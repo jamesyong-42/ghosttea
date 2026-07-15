@@ -63,6 +63,19 @@ npm run check
 npm run build
 ```
 
+## Benchmark
+
+Compare the `terminald` sidecar path against a classic `node-pty` + xterm.js
+baseline (and manually against native Ghostty with the same payloads):
+
+```sh
+cargo build --release --manifest-path native/terminald/Cargo.toml
+npm run bench
+# or: npm run bench:json
+```
+
+See [`bench/README.md`](bench/README.md) for methodology and interpretation.
+
 This implements the Phase 4 production text-engine vertical slice on macOS.
 Phase 5 adds infinite-canvas virtualization, headless/thumbnail/visible states,
 and shared GPU memory budgets across many terminal cards.

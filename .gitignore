@@ -10,3 +10,5 @@ target/
 native/build/
 apps/desktop/build/
 native/vendor/ghostty/
+bench/results.json
+bench/results-*.json
