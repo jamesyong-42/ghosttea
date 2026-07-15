@@ -25,6 +25,35 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt
       - run: npm run build:ghostty-vt
+
+      - name: Upload unstripped build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghostty-vt-unstripped
+          path: native/build/ghostty/install/
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Download unstripped build
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-vt-unstripped
+          path: native/build/ghostty/install/
+
+      - run: npm run normalize:ghostty-vt
       - name: Package locked release artifact
         if: github.ref_type == 'tag'
         run: npm run package:ghostty-vt

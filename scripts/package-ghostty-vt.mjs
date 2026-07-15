@@ -70,6 +70,11 @@ const artifact = {
     platform: lock.builder.platform,
     zigVersion: lock.zig.version,
     zigTarget: lock.builder.target,
+    postprocessor: {
+      tool: "Apple strip",
+      flags: ["-S"],
+      canonicalArchiveMetadata: true,
+    },
   },
   files: Object.fromEntries(
     inputs.map((file) => [file.bundlePath, { sha256: digest("sha256", file.contents), size: file.contents.length }]),
