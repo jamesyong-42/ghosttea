@@ -25,7 +25,13 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt
       - run: npm run build:ghostty-vt
-      - run: npm run package:ghostty-vt
+      - name: Package locked release artifact
+        if: github.ref_type == 'tag'
+        run: npm run package:ghostty-vt
+
+      - name: Package diagnostic candidate
+        if: github.ref_type != 'tag'
+        run: npm run package:ghostty-vt -- --allow-mismatch
 
       - name: Require the release tag to match the locked artifact
         if: github.ref_type == 'tag'

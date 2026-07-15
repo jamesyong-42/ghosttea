@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
+const allowMismatch = process.argv.includes("--allow-mismatch");
 const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
 const target = "aarch64-apple-darwin";
 const revision = lock.ghostty.commit.slice(0, 12);
@@ -186,8 +187,8 @@ const lockedManifest = JSON.parse(
 const lockedTarget = lockedManifest.targets[target];
 for (const field of ["release", "filename", "url", "sha256", "size", "librarySha256", "headersSha256"]) {
   if (lockedTarget?.[field] !== result[field]) {
-    throw new Error(
-      `native artifact manifest mismatch for ${field}: expected ${JSON.stringify(lockedTarget?.[field])}, got ${JSON.stringify(result[field])}`,
-    );
+    const message = `native artifact manifest mismatch for ${field}: expected ${JSON.stringify(lockedTarget?.[field])}, got ${JSON.stringify(result[field])}`;
+    if (!allowMismatch) throw new Error(message);
+    console.warn(message);
   }
 }
