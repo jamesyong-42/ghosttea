@@ -350,13 +350,18 @@ Truffle’s current API already exposes `Peer` handles with live process-local i
 
 # 6. Process topology
 
-`terminald` should own the Truffle node.
+The consuming application's Rust service owns the Truffle node. The terminal
+service receives a clone of that host-owned `Arc` and owns only its terminal
+listener, discovery store, and protocol tasks.
 
 ```text
 Electron
    │ local UDS / named pipe
    ▼
-terminald
+application Rust service
+├── shared Arc<TruffleNode>
+├── application-specific Truffle services
+└── terminal service library
 ├── terminal session authority
 ├── local view connections
 ├── remote view replicas
@@ -381,13 +386,17 @@ Do not run the terminal network protocol through:
 - the Node Truffle binding;
 - a browser WebSocket.
 
-`terminald` is already the persistent owner of sessions, so it should also own their network exposure.
+The terminal library must not construct a second Truffle node, select the
+application identity, open the host's state directory independently, resolve
+`sidecar-slim`, or stop the shared node. Those are composition-root concerns.
+The standalone `terminald` binary is only an example composition root for the
+demo desktop application.
 
 Truffle currently provides a Rust API in addition to its Node and Tauri integrations, with the Go sidecar responsible for Tailscale integration. citeturn415142view0
 
-## 6.1 One Truffle node per device
+## 6.1 One Truffle node per application profile
 
-Use one Truffle node for the complete terminal runtime:
+Use one Truffle node for all Rust services in an application profile:
 
 ```rust
 struct TruffleTerminalTransport {
@@ -397,13 +406,23 @@ struct TruffleTerminalTransport {
 }
 ```
 
-Suggested application namespace:
-
-```text
-appId = "<product>-terminal"
+```rust
+let node = Arc::new(build_host_owned_truffle_node().await?);
+let application_sync = ApplicationSync::new(Arc::clone(&node));
+let terminal = TruffleTerminalTransport::new(
+    Arc::clone(&node),
+    "terminal.v1",
+);
 ```
 
-Every terminal-capable device uses the same app ID.
+The host application chooses the Truffle application identity:
+
+```text
+appId = "<product>"
+```
+
+Every participating application profile uses the same app ID, while terminal
+traffic is isolated under a host-assigned `terminal.v1` service scope.
 
 Truffle scopes peer visibility by `appId`, so unrelated Truffle applications do not enter this terminal network. citeturn534891view0
 
@@ -439,17 +458,17 @@ struct SharedSessionSummary {
 }
 ```
 
-Store name:
+Scoped store name:
 
 ```text
-terminal-hosts
+<terminal-service>.hosts
 ```
 
 Conceptually:
 
 ```rust
 let hosts =
-    truffle.synced_store::<TerminalHostAdvertisement>("terminal-hosts");
+    truffle.synced_store::<TerminalHostAdvertisement>("terminal.v1.hosts");
 
 hosts.set(local_advertisement).await;
 ```
@@ -1053,8 +1072,9 @@ DEVICE A — session authority
 │ └── local WebGPU terminal view A             │
 │               │                              │
 │               ▼                              │
-│ terminald                                    │
-│ ├── PTY                                      │
+│ application Rust service                     │
+│ ├── shared host-owned Truffle node           │
+│ ├── terminal library: PTY                    │
 │ ├── authoritative libghostty-vt state        │
 │ ├── canonical size                           │
 │ ├── LWW resize controller                    │
@@ -1067,8 +1087,9 @@ DEVICE A — session authority
                        ▼
 DEVICE B — replicated view
 ┌──────────────────────────────────────────────┐
-│ terminald                                    │
-│ ├── Truffle peer connection                  │
+│ application Rust service                     │
+│ ├── shared host-owned Truffle node           │
+│ ├── terminal library: peer connection        │
 │ ├── logical terminal replica                 │
 │ ├── local font shaping                       │
 │ └── local render-display generation          │

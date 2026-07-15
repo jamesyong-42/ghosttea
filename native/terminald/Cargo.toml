@@ -14,7 +14,7 @@ serde_json = "1.0"
 tokio = { version = "1.45", features = ["full"] }
 uuid = { version = "1.16", features = ["v4"] }
 dotenvy = "0.15"
-truffle = { path = "../../../p008/truffle/crates/truffle" }
+truffle-core = { path = "../../../p008/truffle/crates/truffle-core" }
 subtle = "2"
 
 [dev-dependencies]

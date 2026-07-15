@@ -39,11 +39,20 @@ export class TerminalSupervisor extends EventEmitter {
     mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     rmSync(this.connection.controlSocket, { force: true });
     rmSync(this.connection.frameSocket, { force: true });
+    const repositoryRoot = resolve(app.getAppPath(), "../..");
+    const developmentSidecar = resolve(
+      repositoryRoot,
+      "../p008/truffle/packages/sidecar-slim",
+      process.platform === "win32" ? "sidecar-slim.exe" : "sidecar-slim",
+    );
     const environment = {
       ...process.env,
       TERMINALD_CONTROL_SOCKET: this.connection.controlSocket,
       TERMINALD_FRAME_SOCKET: this.connection.frameSocket,
       TERMINALD_AUTH_TOKEN: this.connection.authToken,
+      ...(!process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
+        ? { TRUFFLE_SIDECAR_PATH: developmentSidecar }
+        : {}),
     };
 
     const configuredBinary =
@@ -55,7 +64,6 @@ export class TerminalSupervisor extends EventEmitter {
       if (!existsSync(configuredBinary)) throw new Error(`terminald executable not found at ${configuredBinary}`);
       this.#child = spawn(configuredBinary, [], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
     } else {
-      const repositoryRoot = resolve(app.getAppPath(), "../..");
       const manifest = join(repositoryRoot, "native/terminald/Cargo.toml");
       if (!existsSync(manifest)) throw new Error(`terminald manifest not found at ${manifest}`);
       const profileArgs = process.env.TERMINALD_DEV_PROFILE === "debug" ? [] : ["--release"];

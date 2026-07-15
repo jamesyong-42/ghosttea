@@ -1,9 +1,11 @@
 use std::{
     collections::{HashMap, VecDeque},
-    env,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(test)]
+use std::env;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -11,7 +13,8 @@ use subtle::ConstantTimeEq;
 use text_engine::TextEngine;
 use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
-use truffle::{Node, network::tailscale::TailscaleProvider, transport::quic::QuicStream};
+use truffle_core as truffle;
+use truffle_core::{Node, network::tailscale::TailscaleProvider, transport::quic::QuicStream};
 use uuid::Uuid;
 
 use crate::{
@@ -27,8 +30,7 @@ use crate::{
     },
 };
 
-const DEFAULT_APP_ID: &str = "electron-ghostty-terminal";
-const DEFAULT_QUIC_PORT: u16 = 9420;
+pub const DEFAULT_QUIC_PORT: u16 = 9420;
 const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(5);
 const ADVERTISEMENT_TTL: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -632,44 +634,37 @@ async fn validated_advertisement(
     Ok(advertisement)
 }
 
-#[derive(Clone)]
-struct MeshConfig {
-    app_id: String,
-    quic_port: u16,
-    auth_key: Option<String>,
-    device_name: Option<String>,
-    state_dir: Option<String>,
-    capability: Option<String>,
-    allow_tailnet_write: bool,
+#[derive(Clone, Debug)]
+/// Terminal-specific routing and authorization layered on a shared Truffle
+/// node. Application identity, node state, and sidecar configuration belong to
+/// the embedding host instead.
+pub struct TruffleTerminalConfig {
+    pub service_name: String,
+    pub quic_port: u16,
+    pub capability: Option<String>,
+    pub allow_tailnet_write: bool,
 }
 
-impl MeshConfig {
-    fn from_env() -> Result<Option<Self>> {
-        let auth_key = nonempty_env("TRUFFLE_TEST_AUTHKEY");
-        let explicitly_enabled = env_bool("TERMINALD_TRUFFLE_ENABLED")?;
-        if explicitly_enabled == Some(false) || (explicitly_enabled.is_none() && auth_key.is_none())
-        {
-            return Ok(None);
+impl Default for TruffleTerminalConfig {
+    fn default() -> Self {
+        Self {
+            service_name: "terminal.v1".to_owned(),
+            quic_port: DEFAULT_QUIC_PORT,
+            capability: None,
+            allow_tailnet_write: false,
         }
-        let quic_port = match env::var("TERMINALD_TRUFFLE_PORT") {
-            Ok(value) => value
-                .parse::<u16>()
-                .context("TERMINALD_TRUFFLE_PORT must be a valid nonzero port")?,
-            Err(_) => DEFAULT_QUIC_PORT,
-        };
-        if quic_port == 0 {
-            bail!("TERMINALD_TRUFFLE_PORT must be nonzero");
+    }
+}
+
+impl TruffleTerminalConfig {
+    fn validate(&self) -> Result<()> {
+        if self.service_name.trim().is_empty() {
+            bail!("Truffle terminal service name must not be empty");
         }
-        Ok(Some(Self {
-            app_id: nonempty_env("TERMINALD_TRUFFLE_APP_ID")
-                .unwrap_or_else(|| DEFAULT_APP_ID.to_owned()),
-            quic_port,
-            auth_key,
-            device_name: nonempty_env("TERMINALD_TRUFFLE_DEVICE_NAME"),
-            state_dir: nonempty_env("TERMINALD_TRUFFLE_STATE_DIR"),
-            capability: nonempty_env("TERMINALD_TRUFFLE_CAPABILITY"),
-            allow_tailnet_write: env_bool("TERMINALD_TRUFFLE_ALLOW_WRITE")?.unwrap_or(false),
-        }))
+        if self.quic_port == 0 {
+            bail!("Truffle terminal QUIC port must be nonzero");
+        }
+        Ok(())
     }
 
     fn access_for(&self, supplied: Option<&str>) -> ViewAccess {
@@ -696,102 +691,97 @@ impl MeshConfig {
     }
 }
 
-fn nonempty_env(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.trim().is_empty())
+/// A terminal transport adapter that borrows a host-owned Truffle node by
+/// `Arc`. Its discovery store and QUIC listener are scoped to this terminal
+/// service, while the node and sidecar remain shared with the host.
+pub struct TruffleTerminalMesh {
+    node: Arc<Node<TailscaleProvider>>,
+    config: TruffleTerminalConfig,
+    runtime: MeshRuntime,
 }
 
-fn env_bool(name: &str) -> Result<Option<bool>> {
-    let Ok(value) = env::var(name) else {
-        return Ok(None);
-    };
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(Some(true)),
-        "0" | "false" | "no" | "off" => Ok(Some(false)),
-        _ => bail!("{name} must be a boolean"),
+impl TruffleTerminalMesh {
+    pub fn new(node: Arc<Node<TailscaleProvider>>, config: TruffleTerminalConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self {
+            node,
+            config,
+            runtime: MeshRuntime::new(),
+        })
     }
-}
 
-pub async fn run_optional(registry: Registry, runtime: MeshRuntime) -> Result<()> {
-    let Some(config) = MeshConfig::from_env()? else {
-        return Ok(());
-    };
-    let host_instance_id = Uuid::new_v4().to_string();
-    let mut builder = Node::<TailscaleProvider>::builder()
-        .app_id(&config.app_id)?
-        .sidecar_path(truffle::sidecar_path());
-    if let Some(auth_key) = config.auth_key.as_deref() {
-        builder = builder.auth_key(auth_key);
+    pub(crate) fn runtime(&self) -> MeshRuntime {
+        self.runtime.clone()
     }
-    if let Some(device_name) = config.device_name.as_deref() {
-        builder = builder.device_name(device_name);
-    }
-    if let Some(state_dir) = config.state_dir.as_deref() {
-        builder = builder.state_dir(state_dir);
-    }
-    let node = Arc::new(
-        builder
-            .build_with_auth_handler(|_| {
-                eprintln!("[terminal-mesh] Truffle authentication requires user interaction");
-            })
-            .await
-            .context("start Truffle node")?,
-    );
-    let listener = Arc::new(
-        node.listen_quic(config.quic_port)
-            .await
-            .context("listen for terminal QUIC connections")?,
-    );
-    // Profiles keep a stable Truffle device ID, so persist the local store
-    // version with it. Otherwise a restarted terminald begins again at
-    // version 1 and a still-running peer rejects its advertisements as older
-    // than the previous process's slice.
-    let store = node.synced_store_with_backend::<TerminalHostAdvertisement>(
-        "terminal-hosts",
-        Arc::new(truffle::FileBackend::new(
-            node.state_dir().join("synced-store"),
-        )),
-    );
-    *runtime.ready.write().await = Some(MeshReady {
-        node: Arc::clone(&node),
-        store: Arc::clone(&store),
-        host_instance_id: host_instance_id.clone(),
-        capability: config.capability.clone(),
-    });
-    eprintln!(
-        "[terminal-mesh] ready as {} on QUIC port {}",
-        node.local_info().device_name,
-        listener.port()
-    );
 
-    let advertise = advertise_loop(
-        Arc::clone(&node),
-        Arc::clone(&store),
-        registry.clone(),
-        config.clone(),
-        host_instance_id.clone(),
-    );
-    let accept = accept_loop(
-        Arc::clone(&node),
-        Arc::clone(&listener),
-        registry,
-        config,
-        host_instance_id,
-    );
-    let result = tokio::select! {
-        result = advertise => result,
-        result = accept => result,
-    };
-    runtime.connections.lock().await.clear();
-    *runtime.ready.write().await = None;
-    result
+    pub(crate) async fn serve(self, registry: Registry) -> Result<()> {
+        let Self {
+            node,
+            config,
+            runtime,
+        } = self;
+        let host_instance_id = Uuid::new_v4().to_string();
+        let listener = Arc::new(
+            node.listen_quic(config.quic_port)
+                .await
+                .context("listen for terminal QUIC connections")?,
+        );
+        let store_id = format!("{}.hosts", config.service_name);
+        let store_namespace = format!("ss:{store_id}");
+        // Profiles keep a stable Truffle device ID, so persist the local store
+        // version with it. Otherwise a restarted terminald begins again at
+        // version 1 and a still-running peer rejects its advertisements as older
+        // than the previous process's slice.
+        let store = node.synced_store_with_backend::<TerminalHostAdvertisement>(
+            &store_id,
+            Arc::new(truffle::FileBackend::new(
+                node.state_dir().join("synced-store"),
+            )),
+        );
+        *runtime.ready.write().await = Some(MeshReady {
+            node: Arc::clone(&node),
+            store: Arc::clone(&store),
+            host_instance_id: host_instance_id.clone(),
+            capability: config.capability.clone(),
+        });
+        eprintln!(
+            "[terminal-mesh] ready as {} on QUIC port {}",
+            node.local_info().device_name,
+            listener.port()
+        );
+
+        let advertise = advertise_loop(
+            Arc::clone(&node),
+            Arc::clone(&store),
+            registry.clone(),
+            config.clone(),
+            host_instance_id.clone(),
+            store_namespace,
+        );
+        let accept = accept_loop(
+            Arc::clone(&node),
+            Arc::clone(&listener),
+            registry,
+            config,
+            host_instance_id,
+        );
+        let result = tokio::select! {
+            result = advertise => result,
+            result = accept => result,
+        };
+        runtime.connections.lock().await.clear();
+        *runtime.ready.write().await = None;
+        result
+    }
 }
 
 async fn advertise_loop(
     node: Arc<Node<TailscaleProvider>>,
     store: Arc<HostStore>,
     registry: Registry,
-    config: MeshConfig,
+    config: TruffleTerminalConfig,
     host_instance_id: String,
+    store_namespace: String,
 ) -> Result<()> {
     let mut interval = tokio::time::interval(ADVERTISEMENT_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -835,11 +825,14 @@ async fn advertise_loop(
         // are already connected. Targeted requests both establish that
         // channel lazily and ask every known same-app peer for its latest
         // slice, making discovery converge after either side restarts.
-        request_advertisements_from_online_peers(&node).await;
+        request_advertisements_from_online_peers(&node, &store_namespace).await;
     }
 }
 
-async fn request_advertisements_from_online_peers(node: &Node<TailscaleProvider>) {
+async fn request_advertisements_from_online_peers(
+    node: &Node<TailscaleProvider>,
+    store_namespace: &str,
+) {
     let local_device_id = node.local_info().device_id;
     let request = truffle::SyncMessage::Request {};
     let Ok(payload) = serde_json::to_value(&request) else {
@@ -853,7 +846,7 @@ async fn request_advertisements_from_online_peers(node: &Node<TailscaleProvider>
             continue;
         }
         if let Err(cause) = node
-            .send_typed(&device_id, "ss:terminal-hosts", "request", &payload)
+            .send_typed(&device_id, store_namespace, "request", &payload)
             .await
         {
             eprintln!(
@@ -868,7 +861,7 @@ async fn accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     listener: Arc<truffle::transport::quic::QuicListener>,
     registry: Registry,
-    config: MeshConfig,
+    config: TruffleTerminalConfig,
     host_instance_id: String,
 ) -> Result<()> {
     while let Some(connection) = listener.accept().await {
@@ -897,7 +890,7 @@ async fn handle_connection(
     node: Arc<Node<TailscaleProvider>>,
     connection: Arc<truffle::transport::quic::QuicConnection>,
     registry: Registry,
-    config: MeshConfig,
+    config: TruffleTerminalConfig,
     host_instance_id: String,
 ) -> Result<()> {
     let remote_ip = connection.remote_address().ip();
@@ -1017,7 +1010,7 @@ async fn handle_application_stream(
     connection: Arc<truffle::transport::quic::QuicConnection>,
     stream: QuicStream,
     registry: Registry,
-    config: MeshConfig,
+    config: TruffleTerminalConfig,
     client_id: String,
 ) -> Result<()> {
     let mut control = ProtocolStream::new(stream);
@@ -1256,7 +1249,10 @@ async fn spawn_state_stream(
     Ok(())
 }
 
-fn shared_sessions(registry: &Registry, config: &MeshConfig) -> Vec<SharedSessionSummary> {
+fn shared_sessions(
+    registry: &Registry,
+    config: &TruffleTerminalConfig,
+) -> Vec<SharedSessionSummary> {
     registry
         .read()
         .unwrap()
@@ -1365,15 +1361,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mesh_is_disabled_without_key_or_explicit_enable() {
-        // Environment-sensitive behavior is exercised in the opt-in mesh smoke
-        // test; keep pure policy checks deterministic here.
-        let config = MeshConfig {
-            app_id: DEFAULT_APP_ID.into(),
+    fn terminal_access_policy_requires_an_explicit_write_grant() {
+        let config = TruffleTerminalConfig {
+            service_name: "terminal.test".into(),
             quic_port: DEFAULT_QUIC_PORT,
-            auth_key: None,
-            device_name: None,
-            state_dir: None,
             capability: Some("secret".into()),
             allow_tailnet_write: false,
         };
@@ -1382,12 +1373,28 @@ mod tests {
         assert_eq!(config.access_for(Some("secret")), ViewAccess::ReadWrite);
     }
 
+    #[test]
+    fn terminal_service_scope_and_port_are_validated() {
+        let node_free = TruffleTerminalConfig {
+            service_name: " ".into(),
+            ..TruffleTerminalConfig::default()
+        };
+        assert!(node_free.validate().is_err());
+        let zero_port = TruffleTerminalConfig {
+            quic_port: 0,
+            ..TruffleTerminalConfig::default()
+        };
+        assert!(zero_port.validate().is_err());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires TRUFFLE_TEST_AUTHKEY and a reachable Tailscale control plane"]
     async fn latest_truffle_quic_round_trip() -> Result<()> {
         let _ = dotenvy::dotenv();
         let auth_key = env::var("TRUFFLE_TEST_AUTHKEY")
             .context("TRUFFLE_TEST_AUTHKEY is required for this ignored test")?;
+        let sidecar_path = env::var("TRUFFLE_SIDECAR_PATH")
+            .context("TRUFFLE_SIDECAR_PATH is required for this ignored test")?;
         let a_state = tempfile::tempdir()?;
         let b_state = tempfile::tempdir()?;
         let suffix = &Uuid::new_v4().simple().to_string()[..8];
@@ -1395,7 +1402,7 @@ mod tests {
             .app_id("electron-ghostty-test")?
             .device_name(format!("terminal-a-{suffix}"))
             .state_dir(a_state.path().to_string_lossy().as_ref())
-            .sidecar_path(truffle::sidecar_path())
+            .sidecar_path(&sidecar_path)
             .auth_key(&auth_key)
             .ephemeral(true)
             .build();
@@ -1403,7 +1410,7 @@ mod tests {
             .app_id("electron-ghostty-test")?
             .device_name(format!("terminal-b-{suffix}"))
             .state_dir(b_state.path().to_string_lossy().as_ref())
-            .sidecar_path(truffle::sidecar_path())
+            .sidecar_path(&sidecar_path)
             .auth_key(&auth_key)
             .ephemeral(true)
             .build();

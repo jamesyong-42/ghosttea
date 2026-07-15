@@ -35,8 +35,8 @@ npm run build:ghostty-vt
 npm run dev
 ```
 
-Create a packaged macOS build with the release sidecar bundled under the app's
-`Resources/bin` directory:
+Create a packaged macOS build with the release terminal service under the
+app's `Resources/bin` directory:
 
 ```sh
 npm run dist
@@ -51,7 +51,7 @@ minimal Linux container and cross-compiles the static library for macOS, which
 avoids coupling the output to the host macOS SDK.
 
 The desktop process starts `terminald` automatically with `cargo run` during
-development. Set `TERMINALD_BIN` to use a prebuilt sidecar.
+development. Set `TERMINALD_BIN` to use a prebuilt service executable.
 Set `ELECTRON_GHOSTTY_FONT_FAMILY` to select a discovered system font; the
 default preference order favors installed programming-ligature monospace fonts
 before falling back to the platform monospace family.
@@ -63,11 +63,47 @@ checkout at `../p008/truffle`. Put `TRUFFLE_TEST_AUTHKEY` in an untracked
 `.env` to enable the Truffle node during development, or set
 `TERMINALD_TRUFFLE_ENABLED=false` to keep the runtime local-only.
 
+The reusable terminal crate depends on `truffle-core`, not the convenience
+crate that provisions `sidecar-slim`. It accepts a host-owned
+`Arc<Node<TailscaleProvider>>`; it neither creates nor stops that node and does
+not package Truffle. The Electron demo resolves the sibling development
+sidecar and its thin `terminald` binary acts as the application composition
+root. A consuming application owns Truffle installation, identity, state, and
+lifecycle once for all of its Rust services.
+
 Remote peers are read-only by default. Set `TERMINALD_TRUFFLE_CAPABILITY` to
 require a shared write capability, or explicitly set
 `TERMINALD_TRUFFLE_ALLOW_WRITE=true` to grant write access to every same-app
-peer on the tailnet. The app ID and QUIC port default to
-`electron-ghostty-terminal` and `9420`.
+peer on the tailnet. The demo app ID, terminal service scope, and QUIC port
+default to `electron-ghostty-terminal`, `terminal.v1`, and `9420`.
+
+### Embedding in a Rust application service
+
+Create one Truffle node in the host service and pass a clone of the same
+`Arc` to the terminal adapter and to other application services:
+
+```rust,ignore
+let truffle = Arc::new(build_application_truffle_node().await?);
+let app_sync = AppSyncService::new(Arc::clone(&truffle));
+let terminal_mesh = TruffleTerminalMesh::new(
+    Arc::clone(&truffle),
+    TruffleTerminalConfig {
+        service_name: "terminal.v1".into(),
+        quic_port: 9420,
+        ..Default::default()
+    },
+)?;
+
+TerminalService::new(local_terminal_config)
+    .with_truffle_mesh(terminal_mesh)
+    .run()
+    .await?;
+```
+
+Cargo deduplicates the `truffle-core` code, while passing the same `Arc` is
+what shares the live node, peer registry, identity, and sidecar process. Give
+each application feature its own service namespace and QUIC port. Never open
+the same Truffle state directory from two processes.
 
 Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>O</kbd> to open the remote-session palette.
 Choose an advertised session with the arrow keys and Return; it opens as a new

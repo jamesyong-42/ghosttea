@@ -256,6 +256,7 @@ export class TerminaldHarness {
       TERMINALD_CONTROL_SOCKET: this.#controlPath,
       TERMINALD_FRAME_SOCKET: this.#framePath,
       TERMINALD_AUTH_TOKEN: this.#token,
+      TERMINALD_TRUFFLE_ENABLED: "0",
     };
 
     if (binary.kind === "bin") {

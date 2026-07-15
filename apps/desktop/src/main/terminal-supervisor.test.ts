@@ -47,6 +47,9 @@ describe("TerminalSupervisor", () => {
     child.stdout.write("terminald ready (Menlo)\n");
     await Promise.all([first, second]);
     expect(supervisor.running).toBe(true);
+    expect(spawn.mock.calls[0]?.[2]?.env).toMatchObject({
+      TRUFFLE_SIDECAR_PATH: "/p008/truffle/packages/sidecar-slim/sidecar-slim",
+    });
     supervisor.stop();
   });
 
