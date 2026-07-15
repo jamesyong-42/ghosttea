@@ -1,0 +1,12 @@
+[package]
+name = "text-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+fontdb = "0.23.0"
+harfbuzz_rs = "2.0.1"
+swash = "0.2.9"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"

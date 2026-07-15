@@ -1,0 +1,17 @@
+{
+  "name": "@electron-ghostty/terminal-client",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@electron-ghostty/terminal-protocol": "0.1.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

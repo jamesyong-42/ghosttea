@@ -1,0 +1,23 @@
+{
+  "name": "electron-ghostty",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "bootstrap:ghostty-vt": "node scripts/bootstrap-ghostty-vt.mjs",
+    "build": "npm run build --workspaces --if-present",
+    "build:ghostty-vt": "node scripts/build-ghostty-vt.mjs",
+    "check": "npm run check --workspaces --if-present && cargo check --manifest-path native/terminald/Cargo.toml",
+    "dev": "npm run dev --workspace @electron-ghostty/desktop",
+    "test": "npm run test --workspaces --if-present && cargo test --manifest-path native/terminald/Cargo.toml && cargo test --manifest-path native/terminald/crates/ghostty-adapter/Cargo.toml && cargo test --manifest-path native/terminald/crates/text-engine/Cargo.toml",
+    "test:integration": "node tests/integration/terminald-smoke.mjs",
+    "terminald": "cargo run --manifest-path native/terminald/Cargo.toml"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

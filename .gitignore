@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+target/
+.DS_Store
+*.log
+.idea/
+.terminald/
+.tools/
+native/build/
+native/vendor/ghostty/
