@@ -1,0 +1,49 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Require the package version to match the tag
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build:sdk
+      - run: npm test --workspace @vibecook/ghosttea-protocol
+      - run: npm test --workspace @vibecook/ghosttea-frame
+      - run: npm test --workspace @vibecook/ghosttea
+
+      - name: Publish protocol
+        run: npm publish --workspace @vibecook/ghosttea-protocol --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish frame transport
+        run: npm publish --workspace @vibecook/ghosttea-frame --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish client
+        run: npm publish --workspace @vibecook/ghosttea --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
