@@ -1,10 +1,15 @@
 {
-  "name": "@electron-ghostty/terminal-client",
+  "name": "@vibecook/ghosttea",
   "version": "0.1.0",
   "type": "module",
   "exports": "./src/index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "directory": "packages/terminal-client"
+  },
   "dependencies": {
-    "@electron-ghostty/terminal-protocol": "0.1.0"
+    "@vibecook/ghosttea-protocol": "0.1.0"
   },
   "scripts": {
     "check": "tsc --noEmit",

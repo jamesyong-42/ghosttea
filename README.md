@@ -1,4 +1,7 @@
-# Electron Ghostty Runtime
+# Ghosttea
+
+Ghosttea is a native Ghostty-powered terminal runtime and desktop experience
+for Electron applications.
 
 An implementation of the terminal runtime described in
 [`draft/architecture-design.md`](draft/architecture-design.md).
@@ -50,9 +53,10 @@ Ghostty, Zig, and the build container are pinned in
 minimal Linux container and cross-compiles the static library for macOS, which
 avoids coupling the output to the host macOS SDK.
 
-The desktop process starts `terminald` automatically with `cargo run` during
-development. Set `TERMINALD_BIN` to use a prebuilt service executable.
-Set `ELECTRON_GHOSTTY_FONT_FAMILY` to select a discovered system font; the
+The desktop process starts `ghosttead` automatically with `cargo run` during
+development. Set `GHOSTTEAD_BIN` to use a prebuilt service executable;
+`TERMINALD_BIN` remains available as a compatibility alias.
+Set `GHOSTTEA_FONT_FAMILY` to select a discovered system font; the
 default preference order favors installed programming-ligature monospace fonts
 before falling back to the platform monospace family.
 
@@ -61,21 +65,21 @@ before falling back to the platform monospace family.
 The current development dependency targets Truffle 0.7.1 from the sibling
 checkout at `../p008/truffle`. Put `TRUFFLE_TEST_AUTHKEY` in an untracked
 `.env` to enable the Truffle node during development, or set
-`TERMINALD_TRUFFLE_ENABLED=false` to keep the runtime local-only.
+`GHOSTTEA_TRUFFLE_ENABLED=false` to keep the runtime local-only.
 
 The reusable terminal crate depends on `truffle-core`, not the convenience
 crate that provisions `sidecar-slim`. It accepts a host-owned
 `Arc<Node<TailscaleProvider>>`; it neither creates nor stops that node and does
 not package Truffle. The Electron demo resolves the sibling development
-sidecar and its thin `terminald` binary acts as the application composition
+sidecar and its thin `ghosttead` binary acts as the application composition
 root. A consuming application owns Truffle installation, identity, state, and
 lifecycle once for all of its Rust services.
 
-Remote peers are read-only by default. Set `TERMINALD_TRUFFLE_CAPABILITY` to
+Remote peers are read-only by default. Set `GHOSTTEA_TRUFFLE_CAPABILITY` to
 require a shared write capability, or explicitly set
-`TERMINALD_TRUFFLE_ALLOW_WRITE=true` to grant write access to every same-app
+`GHOSTTEA_TRUFFLE_ALLOW_WRITE=true` to grant write access to every same-app
 peer on the tailnet. The demo app ID, terminal service scope, and QUIC port
-default to `electron-ghostty-terminal`, `terminal.v1`, and `9420`.
+default to `ghosttea-terminal`, `terminal.v1`, and `9420`.
 
 ### Embedding in a Rust application service
 
@@ -122,13 +126,13 @@ watchers against the same output directory. For normal HMR development of one
 named profile, use `npm run dev:peer -- alpha` instead.
 
 Each profile has isolated Electron data, Truffle state, and network identity
-under the Ghostty application-data directory. Profile names are stable across
+under the Ghosttea application-data directory. Profile names are stable across
 restarts, so the same `alpha` and `beta` devices are reused instead of enrolling
 new tailnet devices. Only one process may use a given profile at a time.
 Launching the same profile again activates its existing window instead of
 creating a competing runtime.
 
-The launcher sets `ELECTRON_GHOSTTY_PROFILE`; it can also be set directly for
+The launcher sets `GHOSTTEA_PROFILE`; it can also be set directly for
 automation. Both peers keep the same Truffle app ID so they discover each
 other. To test typing and resize authority, enable a write policy in `.env` as
 described above; otherwise remote panes intentionally attach view-only.
@@ -153,7 +157,7 @@ cargo test --manifest-path native/terminald/Cargo.toml \
 
 ## Benchmark
 
-Compare the `terminald` sidecar path against a classic `node-pty` + xterm.js
+Compare the `ghosttead` sidecar path against a classic `node-pty` + xterm.js
 baseline (and manually against native Ghostty with the same payloads):
 
 ```sh

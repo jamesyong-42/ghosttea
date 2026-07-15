@@ -1,4 +1,4 @@
-import { ControlClient } from "@electron-ghostty/terminal-client";
+import { ControlClient } from "@vibecook/ghosttea";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
@@ -8,8 +8,8 @@ import {
   type SharedSessionSummary,
   type TerminalKeyEvent,
   type TerminalMouseEvent,
-} from "@electron-ghostty/terminal-protocol";
-import { FrameFlag } from "@electron-ghostty/terminal-frame";
+} from "@vibecook/ghosttea-protocol";
+import { FrameFlag } from "@vibecook/ghosttea-frame";
 import type { CellSelection, TerminalTheme } from "./renderers/types";
 import { FrameResyncController } from "./frame-resync";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "../../shared/terminal-ipc";
@@ -48,7 +48,7 @@ function waitForPorts(): Promise<Ports> {
       reject(new Error("Electron did not transfer the terminal control and frame ports"));
     }, 10_000);
     const listener = (event: MessageEvent): void => {
-      if (event.data?.type !== "electron-ghostty:ports" || event.ports.length !== 2) return;
+      if (event.data?.type !== "ghosttea:ports" || event.ports.length !== 2) return;
       window.clearTimeout(timeout);
       window.removeEventListener("message", listener);
       resolve({ control: event.ports[0]!, frames: event.ports[1]! });
@@ -104,13 +104,13 @@ export class DesktopTerminalRuntime extends EventTarget {
         this.#resync.complete(data.sessionHandle);
       } else if (data.type === "renderer-reload-required") {
         console.error(`[terminal-runtime] renderer requested reload: ${String(data.reason ?? "unknown")}`);
-        sessionStorage.setItem("electron-ghostty:force-canvas-fallback", "1");
+        sessionStorage.setItem("ghosttea:force-canvas-fallback", "1");
         window.location.reload();
       }
     });
     this.#postWorker({
       type: "renderer-config",
-      forceCanvasFallback: sessionStorage.getItem("electron-ghostty:force-canvas-fallback") === "1",
+      forceCanvasFallback: sessionStorage.getItem("ghosttea:force-canvas-fallback") === "1",
     });
   }
 

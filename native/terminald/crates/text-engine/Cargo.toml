@@ -1,7 +1,9 @@
 [package]
-name = "text-engine"
+name = "ghosttea-text"
 version = "0.1.0"
 edition = "2024"
+description = "Native text shaping and rasterization for Ghosttea"
+repository = "https://github.com/jamesyong-42/ghosttea"
 
 [dependencies]
 anyhow = "1.0"

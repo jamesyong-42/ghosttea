@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import type { SessionSummary } from "@electron-ghostty/terminal-protocol";
+import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 import { terminalRuntime } from "./runtime";
 import { TerminalSurface } from "./TerminalSurface";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette";
@@ -24,14 +24,14 @@ import {
 } from "./pane-layout";
 import { ghosttyHotkey } from "./hotkeys";
 
-const WORKSPACE_STORAGE_KEY = "electron-ghostty:workspace:v1";
+const WORKSPACE_STORAGE_KEY = "ghosttea:workspace:v1";
 
 function windowTitle(session: SessionSummary | undefined): string {
-  if (!session) return "Ghostty";
+  if (!session) return "Ghosttea";
   const title = session.title?.trim();
   if (title) return title;
   const executable = session.executable.split(/[\\/]/).pop();
-  return executable || "Ghostty";
+  return executable || "Ghosttea";
 }
 
 interface InitialWorkspace {

@@ -12,7 +12,7 @@ export class TerminalSupervisor extends EventEmitter {
   #startPromise: Promise<void> | undefined;
   #ready = false;
   #stopping = false;
-  readonly #runtimeDir = join(tmpdir(), `electron-ghostty-${process.getuid?.() ?? "user"}-${process.pid}`);
+  readonly #runtimeDir = join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}`);
   readonly connection: TerminalDaemonConnection;
 
   constructor() {
@@ -47,38 +47,40 @@ export class TerminalSupervisor extends EventEmitter {
     );
     const environment = {
       ...process.env,
-      TERMINALD_CONTROL_SOCKET: this.connection.controlSocket,
-      TERMINALD_FRAME_SOCKET: this.connection.frameSocket,
-      TERMINALD_AUTH_TOKEN: this.connection.authToken,
+      GHOSTTEA_CONTROL_SOCKET: this.connection.controlSocket,
+      GHOSTTEA_FRAME_SOCKET: this.connection.frameSocket,
+      GHOSTTEA_AUTH_TOKEN: this.connection.authToken,
       ...(!process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
         ? { TRUFFLE_SIDECAR_PATH: developmentSidecar }
         : {}),
     };
 
     const configuredBinary =
+      process.env.GHOSTTEAD_BIN ??
       process.env.TERMINALD_BIN ??
       (app.isPackaged
-        ? join(process.resourcesPath, "bin", process.platform === "win32" ? "terminald.exe" : "terminald")
+        ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ghosttead.exe" : "ghosttead")
         : undefined);
     if (configuredBinary) {
-      if (!existsSync(configuredBinary)) throw new Error(`terminald executable not found at ${configuredBinary}`);
+      if (!existsSync(configuredBinary)) throw new Error(`ghosttead executable not found at ${configuredBinary}`);
       this.#child = spawn(configuredBinary, [], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
     } else {
       const manifest = join(repositoryRoot, "native/terminald/Cargo.toml");
       if (!existsSync(manifest)) throw new Error(`terminald manifest not found at ${manifest}`);
-      const profileArgs = process.env.TERMINALD_DEV_PROFILE === "debug" ? [] : ["--release"];
+      const profileArgs =
+        (process.env.GHOSTTEA_DEV_PROFILE ?? process.env.TERMINALD_DEV_PROFILE) === "debug" ? [] : ["--release"];
       this.#child = spawn("cargo", ["run", "--quiet", ...profileArgs, "--manifest-path", manifest], {
         cwd: repositoryRoot,
         env: environment,
         stdio: ["ignore", "pipe", "pipe"],
       });
     }
-    this.#child.stderr?.on("data", (chunk) => console.error(`[terminald] ${String(chunk).trimEnd()}`));
+    this.#child.stderr?.on("data", (chunk) => console.error(`[ghosttead] ${String(chunk).trimEnd()}`));
     await this.#waitUntilReady();
     const running = this.#child;
     if (!running || running.exitCode !== null || running.signalCode !== null) {
       this.#child = undefined;
-      throw new Error("terminald exited immediately after startup");
+      throw new Error("ghosttead exited immediately after startup");
     }
     this.#ready = true;
     running?.once("exit", (code, signal) => {
@@ -102,7 +104,7 @@ export class TerminalSupervisor extends EventEmitter {
 
   async #waitUntilReady(): Promise<void> {
     const child = this.#child;
-    if (!child?.stdout) throw new Error("terminald did not expose stdout");
+    if (!child?.stdout) throw new Error("ghosttead did not expose stdout");
     const stdout = child.stdout;
     await new Promise<void>((resolveReady, reject) => {
       let output = "";
@@ -121,16 +123,16 @@ export class TerminalSupervisor extends EventEmitter {
         if (this.#child === child) this.#child = undefined;
         reject(error);
       };
-      const timeout = setTimeout(() => fail(new Error("terminald startup timed out")), 120_000);
+      const timeout = setTimeout(() => fail(new Error("ghosttead startup timed out")), 120_000);
       const onData = (chunk: Buffer): void => {
         output = `${output}${String(chunk)}`.slice(-4096);
-        if (!output.includes("terminald ready") || settled) return;
+        if (!output.includes("ghosttead ready") || settled) return;
         settled = true;
         cleanup();
         resolveReady();
       };
       const onError = (error: Error): void => fail(error);
-      const onExit = (code: number | null): void => fail(new Error(`terminald exited during startup (${code})`));
+      const onExit = (code: number | null): void => fail(new Error(`ghosttead exited during startup (${code})`));
       child.once("error", onError);
       child.once("exit", onExit);
       stdout.on("data", onData);

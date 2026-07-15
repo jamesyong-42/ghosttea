@@ -1,8 +1,10 @@
 [package]
-name = "ghostty-adapter"
+name = "ghosttea-vt"
 version = "0.1.0"
 edition = "2024"
 links = "ghostty-vt"
+description = "Safe Rust adapter for Ghosttea's Ghostty VT core"
+repository = "https://github.com/jamesyong-42/ghosttea"
 
 [build-dependencies]
 cc = "1.2"

@@ -1,5 +1,5 @@
-#ifndef ELECTRON_GHOSTTY_SHIM_H
-#define ELECTRON_GHOSTTY_SHIM_H
+#ifndef GHOSTTEA_GHOSTTY_SHIM_H
+#define GHOSTTEA_GHOSTTY_SHIM_H
 
 #include <stdbool.h>
 #include <stddef.h>

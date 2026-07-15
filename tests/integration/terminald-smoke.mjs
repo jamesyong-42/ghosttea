@@ -13,10 +13,10 @@ const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/termi
   cwd: root,
   env: {
     ...process.env,
-    TERMINALD_CONTROL_SOCKET: controlSocket,
-    TERMINALD_FRAME_SOCKET: frameSocket,
-    TERMINALD_AUTH_TOKEN: token,
-    TERMINALD_TRUFFLE_ENABLED: "0",
+    GHOSTTEA_CONTROL_SOCKET: controlSocket,
+    GHOSTTEA_FRAME_SOCKET: frameSocket,
+    GHOSTTEA_AUTH_TOKEN: token,
+    GHOSTTEA_TRUFFLE_ENABLED: "0",
   },
   stdio: ["ignore", "pipe", "inherit"],
 });
@@ -176,9 +176,9 @@ try {
   await withTimeout(
     new Promise((resolveReady, reject) => {
       child.stdout.on("data", (chunk) => {
-        if (String(chunk).includes("terminald ready")) resolveReady();
+        if (String(chunk).includes("ghosttead ready")) resolveReady();
       });
-      child.once("exit", (code) => reject(new Error(`terminald exited early (${code})`)));
+      child.once("exit", (code) => reject(new Error(`ghosttead exited early (${code})`)));
     }),
     "terminald startup",
     60_000,
@@ -765,7 +765,7 @@ try {
   );
   if ((await nextControlResponse(control, requestId - 1)).type !== "ok")
     throw new Error("retained session close failed");
-  console.log("terminald smoke test passed");
+  console.log("ghosttead smoke test passed");
 } finally {
   child.kill("SIGTERM");
   rmSync(runtimeDir, { recursive: true, force: true });

@@ -15,7 +15,7 @@ import {
   type StyleDefinition,
   type StyleRun,
   SectionKind,
-} from "@electron-ghostty/terminal-frame";
+} from "@vibecook/ghosttea-frame";
 import { CanvasTerminalRenderer } from "./renderers/canvas-renderer";
 import {
   DEFAULT_THEME,

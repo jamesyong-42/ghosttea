@@ -1,4 +1,4 @@
-import type { SessionSummary } from "@electron-ghostty/terminal-protocol";
+import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 
 export type SplitAxis = "horizontal" | "vertical";
 

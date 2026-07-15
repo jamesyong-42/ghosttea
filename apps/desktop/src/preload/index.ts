@@ -5,7 +5,7 @@ console.info("[terminal-runtime] preload ready");
 
 ipcRenderer.on("terminal-ports", (event) => {
   console.info(`[terminal-runtime] preload received ${event.ports.length} ports`);
-  window.postMessage({ type: "electron-ghostty:ports" } satisfies RendererPortBootstrapMessage, "*", event.ports);
+  window.postMessage({ type: "ghosttea:ports" } satisfies RendererPortBootstrapMessage, "*", event.ports);
 });
 
 contextBridge.exposeInMainWorld("desktop", {

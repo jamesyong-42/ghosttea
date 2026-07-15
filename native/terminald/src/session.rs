@@ -10,10 +10,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ghostty_adapter::{GhosttyTerminalCore, TerminalSnapshot};
+use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
+use ghosttea_vt::{GhosttyTerminalCore, TerminalSnapshot};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
-use text_engine::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -314,7 +314,7 @@ impl Session {
                 while let Ok(operation) = input_rx.recv() {
                     if let Err(error) = session.execute_input(operation) {
                         eprintln!(
-                            "[terminald] PTY input failed for {}: {error:#}",
+                            "[ghosttea] PTY input failed for {}: {error:#}",
                             session.id()
                         );
                     }

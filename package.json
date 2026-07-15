@@ -1,5 +1,5 @@
 {
-  "name": "electron-ghostty",
+  "name": "ghosttea",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -15,19 +15,24 @@
     "bench:json": "node scripts/fix-node-pty.mjs && node bench/run.mjs --json=bench/results.json",
     "postinstall": "node scripts/fix-node-pty.mjs",
     "check": "npm run format:check && npm run lint && npm run check --workspaces --if-present && cargo check --manifest-path native/terminald/Cargo.toml && cargo clippy --manifest-path native/terminald/Cargo.toml --all-targets --all-features -- -D warnings",
-    "dev": "npm run dev --workspace @electron-ghostty/desktop",
+    "dev": "npm run dev --workspace ghosttea-demo",
     "dev:peer": "node scripts/dev-peer.mjs",
     "dev:peers": "node scripts/dev-peers.mjs",
-    "dist": "npm run dist --workspace @electron-ghostty/desktop",
+    "dist": "npm run dist --workspace ghosttea-demo",
     "test": "npm run test --workspaces --if-present && cargo test --manifest-path native/terminald/Cargo.toml && cargo test --manifest-path native/terminald/crates/ghostty-adapter/Cargo.toml && cargo test --manifest-path native/terminald/crates/text-engine/Cargo.toml && npm run test:integration",
     "test:integration": "node tests/integration/terminald-smoke.mjs",
-    "terminald": "cargo run --manifest-path native/terminald/Cargo.toml",
+    "ghosttead": "cargo run --manifest-path native/terminald/Cargo.toml --bin ghosttead",
+    "terminald": "npm run ghosttead",
     "lint": "eslint apps packages scripts tests bench *.js --max-warnings 0",
     "format": "prettier --write apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --manifest-path native/terminald/Cargo.toml",
     "format:check": "prettier --check apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --manifest-path native/terminald/Cargo.toml -- --check"
   },
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

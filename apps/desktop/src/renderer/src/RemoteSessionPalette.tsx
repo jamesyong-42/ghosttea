@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
-import type { RemoteHostSummary, SharedSessionSummary } from "@electron-ghostty/terminal-protocol";
+import type { RemoteHostSummary, SharedSessionSummary } from "@vibecook/ghosttea-protocol";
 import { terminalRuntime } from "./runtime";
 
 export interface RemoteChoice {

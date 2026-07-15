@@ -8,12 +8,13 @@ import { nowMs } from "./stats.mjs";
 const root = resolve(import.meta.dirname, "../..");
 
 export function resolveTerminaldBinary() {
-  if (process.env.TERMINALD_BIN && existsSync(process.env.TERMINALD_BIN)) {
-    return { kind: "bin", path: process.env.TERMINALD_BIN };
+  const configuredBinary = process.env.GHOSTTEAD_BIN ?? process.env.TERMINALD_BIN;
+  if (configuredBinary && existsSync(configuredBinary)) {
+    return { kind: "bin", path: configuredBinary };
   }
-  const release = join(root, "native/terminald/target/release/terminald");
+  const release = join(root, "native/terminald/target/release/ghosttead");
   if (existsSync(release)) return { kind: "bin", path: release };
-  const debug = join(root, "native/terminald/target/debug/terminald");
+  const debug = join(root, "native/terminald/target/debug/ghosttead");
   if (existsSync(debug)) return { kind: "bin", path: debug };
   return {
     kind: "cargo",
@@ -245,7 +246,7 @@ export class TerminaldHarness {
   }
 
   async #boot(timeoutMs) {
-    this.#runtimeDir = mkdtempSync(join(tmpdir(), "electron-ghostty-bench-"));
+    this.#runtimeDir = mkdtempSync(join(tmpdir(), "ghosttea-bench-"));
     this.#controlPath = join(this.#runtimeDir, "control.sock");
     this.#framePath = join(this.#runtimeDir, "frames.sock");
     this.#token = `bench-${process.pid}-${Date.now()}`;
@@ -253,10 +254,10 @@ export class TerminaldHarness {
     const binary = resolveTerminaldBinary();
     const env = {
       ...process.env,
-      TERMINALD_CONTROL_SOCKET: this.#controlPath,
-      TERMINALD_FRAME_SOCKET: this.#framePath,
-      TERMINALD_AUTH_TOKEN: this.#token,
-      TERMINALD_TRUFFLE_ENABLED: "0",
+      GHOSTTEA_CONTROL_SOCKET: this.#controlPath,
+      GHOSTTEA_FRAME_SOCKET: this.#framePath,
+      GHOSTTEA_AUTH_TOKEN: this.#token,
+      GHOSTTEA_TRUFFLE_ENABLED: "0",
     };
 
     if (binary.kind === "bin") {
@@ -267,7 +268,7 @@ export class TerminaldHarness {
 
     this.#child.stderr?.on("data", (chunk) => {
       const text = String(chunk).trimEnd();
-      if (text) process.stderr.write(`[terminald] ${text}\n`);
+      if (text) process.stderr.write(`[ghosttead] ${text}\n`);
     });
 
     await new Promise((resolveReady, reject) => {
@@ -280,7 +281,7 @@ export class TerminaldHarness {
       };
       const timeout = setTimeout(() => fail(new Error("terminald startup timed out")), timeoutMs);
       const onData = (chunk) => {
-        if (!String(chunk).includes("terminald ready") || settled) return;
+        if (!String(chunk).includes("ghosttead ready") || settled) return;
         settled = true;
         cleanup();
         resolveReady();

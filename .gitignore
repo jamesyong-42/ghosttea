@@ -8,7 +8,7 @@ target/
 .DS_Store
 *.log
 .idea/
-.terminald/
+.ghosttea/
 .tools/
 native/build/
 apps/desktop/build/

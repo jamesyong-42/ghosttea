@@ -7,8 +7,8 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use ghostty_adapter::{CellStyle, TerminalCell};
-use text_engine::{FontStyle, GlyphDefinition, StyleSpan, TextEngine};
+use ghosttea_text::{FontStyle, GlyphDefinition, StyleSpan, TextEngine};
+use ghosttea_vt::{CellStyle, TerminalCell};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 

@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { CursorStyle, GlyphFormat, type GlyphDefinition, type StyleDefinition } from "@electron-ghostty/terminal-frame";
+import { CursorStyle, GlyphFormat, type GlyphDefinition, type StyleDefinition } from "@vibecook/ghosttea-frame";
 
 import {
   CELL_WIDTH,

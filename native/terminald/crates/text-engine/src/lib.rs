@@ -110,7 +110,9 @@ const MAX_CACHED_GLYPHS: usize = 65_536;
 
 impl TextEngine {
     pub fn discover() -> Result<Self> {
-        let requested = std::env::var("ELECTRON_GHOSTTY_FONT_FAMILY").ok();
+        let requested = std::env::var("GHOSTTEA_FONT_FAMILY")
+            .or_else(|_| std::env::var("ELECTRON_GHOSTTY_FONT_FAMILY"))
+            .ok();
         Self::discover_with_family(requested.as_deref())
     }
 

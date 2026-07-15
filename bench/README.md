@@ -40,7 +40,7 @@ Options:
 ```sh
 node bench/run.mjs --targets=terminald,xterm --scale=1 --json=bench/results.json
 node bench/run.mjs --targets=terminald --scale=0.5
-TERMINALD_BIN=./native/terminald/target/release/terminald npm run bench
+GHOSTTEAD_BIN=./native/terminald/target/release/ghosttead npm run bench
 ```
 
 ## Cases
@@ -68,7 +68,7 @@ TERMINALD_BIN=./native/terminald/target/release/terminald npm run bench
 **Expected qualitative order (end-to-end pixels):**
 
 ```text
-native Ghostty  ≥  electron-ghostty (terminald + WebGPU)  ≫  node-pty + xterm under flood
+native Ghostty  ≥  Ghosttea (ghosttead + WebGPU)  ≫  node-pty + xterm under flood
 ```
 
 **Expected qualitative order (this harness):**
@@ -137,7 +137,7 @@ To measure that later:
 ```sh
 # Full primary comparison (terminald vs node-pty→xterm)
 cargo build --release --manifest-path native/terminald/Cargo.toml
-TERMINALD_BIN=./native/terminald/target/release/terminald npm run bench:json
+GHOSTTEAD_BIN=./native/terminald/target/release/ghosttead npm run bench:json
 
 # Only the classic embed stack
 node bench/run.mjs --targets=xterm --scale=1

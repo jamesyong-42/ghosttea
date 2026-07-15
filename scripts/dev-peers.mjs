@@ -10,18 +10,18 @@ if (profiles.length < 2 || profiles.some((profile) => !pattern.test(profile))) {
   console.error("Provide at least two profile names using letters, numbers, dots, underscores, or hyphens.");
   process.exitCode = 2;
 } else if (new Set(profiles).size !== profiles.length) {
-  console.error("Every Ghostty peer must use a distinct profile name.");
+  console.error("Every Ghosttea peer must use a distinct profile name.");
   process.exitCode = 2;
 } else {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const build = spawn(npm, ["run", "build", "--workspace", "@electron-ghostty/desktop"], {
+  const build = spawn(npm, ["run", "build", "--workspace", "ghosttea-demo"], {
     stdio: "inherit",
   });
   const buildCode = await new Promise((resolveExit, reject) => {
     build.once("error", reject);
     build.once("exit", (code, signal) => resolveExit(signal ? 1 : (code ?? 1)));
   }).catch((error) => {
-    console.error(`Could not build Ghostty: ${error.message}`);
+    console.error(`Could not build Ghosttea: ${error.message}`);
     return 1;
   });
 
@@ -41,12 +41,12 @@ if (profiles.length < 2 || profiles.some((profile) => !pattern.test(profile))) {
 
     for (const profile of profiles) {
       const child = spawn(electron, [resolve("apps/desktop")], {
-        env: { ...baseEnvironment, ELECTRON_GHOSTTY_PROFILE: profile },
+        env: { ...baseEnvironment, GHOSTTEA_PROFILE: profile },
         stdio: "inherit",
       });
       children.add(child);
       child.once("error", (error) => {
-        console.error(`Could not start Ghostty profile "${profile}": ${error.message}`);
+        console.error(`Could not start Ghosttea profile "${profile}": ${error.message}`);
         process.exitCode = 1;
         stopChildren();
       });

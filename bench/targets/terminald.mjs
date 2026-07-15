@@ -105,7 +105,7 @@ export async function runTerminaldBench({ scale = 1, cols = 120, rows = 40 } = {
   const harness = await TerminaldHarness.start();
   const results = {
     target: "terminald",
-    binary: process.env.TERMINALD_BIN ?? "auto",
+    binary: process.env.GHOSTTEAD_BIN ?? process.env.TERMINALD_BIN ?? "auto",
     cases: {},
   };
 

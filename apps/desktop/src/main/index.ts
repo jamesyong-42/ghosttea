@@ -3,22 +3,22 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, MessageChannelMain, utilityProcess } from "electron";
 import { TerminalSupervisor } from "./terminal-supervisor";
-import { PROFILE_ENV, desktopProfile } from "./profile";
+import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import type { MainToBridgeMessage } from "../shared/terminal-ipc";
 
-app.setName("Ghostty");
+app.setName("Ghosttea");
 if (process.platform === "darwin") app.setActivationPolicy("regular");
-const profile = desktopProfile(app.getPath("userData"), process.env[PROFILE_ENV]);
+const profile = desktopProfile(app.getPath("userData"), process.env[PROFILE_ENV] ?? process.env[LEGACY_PROFILE_ENV]);
 mkdirSync(profile.electronData, { recursive: true, mode: 0o700 });
 if (profile.name !== "default") {
   app.setPath("userData", profile.electronData);
   app.setPath("sessionData", profile.electronData);
   // A named profile is an isolation boundary. Do not allow a shared `.env`
   // value to collapse multiple peers onto the same Truffle identity.
-  process.env.TERMINALD_TRUFFLE_DEVICE_NAME = `${hostname()} · ${profile.name}`;
-  process.env.TERMINALD_TRUFFLE_STATE_DIR = profile.truffleState;
-} else if (!process.env.TERMINALD_TRUFFLE_STATE_DIR?.trim()) {
-  process.env.TERMINALD_TRUFFLE_STATE_DIR = profile.truffleState;
+  process.env.GHOSTTEA_TRUFFLE_DEVICE_NAME = `${hostname()} · ${profile.name}`;
+  process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
+} else if (!process.env.GHOSTTEA_TRUFFLE_STATE_DIR?.trim() && !process.env.TERMINALD_TRUFFLE_STATE_DIR?.trim()) {
+  process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
 }
 
 // Electron keys this lock from the configured user-data directory. Different
@@ -72,7 +72,7 @@ async function ensureBackend(): Promise<void> {
     supervisor = new TerminalSupervisor();
     supervisor.on("unexpected-exit", ({ code, signal }) => {
       if (quitting) return;
-      console.error(`terminald exited unexpectedly (${code ?? signal ?? "unknown"}); restarting`);
+      console.error(`ghosttead exited unexpectedly (${code ?? signal ?? "unknown"}); restarting`);
       void recoverBackend();
     });
   }
@@ -121,7 +121,7 @@ async function createWindow(): Promise<void> {
     minWidth: 320,
     minHeight: 180,
     show: false,
-    title: "Ghostty",
+    title: "Ghosttea",
     backgroundColor: "#282c34",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     ...(process.platform === "darwin" ? { trafficLightPosition: { x: 12, y: 8 } } : {}),

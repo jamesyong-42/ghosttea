@@ -12,10 +12,10 @@ const result = spawnSync("cargo", ["build", "--release", "--manifest-path", mani
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-const executable = process.platform === "win32" ? "terminald.exe" : "terminald";
+const executable = process.platform === "win32" ? "ghosttead.exe" : "ghosttead";
 const source = resolve(root, "native/terminald/target/release", executable);
 const destination = resolve(root, "apps/desktop/build/bin", executable);
 mkdirSync(dirname(destination), { recursive: true });
 copyFileSync(source, destination);
 if (process.platform !== "win32") chmodSync(destination, 0o755);
-console.log(`staged terminald at ${destination}`);
+console.log(`staged ghosttead at ${destination}`);

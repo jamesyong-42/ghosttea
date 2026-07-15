@@ -5,9 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use ghosttea_text::TextEngine;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use text_engine::TextEngine;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
@@ -265,7 +265,7 @@ impl TerminalService {
         ));
 
         println!(
-            "terminald ready ({})",
+            "ghosttead ready ({})",
             text_engine.lock().unwrap().primary_family()
         );
         let mesh_task = self.mesh.map(|mesh| {

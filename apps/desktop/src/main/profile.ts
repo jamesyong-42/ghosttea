@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
-export const PROFILE_ENV = "ELECTRON_GHOSTTY_PROFILE";
+export const PROFILE_ENV = "GHOSTTEA_PROFILE";
+export const LEGACY_PROFILE_ENV = "ELECTRON_GHOSTTY_PROFILE";
 const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface DesktopProfile {

@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 KIND="${1:-scrolling}"
 SCALE="${BENCH_SCALE:-1}"
-OUT_DIR="${TMPDIR:-/tmp}/electron-ghostty-manual-bench-$$"
+OUT_DIR="${TMPDIR:-/tmp}/ghosttea-manual-bench-$$"
 mkdir -p "$OUT_DIR"
 PAYLOAD="$OUT_DIR/payload.bin"
 

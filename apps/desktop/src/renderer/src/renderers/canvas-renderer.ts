@@ -1,4 +1,4 @@
-import { CursorStyle } from "@electron-ghostty/terminal-frame";
+import { CursorStyle } from "@vibecook/ghosttea-frame";
 import {
   CELL_WIDTH,
   LINE_HEIGHT,

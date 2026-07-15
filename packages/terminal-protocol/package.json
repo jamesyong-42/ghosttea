@@ -1,8 +1,13 @@
 {
-  "name": "@electron-ghostty/terminal-protocol",
+  "name": "@vibecook/ghosttea-protocol",
   "version": "0.1.0",
   "type": "module",
   "exports": "./src/index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "directory": "packages/terminal-protocol"
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run"

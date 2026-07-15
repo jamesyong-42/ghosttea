@@ -9,12 +9,12 @@ if (!profile || extra.length || !pattern.test(profile)) {
   process.exitCode = 2;
 } else {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const child = spawn(npm, ["run", "dev", "--workspace", "@electron-ghostty/desktop"], {
-    env: { ...process.env, ELECTRON_GHOSTTY_PROFILE: profile },
+  const child = spawn(npm, ["run", "dev", "--workspace", "ghosttea-demo"], {
+    env: { ...process.env, GHOSTTEA_PROFILE: profile },
     stdio: "inherit",
   });
   child.once("error", (error) => {
-    console.error(`Could not start Ghostty profile "${profile}": ${error.message}`);
+    console.error(`Could not start Ghosttea profile "${profile}": ${error.message}`);
     process.exitCode = 1;
   });
   child.once("exit", (code, signal) => {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
-import type { SessionSummary, TerminalKeyEvent } from "@electron-ghostty/terminal-protocol";
+import type { SessionSummary, TerminalKeyEvent } from "@vibecook/ghosttea-protocol";
 import { terminalRuntime } from "./runtime";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types";
 

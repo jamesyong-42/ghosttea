@@ -44,7 +44,7 @@ describe("TerminalSupervisor", () => {
     expect(secondResolved).toBe(false);
     expect(supervisor.running).toBe(false);
 
-    child.stdout.write("terminald ready (Menlo)\n");
+    child.stdout.write("ghosttead ready (Menlo)\n");
     await Promise.all([first, second]);
     expect(supervisor.running).toBe(true);
     expect(spawn.mock.calls[0]?.[2]?.env).toMatchObject({
@@ -66,7 +66,7 @@ describe("TerminalSupervisor", () => {
     await expect(first).rejects.toThrow("exited during startup");
 
     const second = supervisor.start();
-    recovered.stdout.write("terminald ready (Menlo)\n");
+    recovered.stdout.write("ghosttead ready (Menlo)\n");
     await second;
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(supervisor.running).toBe(true);

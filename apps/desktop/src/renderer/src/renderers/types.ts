@@ -5,7 +5,7 @@ import {
   type GlyphInstance,
   type StyleDefinition,
   type StyleRun,
-} from "@electron-ghostty/terminal-frame";
+} from "@vibecook/ghosttea-frame";
 
 export type Rgba = readonly [number, number, number, number];
 

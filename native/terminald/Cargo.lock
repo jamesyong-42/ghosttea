@@ -634,7 +634,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghostty-adapter"
+name = "ghosttea"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dotenvy",
+ "ghosttea-text",
+ "ghosttea-vt",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "truffle-core",
+ "uuid",
+]
+
+[[package]]
+name = "ghosttea-text"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fontdb",
+ "harfbuzz_rs",
+ "swash",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "ghosttea-vt"
 version = "0.1.0"
 dependencies = [
  "cc",
@@ -1626,37 +1657,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "terminald"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "dotenvy",
- "ghostty-adapter",
- "portable-pty",
- "serde",
- "serde_json",
- "subtle",
- "tempfile",
- "text-engine",
- "tokio",
- "truffle-core",
- "uuid",
-]
-
-[[package]]
-name = "text-engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fontdb",
- "harfbuzz_rs",
- "swash",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ export interface MainToBridgeMessage {
 }
 
 export interface RendererPortBootstrapMessage {
-  type: "electron-ghostty:ports";
+  type: "ghosttea:ports";
 }
 
 export type RendererToWorkerMessage =

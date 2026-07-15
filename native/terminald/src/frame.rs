@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
-use ghostty_adapter::{CellStyle, TerminalCell};
+use ghosttea_text::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
+use ghosttea_vt::{CellStyle, TerminalCell};
 use std::collections::BTreeMap;
-use text_engine::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
 
 pub const FRAME_MAGIC: u32 = 0x3146_5254;
 pub const FRAME_HEADER_BYTES: usize = 64;
@@ -314,10 +314,10 @@ mod tests {
 
     #[test]
     fn snapshot_has_expected_header() {
-        let mut engine = text_engine::TextEngine::discover().unwrap();
+        let mut engine = ghosttea_text::TextEngine::discover().unwrap();
         let shaped = vec![
             engine
-                .shape_row("hello", text_engine::FontStyle::default())
+                .shape_row("hello", ghosttea_text::FontStyle::default())
                 .unwrap(),
         ];
         let cells = vec![vec![TerminalCell {
@@ -369,13 +369,13 @@ mod tests {
 
     #[test]
     fn incremental_frame_contains_only_updated_rows_and_no_repeated_glyphs() {
-        let mut engine = text_engine::TextEngine::discover().unwrap();
+        let mut engine = ghosttea_text::TextEngine::discover().unwrap();
         let shaped = vec![
             engine
-                .shape_row("stable", text_engine::FontStyle::default())
+                .shape_row("stable", ghosttea_text::FontStyle::default())
                 .unwrap(),
             engine
-                .shape_row("changed", text_engine::FontStyle::default())
+                .shape_row("changed", ghosttea_text::FontStyle::default())
                 .unwrap(),
         ];
         let cells = vec![Vec::new(), Vec::new()];

@@ -1,23 +1,28 @@
 {
-  "name": "@electron-ghostty/desktop",
+  "name": "ghosttea-demo",
   "version": "0.1.0",
-  "description": "A Ghostty-class native terminal runtime and desktop experience for Electron.",
-  "author": "Project 100",
+  "description": "The Ghosttea desktop example application.",
+  "author": "James Yong",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "directory": "apps/desktop"
+  },
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "stage:terminald": "node ../../scripts/stage-terminald.mjs",
-    "dist": "npm run stage:terminald && npm run build && electron-builder",
+    "stage:ghosttead": "node ../../scripts/stage-terminald.mjs",
+    "dist": "npm run stage:ghosttead && npm run build && electron-builder",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@electron-ghostty/terminal-client": "0.1.0",
-    "@electron-ghostty/terminal-frame": "0.1.0",
-    "@electron-ghostty/terminal-protocol": "0.1.0",
+    "@vibecook/ghosttea": "0.1.0",
+    "@vibecook/ghosttea-frame": "0.1.0",
+    "@vibecook/ghosttea-protocol": "0.1.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

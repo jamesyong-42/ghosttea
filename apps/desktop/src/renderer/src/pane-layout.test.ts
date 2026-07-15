@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionSummary } from "@electron-ghostty/terminal-protocol";
+import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 import {
   containsPane,
   equalize,

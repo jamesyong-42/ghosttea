@@ -1,5 +1,5 @@
-import type { ClientCommand, ServerEvent } from "@electron-ghostty/terminal-protocol";
-import { isServerEvent } from "@electron-ghostty/terminal-protocol";
+import type { ClientCommand, ServerEvent } from "@vibecook/ghosttea-protocol";
+import { isServerEvent } from "@vibecook/ghosttea-protocol";
 
 type CommandPayload = ClientCommand extends infer Command
   ? Command extends { requestId: number }

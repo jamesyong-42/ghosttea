@@ -8,9 +8,9 @@ use std::{
 use std::env;
 
 use anyhow::{Context, Result, bail};
+use ghosttea_text::TextEngine;
 use serde::Serialize;
 use subtle::ConstantTimeEq;
-use text_engine::TextEngine;
 use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 use truffle_core as truffle;
@@ -1399,7 +1399,7 @@ mod tests {
         let b_state = tempfile::tempdir()?;
         let suffix = &Uuid::new_v4().simple().to_string()[..8];
         let build_a = Node::<TailscaleProvider>::builder()
-            .app_id("electron-ghostty-test")?
+            .app_id("ghosttea-test")?
             .device_name(format!("terminal-a-{suffix}"))
             .state_dir(a_state.path().to_string_lossy().as_ref())
             .sidecar_path(&sidecar_path)
@@ -1407,7 +1407,7 @@ mod tests {
             .ephemeral(true)
             .build();
         let build_b = Node::<TailscaleProvider>::builder()
-            .app_id("electron-ghostty-test")?
+            .app_id("ghosttea-test")?
             .device_name(format!("terminal-b-{suffix}"))
             .state_dir(b_state.path().to_string_lossy().as_ref())
             .sidecar_path(&sidecar_path)

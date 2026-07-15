@@ -66,7 +66,7 @@ Options:
   -h, --help                  Show help
 
 Environment:
-  TERMINALD_BIN               Path to a prebuilt terminald binary
+  GHOSTTEAD_BIN               Path to a prebuilt ghosttead binary
 
 If node-pty fails with "posix_spawnp failed":
   node scripts/fix-node-pty.mjs
