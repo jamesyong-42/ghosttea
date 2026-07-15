@@ -33,6 +33,16 @@ npm run build:ghostty-vt
 npm run dev
 ```
 
+Create a packaged macOS build with the release sidecar bundled under the app's
+`Resources/bin` directory:
+
+```sh
+npm run dist
+```
+
+Code signing and notarization use the standard electron-builder environment
+variables when release credentials are available.
+
 Ghostty, Zig, and the build container are pinned in
 [`native/ghostty.lock.json`](native/ghostty.lock.json). The build runs Zig in a
 minimal Linux container and cross-compiles the static library for macOS, which

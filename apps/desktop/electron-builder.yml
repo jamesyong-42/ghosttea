@@ -1,0 +1,19 @@
+appId: com.project100.electron-ghostty
+productName: Ghostty
+asar: true
+directories:
+  output: ../../dist
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: build/bin/terminald
+    to: bin/terminald
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+artifactName: ${productName}-${version}-${arch}.${ext}

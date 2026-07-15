@@ -179,6 +179,26 @@ void eg_terminal_write(EgTerminal* state, const uint8_t* data, size_t len) {
   ghostty_terminal_vt_write(state->terminal, data, len);
 }
 
+int eg_terminal_encode_paste(EgTerminal* state,
+                             const uint8_t* data,
+                             size_t data_len,
+                             uint8_t* out,
+                             size_t cap,
+                             size_t* out_len) {
+  if (state == NULL || out_len == NULL || (data == NULL && data_len != 0) ||
+      (out == NULL && cap != 0)) return GHOSTTY_INVALID_VALUE;
+  bool bracketed = false;
+  GhosttyResult result = ghostty_terminal_mode_get(
+      state->terminal, GHOSTTY_MODE_BRACKETED_PASTE, &bracketed);
+  if (result != GHOSTTY_SUCCESS) return result;
+  char* copy = data_len == 0 ? NULL : malloc(data_len);
+  if (data_len != 0 && copy == NULL) return GHOSTTY_OUT_OF_MEMORY;
+  if (data_len != 0) memcpy(copy, data, data_len);
+  result = ghostty_paste_encode(copy, data_len, bracketed, (char*)out, cap, out_len);
+  free(copy);
+  return result;
+}
+
 int eg_terminal_resize(EgTerminal* state, uint16_t cols, uint16_t rows) {
   if (state == NULL) return GHOSTTY_INVALID_VALUE;
   return ghostty_terminal_resize(state->terminal, cols, rows, 8, 19);

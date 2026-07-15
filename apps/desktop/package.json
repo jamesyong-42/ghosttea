@@ -1,14 +1,18 @@
 {
   "name": "@electron-ghostty/desktop",
   "version": "0.1.0",
+  "description": "A Ghostty-class native terminal runtime and desktop experience for Electron.",
+  "author": "Project 100",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "stage:terminald": "node ../../scripts/stage-terminald.mjs",
+    "dist": "npm run stage:terminald && npm run build && electron-builder",
     "check": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@electron-ghostty/terminal-client": "0.1.0",
@@ -24,6 +28,7 @@
     "@vitejs/plugin-react": "5.2.0",
     "@webgpu/types": "^0.1.71",
     "electron": "43.1.1",
+    "electron-builder": "^26.0.0",
     "electron-vite": "5.0.0",
     "typescript": "7.0.2",
     "vite": "7.3.6",

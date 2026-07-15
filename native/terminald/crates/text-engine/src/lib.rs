@@ -106,6 +106,8 @@ pub struct TextEngine {
     scale_context: ScaleContext,
 }
 
+const MAX_CACHED_GLYPHS: usize = 65_536;
+
 impl TextEngine {
     pub fn discover() -> Result<Self> {
         let requested = std::env::var("ELECTRON_GHOSTTY_FONT_FAMILY").ok();
@@ -235,7 +237,9 @@ impl TextEngine {
     fn fallback_for(&mut self, cluster: &str) -> Option<ID> {
         let representative = cluster.chars().find(|character| !character.is_control())?;
         if let Some(face) = self.fallback_faces.get(&representative) {
-            return Some(*face);
+            if self.face_supports(*face, cluster).unwrap_or(false) {
+                return Some(*face);
+            }
         }
         let prefer_emoji = cluster.chars().any(is_emoji);
         let mut ids: Vec<ID> = self.database.faces().map(|face| face.id).collect();
@@ -353,6 +357,10 @@ impl TextEngine {
         };
         if let Some(id) = self.glyph_ids.get(&key).copied() {
             return Ok(self.glyphs.get(&id).cloned().map(|definition| (id, definition)));
+        }
+        if self.glyph_ids.len() >= MAX_CACHED_GLYPHS {
+            self.glyph_ids.clear();
+            self.glyphs.clear();
         }
         if glyph_index > u16::MAX as u32 {
             bail!("glyph index exceeds OpenType range");

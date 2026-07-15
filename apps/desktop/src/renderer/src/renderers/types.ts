@@ -1,4 +1,11 @@
-import { CursorStyle, type CursorState, type GlyphDefinition, type GlyphInstance, type StyleDefinition, type StyleRun } from "@electron-ghostty/terminal-frame";
+import {
+  CursorStyle,
+  type CursorState,
+  type GlyphDefinition,
+  type GlyphInstance,
+  type StyleDefinition,
+  type StyleRun,
+} from "@electron-ghostty/terminal-frame";
 
 export type Rgba = readonly [number, number, number, number];
 

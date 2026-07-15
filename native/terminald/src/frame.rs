@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
-use std::collections::BTreeMap;
+use anyhow::{Result, bail};
 use ghostty_adapter::{CellStyle, TerminalCell};
+use std::collections::BTreeMap;
 use text_engine::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
 
 pub const FRAME_MAGIC: u32 = 0x3146_5254;
@@ -58,19 +58,29 @@ fn encode_glyph_definitions(definitions: &[GlyphDefinition]) -> Result<(Vec<u8>,
 }
 
 fn style_id(style: CellStyle) -> u32 {
-    if style == CellStyle::default() { return 0; }
+    if style == CellStyle::default() {
+        return 0;
+    }
     let mut hash = 2_166_136_261_u32;
     let flags = [
-        style.bold, style.italic, style.faint, style.inverse,
-        style.invisible, style.strikethrough, style.underline,
+        style.bold,
+        style.italic,
+        style.faint,
+        style.inverse,
+        style.invisible,
+        style.strikethrough,
+        style.underline,
     ];
     let foreground = style.foreground.unwrap_or([0; 3]);
     let background = style.background.unwrap_or([0; 3]);
-    for byte in flags.into_iter().map(u8::from)
+    for byte in flags
+        .into_iter()
+        .map(u8::from)
         .chain([u8::from(style.foreground.is_some())])
         .chain(foreground)
         .chain([u8::from(style.background.is_some())])
-        .chain(background) {
+        .chain(background)
+    {
         hash ^= byte as u32;
         hash = hash.wrapping_mul(16_777_619);
     }
@@ -112,23 +122,42 @@ fn encode_glyph_instance(bytes: &mut Vec<u8>, glyph: &GlyphInstance, style_id: u
     bytes.extend_from_slice(&glyph.cell_span.to_le_bytes());
 }
 
-pub fn encode_text_snapshot(
-    session_handle: u64,
-    session_epoch: u64,
-    layout_epoch: u64,
-    sequence: u64,
-    revision: u64,
-    cols: u16,
-    rows: &[String],
-    shaped_rows: &[ShapedRow],
-    cells: &[Vec<TerminalCell>],
-    updated_rows: &[u16],
-    full_snapshot: bool,
-    mouse_tracking: bool,
-    new_glyph_definitions: &[GlyphDefinition],
-    clipboard: Option<&[u8]>,
-    cursor: &FrameCursor,
-) -> Result<Vec<u8>> {
+pub struct TextSnapshot<'a> {
+    pub session_handle: u64,
+    pub session_epoch: u64,
+    pub layout_epoch: u64,
+    pub sequence: u64,
+    pub revision: u64,
+    pub cols: u16,
+    pub rows: &'a [String],
+    pub shaped_rows: &'a [ShapedRow],
+    pub cells: &'a [Vec<TerminalCell>],
+    pub updated_rows: &'a [u16],
+    pub full_snapshot: bool,
+    pub mouse_tracking: bool,
+    pub new_glyph_definitions: &'a [GlyphDefinition],
+    pub clipboard: Option<&'a [u8]>,
+    pub cursor: &'a FrameCursor,
+}
+
+pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
+    let TextSnapshot {
+        session_handle,
+        session_epoch,
+        layout_epoch,
+        sequence,
+        revision,
+        cols,
+        rows,
+        shaped_rows,
+        cells,
+        updated_rows,
+        full_snapshot,
+        mouse_tracking,
+        new_glyph_definitions,
+        clipboard,
+        cursor,
+    } = snapshot;
     if rows.len() > u16::MAX as usize {
         bail!("too many rows");
     }
@@ -167,20 +196,27 @@ pub fn encode_text_snapshot(
         let mut runs: Vec<(u32, u16, u16)> = Vec::new();
         for cell in row_cells {
             let id = style_id(cell.style);
-            if id == 0 { continue; }
-            if let Some((previous_id, start, span)) = runs.last_mut() {
-                if *previous_id == id && start.saturating_add(*span) == cell.column {
-                    *span = span.saturating_add(cell.span);
-                    continue;
-                }
+            if id == 0 {
+                continue;
+            }
+            if let Some((previous_id, start, span)) = runs.last_mut()
+                && *previous_id == id
+                && start.saturating_add(*span) == cell.column
+            {
+                *span = span.saturating_add(cell.span);
+                continue;
             }
             runs.push((id, cell.column, cell.span));
         }
         replacements.extend_from_slice(&(runs.len() as u16).to_le_bytes());
         replacements.extend_from_slice(bytes);
         for glyph in &shaped.glyphs {
-            let style_id = row_cells.iter()
-                .find(|cell| glyph.cell_start >= cell.column && glyph.cell_start < cell.column.saturating_add(cell.span))
+            let style_id = row_cells
+                .iter()
+                .find(|cell| {
+                    glyph.cell_start >= cell.column
+                        && glyph.cell_start < cell.column.saturating_add(cell.span)
+                })
                 .map(|cell| style_id(cell.style))
                 .unwrap_or(0);
             encode_glyph_instance(&mut replacements, glyph, style_id);
@@ -216,7 +252,9 @@ pub fn encode_text_snapshot(
     packet.push(0);
     packet.extend_from_slice(&accessibility);
     let clipboard_offset = packet.len();
-    if let Some(bytes) = &clipboard_payload { packet.extend_from_slice(bytes); }
+    if let Some(bytes) = &clipboard_payload {
+        packet.extend_from_slice(bytes);
+    }
 
     put_u32(&mut packet, 0, FRAME_MAGIC);
     put_u16(&mut packet, 4, 1);
@@ -245,7 +283,11 @@ pub fn encode_text_snapshot(
     put_u32(&mut packet, 88, style_definitions.len() as u32);
     put_u32(&mut packet, 92, styles.len() as u32);
     put_u16(&mut packet, 96, ROW_REPLACEMENTS);
-    put_u16(&mut packet, 98, if full_snapshot { FULL_SNAPSHOT } else { 0 });
+    put_u16(
+        &mut packet,
+        98,
+        if full_snapshot { FULL_SNAPSHOT } else { 0 },
+    );
     put_u32(&mut packet, 100, replacement_offset as u32);
     put_u32(&mut packet, 104, replacements.len() as u32);
     put_u32(&mut packet, 108, updated_rows.len() as u32);
@@ -273,18 +315,53 @@ mod tests {
     #[test]
     fn snapshot_has_expected_header() {
         let mut engine = text_engine::TextEngine::discover().unwrap();
-        let shaped = vec![engine.shape_row("hello", text_engine::FontStyle::default()).unwrap()];
-        let cells = vec![vec![TerminalCell { column: 0, span: 1, text: "h".into(), style: CellStyle::default() }]];
-        let frame = encode_text_snapshot(
-            4, 1, 2, 3, 5, 80, &["hello".into()], &shaped, &cells,
-            &[0], true, false, &shaped[0].definitions, None,
-            &FrameCursor { x: 5, y: 0, visible: true, style: 1, blinking: true },
-        ).unwrap();
+        let shaped = vec![
+            engine
+                .shape_row("hello", text_engine::FontStyle::default())
+                .unwrap(),
+        ];
+        let cells = vec![vec![TerminalCell {
+            column: 0,
+            span: 1,
+            text: "h".into(),
+            style: CellStyle::default(),
+        }]];
+        let cursor = FrameCursor {
+            x: 5,
+            y: 0,
+            visible: true,
+            style: 1,
+            blinking: true,
+        };
+        let frame = encode_text_snapshot(TextSnapshot {
+            session_handle: 4,
+            session_epoch: 1,
+            layout_epoch: 2,
+            sequence: 3,
+            revision: 5,
+            cols: 80,
+            rows: &["hello".into()],
+            shaped_rows: &shaped,
+            cells: &cells,
+            updated_rows: &[0],
+            full_snapshot: true,
+            mouse_tracking: false,
+            new_glyph_definitions: &shaped[0].definitions,
+            clipboard: None,
+            cursor: &cursor,
+        })
+        .unwrap();
         assert_eq!(&frame[0..4], &FRAME_MAGIC.to_le_bytes());
         assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()), 3);
         assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 5);
-        assert_eq!(u16::from_le_bytes(frame[64..66].try_into().unwrap()), GLYPH_DEFINITIONS);
-        assert_eq!(u16::from_le_bytes(frame[96..98].try_into().unwrap()), ROW_REPLACEMENTS);
+        assert_eq!(
+            u16::from_le_bytes(frame[64..66].try_into().unwrap()),
+            GLYPH_DEFINITIONS
+        );
+        assert_eq!(
+            u16::from_le_bytes(frame[96..98].try_into().unwrap()),
+            ROW_REPLACEMENTS
+        );
         assert_eq!(u32::from_le_bytes(frame[120..124].try_into().unwrap()), 8);
         let cursor_offset = u32::from_le_bytes(frame[116..120].try_into().unwrap()) as usize;
         assert_eq!(&frame[cursor_offset + 4..cursor_offset + 8], &[1, 1, 1, 0]);
@@ -294,35 +371,82 @@ mod tests {
     fn incremental_frame_contains_only_updated_rows_and_no_repeated_glyphs() {
         let mut engine = text_engine::TextEngine::discover().unwrap();
         let shaped = vec![
-            engine.shape_row("stable", text_engine::FontStyle::default()).unwrap(),
-            engine.shape_row("changed", text_engine::FontStyle::default()).unwrap(),
+            engine
+                .shape_row("stable", text_engine::FontStyle::default())
+                .unwrap(),
+            engine
+                .shape_row("changed", text_engine::FontStyle::default())
+                .unwrap(),
         ];
         let cells = vec![Vec::new(), Vec::new()];
-        let frame = encode_text_snapshot(
-            4, 1, 2, 4, 6, 80,
-            &["stable".into(), "changed".into()], &shaped, &cells,
-            &[1], false, false, &[], None,
-            &FrameCursor { x: 7, y: 1, visible: true, style: 1, blinking: true },
-        ).unwrap();
+        let cursor = FrameCursor {
+            x: 7,
+            y: 1,
+            visible: true,
+            style: 1,
+            blinking: true,
+        };
+        let frame = encode_text_snapshot(TextSnapshot {
+            session_handle: 4,
+            session_epoch: 1,
+            layout_epoch: 2,
+            sequence: 4,
+            revision: 6,
+            cols: 80,
+            rows: &["stable".into(), "changed".into()],
+            shaped_rows: &shaped,
+            cells: &cells,
+            updated_rows: &[1],
+            full_snapshot: false,
+            mouse_tracking: false,
+            new_glyph_definitions: &[],
+            clipboard: None,
+            cursor: &cursor,
+        })
+        .unwrap();
         assert_eq!(u16::from_le_bytes(frame[6..8].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(frame[76..80].try_into().unwrap()), 0);
         assert_eq!(u16::from_le_bytes(frame[98..100].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(frame[108..112].try_into().unwrap()), 1);
     }
 
-
     #[test]
     fn advertises_mouse_tracking_and_transports_clipboard_writes() {
         let shaped = vec![ShapedRow::default()];
-        let frame = encode_text_snapshot(
-            4, 1, 2, 5, 7, 80,
-            &[String::new()], &shaped, &[Vec::new()],
-            &[0], false, true, &[], Some(b"copied"),
-            &FrameCursor { x: 0, y: 0, visible: false, style: 1, blinking: false },
-        ).unwrap();
-        assert_eq!(u16::from_le_bytes(frame[6..8].try_into().unwrap()) & MOUSE_TRACKING, MOUSE_TRACKING);
+        let cursor = FrameCursor {
+            x: 0,
+            y: 0,
+            visible: false,
+            style: 1,
+            blinking: false,
+        };
+        let frame = encode_text_snapshot(TextSnapshot {
+            session_handle: 4,
+            session_epoch: 1,
+            layout_epoch: 2,
+            sequence: 5,
+            revision: 7,
+            cols: 80,
+            rows: &[String::new()],
+            shaped_rows: &shaped,
+            cells: &[Vec::new()],
+            updated_rows: &[0],
+            full_snapshot: false,
+            mouse_tracking: true,
+            new_glyph_definitions: &[],
+            clipboard: Some(b"copied"),
+            cursor: &cursor,
+        })
+        .unwrap();
+        assert_eq!(
+            u16::from_le_bytes(frame[6..8].try_into().unwrap()) & MOUSE_TRACKING,
+            MOUSE_TRACKING
+        );
         assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 6);
-        assert_eq!(u16::from_le_bytes(frame[144..146].try_into().unwrap()), CLIPBOARD_WRITE);
+        assert_eq!(
+            u16::from_le_bytes(frame[144..146].try_into().unwrap()),
+            CLIPBOARD_WRITE
+        );
         let offset = u32::from_le_bytes(frame[148..152].try_into().unwrap()) as usize;
         assert_eq!(&frame[offset + 4..], b"copied");
     }

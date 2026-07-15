@@ -8,6 +8,7 @@ import {
   decodeGlyphDefinitions,
   decodeRowReplacements,
   decodeStyleDefinitions,
+  FrameFlag,
   type CursorState,
   type GlyphDefinition,
   type GlyphInstance,
@@ -24,6 +25,9 @@ import {
   type TerminalTheme,
 } from "./renderers/types";
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer";
+import { classifyFrame } from "./frame-sequence";
+import type { RendererToWorkerMessage, WorkerToRendererMessage } from "../../shared/terminal-ipc";
+import { graphemeCellWidth, splitGraphemes } from "./cell-width";
 
 interface Snapshot {
   rows: string[];
@@ -38,7 +42,9 @@ interface Snapshot {
   selection: CellSelection | null;
   theme: TerminalTheme;
   layoutEpoch: bigint;
+  sessionEpoch: bigint;
   sequence: bigint;
+  awaitingResync: boolean;
 }
 
 interface MountedCanvas {
@@ -58,6 +64,11 @@ let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let recoveryAttempts = 0;
 let recovering = false;
 let nativeTextAnnounced = false;
+let forceCanvasFallback = false;
+
+function postToRenderer(message: WorkerToRendererMessage): void {
+  self.postMessage(message);
+}
 
 function snapshot(id: string): Snapshot {
   let value = snapshots.get(id);
@@ -75,7 +86,9 @@ function snapshot(id: string): Snapshot {
       selection: null,
       theme: DEFAULT_THEME,
       layoutEpoch: 0n,
+      sessionEpoch: 0n,
       sequence: 0n,
+      awaitingResync: false,
     };
     snapshots.set(id, value);
   }
@@ -89,32 +102,24 @@ function scheduleCursorBlink(id: string, reset: boolean): void {
   const value = snapshot(id);
   if (reset) value.cursorBlinkVisible = true;
   if (!value.focused || !value.cursor.visible || !value.cursor.blinking) return;
-  cursorBlinkTimers.set(id, setTimeout(() => {
-    cursorBlinkTimers.delete(id);
-    const current = snapshots.get(id);
-    if (!current || !current.focused || !current.cursor.visible || !current.cursor.blinking) return;
-    current.cursorBlinkVisible = !current.cursorBlinkVisible;
-    markDirty(id);
-    scheduleCursorBlink(id, false);
-  }, CURSOR_BLINK_INTERVAL_MS));
-}
-
-function cellWidth(grapheme: string): number {
-  const codepoint = grapheme.codePointAt(0) ?? 0;
-  return /\p{Extended_Pictographic}/u.test(grapheme) ||
-    (codepoint >= 0x1100 && codepoint <= 0x115f) ||
-    (codepoint >= 0x2e80 && codepoint <= 0xa4cf) ||
-    (codepoint >= 0xac00 && codepoint <= 0xd7a3) ||
-    (codepoint >= 0xf900 && codepoint <= 0xfaff) ||
-    (codepoint >= 0x1f300 && codepoint <= 0x1faff) ? 2 : 1;
+  cursorBlinkTimers.set(
+    id,
+    setTimeout(() => {
+      cursorBlinkTimers.delete(id);
+      const current = snapshots.get(id);
+      if (!current || !current.focused || !current.cursor.visible || !current.cursor.blinking) return;
+      current.cursorBlinkVisible = !current.cursorBlinkVisible;
+      markDirty(id);
+      scheduleCursorBlink(id, false);
+    }, CURSOR_BLINK_INTERVAL_MS),
+  );
 }
 
 function sliceCells(text: string, start: number, endInclusive: number): string {
-  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   let column = 0;
   let selected = "";
-  for (const { segment } of segmenter.segment(text)) {
-    const width = cellWidth(segment);
+  for (const segment of splitGraphemes(text)) {
+    const width = graphemeCellWidth(segment);
     if (column <= endInclusive && column + width > start) selected += segment;
     column += width;
     if (column > endInclusive) break;
@@ -123,7 +128,8 @@ function sliceCells(text: string, start: number, endInclusive: number): string {
 }
 
 function selectionText(rows: string[], selection: CellSelection): string {
-  const forward = selection.anchor.row < selection.focus.row ||
+  const forward =
+    selection.anchor.row < selection.focus.row ||
     (selection.anchor.row === selection.focus.row && selection.anchor.column <= selection.focus.column);
   const start = forward ? selection.anchor : selection.focus;
   const end = forward ? selection.focus : selection.anchor;
@@ -133,19 +139,24 @@ function selectionText(rows: string[], selection: CellSelection): string {
     const last = row === end.row ? end.column : Number.MAX_SAFE_INTEGER;
     output.push(sliceCells(rows[row] ?? "", first, last));
   }
-  return output.join("\n").trimEnd();
+  return output.join("\n");
 }
 
 async function createRenderer(): Promise<TerminalRenderer> {
+  if (forceCanvasFallback) {
+    const canvas = new CanvasTerminalRenderer();
+    postToRenderer({ type: "renderer-status", backend: canvas.kind, recovered: true });
+    return canvas;
+  }
   try {
     const gpu = await WebGpuTerminalRenderer.create((info) => void recoverDevice(info));
     recoveryAttempts = 0;
-    self.postMessage({ type: "renderer-status", backend: gpu.kind });
+    postToRenderer({ type: "renderer-status", backend: gpu.kind });
     return gpu;
   } catch (error) {
     console.warn("[terminal-renderer] WebGPU unavailable; using diagnostic Canvas2D", error);
     const canvas = new CanvasTerminalRenderer();
-    self.postMessage({ type: "renderer-status", backend: canvas.kind });
+    postToRenderer({ type: "renderer-status", backend: canvas.kind });
     return canvas;
   }
 }
@@ -173,11 +184,15 @@ async function recoverDevice(info: GPUDeviceLostInfo): Promise<void> {
       next.resize(id, mount.size);
       markDirty(id);
     }
-    self.postMessage({ type: "renderer-status", backend: next.kind, recovered: true });
+    postToRenderer({ type: "renderer-status", backend: next.kind, recovered: true });
   } catch (error) {
     console.error("[terminal-renderer] WebGPU recovery failed", error);
     rendererPromise = undefined;
     recovering = false;
+    if (recoveryAttempts >= 3) {
+      postToRenderer({ type: "renderer-reload-required", reason: "webgpu-device-loss" });
+      return;
+    }
     const delay = Math.min(5_000, 250 * 2 ** Math.min(recoveryAttempts, 4));
     setTimeout(() => void recoverDevice(info), delay);
   }
@@ -227,10 +242,29 @@ function applyFrame(packet: ArrayBuffer): void {
   const frame = decodeFrame(packet);
   const id = frame.sessionHandle.toString();
   const previous = snapshot(id);
-  if (
-    frame.layoutEpoch < previous.layoutEpoch ||
-    (frame.layoutEpoch === previous.layoutEpoch && frame.frameSequence <= previous.sequence)
-  ) return;
+  const fullFrame = (frame.flags & FrameFlag.FullSnapshot) !== 0;
+  const classification = classifyFrame(previous, {
+    sessionEpoch: frame.sessionEpoch,
+    layoutEpoch: frame.layoutEpoch,
+    sequence: frame.frameSequence,
+    full: fullFrame,
+  });
+  if (classification === "stale") return;
+  const changedSession = previous.sessionEpoch !== 0n && frame.sessionEpoch !== previous.sessionEpoch;
+  if (classification === "resync") {
+    previous.awaitingResync = true;
+    postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
+    return;
+  }
+  const completingResync = previous.awaitingResync;
+  if (changedSession || completingResync) {
+    previous.rows = [];
+    previous.nativeRows = [];
+    previous.nativeStyleRows = [];
+    previous.glyphDefinitions.clear();
+    previous.styleDefinitions.clear();
+    previous.rowRevisions = [];
+  }
   const rowSection = frame.sections.find((candidate) => candidate.kind === SectionKind.RowReplacements);
   const cursorSection = frame.sections.find((candidate) => candidate.kind === SectionKind.CursorState);
   const glyphSection = frame.sections.find((candidate) => candidate.kind === SectionKind.GlyphDefinitions);
@@ -243,20 +277,25 @@ function applyFrame(packet: ArrayBuffer): void {
     for (const definition of definitions) previous.glyphDefinitions.set(definition.id, definition);
     if (!nativeTextAnnounced && definitions.length > 0) {
       nativeTextAnnounced = true;
-      self.postMessage({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
+      postToRenderer({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
     }
   }
   if (styleSection) {
-    for (const definition of decodeStyleDefinitions(styleSection)) previous.styleDefinitions.set(definition.id, definition);
+    for (const definition of decodeStyleDefinitions(styleSection))
+      previous.styleDefinitions.set(definition.id, definition);
   }
   if (clipboardSection) {
-    self.postMessage({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
+    postToRenderer({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
   }
 
   const full = (rowSection.flags & 1) !== 0;
   const rows = full ? Array<string>(frame.rows).fill("") : previous.rows.slice();
-  const nativeRows = full ? Array.from({ length: frame.rows }, () => [] as GlyphInstance[]) : previous.nativeRows.map((row) => row.slice());
-  const nativeStyleRows = full ? Array.from({ length: frame.rows }, () => [] as StyleRun[]) : previous.nativeStyleRows.map((row) => row.slice());
+  const nativeRows = full
+    ? Array.from({ length: frame.rows }, () => [] as GlyphInstance[])
+    : previous.nativeRows.map((row) => row.slice());
+  const nativeStyleRows = full
+    ? Array.from({ length: frame.rows }, () => [] as StyleRun[])
+    : previous.nativeStyleRows.map((row) => row.slice());
   const rowRevisions = full ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
   for (const replacement of decodeRowReplacements(rowSection)) {
     if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
@@ -271,26 +310,43 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.nativeStyleRows = nativeStyleRows;
   previous.rowRevisions = rowRevisions;
   const nextCursor = decodeCursorState(cursorSection);
-  const cursorChanged = nextCursor.x !== previous.cursor.x || nextCursor.y !== previous.cursor.y ||
-    nextCursor.visible !== previous.cursor.visible || nextCursor.style !== previous.cursor.style ||
+  const cursorChanged =
+    nextCursor.x !== previous.cursor.x ||
+    nextCursor.y !== previous.cursor.y ||
+    nextCursor.visible !== previous.cursor.visible ||
+    nextCursor.style !== previous.cursor.style ||
     nextCursor.blinking !== previous.cursor.blinking;
   previous.cursor = nextCursor;
   if (cursorChanged) scheduleCursorBlink(id, true);
   previous.layoutEpoch = frame.layoutEpoch;
+  previous.sessionEpoch = frame.sessionEpoch;
   previous.sequence = frame.frameSequence;
+  previous.awaitingResync = false;
+  if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
   markDirty(id);
 }
 
-self.onmessage = (event: MessageEvent) => {
+self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
   const message = event.data;
   try {
     if (message.type === "mount") {
-      void mount(message.sessionHandle, message.canvas as OffscreenCanvas).catch((error) => {
+      void mount(message.sessionHandle, message.canvas).catch((error) => {
         console.error("[terminal-renderer] mount failed", error);
       });
+    } else if (message.type === "renderer-config") {
+      forceCanvasFallback = Boolean(message.forceCanvasFallback);
     } else if (message.type === "unmount") {
       mounts.delete(message.sessionHandle);
       dirty.delete(message.sessionHandle);
+      renderer?.unmount(message.sessionHandle);
+      const timer = cursorBlinkTimers.get(message.sessionHandle);
+      if (timer !== undefined) clearTimeout(timer);
+      cursorBlinkTimers.delete(message.sessionHandle);
+      snapshots.delete(message.sessionHandle);
+    } else if (message.type === "drop-session") {
+      mounts.delete(message.sessionHandle);
+      dirty.delete(message.sessionHandle);
+      snapshots.delete(message.sessionHandle);
       renderer?.unmount(message.sessionHandle);
       const timer = cursorBlinkTimers.get(message.sessionHandle);
       if (timer !== undefined) clearTimeout(timer);
@@ -302,12 +358,12 @@ self.onmessage = (event: MessageEvent) => {
       renderer?.resize(message.sessionHandle, mounted.size);
       markDirty(message.sessionHandle);
     } else if (message.type === "frame") {
-      applyFrame(message.packet as ArrayBuffer);
+      applyFrame(message.packet);
     } else if (message.type === "theme") {
-      snapshot(message.sessionHandle).theme = message.theme as TerminalTheme;
+      snapshot(message.sessionHandle).theme = message.theme;
       markDirty(message.sessionHandle);
     } else if (message.type === "selection") {
-      snapshot(message.sessionHandle).selection = message.selection as CellSelection | null;
+      snapshot(message.sessionHandle).selection = message.selection;
       markDirty(message.sessionHandle);
     } else if (message.type === "focus") {
       const value = snapshot(message.sessionHandle);
@@ -318,11 +374,10 @@ self.onmessage = (event: MessageEvent) => {
       scheduleCursorBlink(message.sessionHandle, true);
       markDirty(message.sessionHandle);
     } else if (message.type === "selection-text") {
-      const selection = message.selection as CellSelection;
-      self.postMessage({
+      postToRenderer({
         type: "selection-text",
         requestId: message.requestId,
-        text: selectionText(snapshot(message.sessionHandle).rows, selection),
+        text: selectionText(snapshot(message.sessionHandle).rows, message.selection),
       });
     }
   } catch (error) {

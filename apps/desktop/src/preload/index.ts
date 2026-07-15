@@ -1,14 +1,17 @@
 import { clipboard, contextBridge, ipcRenderer } from "electron";
+import type { RendererPortBootstrapMessage } from "../shared/terminal-ipc";
 
 console.info("[terminal-runtime] preload ready");
 
 ipcRenderer.on("terminal-ports", (event) => {
   console.info(`[terminal-runtime] preload received ${event.ports.length} ports`);
-  window.postMessage({ type: "electron-ghostty:ports" }, "*", event.ports);
+  window.postMessage({ type: "electron-ghostty:ports" } satisfies RendererPortBootstrapMessage, "*", event.ports);
 });
 
 contextBridge.exposeInMainWorld("desktop", {
   platform: process.platform,
+  defaultShell:
+    process.platform === "win32" ? (process.env.COMSPEC ?? "powershell.exe") : (process.env.SHELL ?? "/bin/zsh"),
   writeClipboard: (text: string) => clipboard.writeText(text),
   readClipboard: () => clipboard.readText(),
   showContextMenu: (canCopy: boolean) => ipcRenderer.send("terminal-context-menu", canCopy),

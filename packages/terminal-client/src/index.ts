@@ -39,7 +39,7 @@ export class ControlClient extends EventTarget {
   }
 
   notify(command: CommandPayload): void {
-    this.#port.postMessage({ ...command, requestId: this.#nextRequestId++ });
+    this.#port.postMessage({ ...command, requestId: 0 });
   }
 
   dispose(): void {
@@ -57,6 +57,13 @@ export class ControlClient extends EventTarget {
     const event = message.data;
     if (event.requestId === 0) {
       this.dispatchEvent(new CustomEvent(event.type, { detail: event }));
+      if (event.type === "bridge-error") {
+        for (const pending of this.#pending.values()) {
+          clearTimeout(pending.timeout);
+          pending.reject(new Error(event.message));
+        }
+        this.#pending.clear();
+      }
       return;
     }
     const pending = this.#pending.get(event.requestId);

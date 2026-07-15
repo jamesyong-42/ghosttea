@@ -4,6 +4,7 @@ declare global {
   interface Window {
     desktop: {
       platform: string;
+      defaultShell: string;
       writeClipboard: (text: string) => void;
       readClipboard: () => string;
       showContextMenu: (canCopy: boolean) => void;

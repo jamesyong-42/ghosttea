@@ -1,4 +1,5 @@
 export const FRAME_MAGIC = 0x31465254;
+export const FRAME_PROTOCOL_VERSION = 1;
 export const FRAME_HEADER_BYTES = 64;
 export const SECTION_HEADER_BYTES = 16;
 export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
@@ -122,6 +123,7 @@ export function decodeFrame(buffer: ArrayBuffer): TerminalFrame {
   assertRange(buffer.byteLength <= MAX_FRAME_BYTES, "packet exceeds limit");
   const view = new DataView(buffer);
   assertRange(view.getUint32(0, true) === FRAME_MAGIC, "bad magic");
+  assertRange(view.getUint16(4, true) === FRAME_PROTOCOL_VERSION, "unsupported protocol version");
 
   const sectionCount = view.getUint16(60, true);
   const tableEnd = FRAME_HEADER_BYTES + sectionCount * SECTION_HEADER_BYTES;
@@ -239,7 +241,10 @@ export function decodeGlyphDefinitions(section: FrameSection): GlyphDefinition[]
     assertRange(offset + 20 <= section.bytes.byteLength, "truncated glyph definition");
     const format = view.getUint8(offset + 12) as GlyphFormat;
     assertRange(format === GlyphFormat.Alpha8 || format === GlyphFormat.Rgba8Premultiplied, "invalid glyph format");
-    assertRange(view.getUint8(offset + 13) === 0 && view.getUint16(offset + 14, true) === 0, "nonzero glyph reserved bytes");
+    assertRange(
+      view.getUint8(offset + 13) === 0 && view.getUint16(offset + 14, true) === 0,
+      "nonzero glyph reserved bytes",
+    );
     const pixelLength = view.getUint32(offset + 16, true);
     const width = view.getUint16(offset + 4, true);
     const height = view.getUint16(offset + 6, true);
@@ -287,8 +292,12 @@ export function decodeStyleDefinitions(section: FrameSection): StyleDefinition[]
       invisible: (flags & 16) !== 0,
       strikethrough: (flags & 32) !== 0,
       underline: (flags & 64) !== 0,
-      ...(foregroundKind === 1 ? { foreground: [view.getUint8(offset + 8), view.getUint8(offset + 9), view.getUint8(offset + 10)] as const } : {}),
-      ...(backgroundKind === 1 ? { background: [view.getUint8(offset + 11), view.getUint8(offset + 12), view.getUint8(offset + 13)] as const } : {}),
+      ...(foregroundKind === 1
+        ? { foreground: [view.getUint8(offset + 8), view.getUint8(offset + 9), view.getUint8(offset + 10)] as const }
+        : {}),
+      ...(backgroundKind === 1
+        ? { background: [view.getUint8(offset + 11), view.getUint8(offset + 12), view.getUint8(offset + 13)] as const }
+        : {}),
     });
   }
   return styles;

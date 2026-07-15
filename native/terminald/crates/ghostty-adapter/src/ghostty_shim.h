@@ -103,5 +103,11 @@ int eg_terminal_encode_focus(EgTerminal* terminal,
                              uint8_t* out,
                              size_t cap,
                              size_t* out_len);
+int eg_terminal_encode_paste(EgTerminal* terminal,
+                             const uint8_t* data,
+                             size_t data_len,
+                             uint8_t* out,
+                             size_t cap,
+                             size_t* out_len);
 
 #endif

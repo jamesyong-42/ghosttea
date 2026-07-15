@@ -16,13 +16,24 @@ export type ClientCommand =
   | { requestId: number; type: "create-session"; options: CreateSessionOptions }
   | { requestId: number; type: "list-sessions" }
   | { requestId: number; type: "get-session"; sessionId: string }
+  | { requestId: number; type: "refresh-session"; sessionId: string }
+  | { requestId: number; type: "attach-session"; sessionId: string }
+  | { requestId: number; type: "detach-session"; sessionId: string }
   | { requestId: number; type: "send-text"; sessionId: string; text: string }
+  | { requestId: number; type: "paste"; sessionId: string; text: string }
   | { requestId: number; type: "send-key"; sessionId: string; event: TerminalKeyEvent }
   | { requestId: number; type: "send-mouse"; sessionId: string; event: TerminalMouseEvent }
   | { requestId: number; type: "scroll"; sessionId: string; rows: number }
   | { requestId: number; type: "focus"; sessionId: string; focused: boolean }
   | { requestId: number; type: "resize"; sessionId: string; cols: number; rows: number }
-  | { requestId: number; type: "set-colors"; sessionId: string; foreground: [number, number, number]; background: [number, number, number]; cursor: [number, number, number] }
+  | {
+      requestId: number;
+      type: "set-colors";
+      sessionId: string;
+      foreground: [number, number, number];
+      background: [number, number, number];
+      cursor: [number, number, number];
+    }
   | { requestId: number; type: "interrupt"; sessionId: string }
   | { requestId: number; type: "terminate"; sessionId: string };
 
@@ -45,6 +56,7 @@ export type ServerEvent =
   | { requestId: number; type: "sessions"; sessions: SessionSummary[] }
   | { requestId: number; type: "ok" }
   | { requestId: number; type: "error"; message: string }
+  | { requestId: 0; type: "bridge-error"; message: string }
   | { requestId: 0; type: "session-exited"; sessionId: string; exitCode: number | null };
 
 export interface TerminalKeyEvent {
@@ -79,6 +91,53 @@ export interface TerminalMouseEvent {
 
 export function isServerEvent(value: unknown): value is ServerEvent {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as { requestId?: unknown; type?: unknown };
-  return typeof candidate.requestId === "number" && typeof candidate.type === "string";
+  const candidate = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(candidate.requestId) ||
+    (candidate.requestId as number) < 0 ||
+    typeof candidate.type !== "string"
+  )
+    return false;
+  const validSession = (session: unknown): boolean => {
+    if (!session || typeof session !== "object") return false;
+    const summary = session as Record<string, unknown>;
+    return (
+      typeof summary.id === "string" &&
+      typeof summary.handle === "string" &&
+      typeof summary.executable === "string" &&
+      Number.isSafeInteger(summary.cols) &&
+      Number.isSafeInteger(summary.rows) &&
+      typeof summary.exited === "boolean" &&
+      (summary.title === null || typeof summary.title === "string") &&
+      (summary.cwd === null || typeof summary.cwd === "string") &&
+      Number.isSafeInteger(summary.bellCount)
+    );
+  };
+  switch (candidate.type) {
+    case "hello":
+      return (
+        typeof candidate.protocolMajor === "number" &&
+        typeof candidate.protocolMinor === "number" &&
+        typeof candidate.serverBuild === "string"
+      );
+    case "session-created":
+    case "session":
+      return validSession(candidate.session);
+    case "sessions":
+      return Array.isArray(candidate.sessions) && candidate.sessions.every(validSession);
+    case "ok":
+      return true;
+    case "error":
+      return typeof candidate.message === "string";
+    case "bridge-error":
+      return candidate.requestId === 0 && typeof candidate.message === "string";
+    case "session-exited":
+      return (
+        candidate.requestId === 0 &&
+        typeof candidate.sessionId === "string" &&
+        (candidate.exitCode === null || Number.isSafeInteger(candidate.exitCode))
+      );
+    default:
+      return false;
+  }
 }

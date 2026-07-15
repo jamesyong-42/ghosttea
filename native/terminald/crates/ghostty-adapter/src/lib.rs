@@ -101,6 +101,14 @@ unsafe extern "C" {
         cap: usize,
         out_len: *mut usize,
     ) -> i32;
+    fn eg_terminal_encode_paste(
+        terminal: *mut RawTerminal,
+        data: *const u8,
+        data_len: usize,
+        out: *mut u8,
+        cap: usize,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +192,24 @@ impl GhosttyTerminalCore {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         unsafe { eg_terminal_write(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) };
+    }
+
+    pub fn encode_paste(&mut self, text: &str) -> Result<Vec<u8>, GhosttyError> {
+        let bytes = text.as_bytes();
+        let mut output = vec![0_u8; bytes.len().saturating_add(16)];
+        let mut written = 0;
+        check(unsafe {
+            eg_terminal_encode_paste(
+                self.raw.as_ptr(),
+                bytes.as_ptr(),
+                bytes.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            )
+        })?;
+        output.truncate(written);
+        Ok(output)
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), GhosttyError> {
@@ -406,7 +432,7 @@ impl GhosttyTerminalCore {
             bell: meta.effects & EFFECT_BELL != 0,
             mouse_tracking: unsafe { eg_terminal_mouse_tracking(self.raw.as_ptr()) },
             clipboard: (meta.effects & EFFECT_CLIPBOARD != 0).then(|| self.take_clipboard()),
-            pty_response: self.take_response(),
+            pty_response: self.take_pty_response(),
         })
     }
 
@@ -418,7 +444,7 @@ impl GhosttyTerminalCore {
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    fn take_response(&self) -> Vec<u8> {
+    pub fn take_pty_response(&self) -> Vec<u8> {
         let required = unsafe { eg_terminal_take_response(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
         let mut bytes = vec![0_u8; required];
         if required != 0 {
@@ -462,6 +488,17 @@ mod tests {
         assert!(snapshot.bell);
         assert!(snapshot.damage.full || !snapshot.damage.dirty_rows.is_empty());
         assert_eq!(snapshot.cells[0][6].style.foreground, Some([204, 102, 102]));
+    }
+
+    #[test]
+    fn encodes_mode_aware_safe_paste() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        assert_eq!(terminal.encode_paste("first\nsecond").unwrap(), b"first\rsecond");
+        terminal.feed(b"\x1b[?2004h");
+        let encoded = terminal.encode_paste("first\nsecond\x1b[201~tail").unwrap();
+        assert!(encoded.starts_with(b"\x1b[200~"));
+        assert!(encoded.ends_with(b"\x1b[201~"));
+        assert_eq!(encoded.windows(6).filter(|window| *window == b"\x1b[201~").count(), 1);
     }
 
     #[test]

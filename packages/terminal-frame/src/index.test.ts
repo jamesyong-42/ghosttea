@@ -9,6 +9,7 @@ import {
   decodeStyleDefinitions,
   FRAME_HEADER_BYTES,
   FRAME_MAGIC,
+  FRAME_PROTOCOL_VERSION,
   SECTION_HEADER_BYTES,
   SectionKind,
 } from "./index";
@@ -19,7 +20,7 @@ function fixture(): ArrayBuffer {
   const buffer = new ArrayBuffer(FRAME_HEADER_BYTES + SECTION_HEADER_BYTES + payloadBytes);
   const view = new DataView(buffer);
   view.setUint32(0, FRAME_MAGIC, true);
-  view.setUint16(4, 1, true);
+  view.setUint16(4, FRAME_PROTOCOL_VERSION, true);
   view.setBigUint64(8, 7n, true);
   view.setBigUint64(40, 3n, true);
   view.setUint16(56, 80, true);
@@ -42,6 +43,12 @@ describe("decodeFrame", () => {
     expect(frame.sessionHandle).toBe(7n);
     expect(frame.frameSequence).toBe(3n);
     expect(decodeAccessibilityRows(frame.sections[0]!)).toEqual([{ row: 0, text: "hello" }]);
+  });
+
+  it("rejects unsupported protocol versions", () => {
+    const buffer = fixture();
+    new DataView(buffer).setUint16(4, FRAME_PROTOCOL_VERSION + 1, true);
+    expect(() => decodeFrame(buffer)).toThrow(/unsupported protocol version/);
   });
 
   it("decodes cursor state", () => {
@@ -106,18 +113,20 @@ describe("decodeFrame", () => {
     view.setUint8(10, 1);
     view.setUint8(11, 1);
     bytes.set([204, 102, 102, 20, 30, 40], 12);
-    expect(decodeStyleDefinitions({ kind: SectionKind.StyleDefinitions, flags: 0, itemCount: 1, bytes })).toEqual([{
-      id: 7,
-      bold: true,
-      italic: false,
-      faint: true,
-      inverse: true,
-      invisible: false,
-      strikethrough: true,
-      underline: true,
-      foreground: [204, 102, 102],
-      background: [20, 30, 40],
-    }]);
+    expect(decodeStyleDefinitions({ kind: SectionKind.StyleDefinitions, flags: 0, itemCount: 1, bytes })).toEqual([
+      {
+        id: 7,
+        bold: true,
+        italic: false,
+        faint: true,
+        inverse: true,
+        invisible: false,
+        strikethrough: true,
+        underline: true,
+        foreground: [204, 102, 102],
+        background: [20, 30, 40],
+      },
+    ]);
   });
 
   it("decodes native alpha glyph definitions", () => {

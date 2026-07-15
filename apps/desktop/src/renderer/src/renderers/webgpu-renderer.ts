@@ -14,6 +14,7 @@ import {
   type Rgba,
   type TerminalRenderer,
 } from "./types";
+import { graphemeCellWidth, splitGraphemes } from "../cell-width";
 
 const ATLAS_SIZE = 2048;
 const FONT_STACK = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
@@ -175,26 +176,6 @@ interface GlyphLocation {
   cells: number;
 }
 
-function isWide(grapheme: string): boolean {
-  const codepoint = grapheme.codePointAt(0) ?? 0;
-  return (
-    /\p{Extended_Pictographic}/u.test(grapheme) ||
-    (codepoint >= 0x1100 && codepoint <= 0x115f) ||
-    (codepoint >= 0x2e80 && codepoint <= 0xa4cf) ||
-    (codepoint >= 0xac00 && codepoint <= 0xd7a3) ||
-    (codepoint >= 0xf900 && codepoint <= 0xfaff) ||
-    (codepoint >= 0xfe10 && codepoint <= 0xfe6f) ||
-    (codepoint >= 0xff00 && codepoint <= 0xff60) ||
-    (codepoint >= 0x1f300 && codepoint <= 0x1faff) ||
-    (codepoint >= 0x20000 && codepoint <= 0x3fffd)
-  );
-}
-
-function graphemes(text: string): string[] {
-  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  return Array.from(segmenter.segment(text), ({ segment }) => segment);
-}
-
 class FallbackGlyphAtlas {
   readonly #texture: GPUTexture;
   readonly #sampler: GPUSampler;
@@ -230,10 +211,43 @@ class FallbackGlyphAtlas {
     return this.#bindGroup;
   }
 
+  prepare(values: Iterable<string>, dpr: number): void {
+    const scale = Math.max(1, Math.min(3, dpr));
+    const all = [...new Set(values)].filter((value) => value.trim().length > 0);
+    const missing = all.filter((value) => !this.#cache.has(`${scale.toFixed(2)}:${value}`));
+    if (this.#fits(missing, scale, this.#x, this.#y, this.#rowHeight)) return;
+    this.#cache.clear();
+    this.#x = 1;
+    this.#y = 1;
+    this.#rowHeight = 0;
+    if (!this.#fits(all, scale, this.#x, this.#y, this.#rowHeight)) {
+      throw new Error("The diagnostic glyph atlas cannot fit the text visible in one frame");
+    }
+  }
+
+  #fits(values: Iterable<string>, scale: number, startX: number, startY: number, startRowHeight: number): boolean {
+    let x = startX;
+    let y = startY;
+    let rowHeight = startRowHeight;
+    for (const value of values) {
+      const width = Math.max(1, Math.ceil(CELL_WIDTH * graphemeCellWidth(value) * scale));
+      const height = Math.max(1, Math.ceil(LINE_HEIGHT * scale));
+      if (x + width + 1 > ATLAS_SIZE) {
+        x = 1;
+        y += rowHeight + 1;
+        rowHeight = 0;
+      }
+      if (y + height + 1 > ATLAS_SIZE) return false;
+      x += width + 1;
+      rowHeight = Math.max(rowHeight, height);
+    }
+    return true;
+  }
+
   glyph(grapheme: string, dpr: number): GlyphLocation | undefined {
     if (grapheme.trim().length === 0) return undefined;
     const scale = Math.max(1, Math.min(3, dpr));
-    const cells = isWide(grapheme) ? 2 : 1;
+    const cells = graphemeCellWidth(grapheme);
     const key = `${scale.toFixed(2)}:${grapheme}`;
     const cached = this.#cache.get(key);
     if (cached) return cached;
@@ -318,6 +332,41 @@ class NativeGlyphAtlas {
     return this.#bindGroup;
   }
 
+  prepare(definitions: Iterable<GlyphDefinition>): void {
+    const all = new Map<number, GlyphDefinition>();
+    const missing = new Map<number, GlyphDefinition>();
+    for (const definition of definitions) {
+      all.set(definition.id, definition);
+      if (!this.#cache.has(definition.id)) missing.set(definition.id, definition);
+    }
+    if (this.#fits(missing.values(), this.#x, this.#y, this.#rowHeight)) return;
+    this.#cache.clear();
+    this.#x = 1;
+    this.#y = 1;
+    this.#rowHeight = 0;
+    if (!this.#fits(all.values(), this.#x, this.#y, this.#rowHeight)) {
+      throw new Error(`${this.label} cannot fit the glyphs visible in one frame`);
+    }
+  }
+
+  #fits(definitions: Iterable<GlyphDefinition>, startX: number, startY: number, startRowHeight: number): boolean {
+    let x = startX;
+    let y = startY;
+    let rowHeight = startRowHeight;
+    for (const { width, height } of definitions) {
+      if (width + 2 > ATLAS_SIZE || height + 2 > ATLAS_SIZE) return false;
+      if (x + width + 1 > ATLAS_SIZE) {
+        x = 1;
+        y += rowHeight + 1;
+        rowHeight = 0;
+      }
+      if (y + height + 1 > ATLAS_SIZE) return false;
+      x += width + 1;
+      rowHeight = Math.max(rowHeight, height);
+    }
+    return true;
+  }
+
   glyph(definition: GlyphDefinition): GlyphLocation {
     const cached = this.#cache.get(definition.id);
     if (cached) return cached;
@@ -397,9 +446,15 @@ function pushRectangle(
   const right = clipX(x + width, viewportWidth);
   const top = clipY(y, viewportHeight);
   const bottom = clipY(y + height, viewportHeight);
-  const vertex = (px: number, py: number): void => { output.push(px, py, ...color); };
-  vertex(left, top); vertex(right, top); vertex(left, bottom);
-  vertex(left, bottom); vertex(right, top); vertex(right, bottom);
+  const vertex = (px: number, py: number): void => {
+    output.push(px, py, ...color);
+  };
+  vertex(left, top);
+  vertex(right, top);
+  vertex(left, bottom);
+  vertex(left, bottom);
+  vertex(right, top);
+  vertex(right, bottom);
 }
 
 function pushGlyph(
@@ -417,9 +472,15 @@ function pushGlyph(
   const right = clipX(x + width, viewportWidth);
   const top = clipY(y, viewportHeight);
   const bottom = clipY(y + height, viewportHeight);
-  const vertex = (px: number, py: number, u: number, v: number): void => { output.push(px, py, u, v, ...color); };
-  vertex(left, top, glyph.u0, glyph.v0); vertex(right, top, glyph.u1, glyph.v0); vertex(left, bottom, glyph.u0, glyph.v1);
-  vertex(left, bottom, glyph.u0, glyph.v1); vertex(right, top, glyph.u1, glyph.v0); vertex(right, bottom, glyph.u1, glyph.v1);
+  const vertex = (px: number, py: number, u: number, v: number): void => {
+    output.push(px, py, u, v, ...color);
+  };
+  vertex(left, top, glyph.u0, glyph.v0);
+  vertex(right, top, glyph.u1, glyph.v0);
+  vertex(left, bottom, glyph.u0, glyph.v1);
+  vertex(left, bottom, glyph.u0, glyph.v1);
+  vertex(right, top, glyph.u1, glyph.v0);
+  vertex(right, bottom, glyph.u1, glyph.v1);
 }
 
 function ordered(selection: RenderView["selection"]): [CellPoint, CellPoint] | null {
@@ -431,23 +492,67 @@ function ordered(selection: RenderView["selection"]): [CellPoint, CellPoint] | n
 }
 
 function cellLength(text: string): number {
-  return graphemes(text).reduce((total, grapheme) => total + (isWide(grapheme) ? 2 : 1), 0);
+  return splitGraphemes(text).reduce((total, grapheme) => total + graphemeCellWidth(grapheme), 0);
 }
 
 const BOX_DIRECTIONS = new Map<string, string>([
-  ["─", "lr"], ["━", "lr"], ["│", "ud"], ["┃", "ud"],
-  ["┌", "rd"], ["┍", "rd"], ["┎", "rd"], ["┏", "rd"],
-  ["┐", "ld"], ["┑", "ld"], ["┒", "ld"], ["┓", "ld"],
-  ["└", "ru"], ["┕", "ru"], ["┖", "ru"], ["┗", "ru"],
-  ["┘", "lu"], ["┙", "lu"], ["┚", "lu"], ["┛", "lu"],
-  ["├", "udr"], ["┝", "udr"], ["┞", "udr"], ["┣", "udr"],
-  ["┤", "udl"], ["┥", "udl"], ["┦", "udl"], ["┫", "udl"],
-  ["┬", "lrd"], ["┯", "lrd"], ["┰", "lrd"], ["┳", "lrd"],
-  ["┴", "lru"], ["┷", "lru"], ["┸", "lru"], ["┻", "lru"],
-  ["┼", "lrud"], ["╋", "lrud"], ["╴", "l"], ["╶", "r"], ["╵", "u"], ["╷", "d"],
-  ["═", "lr"], ["║", "ud"], ["╔", "rd"], ["╗", "ld"], ["╚", "ru"], ["╝", "lu"],
-  ["╠", "udr"], ["╣", "udl"], ["╦", "lrd"], ["╩", "lru"], ["╬", "lrud"],
-  ["╭", "rd"], ["╮", "ld"], ["╯", "lu"], ["╰", "ru"],
+  ["─", "lr"],
+  ["━", "lr"],
+  ["│", "ud"],
+  ["┃", "ud"],
+  ["┌", "rd"],
+  ["┍", "rd"],
+  ["┎", "rd"],
+  ["┏", "rd"],
+  ["┐", "ld"],
+  ["┑", "ld"],
+  ["┒", "ld"],
+  ["┓", "ld"],
+  ["└", "ru"],
+  ["┕", "ru"],
+  ["┖", "ru"],
+  ["┗", "ru"],
+  ["┘", "lu"],
+  ["┙", "lu"],
+  ["┚", "lu"],
+  ["┛", "lu"],
+  ["├", "udr"],
+  ["┝", "udr"],
+  ["┞", "udr"],
+  ["┣", "udr"],
+  ["┤", "udl"],
+  ["┥", "udl"],
+  ["┦", "udl"],
+  ["┫", "udl"],
+  ["┬", "lrd"],
+  ["┯", "lrd"],
+  ["┰", "lrd"],
+  ["┳", "lrd"],
+  ["┴", "lru"],
+  ["┷", "lru"],
+  ["┸", "lru"],
+  ["┻", "lru"],
+  ["┼", "lrud"],
+  ["╋", "lrud"],
+  ["╴", "l"],
+  ["╶", "r"],
+  ["╵", "u"],
+  ["╷", "d"],
+  ["═", "lr"],
+  ["║", "ud"],
+  ["╔", "rd"],
+  ["╗", "ld"],
+  ["╚", "ru"],
+  ["╝", "lu"],
+  ["╠", "udr"],
+  ["╣", "udl"],
+  ["╦", "lrd"],
+  ["╩", "lru"],
+  ["╬", "lrud"],
+  ["╭", "rd"],
+  ["╮", "ld"],
+  ["╯", "lu"],
+  ["╰", "ru"],
 ]);
 
 const ROUNDED_BOX_CORNERS = new Set(["╭", "╮", "╯", "╰"]);
@@ -455,9 +560,9 @@ const ROUNDED_BOX_CORNERS = new Set(["╭", "╮", "╯", "╰"]);
 function boxDrawingCells(text: string): Map<number, string> {
   const cells = new Map<number, string>();
   let column = 0;
-  for (const grapheme of graphemes(text)) {
+  for (const grapheme of splitGraphemes(text)) {
     if (BOX_DIRECTIONS.has(grapheme)) cells.set(column, grapheme);
-    column += isWide(grapheme) ? 2 : 1;
+    column += graphemeCellWidth(grapheme);
   }
   return cells;
 }
@@ -465,10 +570,10 @@ function boxDrawingCells(text: string): Map<number, string> {
 function blockElementCells(text: string): Map<number, string> {
   const cells = new Map<number, string>();
   let column = 0;
-  for (const grapheme of graphemes(text)) {
+  for (const grapheme of splitGraphemes(text)) {
     const codepoint = grapheme.codePointAt(0) ?? 0;
     if (codepoint >= 0x2580 && codepoint <= 0x259f) cells.set(column, grapheme);
-    column += isWide(grapheme) ? 2 : 1;
+    column += graphemeCellWidth(grapheme);
   }
   return cells;
 }
@@ -546,13 +651,14 @@ function pushBoxDrawing(
     const x = centerX + stroke / 2;
     const y = centerY + stroke / 2;
     const points: Array<readonly [number, number]> = [];
-    const [originX, originY, startAngle, endAngle] = grapheme === "╭"
-      ? [right, bottom, -Math.PI / 2, -Math.PI]
-      : grapheme === "╮"
-        ? [left, bottom, -Math.PI / 2, 0]
-        : grapheme === "╯"
-          ? [left, top, Math.PI / 2, 0]
-          : [right, top, Math.PI, Math.PI / 2];
+    const [originX, originY, startAngle, endAngle] =
+      grapheme === "╭"
+        ? [right, bottom, -Math.PI / 2, -Math.PI]
+        : grapheme === "╮"
+          ? [left, bottom, -Math.PI / 2, 0]
+          : grapheme === "╯"
+            ? [left, top, Math.PI / 2, 0]
+            : [right, top, Math.PI, Math.PI / 2];
     const radiusX = Math.abs(right - x);
     const radiusY = Math.abs(bottom - y);
     const steps = Math.max(5, Math.ceil(Math.max(radiusX, radiusY) / 2));
@@ -567,20 +673,28 @@ function pushBoxDrawing(
       const dy = to[1] - from[1];
       const length = Math.hypot(dx, dy);
       if (length <= Number.EPSILON) continue;
-      const nx = -dy / length * stroke / 2;
-      const ny = dx / length * stroke / 2;
+      const nx = ((-dy / length) * stroke) / 2;
+      const ny = ((dx / length) * stroke) / 2;
       const vertex = (px: number, py: number): void => {
         output.push(clipX(px, viewportWidth), clipY(py, viewportHeight), ...color);
       };
-      vertex(from[0] + nx, from[1] + ny); vertex(to[0] + nx, to[1] + ny); vertex(from[0] - nx, from[1] - ny);
-      vertex(from[0] - nx, from[1] - ny); vertex(to[0] + nx, to[1] + ny); vertex(to[0] - nx, to[1] - ny);
+      vertex(from[0] + nx, from[1] + ny);
+      vertex(to[0] + nx, to[1] + ny);
+      vertex(from[0] - nx, from[1] - ny);
+      vertex(from[0] - nx, from[1] - ny);
+      vertex(to[0] + nx, to[1] + ny);
+      vertex(to[0] - nx, to[1] - ny);
     }
     return;
   }
-  if (directions.includes("u")) pushRectangle(output, centerX, top, stroke, centerY + stroke - top, color, viewportWidth, viewportHeight);
-  if (directions.includes("d")) pushRectangle(output, centerX, centerY, stroke, bottom - centerY, color, viewportWidth, viewportHeight);
-  if (directions.includes("l")) pushRectangle(output, left, centerY, centerX + stroke - left, stroke, color, viewportWidth, viewportHeight);
-  if (directions.includes("r")) pushRectangle(output, centerX, centerY, right - centerX, stroke, color, viewportWidth, viewportHeight);
+  if (directions.includes("u"))
+    pushRectangle(output, centerX, top, stroke, centerY + stroke - top, color, viewportWidth, viewportHeight);
+  if (directions.includes("d"))
+    pushRectangle(output, centerX, centerY, stroke, bottom - centerY, color, viewportWidth, viewportHeight);
+  if (directions.includes("l"))
+    pushRectangle(output, left, centerY, centerX + stroke - left, stroke, color, viewportWidth, viewportHeight);
+  if (directions.includes("r"))
+    pushRectangle(output, centerX, centerY, right - centerX, stroke, color, viewportWidth, viewportHeight);
 }
 
 type FractionRect = readonly [left: number, top: number, right: number, bottom: number];
@@ -668,7 +782,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   ) {
     const rectangleModule = device.createShaderModule({ label: "terminal rectangle shader", code: RECT_SHADER });
     const glyphModule = device.createShaderModule({ label: "terminal glyph shader", code: GLYPH_SHADER });
-    const colorGlyphModule = device.createShaderModule({ label: "terminal color glyph shader", code: COLOR_GLYPH_SHADER });
+    const colorGlyphModule = device.createShaderModule({
+      label: "terminal color glyph shader",
+      code: COLOR_GLYPH_SHADER,
+    });
     const postProcessModule = device.createShaderModule({ label: "Ghostty bettercrt shader", code: BETTER_CRT_SHADER });
     this.#rectanglePipeline = device.createRenderPipeline({
       label: "terminal rectangle pipeline",
@@ -676,15 +793,21 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       vertex: {
         module: rectangleModule,
         entryPoint: "vertex_main",
-        buffers: [{
-          arrayStride: 24,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32x4" },
-          ],
-        }],
+        buffers: [
+          {
+            arrayStride: 24,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32x4" },
+            ],
+          },
+        ],
       },
-      fragment: { module: rectangleModule, entryPoint: "fragment_main", targets: [{ format, blend: premultipliedBlend }] },
+      fragment: {
+        module: rectangleModule,
+        entryPoint: "fragment_main",
+        targets: [{ format, blend: premultipliedBlend }],
+      },
       primitive: { topology: "triangle-list" },
     });
     this.#glyphPipeline = device.createRenderPipeline({
@@ -693,14 +816,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       vertex: {
         module: glyphModule,
         entryPoint: "vertex_main",
-        buffers: [{
-          arrayStride: 32,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32x2" },
-            { shaderLocation: 2, offset: 16, format: "float32x4" },
-          ],
-        }],
+        buffers: [
+          {
+            arrayStride: 32,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32x2" },
+              { shaderLocation: 2, offset: 16, format: "float32x4" },
+            ],
+          },
+        ],
       },
       fragment: { module: glyphModule, entryPoint: "fragment_main", targets: [{ format, blend: premultipliedBlend }] },
       primitive: { topology: "triangle-list" },
@@ -711,16 +836,22 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       vertex: {
         module: colorGlyphModule,
         entryPoint: "vertex_main",
-        buffers: [{
-          arrayStride: 32,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32x2" },
-            { shaderLocation: 2, offset: 16, format: "float32x4" },
-          ],
-        }],
+        buffers: [
+          {
+            arrayStride: 32,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32x2" },
+              { shaderLocation: 2, offset: 16, format: "float32x4" },
+            ],
+          },
+        ],
       },
-      fragment: { module: colorGlyphModule, entryPoint: "fragment_main", targets: [{ format, blend: premultipliedBlend }] },
+      fragment: {
+        module: colorGlyphModule,
+        entryPoint: "fragment_main",
+        targets: [{ format, blend: premultipliedBlend }],
+      },
       primitive: { topology: "triangle-list" },
     });
     this.#postProcessPipeline = device.createRenderPipeline({
@@ -737,8 +868,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       minFilter: "linear",
       magFilter: "linear",
     });
-    this.#monoAtlas = new NativeGlyphAtlas(device, this.#glyphPipeline.getBindGroupLayout(0), "native monochrome glyph atlas");
-    this.#colorAtlas = new NativeGlyphAtlas(device, this.#colorGlyphPipeline.getBindGroupLayout(0), "native color glyph atlas");
+    this.#monoAtlas = new NativeGlyphAtlas(
+      device,
+      this.#glyphPipeline.getBindGroupLayout(0),
+      "native monochrome glyph atlas",
+    );
+    this.#colorAtlas = new NativeGlyphAtlas(
+      device,
+      this.#colorGlyphPipeline.getBindGroupLayout(0),
+      "native color glyph atlas",
+    );
     this.#fallbackAtlas = new FallbackGlyphAtlas(device, this.#glyphPipeline.getBindGroupLayout(0));
   }
 
@@ -792,6 +931,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   resize(id: string, size: PixelSize): void {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
+    if (surface.width === size.width && surface.height === size.height && surface.dpr === size.dpr) return;
     Object.assign(surface, size);
     surface.canvas.width = Math.max(1, Math.round(size.width * size.dpr));
     surface.canvas.height = Math.max(1, Math.round(size.height * size.dpr));
@@ -827,7 +967,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
 
   render(id: string, view: RenderView): void {
     const surface = this.#surfaces.get(id);
-    if (!surface || this.device.lost === undefined) return;
+    if (!surface) return;
     const scale = surface.dpr;
     const viewportWidth = surface.canvas.width;
     const viewportHeight = surface.canvas.height;
@@ -835,6 +975,20 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const glyphVertices: number[] = [];
     const colorGlyphVertices: number[] = [];
     const fallbackGlyphVertices: number[] = [];
+    const monoDefinitions = new Map<number, GlyphDefinition>();
+    const colorDefinitions = new Map<number, GlyphDefinition>();
+    for (const row of view.nativeRows) {
+      for (const glyph of row) {
+        const definition = view.glyphDefinitions.get(glyph.glyphId);
+        if (!definition) continue;
+        (definition.format === GlyphFormat.Rgba8Premultiplied ? colorDefinitions : monoDefinitions).set(
+          definition.id,
+          definition,
+        );
+      }
+    }
+    this.#monoAtlas.prepare(monoDefinitions.values());
+    this.#colorAtlas.prepare(colorDefinitions.values());
 
     for (let row = 0; row < view.nativeStyleRows.length; row += 1) {
       for (const run of view.nativeStyleRows[row] ?? []) {
@@ -875,6 +1029,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const selectionVertexCount = rectangleVertices.length / 6 - backgroundVertexCount;
 
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
+    if (!hasNativeRows) {
+      this.#fallbackAtlas.prepare(view.rows.flatMap(splitGraphemes), scale);
+    }
     if (hasNativeRows) {
       for (let row = 0; row < view.nativeRows.length; row += 1) {
         const boxCells = boxDrawingCells(view.rows[row] ?? "");
@@ -911,16 +1068,19 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
             let backdrop = style.background ?? view.theme.background;
             if (isSelected) backdrop = view.theme.selection;
             const blockColor = over(foreground, backdrop);
-            if (pushBlockElement(
-              rectangleVertices,
-              blockElement,
-              instance.cellStart,
-              row,
-              scale,
-              blockColor,
-              viewportWidth,
-              viewportHeight,
-            )) continue;
+            if (
+              pushBlockElement(
+                rectangleVertices,
+                blockElement,
+                instance.cellStart,
+                row,
+                scale,
+                blockColor,
+                viewportWidth,
+                viewportHeight,
+              )
+            )
+              continue;
           }
           const atlas = definition.format === GlyphFormat.Alpha8 ? this.#monoAtlas : this.#colorAtlas;
           const vertices = definition.format === GlyphFormat.Alpha8 ? glyphVertices : colorGlyphVertices;
@@ -940,9 +1100,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     } else {
       for (let row = 0; row < view.rows.length; row += 1) {
         let column = 0;
-        for (const grapheme of graphemes(view.rows[row] ?? "")) {
+        for (const grapheme of splitGraphemes(view.rows[row] ?? "")) {
           const glyph = this.#fallbackAtlas.glyph(grapheme, scale);
-          const cells = glyph?.cells ?? (isWide(grapheme) ? 2 : 1);
+          const cells = glyph?.cells ?? graphemeCellWidth(grapheme);
           if (glyph) {
             const foreground = selectionContains(selection, row, column)
               ? view.theme.selectionForeground
@@ -973,10 +1133,28 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         const rowTop = (ORIGIN_Y + row * LINE_HEIGHT) * scale;
         const stroke = Math.max(1, Math.round(scale));
         if (style.underline) {
-          pushRectangle(rectangleVertices, x, Math.round(rowTop + 16 * scale), width, stroke, style.foreground, viewportWidth, viewportHeight);
+          pushRectangle(
+            rectangleVertices,
+            x,
+            Math.round(rowTop + 16 * scale),
+            width,
+            stroke,
+            style.foreground,
+            viewportWidth,
+            viewportHeight,
+          );
         }
         if (style.strikethrough) {
-          pushRectangle(rectangleVertices, x, Math.round(rowTop + 9 * scale), width, stroke, style.foreground, viewportWidth, viewportHeight);
+          pushRectangle(
+            rectangleVertices,
+            x,
+            Math.round(rowTop + 9 * scale),
+            width,
+            stroke,
+            style.foreground,
+            viewportWidth,
+            viewportHeight,
+          );
         }
       }
     }
@@ -990,19 +1168,65 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       const width = CELL_WIDTH * scale;
       const height = LINE_HEIGHT * scale;
       const stroke = Math.max(1, Math.round(scale));
-      const cursorColor: Rgba = cursorStyle === CursorStyle.HollowBlock
-        ? [view.theme.cursor[0], view.theme.cursor[1], view.theme.cursor[2], 1]
-        : view.theme.cursor;
+      const cursorColor: Rgba =
+        cursorStyle === CursorStyle.HollowBlock
+          ? [view.theme.cursor[0], view.theme.cursor[1], view.theme.cursor[2], 1]
+          : view.theme.cursor;
       if (cursorStyle === CursorStyle.Bar) {
-        pushRectangle(rectangleVertices, x, y, Math.max(2, Math.round(2 * scale)), height, cursorColor, viewportWidth, viewportHeight);
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y,
+          Math.max(2, Math.round(2 * scale)),
+          height,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
       } else if (cursorStyle === CursorStyle.Underline) {
         const thickness = Math.max(2, Math.round(2 * scale));
-        pushRectangle(rectangleVertices, x, y + height - thickness, width, thickness, cursorColor, viewportWidth, viewportHeight);
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + height - thickness,
+          width,
+          thickness,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
       } else if (cursorStyle === CursorStyle.HollowBlock) {
         pushRectangle(rectangleVertices, x, y, width, stroke, cursorColor, viewportWidth, viewportHeight);
-        pushRectangle(rectangleVertices, x, y + height - stroke, width, stroke, cursorColor, viewportWidth, viewportHeight);
-        pushRectangle(rectangleVertices, x, y + stroke, stroke, Math.max(0, height - stroke * 2), cursorColor, viewportWidth, viewportHeight);
-        pushRectangle(rectangleVertices, x + width - stroke, y + stroke, stroke, Math.max(0, height - stroke * 2), cursorColor, viewportWidth, viewportHeight);
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + height - stroke,
+          width,
+          stroke,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + stroke,
+          stroke,
+          Math.max(0, height - stroke * 2),
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+        pushRectangle(
+          rectangleVertices,
+          x + width - stroke,
+          y + stroke,
+          stroke,
+          Math.max(0, height - stroke * 2),
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
       } else {
         pushRectangle(rectangleVertices, x, y, width, height, cursorColor, viewportWidth, viewportHeight);
       }
@@ -1021,17 +1245,19 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
-      colorAttachments: [{
-        view: surface.sceneTexture.createView(),
-        clearValue: {
-          r: view.theme.background[0],
-          g: view.theme.background[1],
-          b: view.theme.background[2],
-          a: view.theme.background[3],
+      colorAttachments: [
+        {
+          view: surface.sceneTexture.createView(),
+          clearValue: {
+            r: view.theme.background[0],
+            g: view.theme.background[1],
+            b: view.theme.background[2],
+            a: view.theme.background[3],
+          },
+          loadOp: "clear",
+          storeOp: "store",
         },
-        loadOp: "clear",
-        storeOp: "store",
-      }],
+      ],
     });
     if (rectangleBuffer && backgroundVertexCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
@@ -1075,17 +1301,19 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
 
     const postProcessPass = encoder.beginRenderPass({
       label: `Ghostty custom shader pass ${id}`,
-      colorAttachments: [{
-        view: surface.context.getCurrentTexture().createView(),
-        clearValue: {
-          r: view.theme.background[0],
-          g: view.theme.background[1],
-          b: view.theme.background[2],
-          a: 1,
+      colorAttachments: [
+        {
+          view: surface.context.getCurrentTexture().createView(),
+          clearValue: {
+            r: view.theme.background[0],
+            g: view.theme.background[1],
+            b: view.theme.background[2],
+            a: 1,
+          },
+          loadOp: "clear",
+          storeOp: "store",
         },
-        loadOp: "clear",
-        storeOp: "store",
-      }],
+      ],
     });
     postProcessPass.setPipeline(this.#postProcessPipeline);
     postProcessPass.setBindGroup(0, surface.postProcessBindGroup);

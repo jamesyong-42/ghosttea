@@ -67,7 +67,12 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
       for (let row = start.row; row <= end.row; row += 1) {
         const first = row === start.row ? start.column : 0;
         const last = row === end.row ? end.column : Math.max(0, view.rows[row]?.length ?? 0);
-        context.fillRect(ORIGIN_X + first * CELL_WIDTH, ORIGIN_Y + row * LINE_HEIGHT, Math.max(1, last - first + 1) * CELL_WIDTH, LINE_HEIGHT);
+        context.fillRect(
+          ORIGIN_X + first * CELL_WIDTH,
+          ORIGIN_Y + row * LINE_HEIGHT,
+          Math.max(1, last - first + 1) * CELL_WIDTH,
+          LINE_HEIGHT,
+        );
       }
     }
     context.font = "13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
@@ -99,9 +104,10 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
     if (cursorStyle !== null) {
       const x = ORIGIN_X + view.cursor.x * CELL_WIDTH;
       const y = ORIGIN_Y + view.cursor.y * LINE_HEIGHT;
-      const color = cursorStyle === CursorStyle.HollowBlock
-        ? [view.theme.cursor[0], view.theme.cursor[1], view.theme.cursor[2], 1] as const
-        : view.theme.cursor;
+      const color =
+        cursorStyle === CursorStyle.HollowBlock
+          ? ([view.theme.cursor[0], view.theme.cursor[1], view.theme.cursor[2], 1] as const)
+          : view.theme.cursor;
       context.fillStyle = css(color);
       if (cursorStyle === CursorStyle.Bar) {
         context.fillRect(x, y, 2, LINE_HEIGHT);

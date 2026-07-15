@@ -8,4 +8,5 @@ target/
 .terminald/
 .tools/
 native/build/
+apps/desktop/build/
 native/vendor/ghostty/

@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
-import type { SessionSummary } from "@electron-ghostty/terminal-protocol";
+import type { SessionSummary, TerminalKeyEvent } from "@electron-ghostty/terminal-protocol";
 import { terminalRuntime } from "./runtime";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types";
 
@@ -19,26 +19,38 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   const selectionRef = useRef<{ anchor: CellPoint; focus: CellPoint } | null>(null);
   const pointerModeRef = useRef<"mouse" | "selection" | null>(null);
   const wheelDeltaRef = useRef(0);
+  const forwardedKeysRef = useRef(new Map<string, TerminalKeyEvent>());
+
+  const releaseForwardedKeys = useCallback((): void => {
+    for (const event of forwardedKeysRef.current.values()) {
+      terminalRuntime.sendKey(session.id, { ...event, type: "up", repeat: false, timestamp: performance.now() });
+    }
+    forwardedKeysRef.current.clear();
+  }, [session.id]);
 
   useEffect(() => {
     terminalRuntime.setTheme(session.handle, theme);
   }, [session.handle, theme]);
 
-  useEffect(() => window.desktop.onMenuAction((action) => {
-    if (!active) return;
-    if (action === "copy" && selectionRef.current) {
-      void terminalRuntime.copySelection(session.handle, selectionRef.current);
-    } else if (action === "paste") {
-      const text = window.desktop.readClipboard();
-      if (text) terminalRuntime.sendText(session.id, text);
-    } else if (action === "select-all") {
-      const { cols, rows } = gridRef.current;
-      selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
-      terminalRuntime.setSelection(session.handle, selectionRef.current);
-    } else if (action === "clear-screen") {
-      terminalRuntime.sendText(session.id, "\u000c");
-    }
-  }), [active, session.handle, session.id]);
+  useEffect(
+    () =>
+      window.desktop.onMenuAction((action) => {
+        if (!active) return;
+        if (action === "copy" && selectionRef.current) {
+          void terminalRuntime.copySelection(session.handle, selectionRef.current);
+        } else if (action === "paste") {
+          const text = window.desktop.readClipboard();
+          if (text) terminalRuntime.paste(session.id, text);
+        } else if (action === "select-all") {
+          const { cols, rows } = gridRef.current;
+          selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
+          terminalRuntime.setSelection(session.handle, selectionRef.current);
+        } else if (action === "clear-screen") {
+          terminalRuntime.sendText(session.id, "\u000c");
+        }
+      }),
+    [active, session.handle, session.id],
+  );
 
   useEffect(() => {
     if (active && document.hasFocus()) inputRef.current?.focus({ preventScroll: true });
@@ -46,7 +58,10 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
 
   useEffect(() => {
     const syncFocus = (): void => terminalRuntime.setFocused(session.handle, active && document.hasFocus());
-    const onWindowBlur = (): void => terminalRuntime.setFocused(session.handle, false);
+    const onWindowBlur = (): void => {
+      releaseForwardedKeys();
+      terminalRuntime.setFocused(session.handle, false);
+    };
     const onWindowFocus = (): void => {
       if (active) inputRef.current?.focus({ preventScroll: true });
       syncFocus();
@@ -57,16 +72,16 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
     return () => {
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("focus", onWindowFocus);
+      releaseForwardedKeys();
       terminalRuntime.setFocused(session.handle, false);
     };
-  }, [active, session.handle]);
+  }, [active, releaseForwardedKeys, session.handle]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const handle = terminalRuntime.mount(session, canvas);
-    let cols = session.cols;
-    let rows = session.rows;
+    const handle = terminalRuntime.mount(session.id, session.handle, canvas);
+    let { cols, rows } = gridRef.current;
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
       handle.resize(entry.contentRect.width, entry.contentRect.height, window.devicePixelRatio);
@@ -84,7 +99,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       observer.disconnect();
       handle.dispose();
     };
-  }, [session]);
+  }, [session.handle, session.id]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
@@ -115,12 +130,32 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       event.stopPropagation();
       return;
     }
-    terminalRuntime.sendKey(session.id, {
+    const terminalEvent: TerminalKeyEvent = {
       type: "down",
       key: event.key,
       code: event.code,
       location: event.location,
       repeat: event.repeat,
+      shift: event.shiftKey,
+      control: event.ctrlKey,
+      alt: event.altKey,
+      meta: event.metaKey,
+      timestamp: event.timeStamp,
+    };
+    terminalRuntime.sendKey(session.id, terminalEvent);
+    forwardedKeysRef.current.set(event.code, terminalEvent);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onKeyUp = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (!forwardedKeysRef.current.delete(event.code)) return;
+    terminalRuntime.sendKey(session.id, {
+      type: "up",
+      key: event.key,
+      code: event.code,
+      location: event.location,
+      repeat: false,
       shift: event.shiftKey,
       control: event.ctrlKey,
       alt: event.altKey,
@@ -134,7 +169,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
     const text = event.clipboardData.getData("text/plain");
     if (!text) return;
-    terminalRuntime.sendText(session.id, text);
+    terminalRuntime.paste(session.id, text);
     event.preventDefault();
   };
 
@@ -171,14 +206,16 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
     });
   };
 
-  const mouseButton = (button: number): number => button === 0 ? 1 : button === 1 ? 3 : button === 2 ? 2 : 0;
+  const mouseButton = (button: number): number => (button === 0 ? 1 : button === 1 ? 3 : button === 2 ? 2 : 0);
 
   const onPointerDown = (event: PointerEvent<HTMLTextAreaElement>): void => {
     onActivate?.();
     event.currentTarget.focus({ preventScroll: true });
+    const mouseTracking = terminalRuntime.isMouseTracking(session.handle) && !event.shiftKey;
+    if (event.button === 2 && !mouseTracking) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
-    if (terminalRuntime.isMouseTracking(session.handle) && !event.shiftKey) {
+    if (mouseTracking) {
       pointerModeRef.current = "mouse";
       selectionAnchorRef.current = null;
       selectionRef.current = null;
@@ -196,7 +233,8 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   const onPointerMove = (event: PointerEvent<HTMLTextAreaElement>): void => {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     if (pointerModeRef.current === "mouse") {
-      sendMouse(event, "motion", event.buttons & 1 ? 1 : 0);
+      const button = event.buttons & 1 ? 1 : event.buttons & 4 ? 3 : event.buttons & 2 ? 2 : 0;
+      sendMouse(event, "motion", button);
       return;
     }
     const anchor = selectionAnchorRef.current;
@@ -226,7 +264,8 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
 
   const onWheel = (event: WheelEvent<HTMLTextAreaElement>): void => {
     event.preventDefault();
-    const multiplier = event.deltaMode === 1 ? LINE_HEIGHT : event.deltaMode === 2 ? gridRef.current.rows * LINE_HEIGHT : 1;
+    const multiplier =
+      event.deltaMode === 1 ? LINE_HEIGHT : event.deltaMode === 2 ? gridRef.current.rows * LINE_HEIGHT : 1;
     wheelDeltaRef.current += event.deltaY * multiplier;
     const rows = Math.trunc(wheelDeltaRef.current / LINE_HEIGHT);
     if (rows === 0) return;
@@ -255,6 +294,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
           onActivate?.();
         }}
         onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
         onPaste={onPaste}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

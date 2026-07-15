@@ -5,7 +5,7 @@
   "exports": "./src/index.ts",
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "devDependencies": {
     "typescript": "7.0.2",
