@@ -9,9 +9,9 @@
       "release": "ghostty-vt-f8041e849b36",
       "filename": "ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
       "url": "https://github.com/jamesyong-42/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
-      "sha256": "eda9469f9d0278eef025f98de8f283cd6ee92ebdd18820bcd3ec5514618df04a",
-      "size": 9242112,
-      "librarySha256": "fa6dc9a14da78df135bab96e1a7409c1051facac14d306f945c958a176af3032",
+      "sha256": "7158859e1e97b18c341e3478972a227ea3c859e5387dc3d7b8e082d0508cde79",
+      "size": 2411520,
+      "librarySha256": "f6ce47674ed10132b3224d02639972227e00c721f7740b75b66b5bee67c11da4",
       "headersSha256": "7c436d79b361a1385cae4a816331c5220daac5b2439a99eb8dc23c05e9d539e0"
     }
   }
