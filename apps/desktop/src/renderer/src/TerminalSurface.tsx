@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
 import type { SessionSummary, TerminalKeyEvent } from "@electron-ghostty/terminal-protocol";
 import { terminalRuntime } from "./runtime";
@@ -15,6 +15,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const gridRef = useRef({ cols: session.cols, rows: session.rows });
+  const [viewId] = useState(() => crypto.randomUUID());
   const selectionAnchorRef = useRef<CellPoint | null>(null);
   const selectionRef = useRef<{ anchor: CellPoint; focus: CellPoint } | null>(null);
   const pointerModeRef = useRef<"mouse" | "selection" | null>(null);
@@ -23,10 +24,15 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
 
   const releaseForwardedKeys = useCallback((): void => {
     for (const event of forwardedKeysRef.current.values()) {
-      terminalRuntime.sendKey(session.id, { ...event, type: "up", repeat: false, timestamp: performance.now() });
+      terminalRuntime.sendKey(session.id, viewId, {
+        ...event,
+        type: "up",
+        repeat: false,
+        timestamp: performance.now(),
+      });
     }
     forwardedKeysRef.current.clear();
-  }, [session.id]);
+  }, [session.id, viewId]);
 
   useEffect(() => {
     terminalRuntime.setTheme(session.handle, theme);
@@ -40,16 +46,16 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
           void terminalRuntime.copySelection(session.handle, selectionRef.current);
         } else if (action === "paste") {
           const text = window.desktop.readClipboard();
-          if (text) terminalRuntime.paste(session.id, text);
+          if (text) terminalRuntime.paste(session.id, viewId, text);
         } else if (action === "select-all") {
           const { cols, rows } = gridRef.current;
           selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
           terminalRuntime.setSelection(session.handle, selectionRef.current);
         } else if (action === "clear-screen") {
-          terminalRuntime.sendText(session.id, "\u000c");
+          terminalRuntime.sendText(session.id, viewId, "\u000c");
         }
       }),
-    [active, session.handle, session.id],
+    [active, session.handle, session.id, viewId],
   );
 
   useEffect(() => {
@@ -57,10 +63,38 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   }, [active]);
 
   useEffect(() => {
-    const syncFocus = (): void => terminalRuntime.setFocused(session.handle, active && document.hasFocus());
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handle = terminalRuntime.mount(session.id, session.handle, viewId, canvas);
+    let { cols, rows } = gridRef.current;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      handle.resize(entry.contentRect.width, entry.contentRect.height, window.devicePixelRatio);
+      const nextCols = Math.max(2, Math.floor((entry.contentRect.width - ORIGIN_X * 2) / CELL_WIDTH));
+      const nextRows = Math.max(1, Math.floor((entry.contentRect.height - ORIGIN_Y * 2) / LINE_HEIGHT));
+      if (nextCols !== cols || nextRows !== rows) {
+        cols = nextCols;
+        rows = nextRows;
+        gridRef.current = { cols, rows };
+        terminalRuntime.resize(session.id, viewId, cols, rows);
+      }
+    });
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      handle.dispose();
+    };
+  }, [session.handle, session.id, viewId]);
+
+  useEffect(() => {
+    const syncFocus = (): void => {
+      const { cols, rows } = gridRef.current;
+      terminalRuntime.setFocused(session.handle, viewId, active && document.hasFocus(), cols, rows);
+    };
     const onWindowBlur = (): void => {
       releaseForwardedKeys();
-      terminalRuntime.setFocused(session.handle, false);
+      const { cols, rows } = gridRef.current;
+      terminalRuntime.setFocused(session.handle, viewId, false, cols, rows);
     };
     const onWindowFocus = (): void => {
       if (active) inputRef.current?.focus({ preventScroll: true });
@@ -73,33 +107,10 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("focus", onWindowFocus);
       releaseForwardedKeys();
-      terminalRuntime.setFocused(session.handle, false);
+      const { cols, rows } = gridRef.current;
+      terminalRuntime.setFocused(session.handle, viewId, false, cols, rows);
     };
-  }, [active, releaseForwardedKeys, session.handle]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const handle = terminalRuntime.mount(session.id, session.handle, canvas);
-    let { cols, rows } = gridRef.current;
-    const observer = new ResizeObserver(([entry]) => {
-      if (!entry) return;
-      handle.resize(entry.contentRect.width, entry.contentRect.height, window.devicePixelRatio);
-      const nextCols = Math.max(2, Math.floor((entry.contentRect.width - ORIGIN_X * 2) / CELL_WIDTH));
-      const nextRows = Math.max(1, Math.floor((entry.contentRect.height - ORIGIN_Y * 2) / LINE_HEIGHT));
-      if (nextCols !== cols || nextRows !== rows) {
-        cols = nextCols;
-        rows = nextRows;
-        gridRef.current = { cols, rows };
-        terminalRuntime.resize(session.id, cols, rows);
-      }
-    });
-    observer.observe(canvas);
-    return () => {
-      observer.disconnect();
-      handle.dispose();
-    };
-  }, [session.handle, session.id]);
+  }, [active, releaseForwardedKeys, session.handle, viewId]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
@@ -108,7 +119,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
         void terminalRuntime.copySelection(session.handle, selectionRef.current);
         event.preventDefault();
       } else if (event.key.toLowerCase() === "k") {
-        terminalRuntime.sendText(session.id, "\u000c");
+        terminalRuntime.sendText(session.id, viewId, "\u000c");
         event.preventDefault();
       } else if (event.key.toLowerCase() === "a") {
         const { cols, rows } = gridRef.current;
@@ -125,7 +136,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
     selectionRef.current = null;
     terminalRuntime.setSelection(session.handle, null);
     if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "c") {
-      terminalRuntime.interrupt(session.id);
+      terminalRuntime.interrupt(session.id, viewId);
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -142,7 +153,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       meta: event.metaKey,
       timestamp: event.timeStamp,
     };
-    terminalRuntime.sendKey(session.id, terminalEvent);
+    terminalRuntime.sendKey(session.id, viewId, terminalEvent);
     forwardedKeysRef.current.set(event.code, terminalEvent);
     event.preventDefault();
     event.stopPropagation();
@@ -150,7 +161,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
 
   const onKeyUp = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (!forwardedKeysRef.current.delete(event.code)) return;
-    terminalRuntime.sendKey(session.id, {
+    terminalRuntime.sendKey(session.id, viewId, {
       type: "up",
       key: event.key,
       code: event.code,
@@ -169,7 +180,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
     const text = event.clipboardData.getData("text/plain");
     if (!text) return;
-    terminalRuntime.paste(session.id, text);
+    terminalRuntime.paste(session.id, viewId, text);
     event.preventDefault();
   };
 
@@ -188,7 +199,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
     button: number,
   ): void => {
     const bounds = event.currentTarget.getBoundingClientRect();
-    terminalRuntime.sendMouse(session.id, {
+    terminalRuntime.sendMouse(session.id, viewId, {
       action,
       button,
       x: Math.max(0, event.clientX - bounds.left),
@@ -276,7 +287,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
         sendMouse(event, "press", button);
       }
     } else {
-      terminalRuntime.scroll(session.id, Math.max(-100, Math.min(100, rows)));
+      terminalRuntime.scroll(session.id, viewId, Math.max(-100, Math.min(100, rows)));
     }
   };
 
@@ -306,7 +317,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
           window.desktop.showContextMenu(selectionRef.current !== null);
         }}
         onCompositionEnd={(event) => {
-          terminalRuntime.sendText(session.id, event.currentTarget.value);
+          terminalRuntime.sendText(session.id, viewId, event.currentTarget.value);
           event.currentTarget.value = "";
         }}
         onInput={(event) => {

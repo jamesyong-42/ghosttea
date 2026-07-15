@@ -1,6 +1,7 @@
 import type { SplitAxis } from "./pane-layout";
 
 export type GhosttyHotkey =
+  | { type: "remote-sessions" }
   | { type: "split"; axis: SplitAxis }
   | { type: "focus-relative"; offset: -1 | 1 }
   | { type: "focus-direction"; direction: "left" | "right" | "up" | "down" }
@@ -14,6 +15,7 @@ type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "shiftKey" | "altKey" | "
 export function ghosttyHotkey(event: KeyLike): GhosttyHotkey | null {
   if (!event.metaKey) return null;
   const key = event.key.toLowerCase();
+  if (key === "o" && event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "remote-sessions" };
   if (key === "d" && !event.altKey && !event.ctrlKey)
     return { type: "split", axis: event.shiftKey ? "vertical" : "horizontal" };
   if (key === "[" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "focus-relative", offset: -1 };

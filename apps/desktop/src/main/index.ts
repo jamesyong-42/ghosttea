@@ -1,9 +1,30 @@
+import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, MessageChannelMain, utilityProcess } from "electron";
 import { TerminalSupervisor } from "./terminal-supervisor";
+import { PROFILE_ENV, desktopProfile } from "./profile";
 import type { MainToBridgeMessage } from "../shared/terminal-ipc";
 
 app.setName("Ghostty");
+if (process.platform === "darwin") app.setActivationPolicy("regular");
+const profile = desktopProfile(app.getPath("userData"), process.env[PROFILE_ENV]);
+mkdirSync(profile.electronData, { recursive: true, mode: 0o700 });
+if (profile.name !== "default") {
+  app.setPath("userData", profile.electronData);
+  app.setPath("sessionData", profile.electronData);
+  // A named profile is an isolation boundary. Do not allow a shared `.env`
+  // value to collapse multiple peers onto the same Truffle identity.
+  process.env.TERMINALD_TRUFFLE_DEVICE_NAME = `${hostname()} · ${profile.name}`;
+  process.env.TERMINALD_TRUFFLE_STATE_DIR = profile.truffleState;
+} else if (!process.env.TERMINALD_TRUFFLE_STATE_DIR?.trim()) {
+  process.env.TERMINALD_TRUFFLE_STATE_DIR = profile.truffleState;
+}
+
+// Electron keys this lock from the configured user-data directory. Different
+// profiles coexist; launching the same profile again activates its window.
+const ownsProfile = app.requestSingleInstanceLock({ profile: profile.name });
+if (!ownsProfile) app.quit();
 
 ipcMain.on("terminal-context-menu", (event, canCopy: boolean) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return;
@@ -79,9 +100,17 @@ function recoverBackend(): Promise<void> {
   return recoveringBackend;
 }
 
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (process.platform === "darwin") app.focus({ steal: true });
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 async function createWindow(): Promise<void> {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.focus();
+    focusMainWindow();
     return;
   }
   await ensureBackend();
@@ -109,7 +138,20 @@ async function createWindow(): Promise<void> {
     },
   });
   mainWindow = window;
-  window.once("ready-to-show", () => window.show());
+  const revealWindow = (): void => {
+    if (window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    if (process.platform === "darwin") app.focus({ steal: true });
+    window.show();
+    window.focus();
+    if (!app.isPackaged) {
+      const bounds = window.getBounds();
+      console.log(
+        `[terminal-runtime] window revealed: visible=${window.isVisible()} focused=${window.isFocused()} bounds=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}`,
+      );
+    }
+  };
+  window.once("ready-to-show", revealWindow);
   window.once("closed", () => {
     if (mainWindow === window) mainWindow = undefined;
   });
@@ -142,14 +184,21 @@ async function createWindow(): Promise<void> {
   } else {
     await window.loadFile(join(__dirname, "../renderer/index.html"));
   }
+  // `ready-to-show` can be delayed indefinitely while an initially hidden
+  // WebGPU renderer continuously paints. Loading has completed at this point,
+  // so reveal explicitly while keeping the event listener as the fast path.
+  revealWindow();
 }
 
 app
   .whenReady()
-  .then(createWindow)
+  .then(() => {
+    if (!ownsProfile) return;
+    return createWindow();
+  })
   .catch((error) => {
     console.error(error);
-    app.quit();
+    app.exit(1);
   });
 
 app.on("window-all-closed", () => {
@@ -158,6 +207,11 @@ app.on("window-all-closed", () => {
 
 app.on("activate", () => {
   if (!mainWindow) void createWindow().catch((error) => console.error("failed to recreate window", error));
+});
+
+app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => {
+  if ((additionalData as { profile?: unknown }).profile !== profile.name) return;
+  focusMainWindow();
 });
 
 app.on("before-quit", () => {

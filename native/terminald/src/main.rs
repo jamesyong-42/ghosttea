@@ -1,8 +1,12 @@
+mod authority;
 mod frame;
+mod mesh;
+mod replica;
 mod session;
+mod tunnel_protocol;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     path::Path,
     sync::{Arc, Mutex, RwLock},
@@ -48,6 +52,16 @@ enum Command {
         options: SpawnOptions,
     },
     ListSessions,
+    ListRemoteHosts,
+    ListRemoteSessions {
+        device_id: String,
+    },
+    OpenRemoteSession {
+        device_id: String,
+        remote_session_id: String,
+        cols: u64,
+        rows: u64,
+    },
     GetSession {
         session_id: String,
     },
@@ -56,36 +70,67 @@ enum Command {
     },
     AttachSession {
         session_id: String,
+        view_id: String,
     },
     DetachSession {
         session_id: String,
+        view_id: String,
     },
     SendText {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         text: String,
     },
     Paste {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         text: String,
     },
     SendKey {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         event: KeyInput,
     },
     SendMouse {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         event: MouseInput,
     },
     Scroll {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         rows: i64,
     },
     Focus {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
         focused: bool,
+    },
+    FocusAndResize {
+        session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        cols: u64,
+        rows: u64,
     },
     Resize {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        control_epoch: u64,
+        resize_sequence: u64,
         cols: u64,
         rows: u64,
     },
@@ -97,6 +142,9 @@ enum Command {
     },
     Interrupt {
         session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
     },
     Terminate {
         session_id: String,
@@ -134,16 +182,46 @@ enum ResponseBody {
     Sessions {
         sessions: Vec<session::SessionSummary>,
     },
+    RemoteHosts {
+        hosts: Vec<mesh::RemoteHostSummary>,
+    },
+    RemoteSessions {
+        device_id: String,
+        sessions: Vec<tunnel_protocol::SharedSessionSummary>,
+    },
+    ViewAttached {
+        session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+    },
+    ControlClaimed {
+        session_id: String,
+        controller_view_id: String,
+        control_epoch: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
     Ok,
     Error {
         message: String,
     },
 }
 
-type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
+pub(crate) type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
+
+#[derive(Clone)]
+struct ControlContext {
+    registry: Registry,
+    frame_tx: broadcast::Sender<Vec<u8>>,
+    event_tx: broadcast::Sender<Value>,
+    text_engine: Arc<Mutex<TextEngine>>,
+    mesh_runtime: mesh::MeshRuntime,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = dotenvy::dotenv();
     let control_path =
         env::var("TERMINALD_CONTROL_SOCKET").context("TERMINALD_CONTROL_SOCKET is required")?;
     let frame_path =
@@ -157,6 +235,7 @@ async fn main() -> Result<()> {
     let (frame_tx, _) = broadcast::channel::<Vec<u8>>(32);
     let (event_tx, _) = broadcast::channel::<Value>(64);
     let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
+    let mesh_runtime = mesh::MeshRuntime::new();
     let text_engine = Arc::new(Mutex::new(
         TextEngine::discover().context("system font discovery failed")?,
     ));
@@ -165,13 +244,23 @@ async fn main() -> Result<()> {
         "terminald ready ({})",
         text_engine.lock().unwrap().primary_family()
     );
+    let mesh_registry = Arc::clone(&registry);
+    let mesh_service = mesh_runtime.clone();
+    tokio::spawn(async move {
+        if let Err(error) = mesh::run_optional(mesh_registry, mesh_service).await {
+            eprintln!("[terminal-mesh] stopped: {error:#}");
+        }
+    });
     let control_task = serve_control(
         control,
         auth_token.clone(),
-        Arc::clone(&registry),
-        frame_tx.clone(),
-        event_tx,
-        text_engine,
+        ControlContext {
+            registry: Arc::clone(&registry),
+            frame_tx: frame_tx.clone(),
+            event_tx,
+            text_engine,
+            mesh_runtime,
+        },
     );
     let frame_task = serve_frames(frames, auth_token, frame_tx);
     tokio::try_join!(control_task, frame_task)?;
@@ -212,32 +301,27 @@ async fn authenticate(stream: &mut UnixStream, expected: &str) -> Result<()> {
 async fn serve_control(
     listener: UnixListener,
     token: String,
-    registry: Registry,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    event_tx: broadcast::Sender<Value>,
-    text_engine: Arc<Mutex<TextEngine>>,
+    context: ControlContext,
 ) -> Result<()> {
     loop {
         let (mut socket, _) = listener.accept().await?;
         let token = token.clone();
-        let registry = Arc::clone(&registry);
-        let frame_tx = frame_tx.clone();
-        let event_tx = event_tx.clone();
-        let text_engine = Arc::clone(&text_engine);
+        let context = context.clone();
         tokio::spawn(async move {
             if authenticate(&mut socket, &token).await.is_err() {
                 return;
             }
-            let mut events = event_tx.subscribe();
+            let mut events = context.event_tx.subscribe();
             let (mut reader, mut writer) = socket.into_split();
-            let mut attached = HashSet::new();
+            let client_id = uuid::Uuid::new_v4().to_string();
+            let mut attached = HashMap::<(String, String), u64>::new();
             loop {
                 tokio::select! {
                     packet = read_packet(&mut reader, MAX_CONTROL_BYTES) => {
                         let Ok(packet) = packet else { break; };
                         let Ok(command) = serde_json::from_slice::<Envelope>(&packet) else { break; };
                         let notification = command.request_id == 0;
-                        let response = handle_command(command, &registry, &mut attached, frame_tx.clone(), event_tx.clone(), Arc::clone(&text_engine)).await;
+                        let response = handle_command(command, &client_id, &mut attached, &context).await;
                         if !notification && write_packet(&mut writer, &serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
                     }
                     event = events.recv() => match event {
@@ -249,9 +333,14 @@ async fn serve_control(
                     }
                 }
             }
-            for session_id in attached {
-                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
-                    session.detach_view();
+            for ((session_id, view_id), attachment_epoch) in attached {
+                if let Some(session) = context.registry.read().unwrap().get(&session_id).cloned() {
+                    session.detach_view(&view_id, &client_id);
+                } else {
+                    context
+                        .mesh_runtime
+                        .detach_view(&session_id, &view_id, attachment_epoch)
+                        .await;
                 }
             }
         });
@@ -260,13 +349,13 @@ async fn serve_control(
 
 async fn handle_command(
     command: Envelope,
-    registry: &Registry,
-    attached: &mut HashSet<String>,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-    event_tx: broadcast::Sender<Value>,
-    text_engine: Arc<Mutex<TextEngine>>,
+    client_id: &str,
+    attached: &mut HashMap<(String, String), u64>,
+    context: &ControlContext,
 ) -> ResponseEnvelope {
     let request_id = command.request_id;
+    let registry = &context.registry;
+    let event_tx = &context.event_tx;
     let result: Result<ResponseBody> = async {
         match command.command {
             Command::Hello {
@@ -277,7 +366,7 @@ async fn handle_command(
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
                     protocol_major: 1,
-                    protocol_minor: 0,
+                    protocol_minor: 1,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
@@ -296,7 +385,12 @@ async fn handle_command(
                         "exitCode": exit_code,
                     }));
                 });
-                let session = Session::spawn(options, frame_tx, text_engine, on_exit)?;
+                let session = Session::spawn(
+                    options,
+                    context.frame_tx.clone(),
+                    Arc::clone(&context.text_engine),
+                    on_exit,
+                )?;
                 let summary = session.summary();
                 registry
                     .write()
@@ -310,54 +404,195 @@ async fn handle_command(
                 Ok(ResponseBody::SessionCreated { session: summary })
             }
             Command::ListSessions => {
-                let sessions: Vec<_> = registry
-                    .read()
-                    .unwrap()
-                    .values()
-                    .map(|session| session.summary())
-                    .collect();
+                let mut sessions: Vec<_> = {
+                    registry
+                        .read()
+                        .unwrap()
+                        .values()
+                        .map(|session| session.summary())
+                        .collect()
+                };
+                sessions.extend(context.mesh_runtime.summaries().await);
                 Ok(ResponseBody::Sessions { sessions })
             }
-            Command::GetSession { session_id } => {
-                let session = find_session(registry, &session_id)?;
-                Ok(ResponseBody::Session {
-                    session: session.summary(),
+            Command::ListRemoteHosts => Ok(ResponseBody::RemoteHosts {
+                hosts: context.mesh_runtime.hosts().await?,
+            }),
+            Command::ListRemoteSessions { device_id } => {
+                let sessions = context.mesh_runtime.list_sessions(&device_id).await?;
+                Ok(ResponseBody::RemoteSessions {
+                    device_id,
+                    sessions,
                 })
             }
+            Command::OpenRemoteSession {
+                device_id,
+                remote_session_id,
+                cols,
+                rows,
+            } => {
+                let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
+                let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
+                let session = context
+                    .mesh_runtime
+                    .open_session(
+                        &device_id,
+                        &remote_session_id,
+                        cols,
+                        rows,
+                        context.frame_tx.clone(),
+                        Arc::clone(&context.text_engine),
+                    )
+                    .await?;
+                Ok(ResponseBody::SessionCreated { session })
+            }
+            Command::GetSession { session_id } => {
+                let session =
+                    if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                        session.summary()
+                    } else {
+                        context
+                            .mesh_runtime
+                            .summary(&session_id)
+                            .await
+                            .context("unknown session")?
+                    };
+                Ok(ResponseBody::Session { session })
+            }
             Command::RefreshSession { session_id } => {
-                let session = find_session(registry, &session_id)?;
-                session.refresh()?;
-                Ok(ResponseBody::Ok)
-            }
-            Command::AttachSession { session_id } => {
-                let session = find_session(registry, &session_id)?;
-                if attached.insert(session_id) {
-                    session.attach_view();
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                     session.refresh()?;
+                } else {
+                    context.mesh_runtime.refresh(&session_id).await?;
                 }
                 Ok(ResponseBody::Ok)
             }
-            Command::DetachSession { session_id } => {
-                if attached.remove(&session_id)
-                    && let Some(session) = registry.read().unwrap().get(&session_id).cloned()
-                {
-                    session.detach_view();
+            Command::AttachSession {
+                session_id,
+                view_id,
+            } => {
+                let key = (session_id.clone(), view_id.clone());
+                let attachment_epoch = if let Some(epoch) = attached.get(&key).copied() {
+                    epoch
+                } else {
+                    let epoch =
+                        if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                            let epoch = session.attach_view(&view_id, client_id)?;
+                            session.refresh()?;
+                            epoch
+                        } else {
+                            context
+                                .mesh_runtime
+                                .attach_view(&session_id, &view_id)
+                                .await?
+                        };
+                    attached.insert(key, epoch);
+                    epoch
+                };
+                Ok(ResponseBody::ViewAttached {
+                    session_id,
+                    view_id,
+                    attachment_epoch,
+                })
+            }
+            Command::DetachSession {
+                session_id,
+                view_id,
+            } => {
+                if let Some(epoch) = attached.remove(&(session_id.clone(), view_id.clone())) {
+                    if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                        session.detach_view(&view_id, client_id);
+                    } else {
+                        context
+                            .mesh_runtime
+                            .detach_view(&session_id, &view_id, epoch)
+                            .await;
+                    }
                 }
                 Ok(ResponseBody::Ok)
             }
-            Command::SendText { session_id, text } => {
-                find_session(registry, &session_id)?.write(&text)?;
+            Command::SendText {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                text,
+            } => {
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.send_text(
+                        &view_id,
+                        client_id,
+                        attachment_epoch,
+                        input_sequence,
+                        text,
+                    )?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Text(text),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::Paste { session_id, text } => {
-                find_session(registry, &session_id)?.paste(&text)?;
+            Command::Paste {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                text,
+            } => {
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.paste(&view_id, client_id, attachment_epoch, input_sequence, text)?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Paste(text),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::SendKey { session_id, event } => {
-                find_session(registry, &session_id)?.key(&event)?;
+            Command::SendKey {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                event,
+            } => {
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.key(&view_id, client_id, attachment_epoch, input_sequence, event)?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Key(event),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::SendMouse { session_id, event } => {
+            Command::SendMouse {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                event,
+            } => {
                 if event.screen_width > 32_768
                     || event.screen_height > 32_768
                     || event.cell_width == 0
@@ -367,29 +602,170 @@ async fn handle_command(
                 {
                     bail!("invalid mouse geometry");
                 }
-                find_session(registry, &session_id)?.mouse(&event)?;
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.mouse(&view_id, client_id, attachment_epoch, input_sequence, event)?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Mouse(event),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::Scroll { session_id, rows } => {
-                find_session(registry, &session_id)?
-                    .scroll(isize::try_from(rows.clamp(-10_000, 10_000))?)?;
+            Command::Scroll {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                rows,
+            } => {
+                let rows = rows.clamp(-10_000, 10_000);
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.scroll(
+                        &view_id,
+                        client_id,
+                        attachment_epoch,
+                        input_sequence,
+                        isize::try_from(rows)?,
+                    )?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Scroll(rows),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
             Command::Focus {
                 session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
                 focused,
             } => {
-                find_session(registry, &session_id)?.focus(focused)?;
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.focus(
+                        &view_id,
+                        client_id,
+                        attachment_epoch,
+                        input_sequence,
+                        focused,
+                    )?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Focus(focused),
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::Resize {
+            Command::FocusAndResize {
                 session_id,
+                view_id,
+                attachment_epoch,
                 cols,
                 rows,
             } => {
+                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
-                find_session(registry, &session_id)?.resize(cols, rows)?;
+                let (controller_view_id, control_epoch, cols, rows, layout_epoch) =
+                    if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                        let changed = session.claim_control(&view_id, client_id, cols, rows)?;
+                        (
+                            changed.controller.view_id,
+                            changed.controller.control_epoch,
+                            changed.cols,
+                            changed.rows,
+                            changed.layout_epoch,
+                        )
+                    } else {
+                        let changed = context
+                            .mesh_runtime
+                            .claim_control(&session_id, &view_id, attachment_epoch, cols, rows)
+                            .await?;
+                        (
+                            changed.controller_view_id,
+                            changed.control_epoch,
+                            changed.cols,
+                            changed.rows,
+                            changed.layout_epoch,
+                        )
+                    };
+                let _ = event_tx.send(json!({
+                    "requestId": 0,
+                    "type": "control-changed",
+                    "sessionId": session_id,
+                    "controllerViewId": controller_view_id,
+                    "controlEpoch": control_epoch,
+                    "cols": cols,
+                    "rows": rows,
+                    "layoutEpoch": layout_epoch,
+                }));
+                Ok(ResponseBody::ControlClaimed {
+                    session_id,
+                    controller_view_id,
+                    control_epoch,
+                    cols,
+                    rows,
+                    layout_epoch,
+                })
+            }
+            Command::Resize {
+                session_id,
+                view_id,
+                attachment_epoch,
+                control_epoch,
+                resize_sequence,
+                cols,
+                rows,
+            } => {
+                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
+                let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
+                let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.resize_view(
+                        &view_id,
+                        client_id,
+                        control_epoch,
+                        resize_sequence,
+                        cols,
+                        rows,
+                    )?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .resize(
+                            &session_id,
+                            &view_id,
+                            mesh::RemoteResize {
+                                attachment_epoch,
+                                control_epoch,
+                                resize_sequence,
+                                cols,
+                                rows,
+                            },
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
             Command::SetColors {
@@ -398,16 +774,43 @@ async fn handle_command(
                 background,
                 cursor,
             } => {
-                find_session(registry, &session_id)?.set_colors(foreground, background, cursor)?;
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.set_colors(foreground, background, cursor)?;
+                } else if context.mesh_runtime.summary(&session_id).await.is_none() {
+                    bail!("unknown session");
+                }
                 Ok(ResponseBody::Ok)
             }
-            Command::Interrupt { session_id } => {
-                find_session(registry, &session_id)?.interrupt()?;
+            Command::Interrupt {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+            } => {
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.interrupt(&view_id, client_id, attachment_epoch, input_sequence)?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::Interrupt,
+                        )
+                        .await?;
+                }
                 Ok(ResponseBody::Ok)
             }
             Command::Terminate { session_id } => {
-                find_session(registry, &session_id)?.terminate()?;
-                registry.write().unwrap().remove(&session_id);
+                let local_session = { registry.read().unwrap().get(&session_id).cloned() };
+                if let Some(session) = local_session {
+                    session.terminate()?;
+                    registry.write().unwrap().remove(&session_id);
+                } else if !context.mesh_runtime.close_session(&session_id).await {
+                    bail!("unknown session");
+                }
                 Ok(ResponseBody::Ok)
             }
             Command::Unknown => bail!("unknown command"),
@@ -440,13 +843,20 @@ fn checked_dimension(value: u64, name: &str, minimum: u16, maximum: u16) -> Resu
     Ok(value)
 }
 
-fn find_session(registry: &Registry, session_id: &str) -> Result<Arc<Session>> {
-    registry
-        .read()
-        .unwrap()
-        .get(session_id)
-        .cloned()
-        .context("unknown session")
+fn require_attachment(
+    attached: &HashMap<(String, String), u64>,
+    session_id: &str,
+    view_id: &str,
+    attachment_epoch: u64,
+) -> Result<()> {
+    if attached
+        .get(&(session_id.to_owned(), view_id.to_owned()))
+        .is_some_and(|epoch| *epoch == attachment_epoch)
+    {
+        Ok(())
+    } else {
+        bail!("stale or unknown view attachment")
+    }
 }
 
 async fn serve_frames(
@@ -488,6 +898,10 @@ mod protocol_tests {
             "requestId": 12,
             "type": "resize",
             "sessionId": "session",
+            "viewId": "view",
+            "attachmentEpoch": 3,
+            "controlEpoch": 4,
+            "resizeSequence": 2,
             "cols": 120,
             "rows": 40,
         }))
@@ -498,6 +912,7 @@ mod protocol_tests {
                 session_id,
                 cols,
                 rows,
+                ..
             } => {
                 assert_eq!(session_id, "session");
                 assert_eq!((cols, rows), (120, 40));
@@ -512,7 +927,7 @@ mod protocol_tests {
             request_id: 7,
             body: ResponseBody::Hello {
                 protocol_major: 1,
-                protocol_minor: 0,
+                protocol_minor: 1,
                 server_build: "test".to_owned(),
             },
         })

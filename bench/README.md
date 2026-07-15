@@ -2,12 +2,12 @@
 
 Reproducible comparison of:
 
-| Target | What is measured |
-|--------|------------------|
-| **terminald** | Real PTY → `libghostty-vt` → native text engine → TRF1 frames over UDS (the Electron sidecar hot path without UI/GPU) |
+| Target               | What is measured                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **terminald**        | Real PTY → `libghostty-vt` → native text engine → TRF1 frames over UDS (the Electron sidecar hot path without UI/GPU)                    |
 | **node-pty → xterm** | **Primary baseline**: real PTY via `node-pty`, shell `cat`s the same payload, bytes feed `@xterm/xterm` `write` (classic Electron embed) |
-| **xterm write-only** | Decomposition only (parser cost without PTY) — labeled as secondary |
-| **Native Ghostty** | Manual only — same byte payloads via `workloads/manual-cat.sh` |
+| **xterm write-only** | Decomposition only (parser cost without PTY) — labeled as secondary                                                                      |
+| **Native Ghostty**   | Manual only — same byte payloads via `workloads/manual-cat.sh`                                                                           |
 
 ### Fair comparison rule
 
@@ -45,16 +45,16 @@ TERMINALD_BIN=./native/terminald/target/release/terminald npm run bench
 
 ## Cases
 
-| Case | Intent |
-|------|--------|
-| dense | Colored cells (vtebench-ish pressure on SGR + redraw) |
-| scrolling | Large plain-text flood (`cat`-like) |
-| unicode | Wide chars / emoji / combining samples |
-| scroll-region | Full viewport redraw loops |
-| control RTT under flood | `get-session` latency while output is flooding (**terminald**) |
-| interrupt under flood | Ctrl+C → ACK while Python floods stdout (**terminald**) |
-| event-loop lag under write | `setImmediate` lag during xterm `write` (**xterm**) |
-| multi-session | N concurrent floods |
+| Case                       | Intent                                                         |
+| -------------------------- | -------------------------------------------------------------- |
+| dense                      | Colored cells (vtebench-ish pressure on SGR + redraw)          |
+| scrolling                  | Large plain-text flood (`cat`-like)                            |
+| unicode                    | Wide chars / emoji / combining samples                         |
+| scroll-region              | Full viewport redraw loops                                     |
+| control RTT under flood    | `get-session` latency while output is flooding (**terminald**) |
+| interrupt under flood      | Ctrl+C → ACK while Python floods stdout (**terminald**)        |
+| event-loop lag under write | `setImmediate` lag during xterm `write` (**xterm**)            |
+| multi-session              | N concurrent floods                                            |
 
 ## Interpreting results
 

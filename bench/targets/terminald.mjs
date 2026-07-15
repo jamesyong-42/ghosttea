@@ -43,10 +43,7 @@ async function runPayloadThroughPty(harness, payload, marker, { cols, rows }) {
 async function controlRttUnderFlood(harness, { cols, rows, samples = 40 }) {
   const session = await harness.createAttachedSession({ cols, rows });
   // Continuous flood that lasts long enough for RTT samples.
-  await harness.sendText(
-    session.id,
-    `i=0; while [ $i -lt 200000 ]; do printf 'flood-%s\\n' "$i"; i=$((i+1)); done\r`,
-  );
+  await harness.sendText(session.id, `i=0; while [ $i -lt 200000 ]; do printf 'flood-%s\\n' "$i"; i=$((i+1)); done\r`);
   // Warm a bit so the flood is actually running.
   await harness.sampleDuring(100);
   const rtts = [];
@@ -65,10 +62,7 @@ async function interruptUnderFlood(harness, { cols, rows, iterations = 12 }) {
   // (End-to-end SIGINT semantics vary by line discipline; the product-critical
   // property is that interrupt is not blocked behind frame generation.)
   const session = await harness.createAttachedSession({ cols, rows });
-  await harness.sendText(
-    session.id,
-    `i=0; while [ $i -lt 500000 ]; do printf 'flood-%s\\n' "$i"; i=$((i+1)); done\r`,
-  );
+  await harness.sendText(session.id, `i=0; while [ $i -lt 500000 ]; do printf 'flood-%s\\n' "$i"; i=$((i+1)); done\r`);
   await harness.sampleDuring(150);
   const samples = [];
   for (let index = 0; index < iterations; index += 1) {
@@ -94,9 +88,7 @@ async function multiSessionFlood(harness, { sessions = 8, cols, rows, payload })
     const waits = created.map((session) =>
       harness.waitForMarker(session.handle, MARKERS.floodDone, { timeoutMs: 120_000 }),
     );
-    await Promise.all(
-      created.map((session) => harness.sendText(session.id, `cat ${shellQuote(file)}\r`)),
-    );
+    await Promise.all(created.map((session) => harness.sendText(session.id, `cat ${shellQuote(file)}\r`)));
     await Promise.all(waits);
     const ms = nowMs() - started;
     for (const session of created) {
@@ -125,28 +117,19 @@ export async function runTerminaldBench({ scale = 1, cols = 120, rows = 40 } = {
     });
 
     console.error("[bench:terminald] scrolling flood…");
-    results.cases.scrolling = await runPayloadThroughPty(
-      harness,
-      payloads.scrolling,
-      MARKERS.floodDone,
-      { cols, rows },
-    );
+    results.cases.scrolling = await runPayloadThroughPty(harness, payloads.scrolling, MARKERS.floodDone, {
+      cols,
+      rows,
+    });
 
     console.error("[bench:terminald] unicode…");
-    results.cases.unicode = await runPayloadThroughPty(
-      harness,
-      payloads.unicode,
-      MARKERS.unicodeDone,
-      { cols, rows },
-    );
+    results.cases.unicode = await runPayloadThroughPty(harness, payloads.unicode, MARKERS.unicodeDone, { cols, rows });
 
     console.error("[bench:terminald] scroll-region redraws…");
-    results.cases.scrollRegion = await runPayloadThroughPty(
-      harness,
-      payloads.scrollRegion,
-      MARKERS.scrollDone,
-      { cols, rows },
-    );
+    results.cases.scrollRegion = await runPayloadThroughPty(harness, payloads.scrollRegion, MARKERS.scrollDone, {
+      cols,
+      rows,
+    });
 
     console.error("[bench:terminald] control RTT under flood…");
     results.cases.controlRttUnderFlood = await controlRttUnderFlood(harness, { cols, rows });

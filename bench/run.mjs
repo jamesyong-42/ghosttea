@@ -148,133 +148,154 @@ async function main() {
     console.log("terminald also shapes glyphs and encodes TRF1 frames; xterm parses into its JS buffer.");
     console.log("");
 
-    printCase("Dense colored cells", [
-      td?.dense &&
-        metricRow({
-          target: "terminald",
-          ms: td.dense.ms,
-          bytes: td.dense.bytesIn,
-          extra: `${td.dense.frames} frames`,
-        }),
-      xt?.ptyDense &&
-        !xt.ptyDense.skipped &&
-        metricRow({
-          target: "node-pty→xterm",
-          ms: xt.ptyDense.ms,
-          bytes: xt.ptyDense.bytesIn,
-          extra: `${xt.ptyDense.chunks ?? "?"} chunks`,
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Dense colored cells",
+      [
+        td?.dense &&
+          metricRow({
+            target: "terminald",
+            ms: td.dense.ms,
+            bytes: td.dense.bytesIn,
+            extra: `${td.dense.frames} frames`,
+          }),
+        xt?.ptyDense &&
+          !xt.ptyDense.skipped &&
+          metricRow({
+            target: "node-pty→xterm",
+            ms: xt.ptyDense.ms,
+            bytes: xt.ptyDense.bytesIn,
+            extra: `${xt.ptyDense.chunks ?? "?"} chunks`,
+          }),
+      ].filter(Boolean),
+    );
 
-    printCase("Scrolling plain-text flood", [
-      td?.scrolling &&
-        metricRow({
-          target: "terminald",
-          ms: td.scrolling.ms,
-          bytes: td.scrolling.bytesIn,
-          extra: `${td.scrolling.frames} frames / gaps ${td.scrolling.sequenceGaps}`,
-        }),
-      xt?.ptyScrolling &&
-        !xt.ptyScrolling.skipped &&
-        metricRow({
-          target: "node-pty→xterm",
-          ms: xt.ptyScrolling.ms,
-          bytes: xt.ptyScrolling.bytesIn,
-          extra: `write p99 ${formatMs(xt.ptyScrolling.writeLag?.p99)}`,
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Scrolling plain-text flood",
+      [
+        td?.scrolling &&
+          metricRow({
+            target: "terminald",
+            ms: td.scrolling.ms,
+            bytes: td.scrolling.bytesIn,
+            extra: `${td.scrolling.frames} frames / gaps ${td.scrolling.sequenceGaps}`,
+          }),
+        xt?.ptyScrolling &&
+          !xt.ptyScrolling.skipped &&
+          metricRow({
+            target: "node-pty→xterm",
+            ms: xt.ptyScrolling.ms,
+            bytes: xt.ptyScrolling.bytesIn,
+            extra: `write p99 ${formatMs(xt.ptyScrolling.writeLag?.p99)}`,
+          }),
+      ].filter(Boolean),
+    );
 
-    printCase("Unicode / wide chars", [
-      td?.unicode &&
-        metricRow({
-          target: "terminald",
-          ms: td.unicode.ms,
-          bytes: td.unicode.bytesIn,
-          extra: `${td.unicode.frames} frames`,
-        }),
-      xt?.ptyUnicode &&
-        !xt.ptyUnicode.skipped &&
-        metricRow({
-          target: "node-pty→xterm",
-          ms: xt.ptyUnicode.ms,
-          bytes: xt.ptyUnicode.bytesIn,
-          extra: `${xt.ptyUnicode.chunks ?? "?"} chunks`,
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Unicode / wide chars",
+      [
+        td?.unicode &&
+          metricRow({
+            target: "terminald",
+            ms: td.unicode.ms,
+            bytes: td.unicode.bytesIn,
+            extra: `${td.unicode.frames} frames`,
+          }),
+        xt?.ptyUnicode &&
+          !xt.ptyUnicode.skipped &&
+          metricRow({
+            target: "node-pty→xterm",
+            ms: xt.ptyUnicode.ms,
+            bytes: xt.ptyUnicode.bytesIn,
+            extra: `${xt.ptyUnicode.chunks ?? "?"} chunks`,
+          }),
+      ].filter(Boolean),
+    );
 
-    printCase("Full-screen redraws", [
-      td?.scrollRegion &&
-        metricRow({
-          target: "terminald",
-          ms: td.scrollRegion.ms,
-          bytes: td.scrollRegion.bytesIn,
-          extra: `${td.scrollRegion.frames} frames`,
-        }),
-      xt?.ptyScrollRegion &&
-        !xt.ptyScrollRegion.skipped &&
-        metricRow({
-          target: "node-pty→xterm",
-          ms: xt.ptyScrollRegion.ms,
-          bytes: xt.ptyScrollRegion.bytesIn,
-          extra: `${xt.ptyScrollRegion.chunks ?? "?"} chunks`,
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Full-screen redraws",
+      [
+        td?.scrollRegion &&
+          metricRow({
+            target: "terminald",
+            ms: td.scrollRegion.ms,
+            bytes: td.scrollRegion.bytesIn,
+            extra: `${td.scrollRegion.frames} frames`,
+          }),
+        xt?.ptyScrollRegion &&
+          !xt.ptyScrollRegion.skipped &&
+          metricRow({
+            target: "node-pty→xterm",
+            ms: xt.ptyScrollRegion.ms,
+            bytes: xt.ptyScrollRegion.bytesIn,
+            extra: `${xt.ptyScrollRegion.chunks ?? "?"} chunks`,
+          }),
+      ].filter(Boolean),
+    );
 
-    printCase("Responsiveness under PTY flood", [
-      td?.controlRttUnderFlood &&
-        controlRow({
-          target: "terminald control RTT",
-          summary: td.controlRttUnderFlood,
-          extra: "get-session during flood",
-        }),
-      td?.interruptUnderFlood &&
-        controlRow({
-          target: "terminald interrupt RPC",
-          summary: td.interruptUnderFlood,
-          extra: "interrupt while flooding",
-        }),
-      xt?.eventLoopUnderPtyFlood &&
-        controlRow({
-          target: "node-pty+xterm event-loop",
-          summary: xt.eventLoopUnderPtyFlood,
-          extra: "lag while PTY floods xterm",
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Responsiveness under PTY flood",
+      [
+        td?.controlRttUnderFlood &&
+          controlRow({
+            target: "terminald control RTT",
+            summary: td.controlRttUnderFlood,
+            extra: "get-session during flood",
+          }),
+        td?.interruptUnderFlood &&
+          controlRow({
+            target: "terminald interrupt RPC",
+            summary: td.interruptUnderFlood,
+            extra: "interrupt while flooding",
+          }),
+        xt?.eventLoopUnderPtyFlood &&
+          controlRow({
+            target: "node-pty+xterm event-loop",
+            summary: xt.eventLoopUnderPtyFlood,
+            extra: "lag while PTY floods xterm",
+          }),
+      ].filter(Boolean),
+    );
 
-    printCase("Multi-session PTY flood", [
-      td?.multiSession &&
-        metricRow({
-          target: `terminald ×${td.multiSession.sessions}`,
-          ms: td.multiSession.ms,
-          bytes: td.multiSession.bytesIn,
-          extra: "attached sessions",
-        }),
-      xt?.multiPty &&
-        metricRow({
-          target: `node-pty→xterm ×${xt.multiPty.sessions}`,
-          ms: xt.multiPty.ms,
-          bytes: xt.multiPty.bytesIn,
-          extra: "N ptys + N Terminals",
-        }),
-    ].filter(Boolean));
+    printCase(
+      "Multi-session PTY flood",
+      [
+        td?.multiSession &&
+          metricRow({
+            target: `terminald ×${td.multiSession.sessions}`,
+            ms: td.multiSession.ms,
+            bytes: td.multiSession.bytesIn,
+            extra: "attached sessions",
+          }),
+        xt?.multiPty &&
+          metricRow({
+            target: `node-pty→xterm ×${xt.multiPty.sessions}`,
+            ms: xt.multiPty.ms,
+            bytes: xt.multiPty.bytesIn,
+            extra: "N ptys + N Terminals",
+          }),
+      ].filter(Boolean),
+    );
 
     if (xt?.scrollingParse || xt?.denseParse) {
-      printCase("Decomposition only (xterm.write, no PTY — not the product comparison)", [
-        xt?.denseParse &&
-          metricRow({
-            target: "xterm write-only dense",
-            ms: xt.denseParse.ms,
-            bytes: xt.denseParse.bytesIn,
-            extra: "no PTY",
-          }),
-        xt?.scrollingParse &&
-          metricRow({
-            target: "xterm write-only scroll",
-            ms: xt.scrollingParse.ms,
-            bytes: xt.scrollingParse.bytesIn,
-            extra: "no PTY",
-          }),
-      ].filter(Boolean));
+      printCase(
+        "Decomposition only (xterm.write, no PTY — not the product comparison)",
+        [
+          xt?.denseParse &&
+            metricRow({
+              target: "xterm write-only dense",
+              ms: xt.denseParse.ms,
+              bytes: xt.denseParse.bytesIn,
+              extra: "no PTY",
+            }),
+          xt?.scrollingParse &&
+            metricRow({
+              target: "xterm write-only scroll",
+              ms: xt.scrollingParse.ms,
+              bytes: xt.scrollingParse.bytesIn,
+              extra: "no PTY",
+            }),
+        ].filter(Boolean),
+      );
     }
   }
 

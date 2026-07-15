@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -17,7 +17,13 @@ use text_engine::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::frame::{FrameCursor, TextSnapshot, encode_text_snapshot};
+use crate::{
+    authority::{ControlChanged, ControllerState, ViewAccess, ViewAuthority},
+    frame::{FrameCursor, TextSnapshot, encode_text_snapshot},
+    tunnel_protocol::{
+        LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalTerminalSnapshot,
+    },
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -29,7 +35,7 @@ pub enum Persistence {
 
 pub type ExitCallback = Arc<dyn Fn(String, Option<i32>, Persistence) + Send + Sync>;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnOptions {
     pub executable: String,
@@ -43,14 +49,14 @@ pub struct SpawnOptions {
     pub persistence: Persistence,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyAction {
     Down,
     Up,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyInput {
     #[serde(rename = "type")]
@@ -64,7 +70,7 @@ pub struct KeyInput {
     pub meta: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MouseAction {
     Press,
@@ -72,7 +78,7 @@ pub enum MouseAction {
     Motion,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MouseInput {
     pub action: MouseAction,
@@ -108,6 +114,8 @@ pub struct SessionSummary {
 pub struct Session {
     summary: Mutex<SessionSummary>,
     handle: u64,
+    session_epoch: u64,
+    created_at_ms: u64,
     process: PtyProcess,
     terminal: Mutex<GhosttyTerminalCore>,
     sequence: AtomicU64,
@@ -119,7 +127,20 @@ pub struct Session {
     render_cache: Mutex<RenderCache>,
     persistence: Persistence,
     on_exit: ExitCallback,
-    active_views: AtomicUsize,
+    authority: Mutex<ViewAuthority>,
+    input_tx: mpsc::SyncSender<InputOperation>,
+    latest_logical: Mutex<Option<LogicalTerminalSnapshot>>,
+    logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
+}
+
+enum InputOperation {
+    Text(String),
+    Paste(String),
+    Key(KeyInput),
+    Mouse(MouseInput),
+    Scroll(isize),
+    Focus(bool),
+    Interrupt,
 }
 
 struct PtyProcess {
@@ -235,8 +256,16 @@ impl Session {
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
+        let (input_tx, input_rx) = mpsc::sync_channel(1024);
         let id = Uuid::new_v4().to_string();
-        let handle = u64::from_le_bytes(Uuid::parse_str(&id)?.as_bytes()[..8].try_into().unwrap());
+        let id_bytes = *Uuid::parse_str(&id)?.as_bytes();
+        let handle = u64::from_le_bytes(id_bytes[..8].try_into().unwrap());
+        let session_epoch = u64::from_le_bytes(id_bytes[8..].try_into().unwrap()).max(1);
+        let created_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let (logical_tx, _) = broadcast::channel(8);
         let session = Arc::new(Self {
             summary: Mutex::new(SessionSummary {
                 id,
@@ -250,6 +279,8 @@ impl Session {
                 bell_count: 0,
             }),
             handle,
+            session_epoch,
+            created_at_ms,
             process: PtyProcess {
                 master: Mutex::new(pair.master),
                 writer: Mutex::new(writer),
@@ -265,10 +296,34 @@ impl Session {
             render_cache: Mutex::new(RenderCache::new()),
             persistence,
             on_exit,
-            active_views: AtomicUsize::new(0),
+            authority: Mutex::new(ViewAuthority::new(cols, rows)),
+            input_tx,
+            latest_logical: Mutex::new(None),
+            logical_tx,
         });
+        Self::start_input_actor(&session, input_rx);
         Self::start_reader(&session, reader);
         Ok(session)
+    }
+
+    fn start_input_actor(session: &Arc<Self>, input_rx: mpsc::Receiver<InputOperation>) {
+        let session = Arc::clone(session);
+        std::thread::Builder::new()
+            .name(format!("pty-input-{}", session.id()))
+            .spawn(move || {
+                while let Ok(operation) = input_rx.recv() {
+                    if let Err(error) = session.execute_input(operation) {
+                        eprintln!(
+                            "[terminald] PTY input failed for {}: {error:#}",
+                            session.id()
+                        );
+                    }
+                    if session.has_exited() {
+                        break;
+                    }
+                }
+            })
+            .expect("PTY input actor");
     }
 
     fn start_reader(session: &Arc<Self>, mut reader: Box<dyn Read + Send>) {
@@ -359,6 +414,52 @@ impl Session {
         drop(summary);
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
         let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        let logical = LogicalTerminalSnapshot {
+            session_epoch: self.session_epoch,
+            layout_epoch: self.layout_epoch.load(Ordering::Acquire),
+            terminal_revision: revision,
+            cols,
+            rows: snapshot
+                .rows
+                .iter()
+                .cloned()
+                .zip(snapshot.cells.iter())
+                .map(|(text, cells)| LogicalRow {
+                    text,
+                    cells: cells
+                        .iter()
+                        .map(|cell| LogicalCell {
+                            column: cell.column,
+                            span: cell.span,
+                            text: cell.text.clone(),
+                            style: LogicalCellStyle {
+                                bold: cell.style.bold,
+                                italic: cell.style.italic,
+                                faint: cell.style.faint,
+                                inverse: cell.style.inverse,
+                                invisible: cell.style.invisible,
+                                strikethrough: cell.style.strikethrough,
+                                underline: cell.style.underline,
+                                foreground: cell.style.foreground,
+                                background: cell.style.background,
+                            },
+                        })
+                        .collect(),
+                })
+                .collect(),
+            cursor: LogicalCursor {
+                x: snapshot.cursor.x,
+                y: snapshot.cursor.y,
+                visible: snapshot.cursor.visible,
+                style: snapshot.cursor.style,
+                blinking: snapshot.cursor.blinking,
+            },
+            mouse_tracking: snapshot.mouse_tracking,
+            title: snapshot.title.clone(),
+            cwd: snapshot.cwd.clone(),
+        };
+        *self.latest_logical.lock().unwrap() = Some(logical.clone());
+        let _ = self.logical_tx.send(logical);
         let cursor = FrameCursor {
             x: snapshot.cursor.x,
             y: snapshot.cursor.y,
@@ -478,7 +579,7 @@ impl Session {
         };
         match encode_text_snapshot(TextSnapshot {
             session_handle: self.handle,
-            session_epoch: 1,
+            session_epoch: self.session_epoch,
             layout_epoch: self.layout_epoch.load(Ordering::Acquire),
             sequence,
             revision,
@@ -511,24 +612,99 @@ impl Session {
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
     }
+    pub fn session_epoch(&self) -> u64 {
+        self.session_epoch
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+    pub fn logical_snapshot(&self) -> Option<LogicalTerminalSnapshot> {
+        self.latest_logical.lock().unwrap().clone()
+    }
+    pub fn subscribe_logical(&self) -> broadcast::Receiver<LogicalTerminalSnapshot> {
+        self.logical_tx.subscribe()
+    }
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Acquire)
     }
     pub fn persistence(&self) -> Persistence {
         self.persistence
     }
-    pub fn attach_view(&self) {
-        self.active_views.fetch_add(1, Ordering::AcqRel);
+    pub fn attach_view(&self, view_id: &str, client_id: &str) -> Result<u64> {
+        self.attach_view_with_access(view_id, client_id, ViewAccess::ReadWrite)
     }
-    pub fn detach_view(&self) {
-        let _ = self
-            .active_views
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                Some(count.saturating_sub(1))
-            });
+
+    pub fn attach_view_with_access(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        access: ViewAccess,
+    ) -> Result<u64> {
+        self.authority
+            .lock()
+            .unwrap()
+            .attach(view_id, client_id, access)
     }
+
+    pub fn detach_view(&self, view_id: &str, client_id: &str) -> bool {
+        self.authority.lock().unwrap().detach(view_id, client_id)
+    }
+
     pub fn has_active_views(&self) -> bool {
-        self.active_views.load(Ordering::Acquire) > 0
+        self.authority.lock().unwrap().has_views()
+    }
+
+    pub fn claim_control(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<ControlChanged> {
+        let changed = self
+            .authority
+            .lock()
+            .unwrap()
+            .claim_control(view_id, client_id, cols, rows)?;
+        if changed.size_changed {
+            self.apply_resize(cols, rows)?;
+        }
+        Ok(changed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_view(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        control_epoch: u64,
+        resize_sequence: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<bool> {
+        let changed = self.authority.lock().unwrap().authorize_resize(
+            view_id,
+            client_id,
+            control_epoch,
+            resize_sequence,
+            cols,
+            rows,
+        )?;
+        if changed {
+            self.apply_resize(cols, rows)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn control_state(&self) -> (Option<ControllerState>, u16, u16, u64) {
+        let authority = self.authority.lock().unwrap();
+        let (cols, rows) = authority.size();
+        (
+            authority.controller().cloned(),
+            cols,
+            rows,
+            authority.layout_epoch(),
+        )
     }
 
     pub fn refresh(&self) -> Result<()> {
@@ -542,16 +718,164 @@ impl Session {
         Ok(())
     }
 
-    pub fn write(&self, text: &str) -> Result<()> {
-        self.process.write(text.as_bytes())
+    fn authorize_and_enqueue(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        operation: InputOperation,
+    ) -> Result<()> {
+        if !self.authority.lock().unwrap().authorize_input(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+        )? {
+            return Ok(());
+        }
+        self.input_tx
+            .try_send(operation)
+            .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))
     }
 
-    pub fn paste(&self, text: &str) -> Result<()> {
-        let bytes = self.terminal.lock().unwrap().encode_paste(text)?;
-        self.process.write(&bytes)
+    pub fn send_text(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        text: String,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Text(text),
+        )
     }
 
-    pub fn key(&self, input: &KeyInput) -> Result<()> {
+    pub fn paste(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        text: String,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Paste(text),
+        )
+    }
+
+    pub fn key(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        input: KeyInput,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Key(input),
+        )
+    }
+
+    pub fn mouse(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        input: MouseInput,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Mouse(input),
+        )
+    }
+
+    pub fn focus(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        focused: bool,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Focus(focused),
+        )
+    }
+
+    pub fn scroll(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        rows: isize,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Scroll(rows),
+        )
+    }
+
+    pub fn interrupt(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::Interrupt,
+        )
+    }
+
+    fn execute_input(&self, operation: InputOperation) -> Result<()> {
+        match operation {
+            InputOperation::Text(text) => self.process.write(text.as_bytes()),
+            InputOperation::Paste(text) => {
+                let bytes = self.terminal.lock().unwrap().encode_paste(&text)?;
+                self.process.write(&bytes)
+            }
+            InputOperation::Key(input) => self.execute_key(&input),
+            InputOperation::Mouse(input) => self.execute_mouse(&input),
+            InputOperation::Scroll(rows) => self.execute_scroll(rows),
+            InputOperation::Focus(focused) => {
+                let bytes = self.terminal.lock().unwrap().encode_focus(focused)?;
+                self.process.write(&bytes)
+            }
+            InputOperation::Interrupt => self.process.write(b"\x03"),
+        }
+    }
+
+    fn execute_key(&self, input: &KeyInput) -> Result<()> {
         let mut mods = 0_u16;
         if input.shift {
             mods |= 1 << 0;
@@ -583,7 +907,7 @@ impl Session {
         self.process.write(&bytes)
     }
 
-    pub fn mouse(&self, input: &MouseInput) -> Result<()> {
+    fn execute_mouse(&self, input: &MouseInput) -> Result<()> {
         let action = match input.action {
             MouseAction::Press => 0,
             MouseAction::Release => 1,
@@ -618,7 +942,7 @@ impl Session {
         self.process.write(&bytes)
     }
 
-    pub fn scroll(&self, rows: isize) -> Result<()> {
+    fn execute_scroll(&self, rows: isize) -> Result<()> {
         if rows == 0 {
             return Ok(());
         }
@@ -645,19 +969,17 @@ impl Session {
         Ok(())
     }
 
-    pub fn focus(&self, focused: bool) -> Result<()> {
-        let bytes = self.terminal.lock().unwrap().encode_focus(focused)?;
-        self.process.write(&bytes)
-    }
-
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+    fn apply_resize(&self, cols: u16, rows: u16) -> Result<()> {
         self.process.resize(cols, rows)?;
         let snapshot = {
             let mut terminal = self.terminal.lock().unwrap();
             terminal.resize(cols, rows)?;
             terminal.snapshot()?
         };
-        self.layout_epoch.fetch_add(1, Ordering::AcqRel);
+        self.layout_epoch.store(
+            self.authority.lock().unwrap().layout_epoch(),
+            Ordering::Release,
+        );
         self.publish_snapshot(snapshot);
         Ok(())
     }
@@ -675,10 +997,6 @@ impl Session {
         };
         self.publish_snapshot(snapshot);
         Ok(())
-    }
-
-    pub fn interrupt(&self) -> Result<()> {
-        self.write("\u{3}")
     }
 
     pub fn terminate(&self) -> Result<()> {

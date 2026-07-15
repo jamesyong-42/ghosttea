@@ -16,6 +16,8 @@
     "postinstall": "node scripts/fix-node-pty.mjs",
     "check": "npm run format:check && npm run lint && npm run check --workspaces --if-present && cargo check --manifest-path native/terminald/Cargo.toml && cargo clippy --manifest-path native/terminald/Cargo.toml --all-targets --all-features -- -D warnings",
     "dev": "npm run dev --workspace @electron-ghostty/desktop",
+    "dev:peer": "node scripts/dev-peer.mjs",
+    "dev:peers": "node scripts/dev-peers.mjs",
     "dist": "npm run dist --workspace @electron-ghostty/desktop",
     "test": "npm run test --workspaces --if-present && cargo test --manifest-path native/terminald/Cargo.toml && cargo test --manifest-path native/terminald/crates/ghostty-adapter/Cargo.toml && cargo test --manifest-path native/terminald/crates/text-engine/Cargo.toml && npm run test:integration",
     "test:integration": "node tests/integration/terminald-smoke.mjs",

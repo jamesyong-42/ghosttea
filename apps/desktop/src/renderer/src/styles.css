@@ -187,3 +187,228 @@ body {
     Menlo,
     monospace;
 }
+
+.remote-palette-backdrop {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  padding: min(14vh, 96px) 20px 20px;
+  background: rgba(12, 14, 18, 0.3);
+}
+
+.remote-palette {
+  width: min(560px, 100%);
+  max-height: min(520px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 10px;
+  background: rgba(31, 34, 41, 0.985);
+  box-shadow:
+    0 22px 70px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  color: rgba(255, 255, 255, 0.88);
+  font:
+    12px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.remote-palette-search {
+  height: 48px;
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.remote-palette-glyph {
+  color: #8ec7bc;
+  font-size: 17px;
+}
+
+.remote-palette-search input {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: rgba(255, 255, 255, 0.92);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  user-select: text;
+}
+
+.remote-palette-search input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.remote-palette-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #8ec7bc;
+  border-radius: 50%;
+  animation: remote-palette-spin 0.7s linear infinite;
+}
+
+@keyframes remote-palette-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.remote-palette-results {
+  min-height: 96px;
+  overflow: auto;
+  padding: 7px;
+}
+
+.remote-host-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px 5px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.remote-host-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.remote-host-dot.is-online {
+  background: #84c6a7;
+  box-shadow: 0 0 7px rgba(132, 198, 167, 0.45);
+}
+
+.remote-session-choice {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.remote-session-choice.is-selected {
+  background: rgba(139, 190, 182, 0.13);
+  box-shadow: 0 0 0 1px rgba(139, 190, 182, 0.08) inset;
+}
+
+.remote-session-choice:disabled {
+  opacity: 0.66;
+}
+
+.remote-session-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.remote-session-title,
+.remote-session-cwd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-session-title {
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+}
+
+.remote-session-cwd {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+}
+
+.remote-session-access {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.remote-session-access.is-write {
+  border-color: rgba(132, 198, 167, 0.25);
+  color: #9bcdb8;
+}
+
+.remote-palette-empty,
+.remote-palette-error {
+  min-height: 118px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 20px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+}
+
+.remote-palette-error {
+  color: #e6aaaa;
+}
+
+.remote-palette-empty button,
+.remote-palette-error button {
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.04);
+  font: inherit;
+}
+
+.remote-palette-footer {
+  height: 31px;
+  flex: 0 0 31px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  padding: 0 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+@media (max-width: 520px) {
+  .remote-palette-backdrop {
+    padding: 42px 10px 10px;
+  }
+
+  .remote-palette {
+    max-height: calc(100vh - 64px);
+  }
+
+  .remote-palette-footer {
+    display: none;
+  }
+}

@@ -21,10 +21,9 @@ function loadXterm() {
     try {
       return require("xterm");
     } catch (error) {
-      throw new Error(
-        "xterm baseline requires @xterm/xterm. Install with: npm install -D @xterm/xterm",
-        { cause: error },
-      );
+      throw new Error("xterm baseline requires @xterm/xterm. Install with: npm install -D @xterm/xterm", {
+        cause: error,
+      });
     }
   }
 }
@@ -97,10 +96,7 @@ async function ptyPayloadToMarker({ cols, rows, payload, marker }, XTerm, pty) {
     const lagSamples = [];
 
     const markerSeen = new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error(`node-pty+xterm timeout waiting for ${marker}`)),
-        90_000,
-      );
+      const timeout = setTimeout(() => reject(new Error(`node-pty+xterm timeout waiting for ${marker}`)), 90_000);
       child.onData((data) => {
         chunks += 1;
         bytesOut += typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
@@ -173,10 +169,7 @@ async function multiPtyFlood({ sessions, cols, rows, payload, marker }, XTerm, p
       const terminal = terminals[index];
       let buffer = "";
       return new Promise((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error(`multi pty timeout on session ${index}`)),
-          120_000,
-        );
+        const timeout = setTimeout(() => reject(new Error(`multi pty timeout on session ${index}`)), 120_000);
         child.onData((data) => {
           buffer += data;
           if (buffer.length > marker.length + 64 * 1024) {

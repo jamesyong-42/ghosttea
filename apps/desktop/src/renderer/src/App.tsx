@@ -3,6 +3,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { SessionSummary } from "@electron-ghostty/terminal-protocol";
 import { terminalRuntime } from "./runtime";
 import { TerminalSurface } from "./TerminalSurface";
+import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette";
 import { TERMINAL_THEMES } from "./themes";
 import {
   appendPane,
@@ -152,6 +153,7 @@ export function App() {
   const [error, setError] = useState<string>();
   const [operationError, setOperationError] = useState<string>();
   const [focused, setFocused] = useState(document.hasFocus());
+  const [remotePaletteOpen, setRemotePaletteOpen] = useState(false);
   const creatingSplitRef = useRef(false);
   const layoutRef = useRef<PaneNode | undefined>(undefined);
   const mountedRef = useRef(true);
@@ -317,13 +319,62 @@ export function App() {
     activatePane(next.id);
   }, [activatePane, activePane, layout]);
 
+  const openRemoteChoice = useCallback(
+    async (choice: RemoteChoice): Promise<void> => {
+      if (!layout || !activePane || creatingSplitRef.current) return;
+      creatingSplitRef.current = true;
+      try {
+        const session = await terminalRuntime.openRemoteSession(
+          choice.host.deviceId,
+          choice.session.sessionId,
+          activePane.session.cols,
+          activePane.session.rows,
+        );
+        if (!mountedRef.current || !layoutRef.current || !containsPane(layoutRef.current, activePane.id)) {
+          terminalRuntime.terminate(session.id);
+          return;
+        }
+        const newPane = pane(layoutId("pane"), session);
+        const split: PaneSplit = {
+          kind: "split",
+          id: layoutId("split"),
+          axis: "horizontal",
+          ratio: 0.5,
+          first: activePane,
+          second: newPane,
+        };
+        setLayout((current) => (current ? replacePane(current, activePane.id, split) : current));
+        setZoomedPaneId(null);
+        setOperationError(undefined);
+        activatePane(newPane.id);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setOperationError(message);
+        throw cause;
+      } finally {
+        creatingSplitRef.current = false;
+      }
+    },
+    [activePane, activatePane, layout],
+  );
+
   const displayedLayout = zoomedPaneId ? leaves(layout).find((candidate) => candidate.id === zoomedPaneId) : layout;
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       const action = ghosttyHotkey(event);
+      if (remotePaletteOpen) {
+        if (action?.type === "remote-sessions") {
+          setRemotePaletteOpen(false);
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
       if (!action) return;
-      if (action.type === "split") {
+      if (action.type === "remote-sessions") {
+        setRemotePaletteOpen(true);
+      } else if (action.type === "split") {
         void newSplit(action.axis);
       } else if (action.type === "focus-relative") {
         focusRelative(action.offset);
@@ -347,7 +398,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [activePaneId, closeActivePane, focusDirection, focusRelative, newSplit]);
+  }, [activePaneId, closeActivePane, focusDirection, focusRelative, newSplit, remotePaletteOpen]);
 
   return (
     <main className={`ghostty-window${focused ? " is-focused" : ""}`}>
@@ -376,6 +427,9 @@ export function App() {
           <div className="terminal-operation-error" role="status">
             {operationError}
           </div>
+        ) : null}
+        {remotePaletteOpen ? (
+          <RemoteSessionPalette onClose={() => setRemotePaletteOpen(false)} onOpen={openRemoteChoice} />
         ) : null}
       </section>
     </main>

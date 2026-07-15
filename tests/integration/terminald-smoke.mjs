@@ -16,6 +16,7 @@ const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/termi
     TERMINALD_CONTROL_SOCKET: controlSocket,
     TERMINALD_FRAME_SOCKET: frameSocket,
     TERMINALD_AUTH_TOKEN: token,
+    TERMINALD_TRUFFLE_ENABLED: "0",
   },
   stdio: ["ignore", "pipe", "inherit"],
 });
@@ -124,27 +125,64 @@ async function open(path) {
   return { socket, next };
 }
 
+async function withTimeout(promise, label, timeoutMs = 5_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function nextControlResponse(control, requestId) {
   for (;;) {
-    const message = JSON.parse((await control.next()).toString());
+    const message = JSON.parse((await withTimeout(control.next(), `control response ${requestId}`)).toString());
     if (message.requestId === requestId) return message;
   }
 }
 
 async function nextControlEvent(control, type, predicate = () => true) {
   for (;;) {
-    const message = JSON.parse((await control.next()).toString());
+    const message = JSON.parse((await withTimeout(control.next(), `control event ${type}`)).toString());
     if (message.requestId === 0 && message.type === type && predicate(message)) return message;
   }
 }
 
+function nextInput(view) {
+  view.inputSequence += 1;
+  return {
+    viewId: view.viewId,
+    attachmentEpoch: view.attachmentEpoch,
+    inputSequence: view.inputSequence,
+  };
+}
+
+function nextResize(view) {
+  view.resizeSequence += 1;
+  return {
+    viewId: view.viewId,
+    attachmentEpoch: view.attachmentEpoch,
+    controlEpoch: view.controlEpoch,
+    resizeSequence: view.resizeSequence,
+  };
+}
+
 try {
-  await new Promise((resolveReady, reject) => {
-    child.stdout.on("data", (chunk) => {
-      if (String(chunk).includes("terminald ready")) resolveReady();
-    });
-    child.once("exit", (code) => reject(new Error(`terminald exited early (${code})`)));
-  });
+  await withTimeout(
+    new Promise((resolveReady, reject) => {
+      child.stdout.on("data", (chunk) => {
+        if (String(chunk).includes("terminald ready")) resolveReady();
+      });
+      child.once("exit", (code) => reject(new Error(`terminald exited early (${code})`)));
+    }),
+    "terminald startup",
+    60_000,
+  );
   const control = await open(controlSocket);
   const frames = await open(frameSocket);
   control.socket.write(
@@ -158,15 +196,33 @@ try {
   );
   const created = await nextControlResponse(control, 1);
   if (created.type !== "session-created") throw new Error(`create failed: ${JSON.stringify(created)}`);
-  control.socket.write(packet(JSON.stringify({ requestId: 2, type: "attach-session", sessionId: created.session.id })));
+  const primaryView = {
+    viewId: "smoke-primary",
+    attachmentEpoch: 0,
+    inputSequence: 0,
+    resizeSequence: 0,
+    controlEpoch: 0,
+  };
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: 2,
+        type: "attach-session",
+        sessionId: created.session.id,
+        viewId: primaryView.viewId,
+      }),
+    ),
+  );
   const attached = await nextControlResponse(control, 2);
-  if (attached.type !== "ok") throw new Error(`attach failed: ${JSON.stringify(attached)}`);
+  if (attached.type !== "view-attached") throw new Error(`attach failed: ${JSON.stringify(attached)}`);
+  primaryView.attachmentEpoch = attached.attachmentEpoch;
   control.socket.write(
     packet(
       JSON.stringify({
         requestId: 3,
         type: "send-text",
         sessionId: created.session.id,
+        ...nextInput(primaryView),
         text: "printf 'ghostty-smoke\\n'\r",
       }),
     ),
@@ -215,6 +271,7 @@ try {
         requestId: 5,
         type: "send-text",
         sessionId: created.session.id,
+        ...nextInput(primaryView),
         text: "printf '\\033[1mbold\\033[0m \\033[31mred\\033[0m ffi é 😀 界\\n'\r",
       }),
     ),
@@ -244,8 +301,25 @@ try {
     packet(
       JSON.stringify({
         requestId: requestId++,
+        type: "focus-and-resize",
+        sessionId: created.session.id,
+        viewId: primaryView.viewId,
+        attachmentEpoch: primaryView.attachmentEpoch,
+        cols: 80,
+        rows: 20,
+      }),
+    ),
+  );
+  const claimed = await nextControlResponse(control, requestId - 1);
+  if (claimed.type !== "control-claimed") throw new Error(`control claim failed: ${JSON.stringify(claimed)}`);
+  primaryView.controlEpoch = claimed.controlEpoch;
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
         type: "resize",
         sessionId: created.session.id,
+        ...nextResize(primaryView),
         cols: 43,
         rows: 11,
       }),
@@ -272,6 +346,7 @@ try {
         requestId: requestId++,
         type: "send-text",
         sessionId: created.session.id,
+        ...nextInput(primaryView),
         text: "stty size\r",
       }),
     ),
@@ -284,6 +359,7 @@ try {
         requestId: requestId++,
         type: "resize",
         sessionId: created.session.id,
+        ...nextResize(primaryView),
         cols: 65_536,
         rows: 20,
       }),
@@ -308,6 +384,7 @@ try {
         requestId: requestId++,
         type: "resize",
         sessionId: created.session.id,
+        ...nextResize(primaryView),
         cols: 80,
         rows: 20,
       }),
@@ -347,6 +424,7 @@ try {
           requestId: requestId++,
           type: "send-key",
           sessionId: created.session.id,
+          ...nextInput(primaryView),
           event: {
             type: "down",
             key,
@@ -370,6 +448,7 @@ try {
           requestId: requestId++,
           type: "send-key",
           sessionId: created.session.id,
+          ...nextInput(primaryView),
           event: {
             type: "up",
             key,
@@ -421,10 +500,20 @@ try {
   const mouseCreated = await nextControlResponse(control, requestId - 1);
   if (mouseCreated.type !== "session-created")
     throw new Error(`mouse session create failed: ${JSON.stringify(mouseCreated)}`);
+  const mouseView = { viewId: "smoke-mouse", attachmentEpoch: 0, inputSequence: 0 };
   control.socket.write(
-    packet(JSON.stringify({ requestId: requestId++, type: "attach-session", sessionId: mouseCreated.session.id })),
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "attach-session",
+        sessionId: mouseCreated.session.id,
+        viewId: mouseView.viewId,
+      }),
+    ),
   );
-  if ((await nextControlResponse(control, requestId - 1)).type !== "ok") throw new Error("mouse session attach failed");
+  const mouseAttached = await nextControlResponse(control, requestId - 1);
+  if (mouseAttached.type !== "view-attached") throw new Error("mouse session attach failed");
+  mouseView.attachmentEpoch = mouseAttached.attachmentEpoch;
   const mouseModeDeadline = Date.now() + 5_000;
   let mouseMode = false;
   while (Date.now() < mouseModeDeadline && !mouseMode) {
@@ -442,6 +531,7 @@ try {
         requestId: requestId++,
         type: "send-mouse",
         sessionId: mouseCreated.session.id,
+        ...nextInput(mouseView),
         event: {
           action: "press",
           button: 1,
@@ -498,11 +588,20 @@ try {
   const interruptCreated = await nextControlResponse(control, requestId - 1);
   if (interruptCreated.type !== "session-created")
     throw new Error(`interrupt session create failed: ${JSON.stringify(interruptCreated)}`);
+  const interruptView = { viewId: "smoke-interrupt", attachmentEpoch: 0, inputSequence: 0 };
   control.socket.write(
-    packet(JSON.stringify({ requestId: requestId++, type: "attach-session", sessionId: interruptCreated.session.id })),
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "attach-session",
+        sessionId: interruptCreated.session.id,
+        viewId: interruptView.viewId,
+      }),
+    ),
   );
-  if ((await nextControlResponse(control, requestId - 1)).type !== "ok")
-    throw new Error("interrupt session attach failed");
+  const interruptAttached = await nextControlResponse(control, requestId - 1);
+  if (interruptAttached.type !== "view-attached") throw new Error("interrupt session attach failed");
+  interruptView.attachmentEpoch = interruptAttached.attachmentEpoch;
   let interruptReady = false;
   while (!interruptReady) {
     const frame = await Promise.race([
@@ -514,7 +613,14 @@ try {
       frame.includes(Buffer.from("interrupt-ready"));
   }
   control.socket.write(
-    packet(JSON.stringify({ requestId: requestId++, type: "interrupt", sessionId: interruptCreated.session.id })),
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "interrupt",
+        sessionId: interruptCreated.session.id,
+        ...nextInput(interruptView),
+      }),
+    ),
   );
   const interruptResponse = await nextControlResponse(control, requestId - 1);
   if (interruptResponse.type !== "ok") throw new Error(`interrupt failed: ${JSON.stringify(interruptResponse)}`);
@@ -534,6 +640,7 @@ try {
         requestId: requestId++,
         type: "send-text",
         sessionId: created.session.id,
+        ...nextInput(primaryView),
         text: "printf '\\033]52;c;aW50ZWdyYXRpb24tY29weQ==\\007'\r",
       }),
     ),
@@ -560,6 +667,7 @@ try {
         requestId: requestId++,
         type: "send-text",
         sessionId: created.session.id,
+        ...nextInput(primaryView),
         text: "i=0; while [ $i -lt 300 ]; do echo flood-$i; i=$((i+1)); done; echo ghostty-flood-done\r",
       }),
     ),
@@ -577,7 +685,15 @@ try {
   if (!foundFloodTail) throw new Error("latest row-replacement frame did not remain current under output flood");
 
   control.socket.write(
-    packet(JSON.stringify({ requestId: requestId++, type: "scroll", sessionId: created.session.id, rows: -10 })),
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "scroll",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+        rows: -10,
+      }),
+    ),
   );
   await nextControlResponse(control, requestId - 1);
   const scrollDeadline = Date.now() + 5_000;
@@ -593,7 +709,13 @@ try {
 
   control.socket.write(
     packet(
-      JSON.stringify({ requestId: requestId++, type: "send-text", sessionId: created.session.id, text: "exit\r" }),
+      JSON.stringify({
+        requestId: requestId++,
+        type: "send-text",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+        text: "exit\r",
+      }),
     ),
   );
   await nextControlResponse(control, requestId - 1);

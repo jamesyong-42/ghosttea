@@ -3,7 +3,9 @@ import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
   type CreateSessionOptions,
+  type RemoteHostSummary,
   type SessionSummary,
+  type SharedSessionSummary,
   type TerminalKeyEvent,
   type TerminalMouseEvent,
 } from "@electron-ghostty/terminal-protocol";
@@ -23,9 +25,20 @@ interface MountedCanvas {
   canvas: HTMLCanvasElement;
   sessionHandle: string;
   sessionId: string;
+  viewId: string;
   generation: number;
   references: number;
   disposeTimer: number | undefined;
+}
+
+interface ViewRuntimeState {
+  sessionId: string;
+  sessionHandle: string;
+  attachmentEpoch?: number;
+  inputSequence: number;
+  resizeSequence: number;
+  controlEpoch: number | undefined;
+  pendingInput: Array<(attachmentEpoch: number, inputSequence: number) => void>;
 }
 
 function waitForPorts(): Promise<Ports> {
@@ -54,7 +67,8 @@ export class DesktopTerminalRuntime extends EventTarget {
   readonly #mountedCanvases = new WeakMap<HTMLCanvasElement, MountedCanvas>();
   readonly #mountGenerationByHandle = new Map<string, number>();
   readonly #mouseTrackingByHandle = new Map<string, boolean>();
-  readonly #focusByHandle = new Map<string, boolean>();
+  readonly #focusByView = new Map<string, boolean>();
+  readonly #views = new Map<string, ViewRuntimeState>();
   readonly #selectionRequests = new Map<number, SelectionRequest>();
   #nextSelectionRequest = 1;
   #rendererBackend = "starting";
@@ -126,6 +140,19 @@ export class DesktopTerminalRuntime extends EventTarget {
       this.#sessionByHandle.set(handle, exited);
       this.dispatchEvent(new CustomEvent("session-metadata", { detail: exited }));
       this.dispatchEvent(new CustomEvent("session-exited", { detail }));
+    });
+    this.#control.addEventListener("control-changed", (event) => {
+      const detail = (
+        event as CustomEvent<{
+          sessionId: string;
+          controllerViewId: string;
+          controlEpoch: number;
+        }>
+      ).detail;
+      for (const [viewId, view] of this.#views) {
+        if (view.sessionId !== detail.sessionId) continue;
+        view.controlEpoch = viewId === detail.controllerViewId ? detail.controlEpoch : undefined;
+      }
     });
     this.#frames = ports.frames;
     this.#frames.onmessage = ({ data }: MessageEvent<ArrayBuffer>) => {
@@ -204,6 +231,41 @@ export class DesktopTerminalRuntime extends EventTarget {
     return response.sessions;
   }
 
+  async listRemoteHosts(): Promise<RemoteHostSummary[]> {
+    await this.connect();
+    const response = await this.#control!.request({ type: "list-remote-hosts" });
+    if (response.type !== "remote-hosts") throw new Error("terminald returned an unexpected response");
+    return response.hosts;
+  }
+
+  async listRemoteSessions(deviceId: string): Promise<SharedSessionSummary[]> {
+    await this.connect();
+    const response = await this.#control!.request({ type: "list-remote-sessions", deviceId }, 35_000);
+    if (response.type !== "remote-sessions" || response.deviceId !== deviceId)
+      throw new Error("terminald returned an unexpected response");
+    return response.sessions;
+  }
+
+  async openRemoteSession(
+    deviceId: string,
+    remoteSessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<SessionSummary> {
+    await this.connect();
+    const response = await this.#control!.request({
+      type: "open-remote-session",
+      deviceId,
+      remoteSessionId,
+      cols,
+      rows,
+    });
+    if (response.type !== "session-created") throw new Error("terminald could not open the remote session");
+    this.#sessionByHandle.set(response.session.handle, response.session);
+    this.#handleBySessionId.set(response.session.id, response.session.handle);
+    return response.session;
+  }
+
   async #refreshSession(sessionHandle: string): Promise<void> {
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session || !this.#control)
@@ -212,7 +274,7 @@ export class DesktopTerminalRuntime extends EventTarget {
     if (response.type !== "ok") throw new Error("terminald rejected frame resynchronization");
   }
 
-  mount(sessionId: string, sessionHandle: string, canvas: HTMLCanvasElement): TerminalMount {
+  mount(sessionId: string, sessionHandle: string, viewId: string, canvas: HTMLCanvasElement): TerminalMount {
     const mounted = this.#mountedCanvases.get(canvas);
     if (mounted) {
       if (mounted.sessionHandle !== sessionHandle) {
@@ -234,12 +296,37 @@ export class DesktopTerminalRuntime extends EventTarget {
       canvas,
       sessionHandle,
       sessionId,
+      viewId,
       generation,
       references: 1,
       disposeTimer: undefined,
     };
     this.#mountedCanvases.set(canvas, entry);
-    this.#control?.notify({ type: "attach-session", sessionId });
+    const view: ViewRuntimeState = {
+      sessionId,
+      sessionHandle,
+      inputSequence: 0,
+      resizeSequence: 0,
+      controlEpoch: undefined,
+      pendingInput: [],
+    };
+    this.#views.set(viewId, view);
+    void this.#control
+      ?.request({ type: "attach-session", sessionId, viewId }, 60_000)
+      .then((response) => {
+        if (response.type !== "view-attached" || response.viewId !== viewId) {
+          throw new Error("terminald returned an invalid view attachment");
+        }
+        const current = this.#views.get(viewId);
+        if (current !== view) return;
+        current.attachmentEpoch = response.attachmentEpoch;
+        const pending = current.pendingInput.splice(0);
+        for (const operation of pending) {
+          current.inputSequence += 1;
+          operation(response.attachmentEpoch, current.inputSequence);
+        }
+      })
+      .catch((error) => console.error(`[terminal-runtime] failed to attach view ${viewId}`, error));
     return this.#createMountLease(entry);
   }
 
@@ -258,7 +345,9 @@ export class DesktopTerminalRuntime extends EventTarget {
           if (mounted.references !== 0) return;
           if (this.#mountGenerationByHandle.get(mounted.sessionHandle) !== mounted.generation) return;
           this.#postWorker({ type: "unmount", sessionHandle: mounted.sessionHandle });
-          this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId });
+          this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId, viewId: mounted.viewId });
+          this.#views.delete(mounted.viewId);
+          this.#focusByView.delete(mounted.viewId);
           this.#mountGenerationByHandle.delete(mounted.sessionHandle);
           this.#mountedCanvases.delete(mounted.canvas);
         }, 0);
@@ -266,30 +355,52 @@ export class DesktopTerminalRuntime extends EventTarget {
     };
   }
 
-  sendText(sessionId: string, text: string): void {
-    this.#control?.notify({ type: "send-text", sessionId, text });
+  #sendViewInput(viewId: string, operation: (attachmentEpoch: number, inputSequence: number) => void): void {
+    const view = this.#views.get(viewId);
+    if (!view) return;
+    if (view.attachmentEpoch === undefined) {
+      if (view.pendingInput.length < 256) view.pendingInput.push(operation);
+      return;
+    }
+    view.inputSequence += 1;
+    operation(view.attachmentEpoch, view.inputSequence);
+  }
+
+  sendText(sessionId: string, viewId: string, text: string): void {
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "send-text", sessionId, viewId, attachmentEpoch, inputSequence, text }),
+    );
     const handle = this.#handleBySessionId.get(sessionId);
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
 
-  paste(sessionId: string, text: string): void {
-    this.#control?.notify({ type: "paste", sessionId, text });
+  paste(sessionId: string, viewId: string, text: string): void {
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "paste", sessionId, viewId, attachmentEpoch, inputSequence, text }),
+    );
     const handle = this.#handleBySessionId.get(sessionId);
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
 
-  sendKey(sessionId: string, event: TerminalKeyEvent): void {
-    this.#control?.notify({ type: "send-key", sessionId, event });
+  sendKey(sessionId: string, viewId: string, event: TerminalKeyEvent): void {
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "send-key", sessionId, viewId, attachmentEpoch, inputSequence, event }),
+    );
     const handle = this.#handleBySessionId.get(sessionId);
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
 
-  sendMouse(sessionId: string, event: TerminalMouseEvent): void {
-    this.#control?.notify({ type: "send-mouse", sessionId, event });
+  sendMouse(sessionId: string, viewId: string, event: TerminalMouseEvent): void {
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "send-mouse", sessionId, viewId, attachmentEpoch, inputSequence, event }),
+    );
   }
 
-  scroll(sessionId: string, rows: number): void {
-    if (rows !== 0) this.#control?.notify({ type: "scroll", sessionId, rows });
+  scroll(sessionId: string, viewId: string, rows: number): void {
+    if (rows === 0) return;
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "scroll", sessionId, viewId, attachmentEpoch, inputSequence, rows }),
+    );
   }
 
   isMouseTracking(sessionHandle: string): boolean {
@@ -318,12 +429,32 @@ export class DesktopTerminalRuntime extends EventTarget {
     this.#postWorker({ type: "selection", sessionHandle, selection });
   }
 
-  setFocused(sessionHandle: string, focused: boolean): void {
-    if (this.#focusByHandle.get(sessionHandle) === focused) return;
-    this.#focusByHandle.set(sessionHandle, focused);
+  setFocused(sessionHandle: string, viewId: string, focused: boolean, cols: number, rows: number): void {
+    if (this.#focusByView.get(viewId) === focused) return;
+    this.#focusByView.set(viewId, focused);
     this.#postWorker({ type: "focus", sessionHandle, focused });
     const session = this.#sessionByHandle.get(sessionHandle);
-    if (session) this.#control?.notify({ type: "focus", sessionId: session.id, focused });
+    if (!session) return;
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) => {
+      this.#control?.notify({
+        type: "focus",
+        sessionId: session.id,
+        viewId,
+        attachmentEpoch,
+        inputSequence,
+        focused,
+      });
+      if (focused) {
+        this.#control?.notify({
+          type: "focus-and-resize",
+          sessionId: session.id,
+          viewId,
+          attachmentEpoch,
+          cols,
+          rows,
+        });
+      }
+    });
   }
 
   copySelection(sessionHandle: string, selection: CellSelection): Promise<string> {
@@ -341,8 +472,10 @@ export class DesktopTerminalRuntime extends EventTarget {
     });
   }
 
-  interrupt(sessionId: string): void {
-    this.#control?.notify({ type: "interrupt", sessionId });
+  interrupt(sessionId: string, viewId: string): void {
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "interrupt", sessionId, viewId, attachmentEpoch, inputSequence }),
+    );
     const handle = this.#handleBySessionId.get(sessionId);
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
@@ -355,15 +488,38 @@ export class DesktopTerminalRuntime extends EventTarget {
     if (timer !== undefined) window.clearTimeout(timer);
     this.#metadataTimers.delete(handle);
     this.#mouseTrackingByHandle.delete(handle);
-    this.#focusByHandle.delete(handle);
+    for (const [viewId, view] of this.#views) {
+      if (view.sessionId === sessionId) {
+        this.#views.delete(viewId);
+        this.#focusByView.delete(viewId);
+      }
+    }
     this.#sessionByHandle.delete(handle);
     this.#handleBySessionId.delete(sessionId);
     this.#resync.cancel(handle);
     this.#postWorker({ type: "drop-session", sessionHandle: handle });
   }
 
-  resize(sessionId: string, cols: number, rows: number): void {
-    this.#control?.notify({ type: "resize", sessionId, cols, rows });
+  resize(sessionId: string, viewId: string, cols: number, rows: number): void {
+    const view = this.#views.get(viewId);
+    if (
+      !view ||
+      view.attachmentEpoch === undefined ||
+      view.controlEpoch === undefined ||
+      !this.#focusByView.get(viewId)
+    )
+      return;
+    view.resizeSequence += 1;
+    this.#control?.notify({
+      type: "resize",
+      sessionId,
+      viewId,
+      attachmentEpoch: view.attachmentEpoch,
+      controlEpoch: view.controlEpoch,
+      resizeSequence: view.resizeSequence,
+      cols,
+      rows,
+    });
   }
 }
 

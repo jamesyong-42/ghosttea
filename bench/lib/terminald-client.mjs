@@ -85,10 +85,7 @@ function packets(socket) {
       };
       const wait = (value) => finish(value);
       waiting.push(wait);
-      const timer =
-        timeoutMs === null
-          ? undefined
-          : setTimeout(() => finish(null), Math.max(0, timeoutMs));
+      const timer = timeoutMs === null ? undefined : setTimeout(() => finish(null), Math.max(0, timeoutMs));
     });
   };
 }
@@ -237,6 +234,7 @@ export class TerminaldHarness {
   #framePath;
   #requestId = 1;
   #demux;
+  #views = new Map();
   control;
   frames;
 
@@ -338,22 +336,41 @@ export class TerminaldHarness {
       },
     });
     if (created.type !== "session-created") throw new Error("unexpected create-session response");
-    await this.request("attach-session", { sessionId: created.session.id });
+    const viewId = `bench-${created.session.id}`;
+    const attached = await this.request("attach-session", { sessionId: created.session.id, viewId });
+    if (attached.type !== "view-attached") throw new Error("unexpected attach-session response");
+    this.#views.set(created.session.id, {
+      viewId,
+      attachmentEpoch: attached.attachmentEpoch,
+      inputSequence: 0,
+    });
     // Drop attach/refresh frames so marker waits only see this session's workload.
     this.#demux.clearRecent();
     return created.session;
   }
 
   async sendText(sessionId, text) {
-    await this.request("send-text", { sessionId, text });
+    await this.request("send-text", { sessionId, ...this.#nextInput(sessionId), text });
   }
 
   async interrupt(sessionId) {
-    await this.request("interrupt", { sessionId });
+    await this.request("interrupt", { sessionId, ...this.#nextInput(sessionId) });
+  }
+
+  #nextInput(sessionId) {
+    const view = this.#views.get(sessionId);
+    if (!view) throw new Error(`session ${sessionId} is not attached`);
+    view.inputSequence += 1;
+    return {
+      viewId: view.viewId,
+      attachmentEpoch: view.attachmentEpoch,
+      inputSequence: view.inputSequence,
+    };
   }
 
   async terminate(sessionId) {
     await this.request("terminate", { sessionId });
+    this.#views.delete(sessionId);
   }
 
   /**
@@ -388,7 +405,7 @@ export class TerminaldHarness {
       );
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("timeout")) {
-        throw new Error(`timeout waiting for ${marker}`);
+        throw new Error(`timeout waiting for ${marker}`, { cause: error });
       }
       throw error;
     }

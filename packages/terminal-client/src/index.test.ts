@@ -9,7 +9,14 @@ describe("ControlClient", () => {
       channel.port2.addEventListener("message", (event) => resolve(event.data), { once: true }),
     );
     channel.port2.start();
-    client.notify({ type: "focus", sessionId: "session", focused: true });
+    client.notify({
+      type: "focus",
+      sessionId: "session",
+      viewId: "view",
+      attachmentEpoch: 1,
+      inputSequence: 1,
+      focused: true,
+    });
     await expect(command).resolves.toMatchObject({ requestId: 0, type: "focus" });
     client.dispose();
     channel.port2.close();

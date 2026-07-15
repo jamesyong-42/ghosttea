@@ -12,6 +12,10 @@ const key = (value: string, overrides: Partial<KeyboardEvent> = {}) =>
   }) as KeyboardEvent;
 
 describe("Ghostty pane hotkeys", () => {
+  it("opens the remote session palette", () => {
+    expect(ghosttyHotkey(key("o", { shiftKey: true }))).toEqual({ type: "remote-sessions" });
+  });
+
   it("maps command-D and command-shift-D to the expected split axes", () => {
     expect(ghosttyHotkey(key("d"))).toEqual({ type: "split", axis: "horizontal" });
     expect(ghosttyHotkey(key("D", { shiftKey: true }))).toEqual({ type: "split", axis: "vertical" });
