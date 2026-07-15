@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -67,4 +67,7 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 
 const library = join(output, "install/lib/libghostty-vt.a");
 if (!existsSync(library)) throw new Error("Ghostty build completed without libghostty-vt.a");
+const licenseDirectory = join(output, "install/share/licenses/ghostty");
+mkdirSync(licenseDirectory, { recursive: true });
+copyFileSync(join(vendor, "LICENSE"), join(licenseDirectory, "LICENSE"));
 console.log(`Built ${library}`);

@@ -37,7 +37,7 @@ const inputs = [
   },
   {
     bundlePath: "LICENSES/Ghostty.txt",
-    sourcePath: join(root, "native/vendor/ghostty/LICENSE"),
+    sourcePath: join(root, "native/build/ghostty/install/share/licenses/ghostty/LICENSE"),
   },
 ].map((file) => ({ ...file, contents: readFileSync(file.sourcePath) }));
 
