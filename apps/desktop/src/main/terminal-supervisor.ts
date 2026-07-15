@@ -65,8 +65,8 @@ export class TerminalSupervisor extends EventEmitter {
       if (!existsSync(configuredBinary)) throw new Error(`ghosttead executable not found at ${configuredBinary}`);
       this.#child = spawn(configuredBinary, [], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
     } else {
-      const manifest = join(repositoryRoot, "native/terminald/Cargo.toml");
-      if (!existsSync(manifest)) throw new Error(`terminald manifest not found at ${manifest}`);
+      const manifest = join(repositoryRoot, "native/ghosttead/Cargo.toml");
+      if (!existsSync(manifest)) throw new Error(`ghosttead manifest not found at ${manifest}`);
       const profileArgs =
         (process.env.GHOSTTEA_DEV_PROFILE ?? process.env.TERMINALD_DEV_PROFILE) === "debug" ? [] : ["--release"];
       this.#child = spawn("cargo", ["run", "--quiet", ...profileArgs, "--manifest-path", manifest], {

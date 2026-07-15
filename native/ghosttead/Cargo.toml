@@ -1,0 +1,18 @@
+[package]
+name = "ghosttead"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Private Ghosttea desktop composition service"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+dotenvy.workspace = true
+ghosttea = { version = "0.1.0", path = "../terminald" }
+ghosttea-truffle = { version = "0.1.0", path = "../terminald/crates/truffle" }
+tokio.workspace = true
+truffle-core.workspace = true

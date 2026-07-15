@@ -67,13 +67,13 @@ checkout at `../p008/truffle`. Put `TRUFFLE_TEST_AUTHKEY` in an untracked
 `.env` to enable the Truffle node during development, or set
 `GHOSTTEA_TRUFFLE_ENABLED=false` to keep the runtime local-only.
 
-The reusable terminal crate depends on `truffle-core`, not the convenience
-crate that provisions `sidecar-slim`. It accepts a host-owned
-`Arc<Node<TailscaleProvider>>`; it neither creates nor stops that node and does
-not package Truffle. The Electron demo resolves the sibling development
-sidecar and its thin `ghosttead` binary acts as the application composition
-root. A consuming application owns Truffle installation, identity, state, and
-lifecycle once for all of its Rust services.
+The reusable `ghosttea` crate is transport-neutral and does not depend on
+Truffle. The separate `ghosttea-truffle` adapter depends on `truffle-core` and
+accepts a host-owned `Arc<Node<TailscaleProvider>>`; it neither creates nor
+stops that node and does not package Truffle. The Electron demo resolves the
+sibling development sidecar and its thin `ghosttead` binary acts as the
+application composition root. A consuming application owns Truffle
+installation, identity, state, and lifecycle once for all of its Rust services.
 
 Remote peers are read-only by default. Set `GHOSTTEA_TRUFFLE_CAPABILITY` to
 require a shared write capability, or explicitly set
@@ -99,7 +99,7 @@ let terminal_mesh = TruffleTerminalMesh::new(
 )?;
 
 TerminalService::new(local_terminal_config)
-    .with_truffle_mesh(terminal_mesh)
+    .with_terminal_mesh(terminal_mesh)
     .run()
     .await?;
 ```
@@ -151,8 +151,8 @@ npm run check
 npm run build
 
 # opt-in live Truffle 0.7.1 QUIC smoke test (reads .env)
-cargo test --manifest-path native/terminald/Cargo.toml \
-  mesh::tests::latest_truffle_quic_round_trip -- --ignored
+cargo test --package ghosttea-truffle \
+  latest_truffle_quic_round_trip -- --ignored
 ```
 
 ## Benchmark
@@ -161,12 +161,15 @@ Compare the `ghosttead` sidecar path against a classic `node-pty` + xterm.js
 baseline (and manually against native Ghostty with the same payloads):
 
 ```sh
-cargo build --release --manifest-path native/terminald/Cargo.toml
+cargo build --release --package ghosttead
 npm run bench
 # or: npm run bench:json
 ```
 
 See [`bench/README.md`](bench/README.md) for methodology and interpretation.
+
+Packaging boundaries, dry-run checks, and release order are documented in
+[`PUBLISHING.md`](PUBLISHING.md).
 
 This implements the Phase 4 production text-engine vertical slice on macOS.
 Phase 5 adds infinite-canvas virtualization, headless/thumbnail/visible states,

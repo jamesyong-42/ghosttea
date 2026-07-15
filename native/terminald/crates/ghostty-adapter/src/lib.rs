@@ -38,7 +38,8 @@ struct RawCellStyle {
     bg_b: u8,
 }
 
-type CellCallback = unsafe extern "C" fn(*mut c_void, u16, u16, u16, *const u8, usize, *const RawCellStyle);
+type CellCallback =
+    unsafe extern "C" fn(*mut c_void, u16, u16, u16, *const u8, usize, *const RawCellStyle);
 
 unsafe extern "C" {
     fn eg_terminal_new(cols: u16, rows: u16, max_scrollback: usize) -> *mut RawTerminal;
@@ -47,9 +48,15 @@ unsafe extern "C" {
     fn eg_terminal_resize(terminal: *mut RawTerminal, cols: u16, rows: u16) -> i32;
     fn eg_terminal_set_colors(
         terminal: *mut RawTerminal,
-        fg_r: u8, fg_g: u8, fg_b: u8,
-        bg_r: u8, bg_g: u8, bg_b: u8,
-        cursor_r: u8, cursor_g: u8, cursor_b: u8,
+        fg_r: u8,
+        fg_g: u8,
+        fg_b: u8,
+        bg_r: u8,
+        bg_g: u8,
+        bg_b: u8,
+        cursor_r: u8,
+        cursor_g: u8,
+        cursor_b: u8,
     ) -> i32;
     fn eg_terminal_scroll(terminal: *mut RawTerminal, rows: isize);
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
@@ -187,7 +194,11 @@ impl GhosttyTerminalCore {
     pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self, GhosttyError> {
         let raw = NonNull::new(unsafe { eg_terminal_new(cols, rows, max_scrollback) })
             .ok_or(GhosttyError(-1))?;
-        Ok(Self { raw, cached_rows: Vec::new(), cached_cells: Vec::new() })
+        Ok(Self {
+            raw,
+            cached_rows: Vec::new(),
+            cached_cells: Vec::new(),
+        })
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -216,13 +227,24 @@ impl GhosttyTerminalCore {
         check(unsafe { eg_terminal_resize(self.raw.as_ptr(), cols, rows) })
     }
 
-    pub fn set_colors(&mut self, foreground: [u8; 3], background: [u8; 3], cursor: [u8; 3]) -> Result<(), GhosttyError> {
+    pub fn set_colors(
+        &mut self,
+        foreground: [u8; 3],
+        background: [u8; 3],
+        cursor: [u8; 3],
+    ) -> Result<(), GhosttyError> {
         check(unsafe {
             eg_terminal_set_colors(
                 self.raw.as_ptr(),
-                foreground[0], foreground[1], foreground[2],
-                background[0], background[1], background[2],
-                cursor[0], cursor[1], cursor[2],
+                foreground[0],
+                foreground[1],
+                foreground[2],
+                background[0],
+                background[1],
+                background[2],
+                cursor[0],
+                cursor[1],
+                cursor[2],
             )
         })
     }
@@ -254,18 +276,42 @@ impl GhosttyTerminalCore {
         let mut written = 0;
         let mut result = unsafe {
             eg_terminal_encode_mouse(
-                self.raw.as_ptr(), action, button, mods, x, y,
-                screen_width, screen_height, cell_width, cell_height,
-                padding_left, padding_top, bytes.as_mut_ptr(), bytes.len(), &mut written,
+                self.raw.as_ptr(),
+                action,
+                button,
+                mods,
+                x,
+                y,
+                screen_width,
+                screen_height,
+                cell_width,
+                cell_height,
+                padding_left,
+                padding_top,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut written,
             )
         };
         if result == -3 {
             bytes.resize(written, 0);
             result = unsafe {
                 eg_terminal_encode_mouse(
-                    self.raw.as_ptr(), action, button, mods, x, y,
-                    screen_width, screen_height, cell_width, cell_height,
-                    padding_left, padding_top, bytes.as_mut_ptr(), bytes.len(), &mut written,
+                    self.raw.as_ptr(),
+                    action,
+                    button,
+                    mods,
+                    x,
+                    y,
+                    screen_width,
+                    screen_height,
+                    cell_width,
+                    cell_height,
+                    padding_left,
+                    padding_top,
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    &mut written,
                 )
             };
         }
@@ -279,7 +325,11 @@ impl GhosttyTerminalCore {
         let mut written = 0;
         check(unsafe {
             eg_terminal_encode_focus(
-                self.raw.as_ptr(), focused, bytes.as_mut_ptr(), bytes.len(), &mut written,
+                self.raw.as_ptr(),
+                focused,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut written,
             )
         })?;
         bytes.truncate(written);
@@ -346,12 +396,18 @@ impl GhosttyTerminalCore {
             dirty: bool,
         ) {
             let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
-            let bytes = if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(text, len) } };
+            let bytes = if len == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(text, len) }
+            };
             rows.text.resize_with(row as usize + 1, String::new);
             rows.present.resize(row as usize + 1, false);
             rows.text[row as usize] = String::from_utf8_lossy(bytes).into_owned();
             rows.present[row as usize] = dirty;
-            if dirty { rows.dirty.push(row); }
+            if dirty {
+                rows.dirty.push(row);
+            }
         }
         unsafe extern "C" fn collect_cell(
             userdata: *mut c_void,
@@ -364,7 +420,11 @@ impl GhosttyTerminalCore {
         ) {
             let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
             rows.cells.resize_with(row as usize + 1, Vec::new);
-            let bytes = if len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(text, len) } };
+            let bytes = if len == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(text, len) }
+            };
             let raw = unsafe { &*raw_style };
             rows.cells[row as usize].push(TerminalCell {
                 column,
@@ -385,7 +445,12 @@ impl GhosttyTerminalCore {
         }
 
         let mut meta = RawSnapshotMeta::default();
-        let mut rows = Rows { text: Vec::new(), cells: Vec::new(), present: Vec::new(), dirty: Vec::new() };
+        let mut rows = Rows {
+            text: Vec::new(),
+            cells: Vec::new(),
+            present: Vec::new(),
+            dirty: Vec::new(),
+        };
         check(unsafe {
             eg_terminal_snapshot(
                 self.raw.as_ptr(),
@@ -399,7 +464,9 @@ impl GhosttyTerminalCore {
         rows.cells.resize_with(meta.rows as usize, Vec::new);
         rows.present.resize(meta.rows as usize, false);
         for (row_index, (text, cells)) in rows.text.iter().zip(&mut rows.cells).enumerate() {
-            if meta.full_dirty == 0 && !rows.present[row_index] { continue; }
+            if meta.full_dirty == 0 && !rows.present[row_index] {
+                continue;
+            }
             let mut bytes = 0;
             cells.retain(|cell| {
                 let keep = bytes < text.len() || cell.style != CellStyle::default();
@@ -407,7 +474,8 @@ impl GhosttyTerminalCore {
                 keep
             });
         }
-        self.cached_rows.resize_with(meta.rows as usize, String::new);
+        self.cached_rows
+            .resize_with(meta.rows as usize, String::new);
         self.cached_cells.resize_with(meta.rows as usize, Vec::new);
         for row_index in 0..meta.rows as usize {
             if meta.full_dirty != 0 || rows.present[row_index] {
@@ -426,7 +494,10 @@ impl GhosttyTerminalCore {
                 style: meta.cursor_style,
                 blinking: meta.cursor_blinking != 0,
             },
-            damage: TerminalDamage { full: meta.full_dirty != 0, dirty_rows: rows.dirty },
+            damage: TerminalDamage {
+                full: meta.full_dirty != 0,
+                dirty_rows: rows.dirty,
+            },
             title: self.read_string(eg_terminal_title),
             cwd: self.read_string(eg_terminal_pwd),
             bell: meta.effects & EFFECT_BELL != 0,
@@ -436,29 +507,39 @@ impl GhosttyTerminalCore {
         })
     }
 
-    fn read_string(&self, getter: unsafe extern "C" fn(*mut RawTerminal, *mut u8, usize) -> usize) -> Option<String> {
+    fn read_string(
+        &self,
+        getter: unsafe extern "C" fn(*mut RawTerminal, *mut u8, usize) -> usize,
+    ) -> Option<String> {
         let required = unsafe { getter(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
-        if required == 0 { return None; }
+        if required == 0 {
+            return None;
+        }
         let mut bytes = vec![0_u8; required];
         unsafe { getter(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len()) };
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     pub fn take_pty_response(&self) -> Vec<u8> {
-        let required = unsafe { eg_terminal_take_response(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
+        let required =
+            unsafe { eg_terminal_take_response(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
         let mut bytes = vec![0_u8; required];
         if required != 0 {
-            unsafe { eg_terminal_take_response(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len()) };
+            unsafe {
+                eg_terminal_take_response(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len())
+            };
         }
         bytes
     }
 
-
     fn take_clipboard(&self) -> Vec<u8> {
-        let required = unsafe { eg_terminal_take_clipboard(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
+        let required =
+            unsafe { eg_terminal_take_clipboard(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
         let mut bytes = vec![0_u8; required];
         if required != 0 {
-            unsafe { eg_terminal_take_clipboard(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len()) };
+            unsafe {
+                eg_terminal_take_clipboard(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len())
+            };
         }
         bytes
     }
@@ -471,7 +552,11 @@ impl Drop for GhosttyTerminalCore {
 }
 
 fn check(result: i32) -> Result<(), GhosttyError> {
-    if result == 0 { Ok(()) } else { Err(GhosttyError(result)) }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(GhosttyError(result))
+    }
 }
 
 #[cfg(test)]
@@ -493,12 +578,21 @@ mod tests {
     #[test]
     fn encodes_mode_aware_safe_paste() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
-        assert_eq!(terminal.encode_paste("first\nsecond").unwrap(), b"first\rsecond");
+        assert_eq!(
+            terminal.encode_paste("first\nsecond").unwrap(),
+            b"first\rsecond"
+        );
         terminal.feed(b"\x1b[?2004h");
         let encoded = terminal.encode_paste("first\nsecond\x1b[201~tail").unwrap();
         assert!(encoded.starts_with(b"\x1b[200~"));
         assert!(encoded.ends_with(b"\x1b[201~"));
-        assert_eq!(encoded.windows(6).filter(|window| *window == b"\x1b[201~").count(), 1);
+        assert_eq!(
+            encoded
+                .windows(6)
+                .filter(|window| *window == b"\x1b[201~")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -518,7 +612,12 @@ mod tests {
         terminal.feed(b"\x1b[44m   \x1b[0m");
         let snapshot = terminal.snapshot().unwrap();
         assert_eq!(snapshot.rows[0], "");
-        assert!(snapshot.cells[0].iter().take(3).all(|cell| cell.style.background.is_some()));
+        assert!(
+            snapshot.cells[0]
+                .iter()
+                .take(3)
+                .all(|cell| cell.style.background.is_some())
+        );
     }
 
     #[test]
@@ -528,7 +627,11 @@ mod tests {
         let snapshot = terminal.snapshot().unwrap();
         assert_eq!(snapshot.rows[0], "> go");
         assert_eq!(snapshot.cells[0].len(), 8);
-        assert!(snapshot.cells[0].iter().all(|cell| cell.style.background.is_some()));
+        assert!(
+            snapshot.cells[0]
+                .iter()
+                .all(|cell| cell.style.background.is_some())
+        );
     }
 
     #[test]
@@ -543,12 +646,23 @@ mod tests {
     #[test]
     fn answers_dynamic_color_queries_from_the_configured_theme() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
-        terminal.set_colors([1, 2, 3], [4, 5, 6], [7, 8, 9]).unwrap();
+        terminal
+            .set_colors([1, 2, 3], [4, 5, 6], [7, 8, 9])
+            .unwrap();
         terminal.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\");
         let response = terminal.snapshot().unwrap().pty_response;
-        assert!(response.windows(8).any(|value| value == b"]10;rgb:"), "missing foreground response: {response:?}");
-        assert!(response.windows(8).any(|value| value == b"]11;rgb:"), "missing background response: {response:?}");
-        assert!(response.windows(8).any(|value| value == b"]12;rgb:"), "missing cursor response: {response:?}");
+        assert!(
+            response.windows(8).any(|value| value == b"]10;rgb:"),
+            "missing foreground response: {response:?}"
+        );
+        assert!(
+            response.windows(8).any(|value| value == b"]11;rgb:"),
+            "missing background response: {response:?}"
+        );
+        assert!(
+            response.windows(8).any(|value| value == b"]12;rgb:"),
+            "missing cursor response: {response:?}"
+        );
     }
 
     #[test]
@@ -557,7 +671,10 @@ mod tests {
         assert_eq!(terminal.encode_key("ArrowUp", "", 0, 1).unwrap(), b"\x1b[A");
         terminal.feed(b"\x1b[?1h");
         assert_eq!(terminal.encode_key("ArrowUp", "", 0, 1).unwrap(), b"\x1bOA");
-        assert_eq!(terminal.encode_key("KeyC", "c", 1 << 1, 1).unwrap(), b"\x03");
+        assert_eq!(
+            terminal.encode_key("KeyC", "c", 1 << 1, 1).unwrap(),
+            b"\x03"
+        );
     }
 
     #[test]
@@ -573,18 +690,31 @@ mod tests {
     fn encodes_mouse_only_when_application_tracking_is_active() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
         assert!(!terminal.snapshot().unwrap().mouse_tracking);
-        assert!(terminal.encode_mouse(0, 1, 0, 16.0, 22.0, 188, 100, 8, 19, 14, 12).unwrap().is_empty());
+        assert!(
+            terminal
+                .encode_mouse(0, 1, 0, 16.0, 22.0, 188, 100, 8, 19, 14, 12)
+                .unwrap()
+                .is_empty()
+        );
         terminal.feed(b"\x1b[?1000h\x1b[?1006h");
         assert!(terminal.snapshot().unwrap().mouse_tracking);
-        let encoded = terminal.encode_mouse(0, 1, 0, 16.0, 22.0, 668, 404, 8, 19, 14, 12).unwrap();
-        assert_eq!(encoded, b"\x1b[<0;1;1M", "unexpected mouse sequence: {encoded:?}");
+        let encoded = terminal
+            .encode_mouse(0, 1, 0, 16.0, 22.0, 668, 404, 8, 19, 14, 12)
+            .unwrap();
+        assert_eq!(
+            encoded, b"\x1b[<0;1;1M",
+            "unexpected mouse sequence: {encoded:?}"
+        );
     }
 
     #[test]
     fn captures_osc52_clipboard_writes() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
         terminal.feed(b"\x1b]52;c;aGVsbG8=\x07");
-        assert_eq!(terminal.snapshot().unwrap().clipboard.as_deref(), Some(b"hello".as_slice()));
+        assert_eq!(
+            terminal.snapshot().unwrap().clipboard.as_deref(),
+            Some(b"hello".as_slice())
+        );
     }
 
     #[test]
@@ -595,7 +725,11 @@ mod tests {
         terminal.scroll(-2);
         let history = terminal.snapshot().unwrap().rows;
         assert_ne!(history, bottom);
-        assert!(history.iter().any(|row| row.starts_with("one") || row.starts_with("two")));
+        assert!(
+            history
+                .iter()
+                .any(|row| row.starts_with("one") || row.starts_with("two"))
+        );
     }
 
     #[test]
@@ -647,7 +781,10 @@ mod tests {
         terminal.feed("ab界cdef".as_bytes());
         terminal.resize(12, 4).unwrap();
         let joined = terminal.snapshot().unwrap().rows.join("");
-        assert!(joined.starts_with("ab界cdef"), "unexpected reflow output: {joined:?}");
+        assert!(
+            joined.starts_with("ab界cdef"),
+            "unexpected reflow output: {joined:?}"
+        );
     }
 
     #[test]

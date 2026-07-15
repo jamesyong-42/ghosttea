@@ -30,7 +30,7 @@ This is **not** a claim that the Electron app is faster than Ghostty. It quantif
 
 ```sh
 # From repo root (release terminald binary recommended)
-cargo build --release --manifest-path native/terminald/Cargo.toml
+cargo build --release --package ghosttead
 npm install
 npm run bench
 ```
@@ -40,7 +40,7 @@ Options:
 ```sh
 node bench/run.mjs --targets=terminald,xterm --scale=1 --json=bench/results.json
 node bench/run.mjs --targets=terminald --scale=0.5
-GHOSTTEAD_BIN=./native/terminald/target/release/ghosttead npm run bench
+GHOSTTEAD_BIN=./target/release/ghosttead npm run bench
 ```
 
 ## Cases
@@ -136,8 +136,8 @@ To measure that later:
 
 ```sh
 # Full primary comparison (terminald vs node-pty→xterm)
-cargo build --release --manifest-path native/terminald/Cargo.toml
-GHOSTTEAD_BIN=./native/terminald/target/release/ghosttead npm run bench:json
+cargo build --release --package ghosttead
+GHOSTTEAD_BIN=./target/release/ghosttead npm run bench:json
 
 # Only the classic embed stack
 node bench/run.mjs --targets=xterm --scale=1

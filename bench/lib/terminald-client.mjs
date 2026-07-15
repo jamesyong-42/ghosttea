@@ -12,14 +12,14 @@ export function resolveTerminaldBinary() {
   if (configuredBinary && existsSync(configuredBinary)) {
     return { kind: "bin", path: configuredBinary };
   }
-  const release = join(root, "native/terminald/target/release/ghosttead");
+  const release = join(root, "target/release/ghosttead");
   if (existsSync(release)) return { kind: "bin", path: release };
-  const debug = join(root, "native/terminald/target/debug/ghosttead");
+  const debug = join(root, "target/debug/ghosttead");
   if (existsSync(debug)) return { kind: "bin", path: debug };
   return {
     kind: "cargo",
     path: "cargo",
-    args: ["run", "--quiet", "--release", "--manifest-path", "native/terminald/Cargo.toml"],
+    args: ["run", "--quiet", "--release", "--manifest-path", "native/ghosttead/Cargo.toml"],
   };
 }
 

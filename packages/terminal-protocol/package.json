@@ -1,16 +1,49 @@
 {
   "name": "@vibecook/ghosttea-protocol",
   "version": "0.1.0",
+  "description": "Typed control protocol for Ghosttea terminal clients and bridges.",
+  "license": "MIT",
+  "author": "James Yong",
   "type": "module",
-  "exports": "./src/index.ts",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesyong-42/ghosttea.git",
     "directory": "packages/terminal-protocol"
   },
+  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/jamesyong-42/ghosttea/issues"
+  },
+  "keywords": [
+    "electron",
+    "ghostty",
+    "terminal",
+    "protocol"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "typescript": "7.0.2",

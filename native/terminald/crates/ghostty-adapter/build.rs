@@ -3,7 +3,9 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let default_prefix = manifest.join("../../../build/ghostty/install");
-    let prefix = env::var_os("GHOSTTY_VT_PREFIX").map(PathBuf::from).unwrap_or(default_prefix);
+    let prefix = env::var_os("GHOSTTY_VT_PREFIX")
+        .map(PathBuf::from)
+        .unwrap_or(default_prefix);
     let include = prefix.join("include");
     let library = prefix.join("lib/libghostty-vt.a");
     if !library.exists() {

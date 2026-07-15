@@ -3,13 +3,13 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fontdb::{Database, Family, ID, Query, Stretch, Style, Weight};
-use harfbuzz_rs::{shape, Face, Font, UnicodeBuffer};
+use harfbuzz_rs::{Face, Font, UnicodeBuffer, shape};
 use swash::{
-    scale::{image::Content, Render, ScaleContext, Source, StrikeWith},
-    zeno::Format,
     FontRef,
+    scale::{Render, ScaleContext, Source, StrikeWith, image::Content},
+    zeno::Format,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -135,8 +135,16 @@ impl TextEngine {
             Family::Monospace,
         ]);
         let primary = database
-            .query(&Query { families: &preferred, ..Query::default() })
-            .or_else(|| database.faces().find(|face| face.monospaced).map(|face| face.id))
+            .query(&Query {
+                families: &preferred,
+                ..Query::default()
+            })
+            .or_else(|| {
+                database
+                    .faces()
+                    .find(|face| face.monospaced)
+                    .map(|face| face.id)
+            })
             .context("no system monospace font was discovered")?;
         let primary_family = database
             .face(primary)
@@ -147,17 +155,36 @@ impl TextEngine {
         let mut styled_faces = HashMap::new();
         for style in [
             FontStyle::default(),
-            FontStyle { bold: true, italic: false },
-            FontStyle { bold: false, italic: true },
-            FontStyle { bold: true, italic: true },
+            FontStyle {
+                bold: true,
+                italic: false,
+            },
+            FontStyle {
+                bold: false,
+                italic: true,
+            },
+            FontStyle {
+                bold: true,
+                italic: true,
+            },
         ] {
             let families = [Family::Name(primary_family.as_str())];
-            let face = database.query(&Query {
-                families: &families,
-                weight: if style.bold { Weight::BOLD } else { Weight::NORMAL },
-                stretch: Stretch::Normal,
-                style: if style.italic { Style::Italic } else { Style::Normal },
-            }).unwrap_or(primary);
+            let face = database
+                .query(&Query {
+                    families: &families,
+                    weight: if style.bold {
+                        Weight::BOLD
+                    } else {
+                        Weight::NORMAL
+                    },
+                    stretch: Stretch::Normal,
+                    style: if style.italic {
+                        Style::Italic
+                    } else {
+                        Style::Normal
+                    },
+                })
+                .unwrap_or(primary);
             styled_faces.insert(style, face);
         }
 
@@ -180,7 +207,14 @@ impl TextEngine {
     }
 
     pub fn shape_row(&mut self, text: &str, style: FontStyle) -> Result<ShapedRow> {
-        self.shape_styled_row(text, &[StyleSpan { byte_start: 0, byte_end: text.len(), style }])
+        self.shape_styled_row(
+            text,
+            &[StyleSpan {
+                byte_start: 0,
+                byte_end: text.len(),
+                style,
+            }],
+        )
     }
 
     pub fn shape_styled_row(&mut self, text: &str, spans: &[StyleSpan]) -> Result<ShapedRow> {
@@ -192,7 +226,10 @@ impl TextEngine {
             let face = graphemes[run_start].face;
             let mut run_end = run_start + 1;
             let style = graphemes[run_start].style;
-            while run_end < graphemes.len() && graphemes[run_end].face == face && graphemes[run_end].style == style {
+            while run_end < graphemes.len()
+                && graphemes[run_end].face == face
+                && graphemes[run_end].style == style
+            {
                 run_end += 1;
             }
             self.shape_run(
@@ -214,7 +251,11 @@ impl TextEngine {
         Ok(output)
     }
 
-    fn resolve_graphemes<'a>(&mut self, text: &'a str, spans: &[StyleSpan]) -> Result<Vec<Grapheme<'a>>> {
+    fn resolve_graphemes<'a>(
+        &mut self,
+        text: &'a str,
+        spans: &[StyleSpan],
+    ) -> Result<Vec<Grapheme<'a>>> {
         let mut cell = 0_u16;
         let mut output = Vec::new();
         for (byte_start, cluster) in text.grapheme_indices(true) {
@@ -223,14 +264,24 @@ impl TextEngine {
                 .find(|span| byte_start >= span.byte_start && byte_start < span.byte_end)
                 .map(|span| span.style)
                 .unwrap_or_default();
-            let primary = *self.styled_faces.get(&style).context("missing styled primary face")?;
-            let span = UnicodeWidthStr::width(cluster).max(1).min(2) as u16;
+            let primary = *self
+                .styled_faces
+                .get(&style)
+                .context("missing styled primary face")?;
+            let span = UnicodeWidthStr::width(cluster).clamp(1, 2) as u16;
             let face = if self.face_supports(primary, cluster)? {
                 primary
             } else {
                 self.fallback_for(cluster).unwrap_or(primary)
             };
-            output.push(Grapheme { text: cluster, byte_start, cell_start: cell, cell_span: span, face, style });
+            output.push(Grapheme {
+                text: cluster,
+                byte_start,
+                cell_start: cell,
+                cell_span: span,
+                face,
+                style,
+            });
             cell = cell.saturating_add(span);
         }
         Ok(output)
@@ -249,12 +300,18 @@ impl TextEngine {
             ids.sort_by_key(|id| {
                 let face = self.database.face(*id);
                 let emoji_named = face.is_some_and(|face| {
-                    face.post_script_name.contains("Emoji") || face.families.iter().any(|family| family.0.contains("Emoji"))
+                    face.post_script_name.contains("Emoji")
+                        || face
+                            .families
+                            .iter()
+                            .any(|family| family.0.contains("Emoji"))
                 });
                 !emoji_named
             });
         }
-        let found = ids.into_iter().find(|id| self.face_supports(*id, cluster).unwrap_or(false));
+        let found = ids
+            .into_iter()
+            .find(|id| self.face_supports(*id, cluster).unwrap_or(false));
         if let Some(face) = found {
             self.fallback_faces.insert(representative, face);
         }
@@ -265,7 +322,10 @@ impl TextEngine {
         self.database
             .with_face_data(face, |data, index| {
                 FontRef::from_index(data, index as usize).is_some_and(|font| {
-                    cluster.chars().filter(|character| !is_ignorable(*character)).all(|character| font.charmap().map(character) != 0)
+                    cluster
+                        .chars()
+                        .filter(|character| !is_ignorable(*character))
+                        .all(|character| font.charmap().map(character) != 0)
                 })
             })
             .context("failed to access system font data")
@@ -288,16 +348,32 @@ impl TextEngine {
         let loaded = self.load_face(face_id)?;
         let face = Face::from_bytes(loaded.data.as_ref().as_ref(), loaded.index);
         let mut font = Font::new(face);
-        font.set_scale((FONT_SIZE_PX * 64.0).round() as i32, (FONT_SIZE_PX * 64.0).round() as i32);
+        font.set_scale(
+            (FONT_SIZE_PX * 64.0).round() as i32,
+            (FONT_SIZE_PX * 64.0).round() as i32,
+        );
         font.set_ppem(FONT_SIZE_PX.round() as u32, FONT_SIZE_PX.round() as u32);
-        let buffer = UnicodeBuffer::new().add_str(run_text).guess_segment_properties();
+        let buffer = UnicodeBuffer::new()
+            .add_str(run_text)
+            .guess_segment_properties();
         let shaped = shape(&font, buffer, &[]);
         let infos = shaped.get_glyph_infos();
         let positions = shaped.get_glyph_positions();
-        let natural_width = positions.iter().map(|position| position.x_advance).sum::<i32>() as f32 / 64.0;
-        let target_cells = graphemes.iter().map(|grapheme| grapheme.cell_span as u32).sum::<u32>() as f32;
+        let natural_width = positions
+            .iter()
+            .map(|position| position.x_advance)
+            .sum::<i32>() as f32
+            / 64.0;
+        let target_cells = graphemes
+            .iter()
+            .map(|grapheme| grapheme.cell_span as u32)
+            .sum::<u32>() as f32;
         let target_width = target_cells * CELL_WIDTH_PX;
-        let run_scale_x = if natural_width.abs() > f32::EPSILON { target_width / natural_width } else { 1.0 };
+        let run_scale_x = if natural_width.abs() > f32::EPSILON {
+            target_width / natural_width
+        } else {
+            1.0
+        };
         let mut pen_x = first.cell_start as f32 * CELL_WIDTH_PX;
 
         let mut cluster_starts: Vec<u32> = infos.iter().map(|info| info.cluster).collect();
@@ -310,15 +386,27 @@ impl TextEngine {
                 .rposition(|grapheme| grapheme.byte_start - first.byte_start <= cluster)
                 .unwrap_or(0);
             let cluster_cell_start = graphemes[grapheme_index].cell_start;
-            let next_cluster = cluster_starts.iter().copied().find(|candidate| *candidate > info.cluster).map(|value| value as usize);
+            let next_cluster = cluster_starts
+                .iter()
+                .copied()
+                .find(|candidate| *candidate > info.cluster)
+                .map(|value| value as usize);
             let cluster_end_cell = next_cluster
-                .and_then(|byte| graphemes.iter().find(|grapheme| grapheme.byte_start - first.byte_start >= byte))
+                .and_then(|byte| {
+                    graphemes
+                        .iter()
+                        .find(|grapheme| grapheme.byte_start - first.byte_start >= byte)
+                })
                 .map(|grapheme| grapheme.cell_start)
                 .unwrap_or_else(|| last.cell_start.saturating_add(last.cell_span));
             let cluster_span = cluster_end_cell.saturating_sub(cluster_cell_start).max(1);
             if let Some((glyph_id, definition)) = self.rasterize(&loaded, info.codepoint, style)? {
-                let x = pen_x + position.x_offset as f32 / 64.0 * run_scale_x + definition.bearing_x as f32 / RASTER_SCALE * run_scale_x;
-                let y = BASELINE_PX - position.y_offset as f32 / 64.0 - definition.bearing_y as f32 / RASTER_SCALE;
+                let x = pen_x
+                    + position.x_offset as f32 / 64.0 * run_scale_x
+                    + definition.bearing_x as f32 / RASTER_SCALE * run_scale_x;
+                let y = BASELINE_PX
+                    - position.y_offset as f32 / 64.0
+                    - definition.bearing_y as f32 / RASTER_SCALE;
                 output.push(GlyphInstance {
                     glyph_id,
                     style_id: style_id(style),
@@ -341,15 +429,34 @@ impl TextEngine {
             // System font files are treated as immutable for the terminald lifetime.
             let (data, index) = unsafe { self.database.make_shared_face_data(id) }
                 .context("failed to memory-map system font")?;
-            let face = LoadedFace { id: self.next_face_id, index, data };
-            self.next_face_id = self.next_face_id.checked_add(1).context("font ID overflow")?;
+            let face = LoadedFace {
+                id: self.next_face_id,
+                index,
+                data,
+            };
+            self.next_face_id = self
+                .next_face_id
+                .checked_add(1)
+                .context("font ID overflow")?;
             self.loaded_faces.insert(id, face);
         }
-        let face = self.loaded_faces.get(&id).context("loaded font disappeared")?;
-        Ok(Arc::new(LoadedFace { id: face.id, index: face.index, data: Arc::clone(&face.data) }))
+        let face = self
+            .loaded_faces
+            .get(&id)
+            .context("loaded font disappeared")?;
+        Ok(Arc::new(LoadedFace {
+            id: face.id,
+            index: face.index,
+            data: Arc::clone(&face.data),
+        }))
     }
 
-    fn rasterize(&mut self, face: &LoadedFace, glyph_index: u32, style: FontStyle) -> Result<Option<(u32, GlyphDefinition)>> {
+    fn rasterize(
+        &mut self,
+        face: &LoadedFace,
+        glyph_index: u32,
+        style: FontStyle,
+    ) -> Result<Option<(u32, GlyphDefinition)>> {
         let flags = u16::from(style.bold) | (u16::from(style.italic) << 1);
         let key = GlyphKey {
             face_id: face.id,
@@ -358,7 +465,11 @@ impl TextEngine {
             render_flags: flags,
         };
         if let Some(id) = self.glyph_ids.get(&key).copied() {
-            return Ok(self.glyphs.get(&id).cloned().map(|definition| (id, definition)));
+            return Ok(self
+                .glyphs
+                .get(&id)
+                .cloned()
+                .map(|definition| (id, definition)));
         }
         if self.glyph_ids.len() >= MAX_CACHED_GLYPHS {
             self.glyph_ids.clear();
@@ -367,8 +478,14 @@ impl TextEngine {
         if glyph_index > u16::MAX as u32 {
             bail!("glyph index exceeds OpenType range");
         }
-        let font = FontRef::from_index(face.data.as_ref().as_ref(), face.index as usize).context("invalid raster font")?;
-        let mut scaler = self.scale_context.builder(font).size(FONT_SIZE_PX * RASTER_SCALE).hint(true).build();
+        let font = FontRef::from_index(face.data.as_ref().as_ref(), face.index as usize)
+            .context("invalid raster font")?;
+        let mut scaler = self
+            .scale_context
+            .builder(font)
+            .size(FONT_SIZE_PX * RASTER_SCALE)
+            .hint(true)
+            .build();
         let image = Render::new(&[
             Source::ColorOutline(0),
             Source::ColorBitmap(StrikeWith::BestFit),
@@ -377,19 +494,40 @@ impl TextEngine {
         .format(Format::Alpha)
         .render(&mut scaler, glyph_index as u16);
         let Some(image) = image else { return Ok(None) };
-        if image.placement.width == 0 || image.placement.height == 0 { return Ok(None); }
+        if image.placement.width == 0 || image.placement.height == 0 {
+            return Ok(None);
+        }
         let format = match image.content {
             Content::Mask => GlyphFormat::Alpha8,
             Content::SubpixelMask | Content::Color => GlyphFormat::Rgba8Premultiplied,
         };
         let id = self.next_glyph_id;
-        self.next_glyph_id = self.next_glyph_id.checked_add(1).context("glyph ID overflow")?;
+        self.next_glyph_id = self
+            .next_glyph_id
+            .checked_add(1)
+            .context("glyph ID overflow")?;
         let definition = GlyphDefinition {
             id,
-            width: image.placement.width.try_into().context("glyph is too wide")?,
-            height: image.placement.height.try_into().context("glyph is too tall")?,
-            bearing_x: image.placement.left.try_into().context("glyph X bearing overflow")?,
-            bearing_y: image.placement.top.try_into().context("glyph Y bearing overflow")?,
+            width: image
+                .placement
+                .width
+                .try_into()
+                .context("glyph is too wide")?,
+            height: image
+                .placement
+                .height
+                .try_into()
+                .context("glyph is too tall")?,
+            bearing_x: image
+                .placement
+                .left
+                .try_into()
+                .context("glyph X bearing overflow")?,
+            bearing_y: image
+                .placement
+                .top
+                .try_into()
+                .context("glyph Y bearing overflow")?,
             format,
             pixels: image.data.into(),
         };
@@ -418,9 +556,15 @@ mod tests {
     #[test]
     fn shapes_ligatures_combining_marks_and_wide_text_without_cell_drift() {
         let mut engine = TextEngine::discover().unwrap();
-        let row = engine.shape_row("ffi e\u{301} 界", FontStyle::default()).unwrap();
+        let row = engine
+            .shape_row("ffi e\u{301} 界", FontStyle::default())
+            .unwrap();
         assert!(!row.glyphs.is_empty());
-        assert!(row.glyphs.iter().all(|glyph| glyph.x.is_finite() && glyph.y.is_finite()));
+        assert!(
+            row.glyphs
+                .iter()
+                .all(|glyph| glyph.x.is_finite() && glyph.y.is_finite())
+        );
         assert!(row.glyphs.iter().any(|glyph| glyph.cell_span >= 2));
         assert!(row.definitions.iter().all(|glyph| !glyph.pixels.is_empty()));
     }
@@ -429,26 +573,66 @@ mod tests {
     fn resolves_bold_and_italic_profiles() {
         let mut engine = TextEngine::discover().unwrap();
         for style in [
-            FontStyle { bold: true, italic: false },
-            FontStyle { bold: false, italic: true },
-            FontStyle { bold: true, italic: true },
+            FontStyle {
+                bold: true,
+                italic: false,
+            },
+            FontStyle {
+                bold: false,
+                italic: true,
+            },
+            FontStyle {
+                bold: true,
+                italic: true,
+            },
         ] {
             let row = engine.shape_row("agent => ready", style).unwrap();
             assert!(!row.glyphs.is_empty());
-            assert!(row.glyphs.iter().all(|glyph| glyph.style_id == style_id(style)));
+            assert!(
+                row.glyphs
+                    .iter()
+                    .all(|glyph| glyph.style_id == style_id(style))
+            );
         }
     }
 
     #[test]
     fn applies_style_spans_without_breaking_cell_positions() {
         let mut engine = TextEngine::discover().unwrap();
-        let row = engine.shape_styled_row("normal bold italic", &[
-            StyleSpan { byte_start: 0, byte_end: 7, style: FontStyle::default() },
-            StyleSpan { byte_start: 7, byte_end: 12, style: FontStyle { bold: true, italic: false } },
-            StyleSpan { byte_start: 12, byte_end: 19, style: FontStyle { bold: false, italic: true } },
-        ]).unwrap();
+        let row = engine
+            .shape_styled_row(
+                "normal bold italic",
+                &[
+                    StyleSpan {
+                        byte_start: 0,
+                        byte_end: 7,
+                        style: FontStyle::default(),
+                    },
+                    StyleSpan {
+                        byte_start: 7,
+                        byte_end: 12,
+                        style: FontStyle {
+                            bold: true,
+                            italic: false,
+                        },
+                    },
+                    StyleSpan {
+                        byte_start: 12,
+                        byte_end: 19,
+                        style: FontStyle {
+                            bold: false,
+                            italic: true,
+                        },
+                    },
+                ],
+            )
+            .unwrap();
         assert!(row.glyphs.iter().any(|glyph| glyph.style_id == 1));
         assert!(row.glyphs.iter().any(|glyph| glyph.style_id == 2));
-        assert!(row.glyphs.windows(2).all(|pair| pair[0].x <= pair[1].x + CELL_WIDTH_PX));
+        assert!(
+            row.glyphs
+                .windows(2)
+                .all(|pair| pair[0].x <= pair[1].x + CELL_WIDTH_PX)
+        );
     }
 }

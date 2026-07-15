@@ -9,7 +9,7 @@ const runtimeDir = mkdtempSync(join(tmpdir(), "terminald-smoke-"));
 const controlSocket = join(runtimeDir, "control.sock");
 const frameSocket = join(runtimeDir, "frame.sock");
 const token = "smoke-test-token";
-const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/terminald/Cargo.toml"], {
+const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghosttead/Cargo.toml"], {
   cwd: root,
   env: {
     ...process.env,

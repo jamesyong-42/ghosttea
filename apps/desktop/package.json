@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "The Ghosttea desktop example application.",
   "author": "James Yong",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesyong-42/ghosttea.git",

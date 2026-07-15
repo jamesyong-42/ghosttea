@@ -1,7 +1,8 @@
 use std::{env, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use ghosttea::{TerminalService, TerminalServiceConfig, mesh};
+use ghosttea::{TerminalService, TerminalServiceConfig};
+use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};
 use truffle_core::{Node, network::tailscale::TailscaleProvider};
 
 const DEFAULT_APP_ID: &str = "ghosttea-terminal";
@@ -38,16 +39,16 @@ async fn main() -> Result<()> {
             .await
             .context("start host-owned Truffle node")?,
     );
-    let terminal_mesh = mesh::TruffleTerminalMesh::new(
+    let terminal_mesh = TruffleTerminalMesh::new(
         node,
-        mesh::TruffleTerminalConfig {
+        TruffleTerminalConfig {
             service_name: config.service_name,
             quic_port: config.quic_port,
             capability: config.capability,
             allow_tailnet_write: config.allow_tailnet_write,
         },
     )?;
-    service.with_truffle_mesh(terminal_mesh).run().await
+    service.with_terminal_mesh(terminal_mesh).run().await
 }
 
 struct TruffleHostConfig {
@@ -76,7 +77,7 @@ impl TruffleHostConfig {
             Some(value) => value
                 .parse::<u16>()
                 .context("GHOSTTEA_TRUFFLE_PORT must be a valid nonzero port")?,
-            None => mesh::DEFAULT_QUIC_PORT,
+            None => ghosttea_truffle::DEFAULT_QUIC_PORT,
         };
         if quic_port == 0 {
             bail!("GHOSTTEA_TRUFFLE_PORT must be nonzero");

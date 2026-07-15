@@ -205,7 +205,7 @@ enum ResponseBody {
     },
 }
 
-pub(crate) type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
+pub type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
 
 #[derive(Clone)]
 struct ControlContext {
@@ -213,7 +213,7 @@ struct ControlContext {
     frame_tx: broadcast::Sender<Vec<u8>>,
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
-    mesh_runtime: mesh::MeshRuntime,
+    mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
 }
 
 /// Local IPC endpoints and bearer token owned by the embedding application.
@@ -224,10 +224,10 @@ pub struct TerminalServiceConfig {
 }
 
 /// A terminal session service that can run locally or expose sessions through
-/// an injected, host-owned Truffle node.
+/// an injected remote transport.
 pub struct TerminalService {
     config: TerminalServiceConfig,
-    mesh: Option<mesh::TruffleTerminalMesh>,
+    mesh: Option<Box<dyn mesh::TerminalMesh>>,
 }
 
 impl TerminalService {
@@ -237,8 +237,11 @@ impl TerminalService {
 
     /// Attach a terminal-scoped adapter around an already-running Truffle
     /// node. The terminal service never stops the underlying node.
-    pub fn with_truffle_mesh(mut self, mesh: mesh::TruffleTerminalMesh) -> Self {
-        self.mesh = Some(mesh);
+    pub fn with_terminal_mesh<M>(mut self, mesh: M) -> Self
+    where
+        M: mesh::TerminalMesh + 'static,
+    {
+        self.mesh = Some(Box::new(mesh));
         self
     }
 
@@ -258,8 +261,8 @@ impl TerminalService {
         let mesh_runtime = self
             .mesh
             .as_ref()
-            .map(mesh::TruffleTerminalMesh::runtime)
-            .unwrap_or_default();
+            .map(|mesh| mesh.runtime())
+            .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
         let text_engine = Arc::new(Mutex::new(
             TextEngine::discover().context("system font discovery failed")?,
         ));

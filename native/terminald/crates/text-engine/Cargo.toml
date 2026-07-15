@@ -1,12 +1,16 @@
 [package]
 name = "ghosttea-text"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Native text shaping and rasterization for Ghosttea"
-repository = "https://github.com/jamesyong-42/ghosttea"
+readme = "README.md"
 
 [dependencies]
-anyhow = "1.0"
+anyhow.workspace = true
 fontdb = "0.23.0"
 harfbuzz_rs = "2.0.1"
 swash = "0.2.9"

@@ -2,6 +2,9 @@
   "name": "ghosttea",
   "private": true,
   "version": "0.1.0",
+  "description": "Ghostty-powered native terminal runtime for Electron applications.",
+  "license": "MIT",
+  "author": "James Yong",
   "type": "module",
   "workspaces": [
     "apps/*",
@@ -9,23 +12,25 @@
   ],
   "scripts": {
     "bootstrap:ghostty-vt": "node scripts/bootstrap-ghostty-vt.mjs",
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:sdk && npm run build --workspace ghosttea-demo",
+    "build:sdk": "npm run build --workspace @vibecook/ghosttea-protocol && npm run build --workspace @vibecook/ghosttea-frame && npm run build --workspace @vibecook/ghosttea",
     "build:ghostty-vt": "node scripts/build-ghostty-vt.mjs",
     "bench": "node scripts/fix-node-pty.mjs && node bench/run.mjs",
     "bench:json": "node scripts/fix-node-pty.mjs && node bench/run.mjs --json=bench/results.json",
     "postinstall": "node scripts/fix-node-pty.mjs",
-    "check": "npm run format:check && npm run lint && npm run check --workspaces --if-present && cargo check --manifest-path native/terminald/Cargo.toml && cargo clippy --manifest-path native/terminald/Cargo.toml --all-targets --all-features -- -D warnings",
-    "dev": "npm run dev --workspace ghosttea-demo",
+    "package:check": "npm run build:sdk && node scripts/check-packages.mjs",
+    "check": "npm run format:check && npm run lint && npm run build:sdk && npm run check --workspaces --if-present && cargo check --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "dev": "npm run build:sdk && npm run dev --workspace ghosttea-demo",
     "dev:peer": "node scripts/dev-peer.mjs",
     "dev:peers": "node scripts/dev-peers.mjs",
     "dist": "npm run dist --workspace ghosttea-demo",
-    "test": "npm run test --workspaces --if-present && cargo test --manifest-path native/terminald/Cargo.toml && cargo test --manifest-path native/terminald/crates/ghostty-adapter/Cargo.toml && cargo test --manifest-path native/terminald/crates/text-engine/Cargo.toml && npm run test:integration",
+    "test": "npm run build:sdk && npm run test --workspaces --if-present && cargo test --workspace && npm run test:integration",
     "test:integration": "node tests/integration/terminald-smoke.mjs",
-    "ghosttead": "cargo run --manifest-path native/terminald/Cargo.toml --bin ghosttead",
+    "ghosttead": "cargo run -p ghosttead",
     "terminald": "npm run ghosttead",
     "lint": "eslint apps packages scripts tests bench *.js --max-warnings 0",
-    "format": "prettier --write apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --manifest-path native/terminald/Cargo.toml",
-    "format:check": "prettier --check apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --manifest-path native/terminald/Cargo.toml -- --check"
+    "format": "prettier --write apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --all",
+    "format:check": "prettier --check apps/desktop/src packages scripts tests bench *.json *.js *.md && cargo fmt --all -- --check"
   },
   "engines": {
     "node": ">=22"
@@ -33,6 +38,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesyong-42/ghosttea.git"
+  },
+  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/jamesyong-42/ghosttea/issues"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
