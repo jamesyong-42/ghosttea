@@ -179,6 +179,7 @@ const result = {
 };
 writeFileSync(join(outputDirectory, `${filename}.json`), stableJson(result));
 writeFileSync(join(outputDirectory, `${filename}.spdx.json`), stableJson(sbom));
+console.log(JSON.stringify(result, null, 2));
 const lockedManifest = JSON.parse(
   readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
 );
@@ -190,4 +191,3 @@ for (const field of ["release", "filename", "url", "sha256", "size", "librarySha
     );
   }
 }
-console.log(JSON.stringify(result, null, 2));
