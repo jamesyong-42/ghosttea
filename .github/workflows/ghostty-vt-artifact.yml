@@ -1,0 +1,65 @@
+name: Ghostty VT artifact
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "ghostty-vt-*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run bootstrap:ghostty-vt
+      - run: npm run build:ghostty-vt
+      - run: npm run package:ghostty-vt
+
+      - name: Require the release tag to match the locked artifact
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          expected="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].release")"
+          test "$RELEASE_TAG" = "$expected"
+
+      - name: Attest bundle provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar
+
+      - name: Attest bundle SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar
+          sbom-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar.spdx.json
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghostty-vt-aarch64-apple-darwin
+          path: artifacts/ghostty-vt/
+          if-no-files-found: error
+
+      - name: Create release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/ghostty-vt/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

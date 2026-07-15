@@ -35,6 +35,7 @@ PTY backend. The current native artifact targets Apple Silicon macOS.
 npm install
 npm run bootstrap:ghostty-vt
 npm run build:ghostty-vt
+npm run package:ghostty-vt
 npm run dev
 ```
 
@@ -52,6 +53,14 @@ Ghostty, Zig, and the build container are pinned in
 [`native/ghostty.lock.json`](native/ghostty.lock.json). The build runs Zig in a
 minimal Linux container and cross-compiles the static library for macOS, which
 avoids coupling the output to the host macOS SDK.
+
+`ghosttea-vt-sys` owns native artifact resolution. Repository builds use the
+local pinned output; packaged consumers download the target bundle from its
+locked release URL and verify SHA-256 checksums before compiling or linking.
+Set `GHOSTTY_VT_PREFIX` for an unpacked artifact,
+`GHOSTTEA_GHOSTTY_VT_BUNDLE` for a local release bundle, or
+`GHOSTTEA_GHOSTTY_VT_OFFLINE=1` to prohibit download fallback. The deterministic
+bundle contains Ghostty's license, build inputs, and an SPDX 2.3 SBOM.
 
 The desktop process starts `ghosttead` automatically with `cargo run` during
 development. Set `GHOSTTEAD_BIN` to use a prebuilt service executable;

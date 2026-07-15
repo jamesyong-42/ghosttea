@@ -4,6 +4,7 @@ members = [
   "native/ghosttead",
   "native/terminald",
   "native/terminald/crates/ghostty-adapter",
+  "native/terminald/crates/ghostty-vt-sys",
   "native/terminald/crates/text-engine",
   "native/terminald/crates/truffle",
 ]

@@ -1,3 +1,7 @@
+// Keep the native-linking crate in the dependency graph. Its build script is
+// the single owner of locating and linking the Ghostty VT artifact.
+use ghosttea_vt_sys as _;
+
 use std::{ffi::c_void, fmt, ptr::NonNull};
 
 const EFFECT_BELL: u32 = 1 << 0;

@@ -11,6 +11,7 @@ target/
 .ghosttea/
 .tools/
 native/build/
+artifacts/
 apps/desktop/build/
 native/vendor/ghostty/
 bench/results.json

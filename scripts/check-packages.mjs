@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -18,7 +18,12 @@ function run(command, args, options = {}) {
 
 const npmPackages = ["@vibecook/ghosttea-protocol", "@vibecook/ghosttea-frame", "@vibecook/ghosttea"];
 
-const rustPackages = ["ghosttea-text", "ghosttea-vt", "ghosttea"];
+const rustPackages = ["ghosttea-vt-sys", "ghosttea-text", "ghosttea-vt", "ghosttea"];
+const publishableRustLeaves = ["ghosttea-vt-sys", "ghosttea-text"];
+const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const nativeArtifact = JSON.parse(
+  readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
+).targets["aarch64-apple-darwin"];
 
 try {
   const tarballs = new Map();
@@ -77,11 +82,64 @@ try {
   process.stdout.write(run(process.execPath, ["smoke.mjs"], { cwd: fixture }) + "\n");
 
   for (const crate of rustPackages) {
-    const files = new Set(run("cargo", ["package", "--list", "--allow-dirty", "--package", crate]).split("\n"));
+    const files = new Set(
+      run("cargo", ["package", "--list", "--allow-dirty", "--offline", "--package", crate]).split("\n"),
+    );
     for (const required of ["Cargo.toml", "LICENSE", "README.md"]) {
       if (!files.has(required)) throw new Error(`${crate} package is missing ${required}`);
     }
+    if (crate === "ghosttea-vt-sys") {
+      for (const required of ["artifacts.json", "build.rs", "src/ghostty_shim.c", "src/ghostty_shim.h"]) {
+        if (!files.has(required)) throw new Error(`${crate} package is missing ${required}`);
+      }
+    }
+    if (crate === "ghosttea-vt" && [...files].some((file) => file.endsWith(".c") || file === "build.rs")) {
+      throw new Error("ghosttea-vt package still owns native build implementation");
+    }
   }
+
+  const rustCrates = join(fixture, "rust-crates");
+  mkdirSync(rustCrates);
+  for (const crate of publishableRustLeaves) {
+    run("cargo", ["package", "--allow-dirty", "--no-verify", "--offline", "--package", crate]);
+    run("tar", ["-xzf", join(root, `target/package/${crate}-${version}.crate`), "-C", rustCrates]);
+  }
+
+  const rustConsumer = join(fixture, "rust-consumer");
+  mkdirSync(join(rustConsumer, "src"), { recursive: true });
+  const cratePath = (name) => join(rustCrates, `${name}-${version}`).replaceAll("\\", "/");
+  writeFileSync(
+    join(rustConsumer, "Cargo.toml"),
+    [
+      "[package]",
+      'name = "ghosttea-external-consumer"',
+      'version = "0.0.0"',
+      'edition = "2024"',
+      'rust-version = "1.85"',
+      "",
+      "[dependencies]",
+      `ghosttea-vt-sys = { path = ${JSON.stringify(cratePath("ghosttea-vt-sys"))} }`,
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(rustConsumer, "src/main.rs"),
+    [
+      "fn main() {",
+      "    let _native_link_contract = std::any::TypeId::of::<ghosttea_vt_sys::LinkContract>();",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  run("cargo", ["build", "--offline"], {
+    cwd: rustConsumer,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: join(fixture, "rust-target"),
+      GHOSTTEA_GHOSTTY_VT_BUNDLE: join(root, "artifacts/ghostty-vt", nativeArtifact.filename),
+    },
+  });
+  console.log("external Rust consumer fixture passed");
   console.log("Ghosttea package layouts passed");
 } finally {
   rmSync(fixture, { recursive: true, force: true });

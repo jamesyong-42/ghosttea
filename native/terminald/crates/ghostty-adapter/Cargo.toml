@@ -6,9 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-links = "ghostty-vt"
 description = "Safe Rust adapter for Ghosttea's Ghostty VT core"
 readme = "README.md"
 
-[build-dependencies]
-cc = "1.2"
+[dependencies]
+ghosttea-vt-sys = { version = "0.1.0", path = "../ghostty-vt-sys" }

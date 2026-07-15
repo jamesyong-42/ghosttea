@@ -1,0 +1,19 @@
+[package]
+name = "ghosttea-vt-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "ghostty-vt"
+description = "Native linking contract for Ghosttea's pinned Ghostty VT core"
+readme = "README.md"
+
+[build-dependencies]
+cc = "1.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+ureq = { version = "3.3", default-features = false, features = ["rustls"] }
