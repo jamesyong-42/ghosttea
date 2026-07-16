@@ -81,6 +81,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   non-synchronizing accessibility and opaque connection identifiers, plus a
   checked-in secret-lifetime and private-key materialization policy. A real
   iPhone save/load/delete round trip passes and leaves no item behind.
+- an async opaque password-credential resolver in `GhostteaSSH`. The iPhone
+  harness clears its field before connection, resolves Keychain bytes only at
+  authentication time, removes them immediately after connection, and passes
+  the physical SSH fixture through that path.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -116,7 +120,8 @@ UIKit, transport state, and the rest of the application.
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. The Keychain storage policy and package
-   boundary are implemented; remaining work is adapter credential resolution,
+   boundary and password resolver are implemented; remaining credential work
+   is private-key/passphrase resolution and protected materialization,
    representative-server sampling, adverse-network transitions,
    resolver and reconnect orchestration, device-footprint instrumentation, and
    physical-device execution. The public-key partial step remains locked as

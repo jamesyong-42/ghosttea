@@ -42,10 +42,17 @@ zeroization. Callers must:
 5. request the credential again after reconnect rather than retaining it in
    workspace or session state.
 
-The current Phase 0 `SSHCandidateConfiguration` still carries password and
-passphrase strings. Production promotion therefore requires replacing those
-cases with an async credential resolver receiving an opaque
-`SSHCredentialID`.
+`GhostteaSSH` now includes an async password-credential resolver receiving an
+opaque `SSHCredentialID`. The iOS harness clears its editable password field,
+stores the bytes in Keychain, resolves them only when authentication begins,
+and removes the item immediately after connection or on every failure path.
+The legacy direct-password case remains for fixture compatibility and must not
+be used by the product app.
+
+Public-key paths and passphrase strings are still carried directly by the Phase
+0 configuration. Production promotion therefore requires applying the same
+opaque resolver boundary to those cases and implementing protected key
+materialization.
 
 ## Private-key materialization
 
@@ -72,4 +79,7 @@ tests and must not silently change existing credential accessibility.
 Package tests lock the opaque account format and reject an empty service name.
 The iOS Phase 0 harness performs a real Keychain save/load/delete round trip
 using random non-user secret data and verifies that removal returns the item to
-the missing state. No test writes fixture credentials to the user's Keychain.
+the missing state. A second physical-device probe authenticates to the
+disposable SSH fixture through the on-demand resolver and cannot proceed to
+command output unless immediate post-connect deletion succeeds. No test writes
+user credentials to the Keychain.

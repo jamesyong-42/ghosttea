@@ -177,6 +177,24 @@ public struct SSHCandidateTransport: TerminalTransport {
         }
       }
 
+    case .passwordCredential(let username, let credential, let resolver):
+      let secret = try await resolver(credential)
+      guard secret.count <= Int(UInt32.max) else {
+        throw SSHCandidateError.credentialTooLarge(bytes: secret.count)
+      }
+      try await driver.run(operation: "password authentication") { handle in
+        username.withCString { username in
+          secret.withUnsafeBytes { bytes in
+            ghosttea_ssh_session_auth_password_bytes(
+              handle,
+              username,
+              bytes.bindMemory(to: UInt8.self).baseAddress,
+              bytes.count
+            )
+          }
+        }
+      }
+
     case .publicKey(let username, let publicKeyPath, let privateKeyPath, let passphrase):
       try await authenticatePublicKey(
         driver: driver,

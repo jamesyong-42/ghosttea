@@ -28,7 +28,7 @@ let package = Package(
     ),
     .target(
       name: "GhostteaSSH",
-      dependencies: ["CGhostteaSSH", "GhostteaTransport"]
+      dependencies: ["CGhostteaSSH", "GhostteaCredentials", "GhostteaTransport"]
     ),
     .target(
       name: "GhostteaCredentials",

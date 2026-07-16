@@ -27,6 +27,7 @@ public struct SSHCredentialID: Hashable, Sendable {
 
 public enum SSHCredentialStoreError: Error, Equatable, Sendable {
   case invalidService
+  case missingCredential(SSHCredentialID)
   case keychain(operation: String, status: OSStatus)
   case unexpectedResult
 }
@@ -99,6 +100,13 @@ public actor KeychainSSHCredentialStore {
     default:
       throw SSHCredentialStoreError.keychain(operation: "load credential", status: status)
     }
+  }
+
+  public func require(_ credential: SSHCredentialID) throws -> Data {
+    guard let secret = try load(credential) else {
+      throw SSHCredentialStoreError.missingCredential(credential)
+    }
+    return secret
   }
 
   public func remove(_ credential: SSHCredentialID) throws {

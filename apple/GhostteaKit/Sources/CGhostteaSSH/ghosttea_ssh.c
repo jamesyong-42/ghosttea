@@ -852,12 +852,33 @@ int ghosttea_ssh_session_auth_password(
     const char *username,
     const char *password
 ) {
+    return ghosttea_ssh_session_auth_password_bytes(
+        session,
+        username,
+        (const uint8_t *)password,
+        strlen(password)
+    );
+}
+
+int ghosttea_ssh_session_auth_password_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const uint8_t *password,
+    size_t password_length
+) {
+    size_t username_length = strlen(username);
+    if (username_length > UINT_MAX || password_length > UINT_MAX) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    if (password == NULL && password_length == 0) {
+        password = (const uint8_t *)"";
+    }
     return libssh2_userauth_password_ex(
         session->session,
         username,
-        (unsigned int)strlen(username),
-        password,
-        (unsigned int)strlen(password),
+        (unsigned int)username_length,
+        (const char *)password,
+        (unsigned int)password_length,
         NULL
     );
 }

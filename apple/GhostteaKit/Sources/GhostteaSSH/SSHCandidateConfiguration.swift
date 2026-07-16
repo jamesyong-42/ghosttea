@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCredentials
 import GhostteaTransport
 
 public struct SSHKeyboardInteractivePrompt: Equatable, Sendable {
@@ -30,6 +31,8 @@ public struct SSHKeyboardInteractiveChallenge: Equatable, Sendable {
 public typealias SSHKeyboardInteractiveResponder =
   @Sendable (SSHKeyboardInteractiveChallenge) async throws -> [String]
 
+public typealias SSHCredentialResolver = @Sendable (SSHCredentialID) async throws -> Data
+
 public enum SSHCandidateHostKeyStatus: Equatable, Sendable {
   case unknown
   case changed
@@ -59,6 +62,11 @@ public enum SSHCandidateHostKeyPolicy: Sendable {
 
 public enum SSHCandidateAuthentication: Sendable {
   case password(username: String, password: String)
+  case passwordCredential(
+    username: String,
+    credential: SSHCredentialID,
+    resolver: SSHCredentialResolver
+  )
   case publicKey(
     username: String,
     publicKeyPath: String,
@@ -159,6 +167,7 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case authenticationFailed(status: Int32)
   case keyboardPromptMismatch(expected: Int, actual: Int)
   case keyboardBrokerFailed(String)
+  case credentialTooLarge(bytes: Int)
 }
 
 public struct SSHCandidateNegotiatedAlgorithms: Equatable, Sendable {

@@ -1317,8 +1317,10 @@ multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
 Ed25519 keys pass and incorrect passphrases are rejected.
 `GhostteaCredentials` stores opaque credential references in the device-only,
 non-synchronizing data-protection Keychain, and its save/load/delete round trip
-passes on a physical iPhone. Async adapter credential resolution and protected
-private-key materialization remain open alongside UIKit challenge policy,
+passes on a physical iPhone. The password path resolves Keychain bytes only when
+authentication begins and deletes the item immediately after connection; that
+path also passes the physical SSH fixture. Async private-key/passphrase
+resolution and protected key materialization remain open alongside UIKit challenge policy,
 representative-server sampling, adverse-network
 transitions, and complete device evidence remain open. Strict host-key rejection and an
 async accept-once boundary for unknown/changed keys pass with host, port,

@@ -92,5 +92,27 @@ Passed · device-only, non-synchronizing item removed
 
 The test left no credential item behind and did not use the user's SSH
 credentials. This satisfies the persistent Keychain storage boundary. Async
-credential resolution in `GhostteaSSH` and protected temporary materialization
-for libssh2's current private-key file API remain production-promotion gates.
+private-key/passphrase resolution and protected temporary materialization for
+libssh2's current private-key file API remain production-promotion gates.
+
+## 2026-07-16: on-demand password resolution
+
+The harness was rebuilt to use `SSHCandidateAuthentication.passwordCredential`
+instead of the legacy direct password-string case. Before starting the task it
+cleared the editable UIKit field, stored password bytes under an opaque random
+credential ID, and configured the transport with only that ID and an async
+resolver. `GhostteaSSH` requested the bytes when authentication began and the
+harness removed the Keychain item immediately after `connect()` returned.
+Failure and cancellation paths perform the same idempotent removal.
+
+The physical iPhone then repeated the independently verified accept-once flow,
+password authentication, command execution, clean exit, and output drain:
+
+```text
+ghosttea-device-ok
+Linux 9e1f3e1ac677 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 GNU/Linux
+```
+
+Because credential removal occurs before the harness begins reading command
+output, this successful result also proves that immediate post-authentication
+deletion succeeded. The disposable LAN fixture was shut down afterward.

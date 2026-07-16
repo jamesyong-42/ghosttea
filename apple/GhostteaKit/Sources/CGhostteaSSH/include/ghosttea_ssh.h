@@ -74,6 +74,12 @@ int ghosttea_ssh_session_auth_password(
     const char *username,
     const char *password
 );
+int ghosttea_ssh_session_auth_password_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const uint8_t *password,
+    size_t password_length
+);
 int ghosttea_ssh_session_auth_public_key(
     ghosttea_ssh_session_t *session,
     const char *username,

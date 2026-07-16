@@ -1,3 +1,5 @@
+import Foundation
+import GhostteaCredentials
 import GhostteaTransport
 import Testing
 
@@ -114,6 +116,38 @@ import Testing
   #expect(configuration.initialSize == TerminalSize(uncheckedColumns: 132, rows: 41))
   #expect(configuration.connectTimeoutMilliseconds == 10_000)
   #expect(configuration.handshakeTimeoutMilliseconds == 10_000)
+}
+
+@Test func configurationRetainsOpaqueCredentialResolver() async throws {
+  let credential = SSHCredentialID(
+    connectionID: UUID(uuidString: "73BB90FB-6BD6-4167-A261-1226F78E824F")!,
+    kind: .password
+  )
+  let expected = Data("resolved-only-during-authentication".utf8)
+  let authentication = SSHCandidateAuthentication.passwordCredential(
+    username: "ghosttea",
+    credential: credential,
+    resolver: { requested in
+      #expect(requested == credential)
+      return expected
+    }
+  )
+  let configuration = try SSHCandidateConfiguration(
+    host: "example.test",
+    knownHostsPath: "/keys/known_hosts",
+    authentication: authentication
+  )
+
+  guard
+    case .passwordCredential(let username, let retainedID, let resolver) =
+      configuration.authentication
+  else {
+    Issue.record("configuration did not retain the opaque credential resolver")
+    return
+  }
+  #expect(username == "ghosttea")
+  #expect(retainedID == credential)
+  #expect(try await resolver(retainedID) == expected)
 }
 
 @Test func configurationRetainsHostKeyDecisionBoundary() async throws {

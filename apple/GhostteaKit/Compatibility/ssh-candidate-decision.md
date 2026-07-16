@@ -192,9 +192,10 @@ separately test the host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Connect the asynchronous challenge responder and encrypted-key path to UIKit
-   and Keychain-backed credential policy; add a nonempty name/instruction
-   fixture. Mixed echo/no-echo prompts already pass.
+1. Apply the passing opaque Keychain password-resolver pattern to private keys
+   and passphrases, connect the asynchronous challenge responder to UIKit, and
+   add a nonempty name/instruction fixture. Mixed echo/no-echo prompts already
+   pass.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.

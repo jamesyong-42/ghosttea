@@ -102,64 +102,76 @@ final class HarnessModel: ObservableObject {
 
     let requestedHost = host
     let requestedUsername = username
-    let requestedPassword = password
+    let requestedPassword = Data(password.utf8)
     let requestedCommand = command
+    password = ""
     isRunningSSH = true
     sshStatus = "Connecting…"
     sshOutput = ""
 
     Task {
       do {
-        let knownHostsPath = try self.knownHostsPath()
-        let configuration = try SSHCandidateConfiguration(
-          host: requestedHost,
-          port: numericPort,
-          knownHostsPath: knownHostsPath,
-          hostKeyPolicy: .ask { [weak self] challenge in
-            guard let self else { return .reject }
-            return await self.requestHostKeyDecision(challenge)
-          },
-          authentication: .password(
-            username: requestedUsername,
-            password: requestedPassword
-          ),
-          session: .command(requestedCommand, allocatePTY: false),
-          connectTimeoutMilliseconds: 15_000,
-          handshakeTimeoutMilliseconds: 15_000
-        )
-        let transport = SSHCandidateTransport(configuration: configuration)
-        let connection = try await transport.connect()
+        let credentialStore = try KeychainSSHCredentialStore()
+        let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
+        try await credentialStore.store(requestedPassword, for: credential)
         do {
-          var negotiatedSummary: String?
-          if let candidate = connection as? SSHCandidateConnection {
-            let summary =
-              "\(candidate.negotiatedAlgorithms.hostKey) · \(candidate.negotiatedAlgorithms.serverToClientCipher)"
-            negotiatedSummary = summary
-            sshStatus = "Connected · \(summary)"
-          } else {
-            sshStatus = "Connected"
-          }
-          var received = Data()
-          while let chunk = try await connection.read(maxBytes: 32_768) {
-            guard received.count + chunk.count <= 1_048_576 else {
-              throw HarnessError.outputLimitExceeded
+          let knownHostsPath = try self.knownHostsPath()
+          let configuration = try SSHCandidateConfiguration(
+            host: requestedHost,
+            port: numericPort,
+            knownHostsPath: knownHostsPath,
+            hostKeyPolicy: .ask { [weak self] challenge in
+              guard let self else { return .reject }
+              return await self.requestHostKeyDecision(challenge)
+            },
+            authentication: .passwordCredential(
+              username: requestedUsername,
+              credential: credential,
+              resolver: { requestedCredential in
+                try await credentialStore.require(requestedCredential)
+              }
+            ),
+            session: .command(requestedCommand, allocatePTY: false),
+            connectTimeoutMilliseconds: 15_000,
+            handshakeTimeoutMilliseconds: 15_000
+          )
+          let transport = SSHCandidateTransport(configuration: configuration)
+          let connection = try await transport.connect()
+          do {
+            try await credentialStore.remove(credential)
+            var negotiatedSummary: String?
+            if let candidate = connection as? SSHCandidateConnection {
+              let summary =
+                "\(candidate.negotiatedAlgorithms.hostKey) · \(candidate.negotiatedAlgorithms.serverToClientCipher)"
+              negotiatedSummary = summary
+              sshStatus = "Connected · \(summary)"
+            } else {
+              sshStatus = "Connected"
             }
-            received.append(chunk)
+            var received = Data()
+            while let chunk = try await connection.read(maxBytes: 32_768) {
+              guard received.count + chunk.count <= 1_048_576 else {
+                throw HarnessError.outputLimitExceeded
+              }
+              received.append(chunk)
+            }
+            let termination = try await connection.waitForExit()
+            sshOutput = String(decoding: received, as: UTF8.self)
+            sshStatus = ["Completed", termination.description, negotiatedSummary]
+              .compactMap { $0 }
+              .joined(separator: " · ")
+            await connection.disconnect()
+          } catch {
+            await connection.disconnect()
+            throw error
           }
-          let termination = try await connection.waitForExit()
-          sshOutput = String(decoding: received, as: UTF8.self)
-          sshStatus = ["Completed", termination.description, negotiatedSummary]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-          await connection.disconnect()
         } catch {
-          await connection.disconnect()
+          try? await credentialStore.remove(credential)
           throw error
         }
       } catch {
         sshStatus = "Failed: \(error)"
       }
-      password = ""
       isRunningSSH = false
     }
   }
