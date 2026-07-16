@@ -27,6 +27,7 @@
     "test:ghostty-vt:apple": "node scripts/test-ghostty-vt-apple.mjs",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",
     "test:ssh:fixture:candidate": "node scripts/ssh-fixture.mjs candidate",
+    "test:ssh:fixture:swift": "node scripts/ssh-fixture.mjs swift",
     "normalize:ghostty-vt": "node scripts/normalize-ghostty-vt.mjs",
     "package:ghostty-vt": "node scripts/package-ghostty-vt.mjs",
     "bench": "node scripts/fix-node-pty.mjs && node bench/run.mjs",

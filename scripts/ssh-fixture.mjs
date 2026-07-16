@@ -10,7 +10,11 @@ const publicKey = `${privateKey}.pub`;
 const wrongPrivateKey = join(stateRoot, "wrong_client_ed25519");
 const wrongPublicKey = `${wrongPrivateKey}.pub`;
 const knownHosts = join(stateRoot, "known_hosts");
+const unknownKnownHosts = join(stateRoot, "unknown_known_hosts");
+const changedKnownHosts = join(stateRoot, "changed_known_hosts");
 const candidateProbe = join(stateRoot, "libssh2-candidate-probe");
+const swiftPackage = join(root, "apple/GhostteaKit");
+const swiftModuleCache = join(swiftPackage, ".build/module-cache");
 const composeFile = join(fixtureRoot, "docker-compose.yml");
 const projectName = "ghosttea-ssh-fixture";
 const command = process.argv[2] ?? "test";
@@ -28,6 +32,9 @@ const commandEnvironment = {
   GHOSTTEA_SSH_KEYBOARD_PORT: ports.keyboard,
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
   GHOSTTEA_SSH_PUBLIC_KEY_PORT: ports.publicKey,
+  DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
+  CLANG_MODULE_CACHE_PATH: swiftModuleCache,
+  SWIFTPM_MODULECACHE_OVERRIDE: swiftModuleCache,
 };
 
 function execute(program, args, options = {}) {
@@ -36,6 +43,7 @@ function execute(program, args, options = {}) {
     env: commandEnvironment,
     encoding: "utf8",
     stdio: options.inherit ? "inherit" : undefined,
+    timeout: options.timeout,
   });
   if (result.error) throw result.error;
   return result;
@@ -96,6 +104,15 @@ function scanKnownHosts() {
     return result.stdout.trim();
   });
   writeFileSync(knownHosts, `${entries.join("\n")}\n`, { mode: 0o600 });
+  writeFileSync(unknownKnownHosts, "", { mode: 0o600 });
+
+  const replacementKey = entries.find((entry) => entry.includes(`]:${ports.publicKey} `));
+  if (!replacementKey) {
+    throw new Error("Could not prepare the changed-host-key negative fixture.");
+  }
+  writeFileSync(changedKnownHosts, `${replacementKey.replace(`]:${ports.publicKey} `, `]:${ports.password} `)}\n`, {
+    mode: 0o600,
+  });
 }
 
 function probe(mode) {
@@ -306,8 +323,71 @@ function candidate() {
   }
 }
 
+function swiftCandidate() {
+  mkdirSync(swiftModuleCache, { recursive: true });
+  up();
+  try {
+    run("swift", ["build", "--disable-sandbox", "--package-path", swiftPackage, "--product", "GhostteaSSHLiveProbe"], {
+      inherit: true,
+    });
+    const binaryDirectory = run("swift", [
+      "build",
+      "--disable-sandbox",
+      "--package-path",
+      swiftPackage,
+      "--show-bin-path",
+    ]);
+    const liveProbe = join(binaryDirectory, "GhostteaSSHLiveProbe");
+
+    for (const [mode, port] of [
+      ["password", ports.password],
+      ["keyboard", ports.keyboard],
+      ["partial", ports.partial],
+      ["publickey", ports.publicKey],
+    ]) {
+      const result = execute(liveProbe, [mode, "127.0.0.1", port, knownHosts, publicKey, privateKey], {
+        timeout: 60_000,
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `Swift libssh2 ${mode} probe failed: status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`,
+        );
+      }
+      process.stdout.write(result.stdout);
+    }
+
+    const wrongKey = execute(
+      liveProbe,
+      ["partial", "127.0.0.1", ports.partial, knownHosts, wrongPublicKey, wrongPrivateKey],
+      { timeout: 30_000 },
+    );
+    if (wrongKey.status === 0) {
+      throw new Error("Swift libssh2 partial-success transport accepted the wrong-key control.");
+    }
+    for (const [name, hostFile] of [
+      ["unknown", unknownKnownHosts],
+      ["changed", changedKnownHosts],
+    ]) {
+      const hostKeyResult = execute(
+        liveProbe,
+        ["password", "127.0.0.1", ports.password, hostFile, publicKey, privateKey],
+        { timeout: 30_000 },
+      );
+      if (hostKeyResult.status === 0) {
+        throw new Error(`Swift libssh2 transport accepted the ${name} host-key control.`);
+      }
+    }
+    console.log(
+      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, lossless stalled-reader flow control, cancellation, and wrong-key rejection.",
+    );
+  } finally {
+    if (!keepRunning) down();
+  }
+}
+
 if (command === "up") up();
 else if (command === "down") down();
 else if (command === "test") await test();
 else if (command === "candidate") candidate();
+else if (command === "swift") swiftCandidate();
 else throw new Error(`Unknown SSH fixture command: ${command}`);

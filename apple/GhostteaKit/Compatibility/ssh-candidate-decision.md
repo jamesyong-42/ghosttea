@@ -1,7 +1,7 @@
 # Phase 0 SSH candidate decision
 
-**Status:** libssh2 passes the Phase 0 authentication fixture and advances to a
-nonblocking adapter spike. No SSH stack is selected for production yet.
+**Status:** libssh2 passes the Phase 0 nonblocking Swift adapter fixture. It
+remains the leading candidate, but no SSH stack is selected for production yet.
 
 **Recorded:** 2026-07-16
 
@@ -23,6 +23,14 @@ authenticate. Thus chained MFA works, but libssh2 1.11.1 does not expose a
 distinct partial-success result. The adapter must sequence only methods allowed
 by product/server policy and lock this ambiguous return behavior under tests.
 Upstream work to represent partial success explicitly remains relevant.
+
+The repository now implements that narrow policy in `GhostteaSSH`: only the
+explicit `publicKeyThenKeyboardInteractive` configuration accepts the observed
+`-19` step and attempts the second method. A public-key-only configuration
+still fails on `-19`, and the wrong-key chained control remains rejected by the
+server. Keyboard answers are pre-supplied for this Phase 0 adapter; an
+asynchronous prompt broker that preserves prompt metadata is still required for
+the product UI.
 
 ## Reproducible evidence
 
@@ -64,8 +72,12 @@ XCFramework now passes password, Ed25519 public key, two-round
 keyboard-interactive, strict known-host matching, command execution, and the
 explicit chained-authentication sequence. It also locks the current `-19`
 partial-step behavior and rejects a wrong-key control. The PTY and flood results
-still belong only to the system-OpenSSH baseline until the nonblocking adapter
-executes them.
+also run through the nonblocking Swift adapter. It allocates a 41x132 PTY,
+resizes it to 50x140, stops reading for 750 ms during a 32 MiB stream, and then
+drains exactly 33,554,432 bytes. The stalled process measured 10,043,392 bytes
+maximum RSS on the development Mac, below the 64 MiB gate. A blocked channel
+read observed Swift task cancellation in approximately 45 ms. Strict
+known-host matching succeeds, while empty and changed-key files are rejected.
 
 ## Reproduce
 
@@ -78,6 +90,7 @@ npm run check:ssh:apple
 npm run test:ghostty-vt:apple
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
+npm run test:ssh:fixture:swift
 ```
 
 Generated source checkouts, build directories, and XCFrameworks are ignored.
@@ -86,10 +99,11 @@ record belong in source control.
 
 ## Intended adapter boundary
 
-The production adapter, if this candidate passes, should be a `GhostteaSSH`
-actor implementing `TerminalTransport`. It owns the socket, libssh2 session,
-channel, credential callbacks, host-key policy, and cancellation. The generic
-terminal controller sees only:
+The candidate adapter is a `GhostteaSSH` package implementing
+`TerminalTransport`. It owns the socket, opaque libssh2 session and channel,
+credential callbacks, strict host-key check, and cancellation. A per-connection
+async gate prevents actor reentrancy from overlapping libssh2 calls while a
+poll wait is suspended. The generic terminal controller sees only:
 
 - pull-based `read(maxBytes:)` demand;
 - ordered, lossless writes;
@@ -99,22 +113,26 @@ terminal controller sees only:
 No libssh2 type crosses that boundary. Inbound reads must stop when the
 terminal actor has no capacity, and the live flood fixture must demonstrate
 that this propagates to the SSH channel window rather than accumulating in an
-unbounded Swift stream. The existing `ReplayTransport` and
-`OrderedTerminalWriter` test the host-neutral demand and queue semantics while
-the real network adapter remains gated.
+unbounded Swift stream. The live adapter calls neither socket nor channel read
+without a `read(maxBytes:)` request; its stalled-reader fixture remains bounded
+and lossless. `ReplayTransport` and `OrderedTerminalWriter` separately test the
+host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Move the proven authentication flows from the blocking C probe into a
-   nonblocking Swift adapter without weakening chained-method policy.
-2. Test known, unknown, and changed host keys with an explicit user decision
-   boundary.
+1. Replace pre-supplied keyboard-interactive answers with an asynchronous
+   challenge broker that preserves prompt text and echo policy without calling
+   Swift concurrency from libssh2's synchronous callback.
+2. Add the explicit user decision boundary for unknown and changed host keys;
+   strict acceptance and rejection controls already pass.
 3. Record negotiated host-key, key-exchange, cipher, and MAC algorithms for the
    launch server sample.
-4. Repeat the reference PTY, resize, stdout/stderr/EOF, and exit-status probes
-   through the candidate; add cancellation and reconnect orchestration.
-5. Repeat the reference stalled-reader flood through the candidate while
-   measuring socket, SSH-channel, adapter-queue, and whole-process memory.
+4. Add command-channel stdout/stderr/EOF/exit-status coverage, connect/auth
+   cancellation, graceful close, and reconnect orchestration. PTY allocation,
+   resize, shell I/O, and blocked-read cancellation already pass.
+5. Instrument socket bytes, SSH-channel windows, adapter queues, and physical
+   footprint. The macOS adapter flood is already byte-exact and below its
+   whole-process RSS gate.
 6. Run the package and network fixture on a physical low-end supported iOS
    device.
 

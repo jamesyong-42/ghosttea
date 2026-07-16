@@ -50,7 +50,7 @@ mkdirSync(moduleCache, { recursive: true });
 run("swift", ["test", "--disable-sandbox"]);
 
 const simulatorSdk = capture("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-path"]);
-for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe"]) {
+for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe", "GhostteaSSH"]) {
   run("swift", [
     "build",
     "--disable-sandbox",
@@ -66,7 +66,7 @@ for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe"]
 }
 
 const deviceSdk = capture("xcrun", ["--sdk", "iphoneos", "--show-sdk-path"]);
-for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe"]) {
+for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe", "GhostteaSSH"]) {
   run("swift", [
     "build",
     "--disable-sandbox",
@@ -81,4 +81,4 @@ for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe"]
   ]);
 }
 
-console.log("Swift VT, transport, and SSH candidate probes passed on macOS and arm64 iOS SDKs.");
+console.log("Swift VT, transport, and nonblocking SSH candidate passed on macOS and arm64 iOS SDKs.");

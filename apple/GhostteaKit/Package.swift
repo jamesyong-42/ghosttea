@@ -9,6 +9,7 @@ let package = Package(
     .macOS(.v14),
   ],
   products: [
+    .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
     .library(name: "GhosttyVtProof", targets: ["GhosttyVtProof"]),
@@ -23,6 +24,15 @@ let package = Package(
       name: "GhosttyVt",
       path: "Artifacts/ghostty-vt.xcframework"
     ),
+    .target(
+      name: "CGhostteaSSH",
+      dependencies: ["LibSSH2Candidate"],
+      publicHeadersPath: "include"
+    ),
+    .target(
+      name: "GhostteaSSH",
+      dependencies: ["CGhostteaSSH", "GhostteaTransport"]
+    ),
     .target(name: "GhostteaTransport"),
     .target(
       name: "GhostteaSSHProbe",
@@ -33,8 +43,16 @@ let package = Package(
       dependencies: ["GhosttyVt"]
     ),
     .executableTarget(
+      name: "GhostteaSSHLiveProbe",
+      dependencies: ["GhostteaSSH", "GhostteaTransport"]
+    ),
+    .executableTarget(
       name: "GhosttyVtMemoryProbe",
       dependencies: ["GhosttyVtProof"]
+    ),
+    .testTarget(
+      name: "GhostteaSSHTests",
+      dependencies: ["GhostteaSSH"]
     ),
     .testTarget(
       name: "GhostteaSSHProbeTests",

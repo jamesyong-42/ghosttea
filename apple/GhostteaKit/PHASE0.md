@@ -23,6 +23,13 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   two-round keyboard-interactive, strict host-key matching, command execution,
   and explicit public-key-plus-keyboard-interactive sequencing, with a
   wrong-key negative control.
+- an opaque C shim and serialized, pull-based `GhostteaSSH` Swift adapter using
+  libssh2's nonblocking mode, with no libssh2 type in the public contract;
+- a live Swift adapter fixture that passes the authentication matrix, rejects
+  unknown and changed host keys, verifies a 41x132 PTY and 50x140 resize, drains
+  a deliberately stalled 32 MiB stream byte-for-byte at about 10 MB process
+  RSS, and observes blocked-read task cancellation in under 50 ms on the
+  development Mac.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -49,13 +56,15 @@ UIKit, transport state, and the rest of the application.
 ## Remaining gates
 
 1. Run the proof on a physical iOS device once an app harness and signing team are available.
-2. Replace the blocking libssh2 probe with a nonblocking Swift adapter and run
-   the remaining session matrix. Authentication now passes, including explicit
-   public-key-plus-keyboard-interactive sequencing and a wrong-key control. The
-   public-key partial step is reported as `-19` rather than a distinct partial
-   result, so production sequencing needs a policy-safe state machine and
-   regression tests. Unknown/changed-host policy, PTY/resize, cancellation,
-   SSH-channel window instrumentation, and adapter flood behavior remain open.
+2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
+   authentication, strict unknown/changed-host rejection, PTY/resize, blocked
+   read cancellation, and the stalled-reader flood. Remaining work is an async
+   keyboard-interactive challenge broker, user decisions for unknown/changed
+   hosts, encrypted-key and algorithm coverage, exit/EOF/half-close semantics,
+   connect/auth cancellation, reconnect orchestration, channel-window
+   instrumentation, and physical-device execution. The public-key partial step
+   remains locked as `-19`, so only an explicitly configured chained policy may
+   proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.

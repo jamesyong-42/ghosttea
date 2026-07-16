@@ -186,13 +186,18 @@ library, allocate/free a session, query its version, and import the
 multi-prompt keyboard-interactive function. Every archive slice is also
 validated for that function symbol.
 
-This does not select libssh2. The pinned live fixture passes password, Ed25519
-public key, two-round keyboard-interactive, and explicit public-key followed by
+This does not yet select libssh2. The pinned live fixture now runs through a
+serialized nonblocking Swift adapter and passes password, Ed25519 public key,
+two-round keyboard-interactive, and explicit public-key followed by
 keyboard-interactive. In the chained case libssh2 reports the accepted key step
 as `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`) rather than a distinct partial
-result; the subsequent keyboard-interactive call succeeds. A wrong-key control
-remains rejected. The candidate therefore advances to a policy-safe,
-nonblocking adapter spike documented in
+result; only the explicitly chained configuration proceeds to the subsequent
+keyboard-interactive call. A wrong-key control remains rejected. The adapter
+also rejects unknown and changed host keys, verifies PTY allocation and resize,
+drains a 32 MiB stalled stream byte-for-byte at about 10 MB RSS, and cancels a
+blocked read in about 45 ms. Remaining gates include the asynchronous challenge
+UI, algorithm breadth, command exit semantics, connection cancellation, and
+physical-device evidence, as documented in
 `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 ## 8. Recommended proof order
@@ -203,7 +208,8 @@ nonblocking adapter spike documented in
 4. Measure binary size and VT/scrollback byte-budget memory before and after
    caller-driven compression.
 5. Spike the SSH authentication and algorithm matrix.
-6. Verify demand-driven SSH inbound flow control on a sustained output stream.
+6. Instrument SSH channel windows and repeat the proven demand-driven stalled
+   output fixture on a low-end physical device.
 7. Only then extract the shared Ghosttea terminal model.
 8. Begin the extraction after the current Electron embedding refactor lands.
 

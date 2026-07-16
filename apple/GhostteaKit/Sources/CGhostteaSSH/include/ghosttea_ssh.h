@@ -1,0 +1,94 @@
+#ifndef GHOSTTEA_SSH_H
+#define GHOSTTEA_SSH_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define GHOSTTEA_SSH_EAGAIN (-37)
+#define GHOSTTEA_SSH_PUBLICKEY_UNVERIFIED (-19)
+#define GHOSTTEA_SSH_KNOWN_HOST_MATCH 0
+
+typedef struct ghosttea_ssh_session ghosttea_ssh_session_t;
+
+int ghosttea_ssh_tcp_connect(
+    const char *host,
+    const char *port,
+    char *error_buffer,
+    size_t error_buffer_length
+);
+void ghosttea_ssh_socket_close(int socket_fd);
+
+ghosttea_ssh_session_t *ghosttea_ssh_session_create(int socket_fd);
+void ghosttea_ssh_session_shutdown_socket(ghosttea_ssh_session_t *session);
+void ghosttea_ssh_session_destroy(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_handshake(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milliseconds);
+int ghosttea_ssh_session_verify_known_host(
+    ghosttea_ssh_session_t *session,
+    const char *host,
+    int port,
+    const char *known_hosts_path
+);
+int ghosttea_ssh_session_auth_password(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const char *password
+);
+int ghosttea_ssh_session_auth_public_key(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const char *public_key_path,
+    const char *private_key_path,
+    const char *passphrase
+);
+void ghosttea_ssh_session_reset_keyboard_answers(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_add_keyboard_answer(
+    ghosttea_ssh_session_t *session,
+    const char *answer
+);
+int ghosttea_ssh_session_auth_keyboard_interactive(
+    ghosttea_ssh_session_t *session,
+    const char *username
+);
+int ghosttea_ssh_session_is_authenticated(const ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_keyboard_prompt_count(const ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_open_channel(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_request_pty(
+    ghosttea_ssh_session_t *session,
+    const char *terminal_type,
+    int columns,
+    int rows
+);
+int ghosttea_ssh_session_start_shell(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_resize(
+    ghosttea_ssh_session_t *session,
+    int columns,
+    int rows
+);
+long ghosttea_ssh_session_read(
+    ghosttea_ssh_session_t *session,
+    uint8_t *buffer,
+    size_t buffer_length
+);
+long ghosttea_ssh_session_write(
+    ghosttea_ssh_session_t *session,
+    const uint8_t *buffer,
+    size_t buffer_length
+);
+int ghosttea_ssh_session_signal_interrupt(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_is_eof(const ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_last_error(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

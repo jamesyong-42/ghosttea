@@ -25,6 +25,7 @@ From the repository root:
 ```sh
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
+npm run test:ssh:fixture:swift
 ```
 
 Use `npm run fixture:ssh:up` to leave the endpoints running for an adapter
@@ -50,6 +51,10 @@ libssh2 XCFramework and proves password, public key, two-round
 keyboard-interactive, strict known-host matching, command execution, and
 explicit chained authentication. The accepted partial key step currently
 returns `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`); the next method succeeds,
-while a wrong-key control remains rejected. PTY resize and flow control still
-need to move into the nonblocking Swift adapter before they count as candidate
-evidence.
+while a wrong-key control remains rejected. The Swift command exercises the
+nonblocking adapter through the shared `TerminalTransport` protocol. It repeats
+the authentication matrix, verifies initial and resized PTY dimensions,
+deliberately stops reading during the 32 MiB flood, drains it byte-for-byte, and
+rejects the wrong-key control. It also gates stalled-process RSS below 64 MiB,
+requires a blocked read to observe cancellation within one second, and verifies
+that strict host checking rejects both unknown and changed keys.

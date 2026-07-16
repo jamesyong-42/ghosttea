@@ -5,7 +5,7 @@ This directory is the Apple-side Phase 0 integration package for the iOS termina
 It currently proves that Swift can link the pinned upstream `libghostty-vt`
 XCFramework and exercise terminal creation, VT input, resize, state queries,
 and key encoding. It also contains the host-neutral, demand-driven
-`GhostteaTransport` contract and a pinned libssh2/OpenSSL compile candidate.
+`GhostteaTransport` contract and a pinned libssh2/OpenSSL nonblocking candidate.
 The raw Ghostty and libssh2 APIs are explicitly not application contracts. The
 planned stable terminal boundary is `GhostteaCoreFFI.xcframework`, backed by
 the shared Ghosttea model and ordered effect stream.
@@ -22,6 +22,8 @@ npm run build:ssh:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
 npm run test:ssh:fixture
+npm run test:ssh:fixture:candidate
+npm run test:ssh:fixture:swift
 npm run bench:ghostty-vt:apple:matrix
 ```
 
@@ -40,7 +42,8 @@ energy measurements remain required.
 
 No package source should import `GhosttyVt` outside the `GhosttyVtProof` target. This keeps the unstable upstream API from leaking into future app code.
 
-Likewise, only `GhostteaSSHProbe` may import `LibSSH2Candidate`. It is a compile
-and lifecycle proof, not a selected production transport. The current
-candidate decision and known chained-MFA return-state ambiguity are recorded in
+Likewise, only `CGhostteaSSH` and the isolated `GhostteaSSHProbe` may import
+`LibSSH2Candidate`. The public `GhostteaSSH` candidate sees only opaque C shim
+handles and implements `TerminalTransport`; it is not yet a selected production
+transport. The current evidence and known chained-MFA return-state ambiguity are recorded in
 [`Compatibility/ssh-candidate-decision.md`](Compatibility/ssh-candidate-decision.md).
