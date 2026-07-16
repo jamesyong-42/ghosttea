@@ -1,4 +1,4 @@
-import type { TerminalTheme } from "./renderers/types";
+import type { TerminalTheme } from "@vibecook/ghosttea-react";
 
 export const TERMINAL_THEMES = {
   midnight: {

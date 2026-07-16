@@ -10,12 +10,30 @@ import {
   type TerminalMouseEvent,
 } from "@vibecook/ghosttea-protocol";
 import { FrameFlag } from "@vibecook/ghosttea-frame";
-import type { CellSelection, TerminalTheme } from "./renderers/types";
-import { FrameResyncController } from "./frame-resync";
-import type { RendererToWorkerMessage, WorkerToRendererMessage } from "../../shared/terminal-ipc";
+import type { CellSelection, TerminalTheme } from "./renderers/types.js";
+import { FrameResyncController } from "./frame-resync.js";
+import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 
-type Ports = { control: MessagePort; frames: MessagePort };
-type TerminalMount = {
+export interface GhostteaRendererPorts {
+  control: MessagePort;
+  frames: MessagePort;
+}
+
+export interface GhostteaRendererPlatform {
+  writeClipboard(text: string): void;
+  forceCanvasFallback(): boolean;
+  setForceCanvasFallback(enabled: boolean): void;
+  reload(): void;
+}
+
+export interface GhostteaTerminalRuntimeOptions {
+  ports: GhostteaRendererPorts | Promise<GhostteaRendererPorts>;
+  platform: GhostteaRendererPlatform;
+  workerFactory?: () => Worker;
+  clientBuild?: string;
+}
+
+export type TerminalMount = {
   resize: (width: number, height: number, dpr: number) => void;
   dispose: () => void;
 };
@@ -41,12 +59,12 @@ interface ViewRuntimeState {
   pendingInput: Array<(attachmentEpoch: number, inputSequence: number) => void>;
 }
 
-function waitForPorts(): Promise<Ports> {
+export function waitForGhostteaRendererPorts(timeoutMs = 10_000): Promise<GhostteaRendererPorts> {
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       window.removeEventListener("message", listener);
       reject(new Error("Electron did not transfer the terminal control and frame ports"));
-    }, 10_000);
+    }, timeoutMs);
     const listener = (event: MessageEvent): void => {
       if (event.data?.type !== "ghosttea:ports" || event.ports.length !== 2) return;
       window.clearTimeout(timeout);
@@ -57,8 +75,11 @@ function waitForPorts(): Promise<Ports> {
   });
 }
 
-export class DesktopTerminalRuntime extends EventTarget {
-  readonly #worker = new Worker(new URL("./terminal-render.worker.ts", import.meta.url), { type: "module" });
+export class GhostteaTerminalRuntime extends EventTarget {
+  readonly #worker: Worker;
+  readonly #ports: Promise<GhostteaRendererPorts>;
+  readonly #platform: GhostteaRendererPlatform;
+  readonly #clientBuild: string;
   #control: ControlClient | undefined;
   #frames: MessagePort | undefined;
   #ready: Promise<void> | undefined;
@@ -75,8 +96,14 @@ export class DesktopTerminalRuntime extends EventTarget {
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
 
-  constructor() {
+  constructor(options: GhostteaTerminalRuntimeOptions) {
     super();
+    this.#worker =
+      options.workerFactory?.() ??
+      new Worker(new URL("./terminal-render.worker.js", import.meta.url), { type: "module" });
+    this.#ports = Promise.resolve(options.ports);
+    this.#platform = options.platform;
+    this.#clientBuild = options.clientBuild ?? "ghosttea-react";
     this.#resync = new FrameResyncController((sessionHandle) => this.#refreshSession(sessionHandle), {
       onExhausted: (sessionHandle, error) => {
         console.error(`[terminal-runtime] frame resynchronization exhausted for ${sessionHandle}`, error);
@@ -91,7 +118,7 @@ export class DesktopTerminalRuntime extends EventTarget {
         );
         this.dispatchEvent(new CustomEvent("renderer-status", { detail: data }));
       } else if (data.type === "clipboard-write") {
-        window.desktop.writeClipboard(data.text);
+        this.#platform.writeClipboard(data.text);
       } else if (data.type === "selection-text") {
         const request = this.#selectionRequests.get(data.requestId);
         if (!request) return;
@@ -104,13 +131,13 @@ export class DesktopTerminalRuntime extends EventTarget {
         this.#resync.complete(data.sessionHandle);
       } else if (data.type === "renderer-reload-required") {
         console.error(`[terminal-runtime] renderer requested reload: ${String(data.reason ?? "unknown")}`);
-        sessionStorage.setItem("ghosttea:force-canvas-fallback", "1");
-        window.location.reload();
+        this.#platform.setForceCanvasFallback(true);
+        this.#platform.reload();
       }
     });
     this.#postWorker({
       type: "renderer-config",
-      forceCanvasFallback: sessionStorage.getItem("ghosttea:force-canvas-fallback") === "1",
+      forceCanvasFallback: this.#platform.forceCanvasFallback(),
     });
   }
 
@@ -128,7 +155,7 @@ export class DesktopTerminalRuntime extends EventTarget {
   }
 
   async #connect(): Promise<void> {
-    const ports = await waitForPorts();
+    const ports = await this.#ports;
     console.info("[terminal-runtime] received control and frame ports");
     this.#control = new ControlClient(ports.control);
     this.#control.addEventListener("session-exited", (event) => {
@@ -173,7 +200,7 @@ export class DesktopTerminalRuntime extends EventTarget {
       type: "hello",
       protocolMajor: PROTOCOL_MAJOR,
       protocolMinor: PROTOCOL_MINOR,
-      clientBuild: "desktop-dev",
+      clientBuild: this.#clientBuild,
     });
     if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR)
       throw new Error("terminald protocol mismatch");
@@ -467,7 +494,7 @@ export class DesktopTerminalRuntime extends EventTarget {
       this.#selectionRequests.set(requestId, { resolve, timeout });
       this.#postWorker({ type: "selection-text", requestId, sessionHandle, selection });
     }).then((text) => {
-      if (text) window.desktop.writeClipboard(text);
+      if (text) this.#platform.writeClipboard(text);
       return text;
     });
   }
@@ -523,4 +550,6 @@ export class DesktopTerminalRuntime extends EventTarget {
   }
 }
 
-export const terminalRuntime = new DesktopTerminalRuntime();
+export function createGhostteaTerminalRuntime(options: GhostteaTerminalRuntimeOptions): GhostteaTerminalRuntime {
+  return new GhostteaTerminalRuntime(options);
+}

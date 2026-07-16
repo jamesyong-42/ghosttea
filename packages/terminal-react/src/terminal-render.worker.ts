@@ -16,18 +16,18 @@ import {
   type StyleRun,
   SectionKind,
 } from "@vibecook/ghosttea-frame";
-import { CanvasTerminalRenderer } from "./renderers/canvas-renderer";
+import { CanvasTerminalRenderer } from "./renderers/canvas-renderer.js";
 import {
   DEFAULT_THEME,
   type CellSelection,
   type PixelSize,
   type TerminalRenderer,
   type TerminalTheme,
-} from "./renderers/types";
-import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer";
-import { classifyFrame } from "./frame-sequence";
-import type { RendererToWorkerMessage, WorkerToRendererMessage } from "../../shared/terminal-ipc";
-import { graphemeCellWidth, splitGraphemes } from "./cell-width";
+} from "./renderers/types.js";
+import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
+import { classifyFrame } from "./frame-sequence.js";
+import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
+import { graphemeCellWidth, splitGraphemes } from "./cell-width.js";
 
 interface Snapshot {
   rows: string[];

@@ -3,20 +3,35 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { app } from "electron";
-import type { TerminalDaemonConnection } from "../shared/terminal-ipc";
+import { dirname, join } from "node:path";
+import type { TerminalDaemonConnection } from "./types.js";
+
+export type GhostteaBinary =
+  | { kind: "executable"; path: string; args?: string[]; cwd?: string }
+  | { kind: "cargo"; manifestPath: string; release: boolean; cargoPath?: string; args?: string[] };
+
+export interface TerminalSupervisorOptions {
+  binary: GhostteaBinary;
+  runtimeDirectory?: string;
+  environment?: NodeJS.ProcessEnv;
+  startupTimeoutMs?: number;
+  onStderr?: (line: string) => void;
+}
 
 export class TerminalSupervisor extends EventEmitter {
   #child: ChildProcess | undefined;
   #startPromise: Promise<void> | undefined;
   #ready = false;
   #stopping = false;
-  readonly #runtimeDir = join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}`);
+  readonly #options: TerminalSupervisorOptions;
+  readonly #runtimeDir: string;
   readonly connection: TerminalDaemonConnection;
 
-  constructor() {
+  constructor(options: TerminalSupervisorOptions) {
     super();
+    this.#options = options;
+    this.#runtimeDir =
+      options.runtimeDirectory ?? join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}`);
     mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     this.connection = {
       controlSocket: join(this.#runtimeDir, "control.sock"),
@@ -39,43 +54,46 @@ export class TerminalSupervisor extends EventEmitter {
     mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     rmSync(this.connection.controlSocket, { force: true });
     rmSync(this.connection.frameSocket, { force: true });
-    const repositoryRoot = resolve(app.getAppPath(), "../..");
-    const developmentSidecar = resolve(
-      repositoryRoot,
-      "../p008/truffle/packages/sidecar-slim",
-      process.platform === "win32" ? "sidecar-slim.exe" : "sidecar-slim",
-    );
     const environment = {
       ...process.env,
+      ...this.#options.environment,
       GHOSTTEA_CONTROL_SOCKET: this.connection.controlSocket,
       GHOSTTEA_FRAME_SOCKET: this.connection.frameSocket,
       GHOSTTEA_AUTH_TOKEN: this.connection.authToken,
-      ...(!process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
-        ? { TRUFFLE_SIDECAR_PATH: developmentSidecar }
-        : {}),
     };
 
-    const configuredBinary =
-      process.env.GHOSTTEAD_BIN ??
-      process.env.TERMINALD_BIN ??
-      (app.isPackaged
-        ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ghosttead.exe" : "ghosttead")
-        : undefined);
-    if (configuredBinary) {
-      if (!existsSync(configuredBinary)) throw new Error(`ghosttead executable not found at ${configuredBinary}`);
-      this.#child = spawn(configuredBinary, [], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
-    } else {
-      const manifest = join(repositoryRoot, "native/ghosttead/Cargo.toml");
-      if (!existsSync(manifest)) throw new Error(`ghosttead manifest not found at ${manifest}`);
-      const profileArgs =
-        (process.env.GHOSTTEA_DEV_PROFILE ?? process.env.TERMINALD_DEV_PROFILE) === "debug" ? [] : ["--release"];
-      this.#child = spawn("cargo", ["run", "--quiet", ...profileArgs, "--manifest-path", manifest], {
-        cwd: repositoryRoot,
+    const binary = this.#options.binary;
+    if (binary.kind === "executable") {
+      if (!existsSync(binary.path)) throw new Error(`ghosttead executable not found at ${binary.path}`);
+      this.#child = spawn(binary.path, binary.args ?? [], {
+        cwd: binary.cwd,
         env: environment,
         stdio: ["ignore", "pipe", "pipe"],
       });
+    } else {
+      if (!existsSync(binary.manifestPath)) throw new Error(`ghosttead manifest not found at ${binary.manifestPath}`);
+      this.#child = spawn(
+        binary.cargoPath ?? "cargo",
+        [
+          "run",
+          "--quiet",
+          ...(binary.release ? ["--release"] : []),
+          "--manifest-path",
+          binary.manifestPath,
+          ...(binary.args ?? []),
+        ],
+        {
+          cwd: dirname(binary.manifestPath),
+          env: environment,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
     }
-    this.#child.stderr?.on("data", (chunk) => console.error(`[ghosttead] ${String(chunk).trimEnd()}`));
+    this.#child.stderr?.on("data", (chunk) => {
+      const line = String(chunk).trimEnd();
+      if (this.#options.onStderr) this.#options.onStderr(line);
+      else console.error(`[ghosttead] ${line}`);
+    });
     await this.#waitUntilReady();
     const running = this.#child;
     if (!running || running.exitCode !== null || running.signalCode !== null) {
@@ -123,7 +141,10 @@ export class TerminalSupervisor extends EventEmitter {
         if (this.#child === child) this.#child = undefined;
         reject(error);
       };
-      const timeout = setTimeout(() => fail(new Error("ghosttead startup timed out")), 120_000);
+      const timeout = setTimeout(
+        () => fail(new Error("ghosttead startup timed out")),
+        this.#options.startupTimeoutMs ?? 120_000,
+      );
       const onData = (chunk: Buffer): void => {
         output = `${output}${String(chunk)}`.slice(-4096);
         if (!output.includes("ghosttead ready") || settled) return;

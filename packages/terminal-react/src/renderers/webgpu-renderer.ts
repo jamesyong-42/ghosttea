@@ -13,8 +13,8 @@ import {
   type RenderView,
   type Rgba,
   type TerminalRenderer,
-} from "./types";
-import { graphemeCellWidth, splitGraphemes } from "../cell-width";
+} from "./types.js";
+import { graphemeCellWidth, splitGraphemes } from "../cell-width.js";
 
 const ATLAS_SIZE = 2048;
 const FONT_STACK = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";

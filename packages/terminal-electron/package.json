@@ -1,0 +1,71 @@
+{
+  "name": "@vibecook/ghosttea-electron",
+  "version": "0.1.0",
+  "description": "Electron lifecycle and direct renderer transport for Ghosttea.",
+  "license": "MIT",
+  "author": "James Yong",
+  "type": "module",
+  "sideEffects": [
+    "./dist/bridge-entry.js"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./main": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/main.js"
+    },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "import": "./dist/preload.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
+    "./bridge-entry": "./dist/bridge-entry.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "directory": "packages/terminal-electron"
+  },
+  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/jamesyong-42/ghosttea/issues"
+  },
+  "keywords": [
+    "electron",
+    "ghostty",
+    "terminal"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "electron": ">=35"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "electron": "43.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

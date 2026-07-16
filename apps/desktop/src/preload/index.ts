@@ -1,5 +1,5 @@
 import { clipboard, contextBridge, ipcRenderer } from "electron";
-import type { RendererPortBootstrapMessage } from "../shared/terminal-ipc";
+import type { RendererPortBootstrapMessage } from "@vibecook/ghosttea-electron/types";
 
 console.info("[terminal-runtime] preload ready");
 

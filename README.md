@@ -69,6 +69,31 @@ Set `GHOSTTEA_FONT_FAMILY` to select a discovered system font; the
 default preference order favors installed programming-ligature monospace fonts
 before falling back to the platform monospace family.
 
+## Embed in Electron
+
+Ghosttea's application integration is split into reusable packages:
+
+- `@vibecook/ghosttea-electron` owns daemon supervision, the utility-process
+  socket bridge, transferred renderer ports, and isolated-preload helpers;
+- `@vibecook/ghosttea-react` owns the shared renderer runtime, terminal surface,
+  render worker, and WebGPU/Canvas renderers.
+
+The private desktop demo consumes both packages and remains the visual and
+behavioral reference application. Terminal frames still travel directly from
+the utility process to the renderer and then to the render worker; Electron
+main and React do not process frame payloads.
+
+The Electron package supports two Rust-service ownership modes. In managed
+mode it starts a configured `ghosttead` or application service executable. In
+external mode the host application starts its own Rust composition service and
+passes an authenticated `TerminalDaemonConnection` to
+`GhostteaElectronBackend`. This allows one application-owned Rust process to
+share a single Truffle node across Ghosttea and other services.
+
+For development, the demo can attach to an already-running service with
+`GHOSTTEA_EXTERNAL_CONTROL_SOCKET`, `GHOSTTEA_EXTERNAL_FRAME_SOCKET`, and
+`GHOSTTEA_EXTERNAL_AUTH_TOKEN`.
+
 ## Terminal mirroring
 
 The current development dependency targets Truffle 0.7.1 from the sibling

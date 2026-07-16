@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMainToBridgeMessage } from "./terminal-ipc";
+import { isMainToBridgeMessage } from "./types";
 
 describe("main-to-bridge bootstrap validation", () => {
   it("accepts a complete connection descriptor", () => {

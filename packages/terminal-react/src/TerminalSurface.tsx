@@ -1,17 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
 import type { SessionSummary, TerminalKeyEvent } from "@vibecook/ghosttea-protocol";
-import { terminalRuntime } from "./runtime";
-import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types";
+import { useGhostteaRuntime } from "./context.js";
+import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
 
-interface TerminalSurfaceProps {
+export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
+
+export interface TerminalSurfaceProps {
   session: SessionSummary;
   theme: TerminalTheme;
   active?: boolean;
   onActivate?: () => void;
+  readClipboard?: () => string;
+  onContextMenu?: (canCopy: boolean) => void;
+  onToggleFullscreen?: () => void;
+  onMenuAction?: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
 
-export function TerminalSurface({ session, theme, active = true, onActivate }: TerminalSurfaceProps) {
+export function TerminalSurface({
+  session,
+  theme,
+  active = true,
+  onActivate,
+  readClipboard,
+  onContextMenu,
+  onToggleFullscreen,
+  onMenuAction,
+}: TerminalSurfaceProps) {
+  const terminalRuntime = useGhostteaRuntime();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const gridRef = useRef({ cols: session.cols, rows: session.rows });
@@ -32,31 +48,30 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       });
     }
     forwardedKeysRef.current.clear();
-  }, [session.id, viewId]);
+  }, [session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
     terminalRuntime.setTheme(session.handle, theme);
-  }, [session.handle, theme]);
+  }, [session.handle, terminalRuntime, theme]);
 
-  useEffect(
-    () =>
-      window.desktop.onMenuAction((action) => {
-        if (!active) return;
-        if (action === "copy" && selectionRef.current) {
-          void terminalRuntime.copySelection(session.handle, selectionRef.current);
-        } else if (action === "paste") {
-          const text = window.desktop.readClipboard();
-          if (text) terminalRuntime.paste(session.id, viewId, text);
-        } else if (action === "select-all") {
-          const { cols, rows } = gridRef.current;
-          selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
-          terminalRuntime.setSelection(session.handle, selectionRef.current);
-        } else if (action === "clear-screen") {
-          terminalRuntime.sendText(session.id, viewId, "\u000c");
-        }
-      }),
-    [active, session.handle, session.id, viewId],
-  );
+  useEffect(() => {
+    if (!onMenuAction) return;
+    return onMenuAction((action) => {
+      if (!active) return;
+      if (action === "copy" && selectionRef.current) {
+        void terminalRuntime.copySelection(session.handle, selectionRef.current);
+      } else if (action === "paste") {
+        const text = readClipboard?.() ?? "";
+        if (text) terminalRuntime.paste(session.id, viewId, text);
+      } else if (action === "select-all") {
+        const { cols, rows } = gridRef.current;
+        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
+        terminalRuntime.setSelection(session.handle, selectionRef.current);
+      } else if (action === "clear-screen") {
+        terminalRuntime.sendText(session.id, viewId, "\u000c");
+      }
+    });
+  }, [active, onMenuAction, readClipboard, session.handle, session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
     if (active && document.hasFocus()) inputRef.current?.focus({ preventScroll: true });
@@ -84,7 +99,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       observer.disconnect();
       handle.dispose();
     };
-  }, [session.handle, session.id, viewId]);
+  }, [session.handle, session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
     const syncFocus = (): void => {
@@ -110,7 +125,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
       const { cols, rows } = gridRef.current;
       terminalRuntime.setFocused(session.handle, viewId, false, cols, rows);
     };
-  }, [active, releaseForwardedKeys, session.handle, viewId]);
+  }, [active, releaseForwardedKeys, session.handle, terminalRuntime, viewId]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
@@ -127,7 +142,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
         terminalRuntime.setSelection(session.handle, selectionRef.current);
         event.preventDefault();
       } else if (event.key === "Enter" || (event.ctrlKey && event.key.toLowerCase() === "f")) {
-        window.desktop.toggleFullscreen();
+        onToggleFullscreen?.();
         event.preventDefault();
       }
       return;
@@ -314,7 +329,7 @@ export function TerminalSurface({ session, theme, active = true, onActivate }: T
         onWheel={onWheel}
         onContextMenu={(event) => {
           event.preventDefault();
-          window.desktop.showContextMenu(selectionRef.current !== null);
+          onContextMenu?.(selectionRef.current !== null);
         }}
         onCompositionEnd={(event) => {
           terminalRuntime.sendText(session.id, viewId, event.currentTarget.value);

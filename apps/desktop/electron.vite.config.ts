@@ -7,10 +7,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: {
-          index: resolve("src/main/index.ts"),
-          "terminal-bridge": resolve("src/utility/terminal-bridge.ts"),
-        },
+        input: resolve("src/main/index.ts"),
       },
     },
   },

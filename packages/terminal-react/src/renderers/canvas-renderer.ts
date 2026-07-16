@@ -10,7 +10,7 @@ import {
   type RenderView,
   type Rgba,
   type TerminalRenderer,
-} from "./types";
+} from "./types.js";
 
 interface CanvasSurface extends PixelSize {
   canvas: OffscreenCanvas;

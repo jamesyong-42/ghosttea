@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
-import { terminalRuntime } from "./runtime";
-import { TerminalSurface } from "./TerminalSurface";
+import { TerminalSurface } from "@vibecook/ghosttea-react";
+import { terminalRuntime } from "./terminal";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette";
 import { TERMINAL_THEMES } from "./themes";
 import {
@@ -101,6 +101,10 @@ function SplitView({ node, activePaneId, zoomedPaneId, onActivate, onRatio }: Sp
           theme={TERMINAL_THEMES.midnight}
           active={active}
           onActivate={() => onActivate(node.id)}
+          readClipboard={window.desktop.readClipboard}
+          onContextMenu={window.desktop.showContextMenu}
+          onToggleFullscreen={window.desktop.toggleFullscreen}
+          onMenuAction={window.desktop.onMenuAction}
         />
       </div>
     );

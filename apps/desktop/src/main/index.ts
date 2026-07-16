@@ -1,10 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu, MessageChannelMain, utilityProcess } from "electron";
-import { TerminalSupervisor } from "./terminal-supervisor";
+import { join, resolve } from "node:path";
+import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { GhostteaElectronBackend, type GhostteaElectronBackendOptions } from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
-import type { MainToBridgeMessage } from "../shared/terminal-ipc";
 
 app.setName("Ghosttea");
 if (process.platform === "darwin") app.setActivationPolicy("regular");
@@ -49,35 +48,62 @@ ipcMain.on("terminal-close-window", (event) => {
 });
 
 let mainWindow: BrowserWindow | undefined;
-let supervisor: TerminalSupervisor | undefined;
-let bridge: Electron.UtilityProcess | undefined;
+let backend: GhostteaElectronBackend | undefined;
 let quitting = false;
 let recoveringBackend: Promise<void> | undefined;
 
-function startBridge(): void {
-  if (bridge) return;
-  const bridgeEntry = join(__dirname, "terminal-bridge.js");
-  const next = utilityProcess.fork(bridgeEntry, [], { serviceName: "terminal-bridge" });
-  bridge = next;
-  next.on("exit", (code) => {
-    if (bridge === next) bridge = undefined;
-    if (quitting) return;
-    console.error(`terminal-bridge exited (${code}); restarting`);
-    void recoverBackend();
-  });
+function backendOptions(): GhostteaElectronBackendOptions {
+  const externalControl = process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET;
+  const externalFrames = process.env.GHOSTTEA_EXTERNAL_FRAME_SOCKET;
+  const externalToken = process.env.GHOSTTEA_EXTERNAL_AUTH_TOKEN;
+  if (externalControl && externalFrames && externalToken) {
+    return {
+      mode: "external",
+      connection: { controlSocket: externalControl, frameSocket: externalFrames, authToken: externalToken },
+    };
+  }
+
+  const repositoryRoot = resolve(app.getAppPath(), "../..");
+  const developmentSidecar = resolve(
+    repositoryRoot,
+    "../p008/truffle/packages/sidecar-slim",
+    process.platform === "win32" ? "sidecar-slim.exe" : "sidecar-slim",
+  );
+  const configuredBinary =
+    process.env.GHOSTTEAD_BIN ??
+    process.env.TERMINALD_BIN ??
+    (app.isPackaged
+      ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ghosttead.exe" : "ghosttead")
+      : undefined);
+  const environment =
+    !process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
+      ? { TRUFFLE_SIDECAR_PATH: developmentSidecar }
+      : undefined;
+  return {
+    mode: "managed",
+    daemon: {
+      binary: configuredBinary
+        ? { kind: "executable", path: configuredBinary }
+        : {
+            kind: "cargo",
+            manifestPath: join(repositoryRoot, "native/ghosttead/Cargo.toml"),
+            release: (process.env.GHOSTTEA_DEV_PROFILE ?? process.env.TERMINALD_DEV_PROFILE) !== "debug",
+          },
+      ...(environment ? { environment } : {}),
+    },
+  };
 }
 
 async function ensureBackend(): Promise<void> {
-  if (!supervisor) {
-    supervisor = new TerminalSupervisor();
-    supervisor.on("unexpected-exit", ({ code, signal }) => {
+  if (!backend) {
+    backend = new GhostteaElectronBackend(backendOptions());
+    backend.on("unexpected-exit", ({ source, code, signal }) => {
       if (quitting) return;
-      console.error(`ghosttead exited unexpectedly (${code ?? signal ?? "unknown"}); restarting`);
+      console.error(`${source} exited unexpectedly (${code ?? signal ?? "unknown"}); restarting`);
       void recoverBackend();
     });
   }
-  if (!supervisor.running) await supervisor.start();
-  startBridge();
+  if (!backend.running) await backend.start();
 }
 
 function recoverBackend(): Promise<void> {
@@ -168,15 +194,9 @@ async function createWindow(): Promise<void> {
   }
 
   window.webContents.on("did-finish-load", () => {
-    if (window.isDestroyed() || !bridge || !supervisor) return;
+    if (window.isDestroyed() || !backend?.running) return;
     console.log("[terminal-runtime] renderer loaded; transferring ports");
-    const control = new MessageChannelMain();
-    const frames = new MessageChannelMain();
-    bridge.postMessage({ type: "connect", connection: supervisor.connection } satisfies MainToBridgeMessage, [
-      control.port1,
-      frames.port1,
-    ]);
-    window.webContents.postMessage("terminal-ports", null, [control.port2, frames.port2]);
+    backend.attachRenderer(window.webContents);
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -216,6 +236,5 @@ app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => 
 
 app.on("before-quit", () => {
   quitting = true;
-  bridge?.kill();
-  supervisor?.stop();
+  backend?.stop();
 });

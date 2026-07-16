@@ -9,13 +9,6 @@ vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
   existsSync: () => true,
 }));
-vi.mock("electron", () => ({
-  app: {
-    getAppPath: () => "/workspace/apps/desktop",
-    isPackaged: false,
-  },
-}));
-
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
@@ -30,8 +23,11 @@ describe("TerminalSupervisor", () => {
   it("shares startup readiness across concurrent callers", async () => {
     const child = new FakeChild();
     spawn.mockReturnValue(child);
-    const { TerminalSupervisor } = await import("./terminal-supervisor");
-    const supervisor = new TerminalSupervisor();
+    const { TerminalSupervisor } = await import("./supervisor");
+    const supervisor = new TerminalSupervisor({
+      binary: { kind: "executable", path: "/opt/ghosttead" },
+      environment: { TRUFFLE_SIDECAR_PATH: "/opt/truffle-sidecar" },
+    });
 
     let secondResolved = false;
     const first = supervisor.start();
@@ -48,7 +44,7 @@ describe("TerminalSupervisor", () => {
     await Promise.all([first, second]);
     expect(supervisor.running).toBe(true);
     expect(spawn.mock.calls[0]?.[2]?.env).toMatchObject({
-      TRUFFLE_SIDECAR_PATH: "/p008/truffle/packages/sidecar-slim/sidecar-slim",
+      TRUFFLE_SIDECAR_PATH: "/opt/truffle-sidecar",
     });
     supervisor.stop();
   });
@@ -57,8 +53,8 @@ describe("TerminalSupervisor", () => {
     const failed = new FakeChild();
     const recovered = new FakeChild();
     spawn.mockReturnValueOnce(failed).mockReturnValueOnce(recovered);
-    const { TerminalSupervisor } = await import("./terminal-supervisor");
-    const supervisor = new TerminalSupervisor();
+    const { TerminalSupervisor } = await import("./supervisor");
+    const supervisor = new TerminalSupervisor({ binary: { kind: "executable", path: "/opt/ghosttead" } });
 
     const first = supervisor.start();
     failed.exitCode = 1;

@@ -16,7 +16,13 @@ function run(command, args, options = {}) {
   }).trim();
 }
 
-const npmPackages = ["@vibecook/ghosttea-protocol", "@vibecook/ghosttea-frame", "@vibecook/ghosttea"];
+const npmPackages = [
+  "@vibecook/ghosttea-protocol",
+  "@vibecook/ghosttea-frame",
+  "@vibecook/ghosttea",
+  "@vibecook/ghosttea-electron",
+  "@vibecook/ghosttea-react",
+];
 
 const rustPackages = ["ghosttea-vt-sys", "ghosttea-text", "ghosttea-vt", "ghosttea"];
 const publishableRustLeaves = ["ghosttea-vt-sys", "ghosttea-text"];
@@ -44,6 +50,15 @@ try {
     for (const required of ["LICENSE", "README.md", "dist/index.js", "dist/index.d.ts", "package.json"]) {
       if (!paths.has(required)) throw new Error(`${workspace} tarball is missing ${required}`);
     }
+    const packageSpecific =
+      workspace === "@vibecook/ghosttea-electron"
+        ? ["dist/main.js", "dist/main.d.ts", "dist/preload.js", "dist/types.js", "dist/bridge-entry.js"]
+        : workspace === "@vibecook/ghosttea-react"
+          ? ["dist/styles.css", "dist/terminal-render.worker.js"]
+          : [];
+    for (const required of packageSpecific) {
+      if (!paths.has(required)) throw new Error(`${workspace} tarball is missing ${required}`);
+    }
     if ([...paths].some((path) => path.startsWith("src/") || path.includes(".test."))) {
       throw new Error(`${workspace} tarball contains source or test files`);
     }
@@ -69,16 +84,23 @@ try {
       'import { ControlClient } from "@vibecook/ghosttea";',
       'import { FRAME_MAGIC } from "@vibecook/ghosttea-frame";',
       'import { PROTOCOL_MAJOR } from "@vibecook/ghosttea-protocol";',
+      'import { existsSync } from "node:fs";',
+      'import { join } from "node:path";',
       'if (typeof ControlClient !== "function" || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
       '  throw new Error("installed Ghosttea packages expose an invalid runtime API");',
+      "}",
+      'for (const file of ["@vibecook/ghosttea-electron/dist/bridge-entry.js", "@vibecook/ghosttea-react/dist/terminal-render.worker.js"]) {',
+      '  if (!existsSync(join("node_modules", file))) throw new Error(`installed Ghosttea package is missing ${file}`);',
       "}",
       'console.log("external npm consumer fixture passed");',
       "",
     ].join("\n"),
   );
-  run("npm", ["install", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "--cache", cache], {
-    cwd: fixture,
-  });
+  run(
+    "npm",
+    ["install", "--ignore-scripts", "--legacy-peer-deps", "--offline", "--no-audit", "--no-fund", "--cache", cache],
+    { cwd: fixture },
+  );
   process.stdout.write(run(process.execPath, ["smoke.mjs"], { cwd: fixture }) + "\n");
 
   for (const crate of rustPackages) {

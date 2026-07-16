@@ -10,7 +10,7 @@ declare global {
       showContextMenu: (canCopy: boolean) => void;
       toggleFullscreen: () => void;
       closeWindow: () => void;
-      onMenuAction: (listener: (action: string) => void) => () => void;
+      onMenuAction: (listener: (action: "copy" | "paste" | "select-all" | "clear-screen") => void) => () => void;
     };
   }
 }

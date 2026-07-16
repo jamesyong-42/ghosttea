@@ -1,0 +1,12 @@
+export { GhostteaProvider, useGhostteaRuntime, type GhostteaProviderProps } from "./context.js";
+export { TerminalSurface, type TerminalMenuAction, type TerminalSurfaceProps } from "./TerminalSurface.js";
+export {
+  GhostteaTerminalRuntime,
+  createGhostteaTerminalRuntime,
+  waitForGhostteaRendererPorts,
+  type GhostteaRendererPlatform,
+  type GhostteaRendererPorts,
+  type GhostteaTerminalRuntimeOptions,
+  type TerminalMount,
+} from "./runtime.js";
+export { DEFAULT_THEME, type CellPoint, type CellSelection, type TerminalTheme } from "./renderers/types.js";

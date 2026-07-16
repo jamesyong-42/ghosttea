@@ -1,5 +1,5 @@
 import { createConnection, type Socket } from "node:net";
-import { isMainToBridgeMessage } from "../shared/terminal-ipc";
+import { isMainToBridgeMessage } from "./types.js";
 
 const parentPort = process.parentPort;
 

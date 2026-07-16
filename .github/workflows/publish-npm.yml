@@ -32,6 +32,8 @@ jobs:
       - run: npm test --workspace @vibecook/ghosttea-protocol
       - run: npm test --workspace @vibecook/ghosttea-frame
       - run: npm test --workspace @vibecook/ghosttea
+      - run: npm test --workspace @vibecook/ghosttea-electron
+      - run: npm test --workspace @vibecook/ghosttea-react
 
       - name: Publish protocol
         run: npm publish --workspace @vibecook/ghosttea-protocol --access public --provenance
@@ -41,3 +43,9 @@ jobs:
 
       - name: Publish client
         run: npm publish --workspace @vibecook/ghosttea --access public --provenance
+
+      - name: Publish Electron integration
+        run: npm publish --workspace @vibecook/ghosttea-electron --access public --provenance
+
+      - name: Publish React integration
+        run: npm publish --workspace @vibecook/ghosttea-react --access public --provenance
