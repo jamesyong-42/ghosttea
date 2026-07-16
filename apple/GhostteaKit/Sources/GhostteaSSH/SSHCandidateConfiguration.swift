@@ -66,3 +66,12 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case authenticationFailed(status: Int32)
   case keyboardPromptMismatch(expected: Int, actual: Int)
 }
+
+public struct SSHCandidateNegotiatedAlgorithms: Equatable, Sendable {
+  public let keyExchange: String
+  public let hostKey: String
+  public let clientToServerCipher: String
+  public let serverToClientCipher: String
+  public let clientToServerMAC: String
+  public let serverToClientMAC: String
+}

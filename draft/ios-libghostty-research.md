@@ -195,9 +195,11 @@ result; only the explicitly chained configuration proceeds to the subsequent
 keyboard-interactive call. A wrong-key control remains rejected. The adapter
 also rejects unknown and changed host keys, verifies PTY allocation and resize,
 drains a 32 MiB stalled stream byte-for-byte at about 10 MB RSS, and cancels a
-blocked read in about 45 ms. Remaining gates include the asynchronous challenge
-UI, algorithm breadth, command exit semantics, connection cancellation, and
-physical-device evidence, as documented in
+blocked read in about 45 ms. Negotiated-method instrumentation locks the
+fixture profile to Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
+Remaining gates include the asynchronous challenge UI, broader algorithm
+coverage, command exit semantics, connection cancellation, and physical-device
+evidence, as documented in
 `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 ## 8. Recommended proof order

@@ -78,6 +78,11 @@ drains exactly 33,554,432 bytes. The stalled process measured 10,043,392 bytes
 maximum RSS on the development Mac, below the 64 MiB gate. A blocked channel
 read observed Swift task cancellation in approximately 45 ms. Strict
 known-host matching succeeds, while empty and changed-key files are rejected.
+Every fixture connection also locks the negotiated methods as
+`curve25519-sha256`, `ssh-ed25519`,
+`chacha20-poly1305@openssh.com` in both directions, and `hmac-sha2-256` in both
+directions. This proves one modern launch profile; it does not replace ECDSA,
+AES-GCM, RSA/SHA-2, or representative production-server coverage.
 
 ## Reproduce
 
@@ -125,8 +130,9 @@ host-neutral demand and queue semantics.
    Swift concurrency from libssh2's synchronous callback.
 2. Add the explicit user decision boundary for unknown and changed host keys;
    strict acceptance and rejection controls already pass.
-3. Record negotiated host-key, key-exchange, cipher, and MAC algorithms for the
-   launch server sample.
+3. Add ECDSA and AES-GCM fixture endpoints, then repeat the now-instrumented
+   negotiated-method capture against the launch server sample. Decide RSA/SHA-2
+   scope from that sample.
 4. Add command-channel stdout/stderr/EOF/exit-status coverage, connect/auth
    cancellation, graceful close, and reconnect orchestration. PTY allocation,
    resize, shell I/O, and blocked-read cancellation already pass.

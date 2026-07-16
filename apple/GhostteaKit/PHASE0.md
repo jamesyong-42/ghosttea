@@ -29,7 +29,8 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   unknown and changed host keys, verifies a 41x132 PTY and 50x140 resize, drains
   a deliberately stalled 32 MiB stream byte-for-byte at about 10 MB process
   RSS, and observes blocked-read task cancellation in under 50 ms on the
-  development Mac.
+  development Mac. It locks the negotiated fixture profile to Curve25519,
+  Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

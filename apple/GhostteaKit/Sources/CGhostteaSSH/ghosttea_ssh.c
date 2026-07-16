@@ -264,6 +264,38 @@ int ghosttea_ssh_session_verify_known_host(
     return result;
 }
 
+const char *ghosttea_ssh_session_negotiated_kex(ghosttea_ssh_session_t *session) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_KEX);
+}
+
+const char *ghosttea_ssh_session_negotiated_host_key(ghosttea_ssh_session_t *session) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_HOSTKEY);
+}
+
+const char *ghosttea_ssh_session_negotiated_cipher_client_to_server(
+    ghosttea_ssh_session_t *session
+) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_CRYPT_CS);
+}
+
+const char *ghosttea_ssh_session_negotiated_cipher_server_to_client(
+    ghosttea_ssh_session_t *session
+) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_CRYPT_SC);
+}
+
+const char *ghosttea_ssh_session_negotiated_mac_client_to_server(
+    ghosttea_ssh_session_t *session
+) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_MAC_CS);
+}
+
+const char *ghosttea_ssh_session_negotiated_mac_server_to_client(
+    ghosttea_ssh_session_t *session
+) {
+    return libssh2_session_methods(session->session, LIBSSH2_METHOD_MAC_SC);
+}
+
 int ghosttea_ssh_session_auth_password(
     ghosttea_ssh_session_t *session,
     const char *username,

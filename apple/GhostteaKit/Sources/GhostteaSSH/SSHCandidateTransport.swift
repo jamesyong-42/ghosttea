@@ -37,6 +37,7 @@ public struct SSHCandidateTransport: TerminalTransport {
       guard knownHostStatus == GHOSTTEA_SSH_KNOWN_HOST_MATCH else {
         throw SSHCandidateError.hostKeyRejected(status: knownHostStatus)
       }
+      let negotiatedAlgorithms = driver.negotiatedAlgorithms()
 
       try await authenticate(driver: driver, method: configuration.authentication)
       guard ghosttea_ssh_session_is_authenticated(driver.requiredHandle) == 1 else {
@@ -62,7 +63,10 @@ public struct SSHCandidateTransport: TerminalTransport {
         ghosttea_ssh_session_start_shell($0)
       }
 
-      return SSHCandidateConnection(driver: driver)
+      return SSHCandidateConnection(
+        driver: driver,
+        negotiatedAlgorithms: negotiatedAlgorithms
+      )
     } catch {
       driver.destroy()
       throw error
@@ -205,12 +209,18 @@ public struct SSHCandidateTransport: TerminalTransport {
 }
 
 public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendable {
+  public let negotiatedAlgorithms: SSHCandidateNegotiatedAlgorithms
+
   private let driver: SSHDriver
   private let gate = AsyncOperationGate()
   private var isConnected = true
 
-  fileprivate init(driver: SSHDriver) {
+  fileprivate init(
+    driver: SSHDriver,
+    negotiatedAlgorithms: SSHCandidateNegotiatedAlgorithms
+  ) {
     self.driver = driver
+    self.negotiatedAlgorithms = negotiatedAlgorithms
   }
 
   public func read(maxBytes: Int) async throws -> Data? {
@@ -459,6 +469,25 @@ private final class SSHDriver: @unchecked Sendable {
     }
   }
 
+  func negotiatedAlgorithms() -> SSHCandidateNegotiatedAlgorithms {
+    SSHCandidateNegotiatedAlgorithms(
+      keyExchange: decodeCString(ghosttea_ssh_session_negotiated_kex(requiredHandle)),
+      hostKey: decodeCString(ghosttea_ssh_session_negotiated_host_key(requiredHandle)),
+      clientToServerCipher: decodeCString(
+        ghosttea_ssh_session_negotiated_cipher_client_to_server(requiredHandle)
+      ),
+      serverToClientCipher: decodeCString(
+        ghosttea_ssh_session_negotiated_cipher_server_to_client(requiredHandle)
+      ),
+      clientToServerMAC: decodeCString(
+        ghosttea_ssh_session_negotiated_mac_client_to_server(requiredHandle)
+      ),
+      serverToClientMAC: decodeCString(
+        ghosttea_ssh_session_negotiated_mac_server_to_client(requiredHandle)
+      )
+    )
+  }
+
   func destroy() {
     let oldHandle = stateLock.withLock {
       let oldHandle = handle
@@ -498,4 +527,9 @@ private func decodeCString(_ buffer: [CChar]) -> String {
     decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
     as: UTF8.self
   )
+}
+
+private func decodeCString(_ string: UnsafePointer<CChar>?) -> String {
+  guard let string else { return "" }
+  return String(cString: string)
 }

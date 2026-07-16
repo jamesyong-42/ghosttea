@@ -1299,8 +1299,10 @@ policy may attempt the second method; a wrong-key control remains rejected. The
 same adapter passes strict host-key negatives, PTY allocation and resize, a
 byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. An
 async challenge broker, broader algorithm/key coverage, exit semantics,
-connect/auth cancellation, and device evidence remain open. No stack-specific
-type may escape the adapter.
+connect/auth cancellation, and device evidence remain open. The adapter
+records negotiated methods; the current fixture locks Curve25519, Ed25519,
+ChaCha20-Poly1305, and HMAC-SHA2-256. No stack-specific type may escape the
+adapter.
 
 Secrets and private keys belong in Keychain-backed storage and must never be
 serialized into workspace restoration, logs, crash reports, or terminal

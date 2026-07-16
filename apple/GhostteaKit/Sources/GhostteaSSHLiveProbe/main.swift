@@ -18,6 +18,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case readCompletedInsteadOfCancelling
   case unexpectedCancellationError(String)
   case cancellationTooSlow(Duration)
+  case missingCandidateConnection
+  case unexpectedAlgorithms(SSHCandidateNegotiatedAlgorithms)
 
   var description: String {
     switch self {
@@ -43,6 +45,10 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "blocked SSH read failed with \(error) instead of CancellationError"
     case .cancellationTooSlow(let duration):
       return "blocked SSH read took \(duration) to observe cancellation"
+    case .missingCandidateConnection:
+      return "SSH transport did not return its candidate connection type"
+    case .unexpectedAlgorithms(let algorithms):
+      return "SSH fixture negotiated unexpected algorithms: \(algorithms)"
     }
   }
 }
@@ -161,6 +167,10 @@ private func runProbe() async throws {
     rows: 41
   )
   let connection = try await SSHCandidateTransport(configuration: configuration).connect()
+  guard let candidateConnection = connection as? SSHCandidateConnection else {
+    throw LiveProbeError.missingCandidateConnection
+  }
+  try verifyAlgorithms(candidateConnection.negotiatedAlgorithms)
   var reader = ProbeReader(connection: connection)
 
   do {
@@ -191,6 +201,20 @@ private func runProbe() async throws {
     await connection.disconnect()
     throw error
   }
+}
+
+private func verifyAlgorithms(_ algorithms: SSHCandidateNegotiatedAlgorithms) throws {
+  guard
+    algorithms.keyExchange == "curve25519-sha256",
+    algorithms.hostKey == "ssh-ed25519",
+    algorithms.clientToServerCipher == "chacha20-poly1305@openssh.com",
+    algorithms.serverToClientCipher == "chacha20-poly1305@openssh.com",
+    algorithms.clientToServerMAC == "hmac-sha2-256",
+    algorithms.serverToClientMAC == "hmac-sha2-256"
+  else {
+    throw LiveProbeError.unexpectedAlgorithms(algorithms)
+  }
+  print("Swift negotiated SSH algorithms: \(algorithms)")
 }
 
 private func verifyTerminalSize(

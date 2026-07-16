@@ -33,6 +33,20 @@ int ghosttea_ssh_session_verify_known_host(
     int port,
     const char *known_hosts_path
 );
+const char *ghosttea_ssh_session_negotiated_kex(ghosttea_ssh_session_t *session);
+const char *ghosttea_ssh_session_negotiated_host_key(ghosttea_ssh_session_t *session);
+const char *ghosttea_ssh_session_negotiated_cipher_client_to_server(
+    ghosttea_ssh_session_t *session
+);
+const char *ghosttea_ssh_session_negotiated_cipher_server_to_client(
+    ghosttea_ssh_session_t *session
+);
+const char *ghosttea_ssh_session_negotiated_mac_client_to_server(
+    ghosttea_ssh_session_t *session
+);
+const char *ghosttea_ssh_session_negotiated_mac_server_to_client(
+    ghosttea_ssh_session_t *session
+);
 int ghosttea_ssh_session_auth_password(
     ghosttea_ssh_session_t *session,
     const char *username,
