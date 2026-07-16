@@ -1315,10 +1315,11 @@ The async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
 Ed25519 keys pass and incorrect passphrases are rejected. UIKit/Keychain policy,
-atomic known-host persistence, representative-server sampling, adverse-network
+representative-server sampling, adverse-network
 transitions, and device evidence remain open. Strict host-key rejection and an
 async accept-once boundary for unknown/changed keys pass with host, port,
-algorithm, SHA-256 fingerprint, and mismatch reason. TCP establishment now uses a
+algorithm, SHA-256 fingerprint, and mismatch reason. Accept-and-store uses a
+mode-preserving atomic replacement and passes subsequent strict reconnects. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
@@ -1764,7 +1765,7 @@ return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy,
-UIKit host-key confirmation and atomic persistence, representative-server and
+UIKit host-key confirmation, representative-server and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.

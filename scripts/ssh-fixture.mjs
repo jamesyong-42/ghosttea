@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -15,6 +15,8 @@ const authorizedKeys = join(stateRoot, "authorized_keys");
 const knownHosts = join(stateRoot, "known_hosts");
 const unknownKnownHosts = join(stateRoot, "unknown_known_hosts");
 const changedKnownHosts = join(stateRoot, "changed_known_hosts");
+const persistedUnknownKnownHosts = join(stateRoot, "persisted_unknown_known_hosts");
+const persistedChangedKnownHosts = join(stateRoot, "persisted_changed_known_hosts");
 const candidateProbe = join(stateRoot, "libssh2-candidate-probe");
 const swiftPackage = join(root, "apple/GhostteaKit");
 const swiftModuleCache = join(swiftPackage, ".build/module-cache");
@@ -486,8 +488,46 @@ function swiftCandidate() {
       }
       process.stdout.write(hostKeyDecision.stdout);
     }
+    rmSync(persistedUnknownKnownHosts, { force: true });
+    copyFileSync(changedKnownHosts, persistedChangedKnownHosts);
+    const originalChangedEntry = readFileSync(persistedChangedKnownHosts, "utf8").trim();
+    for (const [mode, hostFile] of [
+      ["host-key-store-unknown", persistedUnknownKnownHosts],
+      ["host-key-store-changed", persistedChangedKnownHosts],
+    ]) {
+      const persistence = execute(liveProbe, [mode, "127.0.0.1", ports.password, hostFile, publicKey, privateKey], {
+        timeout: 30_000,
+      });
+      if (persistence.status !== 0) {
+        throw new Error(
+          `Swift ${mode} persistence probe failed: status=${persistence.status} stdout=${persistence.stdout} stderr=${persistence.stderr}`,
+        );
+      }
+      process.stdout.write(persistence.stdout);
+      const strictReconnect = execute(
+        liveProbe,
+        ["password", "127.0.0.1", ports.password, hostFile, publicKey, privateKey],
+        { timeout: 30_000 },
+      );
+      if (strictReconnect.status !== 0) {
+        throw new Error(
+          `Swift ${mode} strict reconnect failed: status=${strictReconnect.status} stdout=${strictReconnect.stdout} stderr=${strictReconnect.stderr}`,
+        );
+      }
+    }
+    if (readFileSync(persistedUnknownKnownHosts, "utf8").trim().length === 0) {
+      throw new Error("Swift unknown host-key persistence left the known-host file empty.");
+    }
+    if (readFileSync(persistedChangedKnownHosts, "utf8").includes(originalChangedEntry)) {
+      throw new Error("Swift changed host-key persistence retained the rejected key.");
+    }
+    for (const hostFile of [persistedUnknownKnownHosts, persistedChangedKnownHosts]) {
+      if ((statSync(hostFile).mode & 0o777) !== 0o600) {
+        throw new Error(`Swift host-key persistence changed permissions for ${hostFile}.`);
+      }
+    }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, explicit unknown/changed accept-once decisions, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, explicit unknown/changed accept-once decisions, atomic host-key insertion/replacement with strict reconnects, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

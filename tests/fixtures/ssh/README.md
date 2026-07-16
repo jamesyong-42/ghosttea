@@ -69,6 +69,8 @@ The automated matrix verifies:
 - strict rejection of unknown and changed host keys, followed by separate
   explicit accept-once probes that validate the async challenge's host, port,
   algorithm, SHA-256 fingerprint, and mismatch reason.
+- atomic unknown-key insertion and changed-key replacement, permission
+  preservation, rejected-key removal, and subsequent strict reconnects.
 
 The first command proves all server/session scenarios with the system OpenSSH
 client. The candidate command compiles a test-only C client against the packaged

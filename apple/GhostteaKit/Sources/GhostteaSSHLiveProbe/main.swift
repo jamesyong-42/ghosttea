@@ -160,8 +160,9 @@ private func authentication(
   privateKeyPath: String
 ) throws -> SSHCandidateAuthentication {
   switch mode {
-  case "password", "host-key-unknown", "host-key-changed", "handshake-timeout",
-    "handshake-cancel", "handshake-cancel-stress":
+  case "password", "host-key-unknown", "host-key-changed", "host-key-store-unknown",
+    "host-key-store-changed", "handshake-timeout", "handshake-cancel",
+    "handshake-cancel-stress":
     return .password(username: "ghosttea", password: "ghosttea-password")
   case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm", "rsa-sha2":
     return .publicKey(
@@ -239,9 +240,12 @@ private func runProbe() async throws {
   let privateKeyPath = arguments[6]
   let hostKeyPolicy: SSHCandidateHostKeyPolicy
   switch mode {
-  case "host-key-unknown", "host-key-changed":
+  case "host-key-unknown", "host-key-changed", "host-key-store-unknown",
+    "host-key-store-changed":
     let expectedStatus: SSHCandidateHostKeyStatus =
-      mode == "host-key-unknown" ? .unknown : .changed
+      mode.hasSuffix("unknown") ? .unknown : .changed
+    let decision: SSHCandidateHostKeyDecision =
+      mode.contains("-store-") ? .acceptAndStore : .acceptOnce
     hostKeyPolicy = .ask { challenge in
       guard
         challenge.host == host,
@@ -253,7 +257,7 @@ private func runProbe() async throws {
       else {
         throw LiveProbeError.unexpectedHostKeyChallenge(challenge)
       }
-      return .acceptOnce
+      return decision
     }
   default:
     hostKeyPolicy = .strictKnownHosts

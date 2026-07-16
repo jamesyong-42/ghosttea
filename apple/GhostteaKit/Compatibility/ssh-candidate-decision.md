@@ -143,8 +143,10 @@ key, an opt-in async responder now receives the host, port, negotiated key
 algorithm, OpenSSH-style SHA-256 fingerprint, and whether the key is unknown or
 changed. It may reject or accept that connection once; authentication never
 starts before the decision. The fixture proves strict rejection and explicit
-accept-once decisions for both states. Atomic known-host persistence and its
-UIKit confirmation flow remain product work.
+accept-once decisions for both states. An `acceptAndStore` decision inserts an
+unknown key or replaces the rejected changed entry through a mode-preserving,
+fsynced temporary file and atomic rename. Strict reconnects prove both stored
+results. The UIKit confirmation flow remains product work.
 
 ## Reproduce
 
@@ -193,9 +195,9 @@ separately test the host-neutral demand and queue semantics.
 1. Connect the asynchronous challenge responder and encrypted-key path to UIKit
    and Keychain-backed credential policy; add a nonempty name/instruction
    fixture. Mixed echo/no-echo prompts already pass.
-2. Connect the tested unknown/changed host-key responder to UIKit and implement
-   atomic known-host persistence. Strict rejection and explicit accept-once
-   decisions already pass.
+2. Connect the tested unknown/changed host-key responder to UIKit. Strict
+   rejection, explicit accept-once decisions, atomic insertion/replacement,
+   permission preservation, and strict reconnects already pass.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.

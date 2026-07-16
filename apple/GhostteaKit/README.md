@@ -58,5 +58,6 @@ socket receives, then verifies exact delivery while reporting the libssh2
 receive window and socket-wait count.
 Strict known-host verification is the default. An opt-in async responder may
 make an explicit accept-once decision for unknown or changed keys after showing
-the host, port, algorithm, and SHA-256 fingerprint; persistence remains owned by
-the future app integration.
+the host, port, algorithm, and SHA-256 fingerprint. It may instead atomically
+insert or replace the OpenSSH entry while preserving file permissions; the
+future app integration owns the confirmation UI.

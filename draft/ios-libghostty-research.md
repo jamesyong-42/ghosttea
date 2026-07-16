@@ -205,7 +205,9 @@ Strict known-host verification remains the default. Unknown and changed keys
 can now cross an opt-in async decision boundary with host, port, algorithm,
 OpenSSH-style SHA-256 fingerprint, and mismatch reason. Live controls prove
 strict rejection and explicit accept-once behavior before authentication;
-atomic persistence and UIKit confirmation remain open.
+accept-and-store atomically inserts or replaces the OpenSSH entry, preserves
+its file mode, and passes strict reconnect controls. UIKit confirmation remains
+open.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds plus cancellation.

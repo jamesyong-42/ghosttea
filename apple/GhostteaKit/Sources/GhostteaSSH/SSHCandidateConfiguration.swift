@@ -45,6 +45,7 @@ public struct SSHCandidateHostKeyChallenge: Equatable, Sendable {
 
 public enum SSHCandidateHostKeyDecision: Equatable, Sendable {
   case acceptOnce
+  case acceptAndStore
   case reject
 }
 
@@ -154,6 +155,7 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case operationFailed(operation: String, status: Int32, message: String)
   case hostKeyRejected(status: Int32)
   case hostKeyFingerprintUnavailable
+  case knownHostPersistenceFailed(status: Int32)
   case authenticationFailed(status: Int32)
   case keyboardPromptMismatch(expected: Int, actual: Int)
   case keyboardBrokerFailed(String)

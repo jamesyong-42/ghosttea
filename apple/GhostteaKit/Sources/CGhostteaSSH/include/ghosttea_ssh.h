@@ -44,6 +44,12 @@ int ghosttea_ssh_session_verify_known_host(
     int port,
     const char *known_hosts_path
 );
+int ghosttea_ssh_session_store_known_host(
+    ghosttea_ssh_session_t *session,
+    const char *host,
+    int port,
+    const char *known_hosts_path
+);
 int ghosttea_ssh_session_host_key_sha256(
     ghosttea_ssh_session_t *session,
     uint8_t *buffer,

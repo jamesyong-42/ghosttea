@@ -128,7 +128,24 @@ public struct SSHCandidateTransport: TerminalTransport {
       )
     )
     try Task.checkCancellation()
-    guard decision == .acceptOnce else {
+    switch decision {
+    case .acceptOnce:
+      return
+    case .acceptAndStore:
+      let persistenceStatus = configuration.host.withCString { host in
+        configuration.knownHostsPath.withCString { path in
+          ghosttea_ssh_session_store_known_host(
+            driver.requiredHandle,
+            host,
+            Int32(configuration.port),
+            path
+          )
+        }
+      }
+      guard persistenceStatus == 0 else {
+        throw SSHCandidateError.knownHostPersistenceFailed(status: persistenceStatus)
+      }
+    case .reject:
       throw SSHCandidateError.hostKeyRejected(status: status)
     }
   }

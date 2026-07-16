@@ -59,7 +59,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   later 32 MiB drain is exact.
 - an async unknown/changed host-key decision boundary carrying host, port,
   algorithm, SHA-256 fingerprint, and mismatch reason. Strict rejection and
-  explicit accept-once paths pass before authentication begins.
+  explicit accept-once paths pass before authentication begins. Accept-and-store
+  atomically inserts or replaces the OpenSSH entry, preserves file mode, and
+  passes a subsequent strict reconnect.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -91,7 +93,7 @@ UIKit, transport state, and the rest of the application.
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. Remaining work is UIKit/Keychain credential
-   policy, UIKit host-key confirmation and atomic known-host persistence,
+   policy, UIKit host-key confirmation,
    representative-server sampling, adverse-network transitions, resolver and reconnect
    orchestration, device-footprint instrumentation, and physical-device
    execution. The public-key partial step remains locked as

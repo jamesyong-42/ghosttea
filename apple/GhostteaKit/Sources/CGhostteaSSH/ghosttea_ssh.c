@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,6 +48,7 @@ struct ghosttea_ssh_connector {
 
 static pthread_once_t libssh2_initialization_once = PTHREAD_ONCE_INIT;
 static int libssh2_initialization_status = -1;
+static pthread_mutex_t known_hosts_write_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void initialize_libssh2(void) {
     libssh2_initialization_status = libssh2_init(0);
@@ -557,6 +559,48 @@ int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milli
     return (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) == 0 ? 0 : -1;
 }
 
+static int session_host_key(
+    ghosttea_ssh_session_t *session,
+    const char **key,
+    size_t *key_length,
+    int *known_key_type
+) {
+    size_t host_key_length = 0;
+    int key_type = 0;
+    const char *host_key = libssh2_session_hostkey(
+        session->session,
+        &host_key_length,
+        &key_type
+    );
+    int host_key_type = LIBSSH2_KNOWNHOST_KEY_UNKNOWN;
+    switch (key_type) {
+    case LIBSSH2_HOSTKEY_TYPE_RSA:
+        host_key_type = LIBSSH2_KNOWNHOST_KEY_SSHRSA;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ED25519:
+        host_key_type = LIBSSH2_KNOWNHOST_KEY_ED25519;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_256:
+        host_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_256;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_384:
+        host_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_384;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_521:
+        host_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_521;
+        break;
+    default:
+        break;
+    }
+    if (host_key == NULL || host_key_type == LIBSSH2_KNOWNHOST_KEY_UNKNOWN) {
+        return -1;
+    }
+    *key = host_key;
+    *key_length = host_key_length;
+    *known_key_type = host_key_type;
+    return 0;
+}
+
 int ghosttea_ssh_session_verify_known_host(
     ghosttea_ssh_session_t *session,
     const char *host,
@@ -567,40 +611,26 @@ int ghosttea_ssh_session_verify_known_host(
     if (known_hosts == NULL) {
         return LIBSSH2_KNOWNHOST_CHECK_FAILURE;
     }
-    int read_status = libssh2_knownhost_readfile(
-        known_hosts,
-        known_hosts_path,
-        LIBSSH2_KNOWNHOST_FILE_OPENSSH
-    );
-    if (read_status < 0) {
+    struct stat known_hosts_file;
+    int stat_status = stat(known_hosts_path, &known_hosts_file);
+    if (stat_status != 0 && errno != ENOENT) {
+        libssh2_knownhost_free(known_hosts);
+        return LIBSSH2_KNOWNHOST_CHECK_FAILURE;
+    }
+    if (stat_status == 0
+        && libssh2_knownhost_readfile(
+               known_hosts,
+               known_hosts_path,
+               LIBSSH2_KNOWNHOST_FILE_OPENSSH
+           ) < 0) {
         libssh2_knownhost_free(known_hosts);
         return LIBSSH2_KNOWNHOST_CHECK_FAILURE;
     }
 
+    const char *key = NULL;
     size_t key_length = 0;
-    int key_type = 0;
-    const char *key = libssh2_session_hostkey(session->session, &key_length, &key_type);
     int known_key_type = LIBSSH2_KNOWNHOST_KEY_UNKNOWN;
-    switch (key_type) {
-    case LIBSSH2_HOSTKEY_TYPE_RSA:
-        known_key_type = LIBSSH2_KNOWNHOST_KEY_SSHRSA;
-        break;
-    case LIBSSH2_HOSTKEY_TYPE_ED25519:
-        known_key_type = LIBSSH2_KNOWNHOST_KEY_ED25519;
-        break;
-    case LIBSSH2_HOSTKEY_TYPE_ECDSA_256:
-        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_256;
-        break;
-    case LIBSSH2_HOSTKEY_TYPE_ECDSA_384:
-        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_384;
-        break;
-    case LIBSSH2_HOSTKEY_TYPE_ECDSA_521:
-        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_521;
-        break;
-    default:
-        break;
-    }
-    if (key == NULL || known_key_type == LIBSSH2_KNOWNHOST_KEY_UNKNOWN) {
+    if (session_host_key(session, &key, &key_length, &known_key_type) != 0) {
         libssh2_knownhost_free(known_hosts);
         return LIBSSH2_KNOWNHOST_CHECK_FAILURE;
     }
@@ -616,6 +646,152 @@ int ghosttea_ssh_session_verify_known_host(
         &match
     );
     libssh2_knownhost_free(known_hosts);
+    return result;
+}
+
+int ghosttea_ssh_session_store_known_host(
+    ghosttea_ssh_session_t *session,
+    const char *host,
+    int port,
+    const char *known_hosts_path
+) {
+    if (session == NULL || host == NULL || known_hosts_path == NULL || port <= 0) {
+        return -1;
+    }
+    pthread_mutex_lock(&known_hosts_write_mutex);
+    int result = -1;
+    LIBSSH2_KNOWNHOSTS *known_hosts = libssh2_knownhost_init(session->session);
+    char *stored_host = NULL;
+    char *temporary_path = NULL;
+    if (known_hosts == NULL) {
+        goto cleanup;
+    }
+    struct stat existing_file;
+    int stat_status = stat(known_hosts_path, &existing_file);
+    if (stat_status != 0 && errno != ENOENT) {
+        goto cleanup;
+    }
+    if (stat_status == 0
+        && libssh2_knownhost_readfile(
+               known_hosts,
+               known_hosts_path,
+               LIBSSH2_KNOWNHOST_FILE_OPENSSH
+           ) < 0) {
+        goto cleanup;
+    }
+
+    const char *key = NULL;
+    size_t key_length = 0;
+    int known_key_type = LIBSSH2_KNOWNHOST_KEY_UNKNOWN;
+    if (session_host_key(session, &key, &key_length, &known_key_type) != 0) {
+        goto cleanup;
+    }
+    struct libssh2_knownhost *match = NULL;
+    int check_status = libssh2_knownhost_checkp(
+        known_hosts,
+        host,
+        port,
+        key,
+        key_length,
+        LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW | known_key_type,
+        &match
+    );
+    if (check_status == LIBSSH2_KNOWNHOST_CHECK_MATCH) {
+        result = 0;
+        goto cleanup;
+    }
+    if (check_status == LIBSSH2_KNOWNHOST_CHECK_MISMATCH) {
+        if (match == NULL || libssh2_knownhost_del(known_hosts, match) != 0) {
+            goto cleanup;
+        }
+    } else if (check_status != LIBSSH2_KNOWNHOST_CHECK_NOTFOUND) {
+        goto cleanup;
+    }
+
+    if (port == 22) {
+        stored_host = strdup(host);
+    } else {
+        int length = snprintf(NULL, 0, "[%s]:%d", host, port);
+        if (length < 0) {
+            goto cleanup;
+        }
+        stored_host = malloc((size_t)length + 1);
+        if (stored_host != NULL) {
+            snprintf(stored_host, (size_t)length + 1, "[%s]:%d", host, port);
+        }
+    }
+    if (stored_host == NULL) {
+        goto cleanup;
+    }
+    if (libssh2_knownhost_addc(
+            known_hosts,
+            stored_host,
+            NULL,
+            key,
+            key_length,
+            NULL,
+            0,
+            LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW | known_key_type,
+            NULL
+        ) != 0) {
+        goto cleanup;
+    }
+
+    size_t path_length = strlen(known_hosts_path);
+    const char temporary_suffix[] = ".ghosttea.XXXXXX";
+    temporary_path = malloc(path_length + sizeof(temporary_suffix));
+    if (temporary_path == NULL) {
+        goto cleanup;
+    }
+    snprintf(
+        temporary_path,
+        path_length + sizeof(temporary_suffix),
+        "%s%s",
+        known_hosts_path,
+        temporary_suffix
+    );
+    int temporary_fd = mkstemp(temporary_path);
+    if (temporary_fd < 0) {
+        goto cleanup;
+    }
+    mode_t file_mode = stat_status == 0 ? existing_file.st_mode & 0777 : 0600;
+    if (fchmod(temporary_fd, file_mode) != 0) {
+        close(temporary_fd);
+        goto cleanup;
+    }
+    close(temporary_fd);
+    if (libssh2_knownhost_writefile(
+            known_hosts,
+            temporary_path,
+            LIBSSH2_KNOWNHOST_FILE_OPENSSH
+        ) != 0) {
+        goto cleanup;
+    }
+    temporary_fd = open(temporary_path, O_RDONLY);
+    if (temporary_fd < 0 || fsync(temporary_fd) != 0) {
+        if (temporary_fd >= 0) {
+            close(temporary_fd);
+        }
+        goto cleanup;
+    }
+    close(temporary_fd);
+    if (rename(temporary_path, known_hosts_path) != 0) {
+        goto cleanup;
+    }
+    free(temporary_path);
+    temporary_path = NULL;
+    result = 0;
+
+cleanup:
+    if (temporary_path != NULL) {
+        unlink(temporary_path);
+    }
+    free(temporary_path);
+    free(stored_host);
+    if (known_hosts != NULL) {
+        libssh2_knownhost_free(known_hosts);
+    }
+    pthread_mutex_unlock(&known_hosts_write_mutex);
     return result;
 }
 
