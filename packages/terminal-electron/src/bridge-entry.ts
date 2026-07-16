@@ -13,7 +13,13 @@ function packet(bytes: Uint8Array): Buffer {
   return output;
 }
 
-function connectSocket(path: string, token: string, limit: number, onPacket: (bytes: Buffer) => void): Promise<Socket> {
+function connectSocket(
+  path: string,
+  token: string,
+  limit: number,
+  onPacket: (bytes: Buffer) => void,
+  onDisconnect: (error: Error) => void,
+): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(path);
     let buffered = Buffer.alloc(0);
@@ -25,7 +31,11 @@ function connectSocket(path: string, token: string, limit: number, onPacket: (by
         reject(error);
       } else {
         console.error(`[terminal-bridge] socket error at ${path}: ${error.message}`);
+        onDisconnect(error);
       }
+    });
+    socket.on("close", () => {
+      if (authenticated) onDisconnect(new Error(`terminald connection closed at ${path}`));
     });
     socket.on("connect", () => socket.write(packet(Buffer.from(token))));
     socket.on("data", (chunk) => {
@@ -65,6 +75,17 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
 
   let controlSocket: Socket | undefined;
   let frameSocket: Socket | undefined;
+  let rendererClosed = false;
+  let connectionLost = false;
+  const reportConnectionLost = (cause: unknown): void => {
+    if (rendererClosed || connectionLost) return;
+    connectionLost = true;
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    controlPort.postMessage({ requestId: 0, type: "bridge-error", message: error.message });
+    parentPort.postMessage({ type: "connection-lost", message: error.message });
+    controlSocket?.destroy();
+    frameSocket?.destroy();
+  };
   try {
     controlSocket = await connectSocket(
       data.connection.controlSocket,
@@ -83,6 +104,7 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
           controlSocket?.destroy();
         }
       },
+      reportConnectionLost,
     );
     frameSocket = await connectSocket(
       data.connection.frameSocket,
@@ -92,10 +114,14 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
         const transferable = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
         framePort.postMessage(transferable);
       },
+      reportConnectionLost,
     );
   } catch (error) {
     controlSocket?.destroy();
     frameSocket?.destroy();
+    connectionLost = true;
+    const message = error instanceof Error ? error.message : String(error);
+    parentPort.postMessage({ type: "connection-lost", message });
     throw error;
   }
 
@@ -109,8 +135,13 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
       controlPort.postMessage({ requestId: 0, type: "bridge-error", message: error.message });
     }
   });
-  controlPort.once("close", () => controlSocket.destroy());
-  framePort.once("close", () => frameSocket.destroy());
+  const closeForRenderer = (): void => {
+    rendererClosed = true;
+    controlSocket.destroy();
+    frameSocket.destroy();
+  };
+  controlPort.once("close", closeForRenderer);
+  framePort.once("close", closeForRenderer);
   controlPort.start();
   framePort.start();
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ghosttyHotkey } from "./hotkeys";
+import { ghosttyHotkey } from "@vibecook/ghosttea-react/workspace";
 
 const key = (value: string, overrides: Partial<KeyboardEvent> = {}) =>
   ({

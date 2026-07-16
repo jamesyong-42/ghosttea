@@ -10,7 +10,7 @@ must never be published.
 Rust
 ghosttea-vt-sys ─> ghosttea-vt ─┐
 ghosttea-text ──────────────────┴─> ghosttea
-                    └─> ghosttea-truffle (private until truffle-core is published)
+                    └─> ghosttea-truffle (private until its synchronized release)
                          └─> ghosttead (private)
 
 npm
@@ -77,8 +77,9 @@ produce an attested workflow artifact.
 5. Publish `@vibecook/ghosttea-protocol` and `@vibecook/ghosttea-frame`.
 6. Publish `@vibecook/ghosttea`.
 7. Publish `@vibecook/ghosttea-electron`, then `@vibecook/ghosttea-react`.
-8. Enable and publish `ghosttea-truffle` only after `truffle-core` is available
-   from the selected Cargo registry.
+8. Enable and publish `ghosttea-truffle` with the synchronized Ghosttea version.
+   `truffle-core` 0.7.2 is registry-resolvable; the adapter remains private
+   until its manifest, package fixture, and release ordering are enabled.
 
 Use npm provenance from trusted CI. Do not publish from a developer machine or
 publish the private demo workspaces.

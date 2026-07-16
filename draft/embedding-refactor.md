@@ -1,14 +1,14 @@
 # Ghosttea embeddable Electron refactor
 
-Status: extraction implemented; Chopsticks compatibility extensions pending
+Status: extraction and Chopsticks compatibility extensions implemented
 
 Implementation note (July 2026): sections 3 through 7 are implemented. The
 desktop demo now consumes `@vibecook/ghosttea-electron` and
 `@vibecook/ghosttea-react` in managed mode, while the Electron package also
 supports an externally owned `ghosttead` connection. Package, integration,
 desktop development, unsigned packaged-app, and repeated release benchmark
-checks pass. Section 8 remains the next compatibility phase before Chopsticks
-can replace its current terminal backend.
+checks pass. Section 8 is implemented with daemon-ordered automation, explicit
+environment ownership, process-group termination, and rich lifecycle metadata.
 
 This refactor turns the terminal integration currently embedded in
 `apps/desktop` into supported packages that another Electron application can
@@ -158,14 +158,9 @@ interface GhostteaRendererPlatform {
   setFallbackRenderer(enabled: boolean): void;
 }
 
-interface BeforeUserInput {
-  (input: GhostteaUserInput): void | Promise<void>;
-}
-
 interface GhostteaRuntimeOptions {
   ports: Promise<GhostteaRendererPorts> | GhostteaRendererPorts;
   platform: GhostteaRendererPlatform;
-  beforeUserInput?: BeforeUserInput;
   workerFactory?: () => Worker;
 }
 
@@ -232,42 +227,35 @@ bootstrap for the demo.
 Ghosttea must distinguish human input from application automation without
 putting Chopsticks policy into Ghosttea.
 
-### 6.1 Default fast path
+### 6.1 Human-input fast path
 
-When `beforeUserInput` is absent, key, paste, mouse, and focus behavior follows
-the current direct control-port path. There is no promise allocation and no
-additional IPC hop.
+Key, paste, mouse, scroll, and interrupt behavior stays on the existing direct
+renderer control-port path. The daemon records a monotonically increasing
+human-input epoch as it accepts those operations. Focus-only changes do not
+advance the epoch because they carry no PTY bytes.
 
-When the hook returns `void`, it runs synchronously and input is sent
-immediately afterward.
-
-Only when the hook returns a `Promise` does the runtime queue that view's input
-until the promise settles. Output rendering and other sessions are unaffected.
-
-This lets Chopsticks pay an acknowledged Electron IPC round trip only while a
-guarded prompt injection is actually pending. Ordinary typing remains on the
-direct Ghosttea path.
+There is no renderer callback, promise allocation, or Electron-main round trip
+before user input. This keeps the interactive path deterministic and prevents
+application policy from delaying the active terminal user.
 
 ### 6.2 Programmatic input
 
-The Electron package will expose a main-side control client suitable for host
-automation. It attaches a non-rendering application view to a session and
-sends text through the normal authenticated Ghosttea protocol. It does not
-claim focus/resize control.
+The Electron package exposes a main-side, control-only client suitable for host
+automation. It never opens a frame connection or attaches a view, so it cannot
+claim focus or resize control.
 
 Chopsticks can implement its existing `AgentHost` as:
 
 ```ts
-spawnTerminal(spec) -> ghosttea.createSession(spec)
-writeTerminal(id, data) -> ghostteaAutomation.write(id, data)
+spawnTerminal(spec) -> backend.automation.createSession(spec)
+writeTerminal(id, data) -> backend.automation.sendText(id, data)
 ```
 
-The programmatic path never invokes `beforeUserInput`.
-
-Strict Chopsticks user-priority ordering is implemented by its renderer hook:
-while an injection guard is pending, the hook awaits acknowledgment from the
-Chopsticks runtime before allowing the human bytes onto the terminal control
-port.
+Before an automation write, the client observes the daemon's human-input epoch
+and includes it with the operation. The daemon checks and commits under the
+same ordering lock used when accepting human input. A mismatch returns a
+structured conflict; it never delays or discards the user's input. Atomic
+paste-and-submit prevents a command and its Return from being interleaved.
 
 ## 7. Demo composition after extraction
 
@@ -311,31 +299,35 @@ package extraction so regressions can be attributed precisely.
 
 ### 8.1 Environment policy
 
-Add an explicit session option:
+Session creation has an explicit environment policy:
 
 ```ts
-envPolicy: "inherit" | "replace";
+type SessionEnvironment =
+  { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
 ```
 
-`inherit` preserves existing Ghosttea behavior. `replace` calls
-`CommandBuilder::env_clear()` before applying the provided environment.
-Chopsticks uses `replace` with its curated agent environment.
+`inherit` starts with the service environment, removes Ghosttea and Truffle
+credentials, and applies explicit overrides. `clean` calls
+`CommandBuilder::env_clear()` and applies only the supplied variables. Ghosttea
+sets its terminal contract such as `TERM` after either policy. Chopsticks uses
+`clean` with its curated agent environment.
 
 ### 8.2 Process lifecycle
 
-Move full owned-process termination into Ghosttea:
+Full owned-process termination lives in Ghosttea:
 
 ```text
 interrupt -> grace period -> terminate group -> grace period -> kill group
 ```
 
-POSIX uses the owned process group. Windows support should use a Job Object
-when the Windows PTY artifact is introduced. Termination is asynchronous and
-returns the observed outcome.
+POSIX sessions own a process group. Ghosttea sends the requested interrupt,
+waits, sends `SIGTERM` to the group, waits again, and finally sends `SIGKILL`
+to the group. Windows support should use a Job Object when the Windows PTY
+artifact is introduced. The eventual exit event reports the observed outcome.
 
 ### 8.3 Session metadata
 
-Extend session and exit data with:
+Session summaries and exit data include:
 
 - PID;
 - creation timestamp;
@@ -348,8 +340,10 @@ added.
 
 ### 8.4 Automation client
 
-Add the main-side control connection and hidden application-view lifecycle.
-This work does not touch frame delivery.
+The main-side client uses the authenticated control connection without a hidden
+view. It supports session creation/listing, conditional input, atomic
+paste-and-submit, interrupt, and termination. This work does not touch frame
+delivery or layout authority.
 
 ## 9. Implementation sequence
 
@@ -389,9 +383,9 @@ Each numbered item should be its own reviewable commit or small commit series.
 8. **Performance parity gate**
    - repeat the baseline measurements on the same machine and release binary;
    - do not begin Chopsticks compatibility work until this gate passes.
-9. **Compatibility extensions**
-   - add environment replacement, lifecycle semantics, metadata, automation,
-     and the optional user-input gate one at a time;
+9. **Compatibility extensions (implemented)**
+   - add explicit environment policy, lifecycle semantics, metadata, and
+     daemon-ordered automation one at a time;
    - rerun focused behavior and performance gates after each change.
 
 ## 10. Verification gates

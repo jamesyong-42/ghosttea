@@ -655,6 +655,7 @@ dependencies = [
  "bytes",
  "ghosttea-text",
  "ghosttea-vt",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",
@@ -1931,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-core"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "base64",
  "blake3",

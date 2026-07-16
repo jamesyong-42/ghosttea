@@ -9,7 +9,7 @@ import {
   resizeForPane,
   restoreNode,
   type PaneNode,
-} from "./pane-layout";
+} from "@vibecook/ghosttea-react/workspace";
 
 const session = (id: string): SessionSummary => ({
   id,
@@ -21,6 +21,12 @@ const session = (id: string): SessionSummary => ({
   title: null,
   cwd: null,
   bellCount: 0,
+  pid: 123,
+  createdAtMs: 1,
+  exitCode: null,
+  exitSignal: null,
+  requestedTermination: null,
+  exitOutcome: null,
 });
 
 describe("pane layout", () => {

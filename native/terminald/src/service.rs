@@ -16,7 +16,10 @@ use tokio::{
 
 use crate::{
     mesh, session,
-    session::{ExitCallback, KeyInput, MouseInput, Persistence, Session, SpawnOptions},
+    session::{
+        AutomationInputOperation, ExitCallback, KeyInput, MouseInput, Persistence, Session,
+        SpawnOptions, TerminationSource,
+    },
     tunnel_protocol,
 };
 
@@ -143,8 +146,18 @@ enum Command {
         attachment_epoch: u64,
         input_sequence: u64,
     },
+    GetAutomationState {
+        session_id: String,
+    },
+    AutomationInput {
+        session_id: String,
+        expected_human_input_epoch: u64,
+        operation: AutomationInputOperation,
+    },
     Terminate {
         session_id: String,
+        #[serde(default)]
+        source: TerminationSource,
     },
     #[serde(other)]
     Unknown,
@@ -198,6 +211,17 @@ enum ResponseBody {
         cols: u16,
         rows: u16,
         layout_epoch: u64,
+    },
+    AutomationState {
+        session_id: String,
+        human_input_epoch: u64,
+    },
+    AutomationInputResult {
+        session_id: String,
+        accepted: bool,
+        human_input_epoch: u64,
+        input_sequence: Option<u64>,
+        reason: Option<&'static str>,
     },
     Ok,
     Error {
@@ -398,7 +422,7 @@ async fn handle_command(
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
                     protocol_major: 1,
-                    protocol_minor: 1,
+                    protocol_minor: 2,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
@@ -406,7 +430,7 @@ async fn handle_command(
                 validate_grid(options.cols, options.rows)?;
                 let registry_on_exit = Arc::clone(registry);
                 let events_on_exit = event_tx.clone();
-                let on_exit: ExitCallback = Arc::new(move |session_id, exit_code, persistence| {
+                let on_exit: ExitCallback = Arc::new(move |session_id, exit, persistence| {
                     if persistence != Persistence::KeepUntilExplicitClose {
                         registry_on_exit.write().unwrap().remove(&session_id);
                     }
@@ -414,7 +438,10 @@ async fn handle_command(
                         "requestId": 0,
                         "type": "session-exited",
                         "sessionId": session_id,
-                        "exitCode": exit_code,
+                        "exitCode": exit.exit_code,
+                        "exitSignal": exit.exit_signal,
+                        "requestedTermination": exit.requested_termination,
+                        "exitOutcome": exit.exit_outcome,
                     }));
                 });
                 let session = Session::spawn(
@@ -835,10 +862,42 @@ async fn handle_command(
                 }
                 Ok(ResponseBody::Ok)
             }
-            Command::Terminate { session_id } => {
+            Command::GetAutomationState { session_id } => {
+                let session = registry
+                    .read()
+                    .unwrap()
+                    .get(&session_id)
+                    .cloned()
+                    .context("unknown or remote session")?;
+                Ok(ResponseBody::AutomationState {
+                    session_id,
+                    human_input_epoch: session.automation_state(),
+                })
+            }
+            Command::AutomationInput {
+                session_id,
+                expected_human_input_epoch,
+                operation,
+            } => {
+                let session = registry
+                    .read()
+                    .unwrap()
+                    .get(&session_id)
+                    .cloned()
+                    .context("unknown or remote session")?;
+                let result = session.automation_input(expected_human_input_epoch, operation)?;
+                Ok(ResponseBody::AutomationInputResult {
+                    session_id,
+                    accepted: result.accepted,
+                    human_input_epoch: result.human_input_epoch,
+                    input_sequence: result.input_sequence,
+                    reason: (!result.accepted).then_some("human-input-conflict"),
+                })
+            }
+            Command::Terminate { session_id, source } => {
                 let local_session = { registry.read().unwrap().get(&session_id).cloned() };
                 if let Some(session) = local_session {
-                    session.terminate()?;
+                    session.terminate(source)?;
                     registry.write().unwrap().remove(&session_id);
                 } else if !context.mesh_runtime.close_session(&session_id).await {
                     bail!("unknown session");
@@ -959,7 +1018,7 @@ mod protocol_tests {
             request_id: 7,
             body: ResponseBody::Hello {
                 protocol_major: 1,
-                protocol_minor: 1,
+                protocol_minor: 2,
                 server_build: "test".to_owned(),
             },
         })
@@ -967,6 +1026,31 @@ mod protocol_tests {
         assert_eq!(value["requestId"], 7);
         assert_eq!(value["type"], "hello");
         assert_eq!(value["protocolMajor"], 1);
+    }
+
+    #[test]
+    fn deserializes_automation_without_view_authority() {
+        let envelope: Envelope = serde_json::from_value(json!({
+            "requestId": 21,
+            "type": "automation-input",
+            "sessionId": "session",
+            "expectedHumanInputEpoch": 4,
+            "operation": { "kind": "paste", "text": "hello", "submit": true },
+        }))
+        .unwrap();
+        match envelope.command {
+            Command::AutomationInput {
+                session_id,
+                expected_human_input_epoch,
+                operation: AutomationInputOperation::Paste { text, submit },
+            } => {
+                assert_eq!(session_id, "session");
+                assert_eq!(expected_human_input_epoch, 4);
+                assert_eq!(text, "hello");
+                assert!(submit);
+            }
+            _ => panic!("expected automation input command"),
+        }
     }
 
     #[test]

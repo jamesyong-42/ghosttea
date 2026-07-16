@@ -6,7 +6,17 @@ describe("isServerEvent", () => {
     expect(
       isServerEvent({ requestId: 1, type: "hello", protocolMajor: 1, protocolMinor: 0, serverBuild: "test" }),
     ).toBe(true);
-    expect(isServerEvent({ requestId: 0, type: "session-exited", sessionId: "session", exitCode: 0 })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 0,
+        type: "session-exited",
+        sessionId: "session",
+        exitCode: 0,
+        exitSignal: null,
+        requestedTermination: null,
+        exitOutcome: "completed",
+      }),
+    ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "bridge-error", message: "disconnected" })).toBe(true);
     expect(
       isServerEvent({
@@ -18,6 +28,17 @@ describe("isServerEvent", () => {
         cols: 120,
         rows: 40,
         layoutEpoch: 3,
+      }),
+    ).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 3,
+        type: "automation-input-result",
+        sessionId: "session",
+        accepted: false,
+        humanInputEpoch: 7,
+        inputSequence: null,
+        reason: "human-input-conflict",
       }),
     ).toBe(true);
     expect(

@@ -15,4 +15,7 @@ pub use mesh::{
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;
 pub use service::{TerminalService, TerminalServiceConfig};
-pub use session::{Session, SessionSummary};
+pub use session::{
+    AutomationInputOperation, AutomationInputResult, ExitOutcome, Session, SessionEnvironment,
+    SessionExit, SessionSummary, TerminationSource,
+};

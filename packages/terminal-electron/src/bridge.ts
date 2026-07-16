@@ -31,8 +31,24 @@ export class GhostteaElectronBridge extends EventEmitter {
     });
     this.#process = child;
     child.once("exit", (code) => {
-      if (this.#process === child) this.#process = undefined;
+      if (this.#process !== child) return;
+      this.#process = undefined;
       this.emit("unexpected-exit", { code });
+    });
+    child.on("message", (message: unknown) => {
+      if (
+        this.#process === child &&
+        message !== null &&
+        typeof message === "object" &&
+        (message as { type?: unknown }).type === "connection-lost"
+      ) {
+        this.emit("connection-lost", {
+          message:
+            typeof (message as { message?: unknown }).message === "string"
+              ? (message as { message: string }).message
+              : "terminald connection lost",
+        });
+      }
     });
   }
 

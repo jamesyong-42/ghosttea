@@ -1,11 +1,30 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 1;
+export const PROTOCOL_MINOR = 2;
+
+export type SessionEnvironment =
+  { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
+
+export type TerminationSource = "user" | "application" | "service-shutdown";
+
+export type ExitOutcome =
+  | "completed"
+  | "crashed"
+  | "signaled"
+  | "user-terminated"
+  | "application-terminated"
+  | "service-terminated"
+  | "unknown";
+
+export type AutomationInputOperation =
+  { kind: "text"; text: string } | { kind: "paste"; text: string; submit: boolean } | { kind: "interrupt" };
 
 export interface CreateSessionOptions {
   executable: string;
   args: string[];
   cwd?: string;
+  /** @deprecated Prefer the explicit environment policy. */
   env?: Record<string, string>;
+  environment?: SessionEnvironment;
   cols: number;
   rows: number;
   persistence: "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
@@ -64,7 +83,15 @@ export type ClientCommand =
       cursor: [number, number, number];
     }
   | (ViewInputIdentity & { requestId: number; type: "interrupt"; sessionId: string })
-  | { requestId: number; type: "terminate"; sessionId: string };
+  | { requestId: number; type: "get-automation-state"; sessionId: string }
+  | {
+      requestId: number;
+      type: "automation-input";
+      sessionId: string;
+      expectedHumanInputEpoch: number;
+      operation: AutomationInputOperation;
+    }
+  | { requestId: number; type: "terminate"; sessionId: string; source?: TerminationSource };
 
 export interface SessionSummary {
   id: string;
@@ -76,6 +103,12 @@ export interface SessionSummary {
   title: string | null;
   cwd: string | null;
   bellCount: number;
+  pid: number | null;
+  createdAtMs: number;
+  exitCode: number | null;
+  exitSignal: string | null;
+  requestedTermination: TerminationSource | null;
+  exitOutcome: ExitOutcome | null;
 }
 
 export interface ViewInputIdentity {
@@ -122,10 +155,28 @@ export type ServerEvent =
       rows: number;
       layoutEpoch: number;
     }
+  | { requestId: number; type: "automation-state"; sessionId: string; humanInputEpoch: number }
+  | {
+      requestId: number;
+      type: "automation-input-result";
+      sessionId: string;
+      accepted: boolean;
+      humanInputEpoch: number;
+      inputSequence: number | null;
+      reason: "human-input-conflict" | null;
+    }
   | { requestId: number; type: "ok" }
   | { requestId: number; type: "error"; message: string }
   | { requestId: 0; type: "bridge-error"; message: string }
-  | { requestId: 0; type: "session-exited"; sessionId: string; exitCode: number | null }
+  | {
+      requestId: 0;
+      type: "session-exited";
+      sessionId: string;
+      exitCode: number | null;
+      exitSignal: string | null;
+      requestedTermination: TerminationSource | null;
+      exitOutcome: ExitOutcome;
+    }
   | {
       requestId: 0;
       type: "control-changed";
@@ -176,6 +227,16 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     typeof candidate.type !== "string"
   )
     return false;
+  const validTerminationSource = (source: unknown): boolean =>
+    source === null || source === "user" || source === "application" || source === "service-shutdown";
+  const validExitOutcome = (outcome: unknown): boolean =>
+    outcome === "completed" ||
+    outcome === "crashed" ||
+    outcome === "signaled" ||
+    outcome === "user-terminated" ||
+    outcome === "application-terminated" ||
+    outcome === "service-terminated" ||
+    outcome === "unknown";
   const validSession = (session: unknown): boolean => {
     if (!session || typeof session !== "object") return false;
     const summary = session as Record<string, unknown>;
@@ -188,7 +249,13 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       typeof summary.exited === "boolean" &&
       (summary.title === null || typeof summary.title === "string") &&
       (summary.cwd === null || typeof summary.cwd === "string") &&
-      Number.isSafeInteger(summary.bellCount)
+      Number.isSafeInteger(summary.bellCount) &&
+      (summary.pid === null || Number.isSafeInteger(summary.pid)) &&
+      Number.isSafeInteger(summary.createdAtMs) &&
+      (summary.exitCode === null || Number.isSafeInteger(summary.exitCode)) &&
+      (summary.exitSignal === null || typeof summary.exitSignal === "string") &&
+      validTerminationSource(summary.requestedTermination) &&
+      (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome))
     );
   };
   const validSharedSession = (session: unknown): boolean => {
@@ -255,6 +322,16 @@ export function isServerEvent(value: unknown): value is ServerEvent {
         Number.isSafeInteger(candidate.rows) &&
         Number.isSafeInteger(candidate.layoutEpoch)
       );
+    case "automation-state":
+      return typeof candidate.sessionId === "string" && Number.isSafeInteger(candidate.humanInputEpoch);
+    case "automation-input-result":
+      return (
+        typeof candidate.sessionId === "string" &&
+        typeof candidate.accepted === "boolean" &&
+        Number.isSafeInteger(candidate.humanInputEpoch) &&
+        (candidate.inputSequence === null || Number.isSafeInteger(candidate.inputSequence)) &&
+        (candidate.reason === null || candidate.reason === "human-input-conflict")
+      );
     case "ok":
       return true;
     case "error":
@@ -265,7 +342,10 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       return (
         candidate.requestId === 0 &&
         typeof candidate.sessionId === "string" &&
-        (candidate.exitCode === null || Number.isSafeInteger(candidate.exitCode))
+        (candidate.exitCode === null || Number.isSafeInteger(candidate.exitCode)) &&
+        (candidate.exitSignal === null || typeof candidate.exitSignal === "string") &&
+        validTerminationSource(candidate.requestedTermination) &&
+        validExitOutcome(candidate.exitOutcome)
       );
     case "control-changed":
       return (

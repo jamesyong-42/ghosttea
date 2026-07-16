@@ -17,7 +17,12 @@ export interface TerminalSurfaceProps {
   onMenuAction?: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
 
-export function TerminalSurface({
+export function TerminalSurface(props: TerminalSurfaceProps) {
+  const { session } = props;
+  return <TerminalSurfaceSession key={`${session.id}:${session.handle}`} {...props} />;
+}
+
+function TerminalSurfaceSession({
   session,
   theme,
   active = true,
@@ -32,11 +37,13 @@ export function TerminalSurface({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const gridRef = useRef({ cols: session.cols, rows: session.rows });
   const [viewId] = useState(() => crypto.randomUUID());
+  const [inputFocused, setInputFocused] = useState(false);
   const selectionAnchorRef = useRef<CellPoint | null>(null);
   const selectionRef = useRef<{ anchor: CellPoint; focus: CellPoint } | null>(null);
   const pointerModeRef = useRef<"mouse" | "selection" | null>(null);
   const wheelDeltaRef = useRef(0);
   const forwardedKeysRef = useRef(new Map<string, TerminalKeyEvent>());
+  const restoreInputFocusRef = useRef(false);
 
   const releaseForwardedKeys = useCallback((): void => {
     for (const event of forwardedKeysRef.current.values()) {
@@ -104,15 +111,22 @@ export function TerminalSurface({
   useEffect(() => {
     const syncFocus = (): void => {
       const { cols, rows } = gridRef.current;
-      terminalRuntime.setFocused(session.handle, viewId, active && document.hasFocus(), cols, rows);
+      terminalRuntime.setFocused(
+        session.handle,
+        viewId,
+        active && inputFocused && document.hasFocus() && document.activeElement === inputRef.current,
+        cols,
+        rows,
+      );
     };
     const onWindowBlur = (): void => {
+      restoreInputFocusRef.current = restoreInputFocusRef.current || document.activeElement === inputRef.current;
       releaseForwardedKeys();
       const { cols, rows } = gridRef.current;
       terminalRuntime.setFocused(session.handle, viewId, false, cols, rows);
     };
     const onWindowFocus = (): void => {
-      if (active) inputRef.current?.focus({ preventScroll: true });
+      if (active && restoreInputFocusRef.current) inputRef.current?.focus({ preventScroll: true });
       syncFocus();
     };
     window.addEventListener("blur", onWindowBlur);
@@ -125,7 +139,7 @@ export function TerminalSurface({
       const { cols, rows } = gridRef.current;
       terminalRuntime.setFocused(session.handle, viewId, false, cols, rows);
     };
-  }, [active, releaseForwardedKeys, session.handle, terminalRuntime, viewId]);
+  }, [active, inputFocused, releaseForwardedKeys, session.handle, terminalRuntime, viewId]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
@@ -318,6 +332,13 @@ export function TerminalSurface({
         aria-label="Terminal input"
         onFocus={() => {
           onActivate?.();
+          restoreInputFocusRef.current = true;
+          setInputFocused(true);
+        }}
+        onBlur={() => {
+          restoreInputFocusRef.current = !document.hasFocus();
+          setInputFocused(false);
+          releaseForwardedKeys();
         }}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}

@@ -6,7 +6,8 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -33,7 +34,81 @@ pub enum Persistence {
     KeepUntilExplicitClose,
 }
 
-pub type ExitCallback = Arc<dyn Fn(String, Option<i32>, Persistence) + Send + Sync>;
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminationSource {
+    #[default]
+    User,
+    Application,
+    ServiceShutdown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExitOutcome {
+    Completed,
+    Crashed,
+    Signaled,
+    UserTerminated,
+    ApplicationTerminated,
+    ServiceTerminated,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionExit {
+    pub exit_code: Option<i32>,
+    pub exit_signal: Option<String>,
+    pub requested_termination: Option<TerminationSource>,
+    pub exit_outcome: ExitOutcome,
+}
+
+fn classify_exit(
+    exit_code: Option<i32>,
+    exit_signal: Option<&str>,
+    source: Option<TerminationSource>,
+) -> ExitOutcome {
+    match source {
+        Some(TerminationSource::User) => ExitOutcome::UserTerminated,
+        Some(TerminationSource::Application) => ExitOutcome::ApplicationTerminated,
+        Some(TerminationSource::ServiceShutdown) => ExitOutcome::ServiceTerminated,
+        None if exit_signal.is_some() => ExitOutcome::Signaled,
+        None if exit_code == Some(0) => ExitOutcome::Completed,
+        None if exit_code.is_some() => ExitOutcome::Crashed,
+        None => ExitOutcome::Unknown,
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum SessionEnvironment {
+    Inherit {
+        #[serde(default)]
+        overrides: HashMap<String, String>,
+    },
+    Clean {
+        #[serde(default)]
+        variables: HashMap<String, String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AutomationInputOperation {
+    Text { text: String },
+    Paste { text: String, submit: bool },
+    Interrupt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationInputResult {
+    pub accepted: bool,
+    pub human_input_epoch: u64,
+    pub input_sequence: Option<u64>,
+}
+
+pub type ExitCallback = Arc<dyn Fn(String, SessionExit, Persistence) + Send + Sync>;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,8 +117,10 @@ pub struct SpawnOptions {
     #[serde(default)]
     pub args: Vec<String>,
     pub cwd: Option<String>,
+    /// Legacy additive environment overlay. New callers should use `environment`.
     #[serde(default)]
     pub env: HashMap<String, String>,
+    pub environment: Option<SessionEnvironment>,
     pub cols: u16,
     pub rows: u16,
     pub persistence: Persistence,
@@ -109,6 +186,12 @@ pub struct SessionSummary {
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub bell_count: u64,
+    pub pid: Option<u32>,
+    pub created_at_ms: u64,
+    pub exit_code: Option<i32>,
+    pub exit_signal: Option<String>,
+    pub requested_termination: Option<TerminationSource>,
+    pub exit_outcome: Option<ExitOutcome>,
 }
 
 pub struct Session {
@@ -129,6 +212,9 @@ pub struct Session {
     on_exit: ExitCallback,
     authority: Mutex<ViewAuthority>,
     input_tx: mpsc::SyncSender<InputOperation>,
+    input_order: Mutex<InputOrderState>,
+    termination_started: AtomicBool,
+    requested_termination: Mutex<Option<TerminationSource>>,
     latest_logical: Mutex<Option<LogicalTerminalSnapshot>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
 }
@@ -141,13 +227,29 @@ enum InputOperation {
     Scroll(isize),
     Focus(bool),
     Interrupt,
+    Automation(AutomationInputOperation),
+}
+
+#[derive(Default)]
+struct InputOrderState {
+    human_input_epoch: u64,
+    input_sequence: u64,
 }
 
 struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    pid: Option<u32>,
 }
+
+struct ObservedProcessExit {
+    exit_code: Option<i32>,
+    exit_signal: Option<String>,
+}
+
+const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
+const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 impl PtyProcess {
     fn write(&self, bytes: &[u8]) -> Result<()> {
@@ -170,22 +272,81 @@ impl PtyProcess {
         Ok(())
     }
 
-    fn wait(&self) -> Option<i32> {
-        self.child
-            .lock()
-            .unwrap()
-            .wait()
-            .ok()
-            .and_then(|status| i32::try_from(status.exit_code()).ok())
-    }
-
-    fn terminate(&self) -> Result<()> {
-        let mut child = self.child.lock().unwrap();
-        if child.try_wait()?.is_none() {
-            child.kill()?;
+    fn wait(&self) -> ObservedProcessExit {
+        match self.child.lock().unwrap().wait() {
+            Ok(status) => ObservedProcessExit {
+                exit_code: status
+                    .signal()
+                    .is_none()
+                    .then(|| i32::try_from(status.exit_code()).ok())
+                    .flatten(),
+                exit_signal: status.signal().map(str::to_owned),
+            },
+            Err(_) => ObservedProcessExit {
+                exit_code: None,
+                exit_signal: None,
+            },
         }
-        Ok(())
     }
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: Option<u32>, signal: libc::c_int) -> Result<()> {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return Ok(());
+    };
+    let result = unsafe { libc::kill(-pid, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error.into())
+    }
+}
+
+fn is_private_service_environment(key: &str) -> bool {
+    matches!(
+        key,
+        "GHOSTTEA_AUTH_TOKEN"
+            | "TERMINALD_AUTH_TOKEN"
+            | "GHOSTTEA_CONTROL_SOCKET"
+            | "TERMINALD_CONTROL_SOCKET"
+            | "GHOSTTEA_FRAME_SOCKET"
+            | "TERMINALD_FRAME_SOCKET"
+            | "TRUFFLE_TEST_AUTHKEY"
+            | "TRUFFLE_SIDECAR_PATH"
+    ) || key.starts_with("GHOSTTEA_TRUFFLE_")
+        || key.starts_with("TERMINALD_TRUFFLE_")
+        || key.starts_with("GHOSTTEA_EXTERNAL_")
+}
+
+fn configure_environment(
+    command: &mut CommandBuilder,
+    legacy: HashMap<String, String>,
+    environment: Option<SessionEnvironment>,
+) {
+    let environment = environment.unwrap_or(SessionEnvironment::Inherit { overrides: legacy });
+    match environment {
+        SessionEnvironment::Inherit { overrides } => {
+            for (key, _) in std::env::vars().filter(|(key, _)| is_private_service_environment(key))
+            {
+                command.env_remove(key);
+            }
+            for (key, value) in overrides {
+                command.env(key, value);
+            }
+        }
+        SessionEnvironment::Clean { variables } => {
+            command.env_clear();
+            for (key, value) in variables {
+                command.env(key, value);
+            }
+        }
+    }
+    command.env("TERM", "xterm-256color");
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -230,6 +391,7 @@ impl Session {
             args,
             cwd,
             env,
+            environment,
             cols,
             rows,
             persistence,
@@ -245,14 +407,12 @@ impl Session {
         if let Some(cwd) = cwd {
             command.cwd(cwd);
         }
-        for (key, value) in env {
-            command.env(key, value);
-        }
-        command.env("TERM", "xterm-256color");
+        configure_environment(&mut command, env, environment);
         let child = pair
             .slave
             .spawn_command(command)
             .context("failed to spawn PTY command")?;
+        let pid = child.process_id();
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -261,8 +421,8 @@ impl Session {
         let id_bytes = *Uuid::parse_str(&id)?.as_bytes();
         let handle = u64::from_le_bytes(id_bytes[..8].try_into().unwrap());
         let session_epoch = u64::from_le_bytes(id_bytes[8..].try_into().unwrap()).max(1);
-        let created_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let created_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let (logical_tx, _) = broadcast::channel(8);
@@ -277,6 +437,12 @@ impl Session {
                 title: None,
                 cwd: None,
                 bell_count: 0,
+                pid,
+                created_at_ms,
+                exit_code: None,
+                exit_signal: None,
+                requested_termination: None,
+                exit_outcome: None,
             }),
             handle,
             session_epoch,
@@ -285,6 +451,7 @@ impl Session {
                 master: Mutex::new(pair.master),
                 writer: Mutex::new(writer),
                 child: Mutex::new(child),
+                pid,
             },
             terminal: Mutex::new(GhosttyTerminalCore::new(cols, rows, 10_000)?),
             sequence: AtomicU64::new(0),
@@ -298,6 +465,9 @@ impl Session {
             on_exit,
             authority: Mutex::new(ViewAuthority::new(cols, rows)),
             input_tx,
+            input_order: Mutex::new(InputOrderState::default()),
+            termination_started: AtomicBool::new(false),
+            requested_termination: Mutex::new(None),
             latest_logical: Mutex::new(None),
             logical_tx,
         });
@@ -386,14 +556,33 @@ impl Session {
                     }
                 }
                 session.exited.store(true, Ordering::Release);
-                session.summary.lock().unwrap().exited = true;
-                let exit_code = session.process.wait();
+                let observed = session.process.wait();
+                let requested_termination = *session.requested_termination.lock().unwrap();
+                let exit_outcome = classify_exit(
+                    observed.exit_code,
+                    observed.exit_signal.as_deref(),
+                    requested_termination,
+                );
+                let exit = SessionExit {
+                    exit_code: observed.exit_code,
+                    exit_signal: observed.exit_signal,
+                    requested_termination,
+                    exit_outcome,
+                };
+                {
+                    let mut summary = session.summary.lock().unwrap();
+                    summary.exited = true;
+                    summary.exit_code = exit.exit_code;
+                    summary.exit_signal.clone_from(&exit.exit_signal);
+                    summary.requested_termination = exit.requested_termination;
+                    summary.exit_outcome = Some(exit.exit_outcome);
+                }
                 if session.has_active_views()
                     && let Ok(snapshot) = session.terminal.lock().unwrap().snapshot()
                 {
                     session.publish_snapshot(snapshot);
                 }
-                (session.on_exit)(session.id(), exit_code, session.persistence);
+                (session.on_exit)(session.id(), exit, session.persistence);
             })
             .expect("PTY reader thread");
     }
@@ -725,6 +914,7 @@ impl Session {
         attachment_epoch: u64,
         input_sequence: u64,
         operation: InputOperation,
+        counts_as_human_input: bool,
     ) -> Result<()> {
         if !self.authority.lock().unwrap().authorize_input(
             view_id,
@@ -734,9 +924,43 @@ impl Session {
         )? {
             return Ok(());
         }
+        let mut order = self.input_order.lock().unwrap();
         self.input_tx
             .try_send(operation)
-            .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))
+            .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))?;
+        if counts_as_human_input {
+            order.human_input_epoch = order.human_input_epoch.saturating_add(1);
+        }
+        order.input_sequence = order.input_sequence.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn automation_state(&self) -> u64 {
+        self.input_order.lock().unwrap().human_input_epoch
+    }
+
+    pub fn automation_input(
+        &self,
+        expected_human_input_epoch: u64,
+        operation: AutomationInputOperation,
+    ) -> Result<AutomationInputResult> {
+        let mut order = self.input_order.lock().unwrap();
+        if order.human_input_epoch != expected_human_input_epoch {
+            return Ok(AutomationInputResult {
+                accepted: false,
+                human_input_epoch: order.human_input_epoch,
+                input_sequence: None,
+            });
+        }
+        self.input_tx
+            .try_send(InputOperation::Automation(operation))
+            .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))?;
+        order.input_sequence = order.input_sequence.saturating_add(1);
+        Ok(AutomationInputResult {
+            accepted: true,
+            human_input_epoch: order.human_input_epoch,
+            input_sequence: Some(order.input_sequence),
+        })
     }
 
     pub fn send_text(
@@ -753,6 +977,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Text(text),
+            true,
         )
     }
 
@@ -770,6 +995,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Paste(text),
+            true,
         )
     }
 
@@ -787,6 +1013,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Key(input),
+            true,
         )
     }
 
@@ -804,6 +1031,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Mouse(input),
+            true,
         )
     }
 
@@ -821,6 +1049,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Focus(focused),
+            false,
         )
     }
 
@@ -838,6 +1067,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Scroll(rows),
+            true,
         )
     }
 
@@ -854,6 +1084,7 @@ impl Session {
             attachment_epoch,
             input_sequence,
             InputOperation::Interrupt,
+            true,
         )
     }
 
@@ -872,6 +1103,25 @@ impl Session {
                 self.process.write(&bytes)
             }
             InputOperation::Interrupt => self.process.write(b"\x03"),
+            InputOperation::Automation(operation) => self.execute_automation_input(operation),
+        }
+    }
+
+    fn execute_automation_input(&self, operation: AutomationInputOperation) -> Result<()> {
+        match operation {
+            AutomationInputOperation::Text { text } => self.process.write(text.as_bytes()),
+            AutomationInputOperation::Paste { text, submit } => {
+                let bytes = {
+                    let mut terminal = self.terminal.lock().unwrap();
+                    let mut bytes = terminal.encode_paste(&text)?;
+                    if submit {
+                        bytes.extend_from_slice(&terminal.encode_key("Enter", "", 0, 1)?);
+                    }
+                    bytes
+                };
+                self.process.write(&bytes)
+            }
+            AutomationInputOperation::Interrupt => self.process.write(b"\x03"),
         }
     }
 
@@ -999,10 +1249,119 @@ impl Session {
         Ok(())
     }
 
-    pub fn terminate(&self) -> Result<()> {
+    pub fn terminate(self: &Arc<Self>, source: TerminationSource) -> Result<()> {
         if self.has_exited() {
             return Ok(());
         }
-        self.process.terminate()
+        if self.termination_started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        *self.requested_termination.lock().unwrap() = Some(source);
+        self.summary.lock().unwrap().requested_termination = Some(source);
+        {
+            let mut order = self.input_order.lock().unwrap();
+            if self.input_tx.try_send(InputOperation::Interrupt).is_ok() {
+                order.input_sequence = order.input_sequence.saturating_add(1);
+            } else {
+                let _ = self.process.write(b"\x03");
+            }
+        }
+        let session = Arc::clone(self);
+        if let Err(error) = thread::Builder::new()
+            .name(format!("pty-terminate-{}", session.id()))
+            .spawn(move || {
+                thread::sleep(INTERRUPT_GRACE);
+                #[cfg(unix)]
+                {
+                    if !session.has_exited()
+                        && let Err(error) = signal_process_group(session.process.pid, libc::SIGTERM)
+                    {
+                        eprintln!(
+                            "[ghosttea] failed to terminate process group {}: {error:#}",
+                            session.id()
+                        );
+                    }
+                    if !session.has_exited() {
+                        thread::sleep(TERMINATE_GRACE);
+                    }
+                    if !session.has_exited()
+                        && let Err(error) = signal_process_group(session.process.pid, libc::SIGKILL)
+                    {
+                        eprintln!(
+                            "[ghosttea] failed to sweep process group {}: {error:#}",
+                            session.id()
+                        );
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if !session.has_exited() {
+                        let _ = session.process.child.lock().unwrap().kill();
+                    }
+                }
+            })
+        {
+            self.termination_started.store(false, Ordering::Release);
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_environment_contains_only_explicit_variables_and_terminal_contract() {
+        let mut command = CommandBuilder::new("test");
+        configure_environment(
+            &mut command,
+            HashMap::new(),
+            Some(SessionEnvironment::Clean {
+                variables: HashMap::from([
+                    ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+                    ("AGENT_TOKEN".to_owned(), "allowed".to_owned()),
+                ]),
+            }),
+        );
+        assert_eq!(
+            command.get_env("PATH"),
+            Some(std::ffi::OsStr::new("/usr/bin:/bin"))
+        );
+        assert_eq!(
+            command.get_env("AGENT_TOKEN"),
+            Some(std::ffi::OsStr::new("allowed"))
+        );
+        assert_eq!(
+            command.get_env("TERM"),
+            Some(std::ffi::OsStr::new("xterm-256color"))
+        );
+        assert_eq!(command.get_env("GHOSTTEA_AUTH_TOKEN"), None);
+    }
+
+    #[test]
+    fn identifies_service_environment_that_must_not_be_inherited() {
+        assert!(is_private_service_environment("GHOSTTEA_AUTH_TOKEN"));
+        assert!(is_private_service_environment(
+            "GHOSTTEA_TRUFFLE_CAPABILITY"
+        ));
+        assert!(is_private_service_environment("TRUFFLE_TEST_AUTHKEY"));
+        assert!(!is_private_service_environment("HOME"));
+        assert!(!is_private_service_environment("CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
+    fn classifies_requested_and_observed_exit_outcomes() {
+        assert_eq!(classify_exit(Some(0), None, None), ExitOutcome::Completed);
+        assert_eq!(classify_exit(Some(2), None, None), ExitOutcome::Crashed);
+        assert_eq!(
+            classify_exit(None, Some("Terminated"), None),
+            ExitOutcome::Signaled
+        );
+        assert_eq!(
+            classify_exit(None, Some("Killed"), Some(TerminationSource::Application)),
+            ExitOutcome::ApplicationTerminated
+        );
     }
 }

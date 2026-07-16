@@ -24,7 +24,11 @@ The current vertical slice includes:
   device-loss recovery, and a diagnostic Canvas2D fallback;
 - strict TypeScript frame decoding and protocol tests.
 - view-aware input and resize authority shared by local and remote views;
-- terminal host discovery and logical-state mirroring over Truffle 0.7.1 QUIC.
+- main-process automation ordered against accepted human input without taking
+  renderer view or layout authority;
+- explicit inherited or clean session environments, rich exit metadata, and
+  process-group termination escalation;
+- terminal host discovery and logical-state mirroring over Truffle 0.7.2 QUIC.
 
 ## Run
 
@@ -90,13 +94,27 @@ passes an authenticated `TerminalDaemonConnection` to
 `GhostteaElectronBackend`. This allows one application-owned Rust process to
 share a single Truffle node across Ghosttea and other services.
 
+Application automation uses the backend's control-only client. It does not
+open the frame socket, attach a renderer view, or participate in focus and
+resize authority. Each operation is committed by `ghosttead` only if no human
+input has been accepted since the application observed the session's input
+epoch. Paste-and-submit is one atomic PTY operation, so the command and Return
+cannot be interleaved with user input.
+
+Session creation requires an explicit environment policy for isolated agent
+processes: use `{ mode: "clean", variables }` for a curated environment or
+`{ mode: "inherit", overrides }` for an ordinary shell. In inherited mode,
+Ghosttea removes its private service and transport credentials before spawning
+the child. Session summaries and exit events include PID, creation time, exit
+code or signal, requested termination source, and classified exit outcome.
+
 For development, the demo can attach to an already-running service with
 `GHOSTTEA_EXTERNAL_CONTROL_SOCKET`, `GHOSTTEA_EXTERNAL_FRAME_SOCKET`, and
 `GHOSTTEA_EXTERNAL_AUTH_TOKEN`.
 
 ## Terminal mirroring
 
-The current development dependency targets Truffle 0.7.1 from the sibling
+The current development dependency targets Truffle 0.7.2 from the sibling
 checkout at `../p008/truffle`. Put `TRUFFLE_TEST_AUTHKEY` in an untracked
 `.env` to enable the Truffle node during development, or set
 `GHOSTTEA_TRUFFLE_ENABLED=false` to keep the runtime local-only.
@@ -184,7 +202,7 @@ npm run test:integration
 npm run check
 npm run build
 
-# opt-in live Truffle 0.7.1 QUIC smoke test (reads .env)
+# opt-in live Truffle 0.7.2 QUIC smoke test (reads .env)
 cargo test --package ghosttea-truffle \
   latest_truffle_quic_round_trip -- --ignored
 ```

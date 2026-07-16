@@ -4,10 +4,12 @@ import {
   PROTOCOL_MINOR,
   type CreateSessionOptions,
   type RemoteHostSummary,
+  type ServerEvent,
   type SessionSummary,
   type SharedSessionSummary,
   type TerminalKeyEvent,
   type TerminalMouseEvent,
+  type TerminationSource,
 } from "@vibecook/ghosttea-protocol";
 import { FrameFlag } from "@vibecook/ghosttea-frame";
 import type { CellSelection, TerminalTheme } from "./renderers/types.js";
@@ -110,6 +112,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.dispatchEvent(new CustomEvent("frame-resync-failed", { detail: { sessionHandle, error } }));
       },
     });
+    this.#worker.addEventListener("error", (event) => {
+      console.error(`[terminal-runtime] render worker failed to start: ${event.message || "unknown worker error"}`);
+      this.dispatchEvent(new CustomEvent("renderer-error", { detail: event }));
+    });
+    this.#worker.addEventListener("messageerror", (event) => {
+      console.error("[terminal-runtime] render worker rejected a message", event);
+      this.dispatchEvent(new CustomEvent("renderer-error", { detail: event }));
+    });
     this.#worker.addEventListener("message", ({ data }: MessageEvent<WorkerToRendererMessage>) => {
       if (data.type === "renderer-status") {
         this.#rendererBackend = data.backend;
@@ -159,7 +169,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     console.info("[terminal-runtime] received control and frame ports");
     this.#control = new ControlClient(ports.control);
     this.#control.addEventListener("session-exited", (event) => {
-      const detail = (event as CustomEvent<{ sessionId: string; exitCode: number | null }>).detail;
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "session-exited" }>>).detail;
       const handle = this.#handleBySessionId.get(detail.sessionId);
       const session = handle ? this.#sessionByHandle.get(handle) : undefined;
       if (!handle || !session) return;
@@ -183,16 +193,19 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     this.#frames = ports.frames;
     this.#frames.onmessage = ({ data }: MessageEvent<ArrayBuffer>) => {
-      if (data.byteLength >= 16) {
-        const view = new DataView(data);
-        const sessionHandle = view.getBigUint64(8, true).toString();
-        const tracking = (view.getUint16(6, true) & FrameFlag.MouseTracking) !== 0;
-        if (this.#mouseTrackingByHandle.get(sessionHandle) !== tracking) {
-          this.#mouseTrackingByHandle.set(sessionHandle, tracking);
-          this.dispatchEvent(new CustomEvent("terminal-modes", { detail: { sessionHandle, mouseTracking: tracking } }));
-        }
-        this.#scheduleMetadataRefresh(sessionHandle);
+      if (data.byteLength < 16) return;
+      const view = new DataView(data);
+      const sessionHandle = view.getBigUint64(8, true).toString();
+      // A frame can already be queued in the bridge when its session is
+      // terminated. Do not recreate worker state for a session we deliberately
+      // dropped, and do not render sessions owned only by automation clients.
+      if (!this.#sessionByHandle.has(sessionHandle)) return;
+      const tracking = (view.getUint16(6, true) & FrameFlag.MouseTracking) !== 0;
+      if (this.#mouseTrackingByHandle.get(sessionHandle) !== tracking) {
+        this.#mouseTrackingByHandle.set(sessionHandle, tracking);
+        this.dispatchEvent(new CustomEvent("terminal-modes", { detail: { sessionHandle, mouseTracking: tracking } }));
       }
+      this.#scheduleMetadataRefresh(sessionHandle);
       this.#postWorker({ type: "frame", packet: data }, [data]);
     };
     this.#frames.start();
@@ -237,12 +250,16 @@ export class GhostteaTerminalRuntime extends EventTarget {
     return this.#sessionByHandle.get(sessionHandle);
   }
 
+  registerSession(session: SessionSummary): void {
+    this.#sessionByHandle.set(session.handle, session);
+    this.#handleBySessionId.set(session.id, session.handle);
+  }
+
   async createSession(options: CreateSessionOptions): Promise<SessionSummary> {
     await this.connect();
     const response = await this.#control!.request({ type: "create-session", options });
     if (response.type !== "session-created") throw new Error("terminald returned an unexpected response");
-    this.#sessionByHandle.set(response.session.handle, response.session);
-    this.#handleBySessionId.set(response.session.id, response.session.handle);
+    this.registerSession(response.session);
     console.info(`[terminal-runtime] created session ${response.session.id}`);
     return response.session;
   }
@@ -252,8 +269,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     const response = await this.#control!.request({ type: "list-sessions" });
     if (response.type !== "sessions") throw new Error("terminald returned an unexpected response");
     for (const session of response.sessions) {
-      this.#sessionByHandle.set(session.handle, session);
-      this.#handleBySessionId.set(session.id, session.handle);
+      this.registerSession(session);
     }
     return response.sessions;
   }
@@ -288,15 +304,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
       rows,
     });
     if (response.type !== "session-created") throw new Error("terminald could not open the remote session");
-    this.#sessionByHandle.set(response.session.handle, response.session);
-    this.#handleBySessionId.set(response.session.id, response.session.handle);
+    this.registerSession(response.session);
     return response.session;
   }
 
   async #refreshSession(sessionHandle: string): Promise<void> {
     const session = this.#sessionByHandle.get(sessionHandle);
-    if (!session || !this.#control)
-      throw new Error(`Session ${sessionHandle} is not ready for frame resynchronization`);
+    if (!session) return;
+    if (!this.#control) throw new Error(`Session ${sessionHandle} is not ready for frame resynchronization`);
     const response = await this.#control.request({ type: "refresh-session", sessionId: session.id });
     if (response.type !== "ok") throw new Error("terminald rejected frame resynchronization");
   }
@@ -370,12 +385,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
         mounted.disposeTimer = window.setTimeout(() => {
           mounted.disposeTimer = undefined;
           if (mounted.references !== 0) return;
-          if (this.#mountGenerationByHandle.get(mounted.sessionHandle) !== mounted.generation) return;
-          this.#postWorker({ type: "unmount", sessionHandle: mounted.sessionHandle });
+          const ownsWorkerSurface = this.#mountGenerationByHandle.get(mounted.sessionHandle) === mounted.generation;
+          if (ownsWorkerSurface) {
+            this.#postWorker({ type: "unmount", sessionHandle: mounted.sessionHandle });
+            this.#mountGenerationByHandle.delete(mounted.sessionHandle);
+          }
           this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId, viewId: mounted.viewId });
           this.#views.delete(mounted.viewId);
           this.#focusByView.delete(mounted.viewId);
-          this.#mountGenerationByHandle.delete(mounted.sessionHandle);
           this.#mountedCanvases.delete(mounted.canvas);
         }, 0);
       },
@@ -507,8 +524,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
 
-  terminate(sessionId: string): void {
-    this.#control?.notify({ type: "terminate", sessionId });
+  terminate(sessionId: string, source: TerminationSource = "user"): void {
+    this.#control?.notify({ type: "terminate", sessionId, source });
     const handle = this.#handleBySessionId.get(sessionId);
     if (!handle) return;
     const timer = this.#metadataTimers.get(handle);

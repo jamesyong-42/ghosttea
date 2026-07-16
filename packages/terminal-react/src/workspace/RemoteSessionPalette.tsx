@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import type { RemoteHostSummary, SharedSessionSummary } from "@vibecook/ghosttea-protocol";
-import { terminalRuntime } from "./terminal";
+import { useGhostteaRuntime } from "../context.js";
 
 export interface RemoteChoice {
   host: RemoteHostSummary;
@@ -14,6 +14,7 @@ interface RemoteSessionPaletteProps {
 }
 
 export function RemoteSessionPalette({ onClose, onOpen }: RemoteSessionPaletteProps) {
+  const terminalRuntime = useGhostteaRuntime();
   const inputRef = useRef<HTMLInputElement>(null);
   const aliveRef = useRef(true);
   const loadingRef = useRef(false);
@@ -24,41 +25,44 @@ export function RemoteSessionPalette({ onClose, onOpen }: RemoteSessionPalettePr
   const [opening, setOpening] = useState<string>();
   const [error, setError] = useState<string>();
 
-  const load = useCallback(async (background = false): Promise<void> => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
-    if (!background) {
-      setLoading(true);
-      setError(undefined);
-    }
-    try {
-      const discovered = await terminalRuntime.listRemoteHosts();
-      if (!aliveRef.current) return;
-      setHosts(discovered);
-      setError(undefined);
-      if (!background) setLoading(false);
+  const load = useCallback(
+    async (background = false): Promise<void> => {
+      if (loadingRef.current) return;
+      loadingRef.current = true;
+      if (!background) {
+        setLoading(true);
+        setError(undefined);
+      }
+      try {
+        const discovered = await terminalRuntime.listRemoteHosts();
+        if (!aliveRef.current) return;
+        setHosts(discovered);
+        setError(undefined);
+        if (!background) setLoading(false);
 
-      const next = await Promise.all(
-        discovered.map(async (host) => {
-          if (!host.online) return host;
-          try {
-            const sessions = await terminalRuntime.listRemoteSessions(host.deviceId);
-            return { ...host, sessions };
-          } catch (cause) {
-            console.warn(`[terminal-runtime] could not refresh sessions from ${host.deviceName}`, cause);
-            return host;
-          }
-        }),
-      );
-      if (aliveRef.current) setHosts(next);
-    } catch (cause) {
-      if (!aliveRef.current || background) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      loadingRef.current = false;
-      if (aliveRef.current && !background) setLoading(false);
-    }
-  }, []);
+        const next = await Promise.all(
+          discovered.map(async (host) => {
+            if (!host.online) return host;
+            try {
+              const sessions = await terminalRuntime.listRemoteSessions(host.deviceId);
+              return { ...host, sessions };
+            } catch (cause) {
+              console.warn(`[terminal-runtime] could not refresh sessions from ${host.deviceName}`, cause);
+              return host;
+            }
+          }),
+        );
+        if (aliveRef.current) setHosts(next);
+      } catch (cause) {
+        if (!aliveRef.current || background) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        loadingRef.current = false;
+        if (aliveRef.current && !background) setLoading(false);
+      }
+    },
+    [terminalRuntime],
+  );
 
   useEffect(() => {
     aliveRef.current = true;

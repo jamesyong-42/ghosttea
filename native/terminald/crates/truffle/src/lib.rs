@@ -1488,7 +1488,7 @@ mod tests {
             tokio::try_join!(build_a, build_b)
         })
         .await
-        .context("timed out starting the two Truffle 0.7.1 nodes")??;
+        .context("timed out starting the two Truffle 0.7.2 nodes")??;
         let node_a = Arc::new(node_a);
         let node_b = Arc::new(node_b);
         let b_id = node_b.local_info().device_id;

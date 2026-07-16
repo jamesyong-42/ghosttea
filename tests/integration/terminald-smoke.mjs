@@ -196,6 +196,21 @@ try {
   );
   const created = await nextControlResponse(control, 1);
   if (created.type !== "session-created") throw new Error(`create failed: ${JSON.stringify(created)}`);
+  if (
+    !Number.isInteger(created.session.pid) ||
+    created.session.pid <= 0 ||
+    !Number.isInteger(created.session.createdAtMs)
+  ) {
+    throw new Error(`session lifecycle metadata missing: ${JSON.stringify(created.session)}`);
+  }
+  if (
+    created.session.exitCode !== null ||
+    created.session.exitSignal !== null ||
+    created.session.requestedTermination !== null ||
+    created.session.exitOutcome !== null
+  ) {
+    throw new Error("running session reported exit metadata");
+  }
   const primaryView = {
     viewId: "smoke-primary",
     attachmentEpoch: 0,
@@ -248,10 +263,135 @@ try {
   }
   if (!found) throw new Error("PTY output was not present in a binary snapshot");
 
+  let requestId = 4;
   control.socket.write(
-    packet(JSON.stringify({ requestId: 4, type: "refresh-session", sessionId: created.session.id })),
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "get-automation-state",
+        sessionId: created.session.id,
+      }),
+    ),
   );
-  const refreshed = await nextControlResponse(control, 4);
+  const automationBeforeHuman = await nextControlResponse(control, requestId - 1);
+  if (automationBeforeHuman.type !== "automation-state") throw new Error("automation state was unavailable");
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "send-text",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+        text: "x",
+      }),
+    ),
+  );
+  await nextControlResponse(control, requestId - 1);
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "automation-input",
+        sessionId: created.session.id,
+        expectedHumanInputEpoch: automationBeforeHuman.humanInputEpoch,
+        operation: { kind: "paste", text: "printf automation-conflict", submit: true },
+      }),
+    ),
+  );
+  const conflict = await nextControlResponse(control, requestId - 1);
+  if (conflict.type !== "automation-input-result" || conflict.accepted || conflict.reason !== "human-input-conflict") {
+    throw new Error(`automation was not rejected after human input: ${JSON.stringify(conflict)}`);
+  }
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "interrupt",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+      }),
+    ),
+  );
+  await nextControlResponse(control, requestId - 1);
+  control.socket.write(
+    packet(JSON.stringify({ requestId: requestId++, type: "get-automation-state", sessionId: created.session.id })),
+  );
+  const automationReady = await nextControlResponse(control, requestId - 1);
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "automation-input",
+        sessionId: created.session.id,
+        expectedHumanInputEpoch: automationReady.humanInputEpoch,
+        operation: { kind: "paste", text: "printf 'ghosttea-automation-ok\\n'", submit: true },
+      }),
+    ),
+  );
+  const automationAccepted = await nextControlResponse(control, requestId - 1);
+  if (automationAccepted.type !== "automation-input-result" || !automationAccepted.accepted) {
+    throw new Error(`atomic automation input failed: ${JSON.stringify(automationAccepted)}`);
+  }
+  let foundAutomation = false;
+  while (!foundAutomation) {
+    const frame = await Promise.race([
+      frames.next(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("automation frame timeout")), 5_000)),
+    ]);
+    foundAutomation = frame.includes(Buffer.from("ghosttea-automation-ok"));
+  }
+
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "create-session",
+        options: {
+          executable: "/bin/sh",
+          args: [
+            "-c",
+            'printf \'env-safe=%s secret=%s term=%s\\n\' "$SAFE" "${GHOSTTEA_AUTH_TOKEN-unset}" "$TERM"; sleep 2',
+          ],
+          environment: { mode: "clean", variables: { SAFE: "allowed" } },
+          cols: 80,
+          rows: 8,
+          persistence: "terminate-with-app",
+        },
+      }),
+    ),
+  );
+  const cleanEnvironment = await nextControlResponse(control, requestId - 1);
+  if (cleanEnvironment.type !== "session-created") throw new Error("clean environment session creation failed");
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "attach-session",
+        sessionId: cleanEnvironment.session.id,
+        viewId: "smoke-clean-env",
+      }),
+    ),
+  );
+  await nextControlResponse(control, requestId - 1);
+  control.socket.write(
+    packet(JSON.stringify({ requestId: requestId++, type: "refresh-session", sessionId: cleanEnvironment.session.id })),
+  );
+  await nextControlResponse(control, requestId - 1);
+  let foundCleanEnvironment = false;
+  while (!foundCleanEnvironment) {
+    const frame = await Promise.race([
+      frames.next(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("clean environment frame timeout")), 5_000)),
+    ]);
+    foundCleanEnvironment =
+      frame.readBigUInt64LE(8).toString() === cleanEnvironment.session.handle &&
+      frame.includes(Buffer.from("env-safe=allowed secret=unset term=xterm-256color"));
+  }
+
+  control.socket.write(
+    packet(JSON.stringify({ requestId: requestId++, type: "refresh-session", sessionId: created.session.id })),
+  );
+  const refreshed = await nextControlResponse(control, requestId - 1);
   if (refreshed.type !== "ok") throw new Error(`refresh failed: ${JSON.stringify(refreshed)}`);
   let foundFullRefresh = false;
   const refreshDeadline = Date.now() + 5_000;
@@ -268,7 +408,7 @@ try {
   control.socket.write(
     packet(
       JSON.stringify({
-        requestId: 5,
+        requestId: requestId++,
         type: "send-text",
         sessionId: created.session.id,
         ...nextInput(primaryView),
@@ -276,7 +416,7 @@ try {
       }),
     ),
   );
-  await nextControlResponse(control, 5);
+  await nextControlResponse(control, requestId - 1);
   const shapingDeadline = Date.now() + 5_000;
   let shapingVerified = false;
   while (Date.now() < shapingDeadline && !shapingVerified) {
@@ -296,7 +436,6 @@ try {
   if (!shapingVerified)
     throw new Error("native shaping frame did not include alpha/color glyphs plus bold/foreground styles");
 
-  let requestId = 6;
   control.socket.write(
     packet(
       JSON.stringify({
@@ -707,6 +846,56 @@ try {
   }
   if (!foundHistory) throw new Error("scrollback viewport did not move into session history");
 
+  if (process.platform !== "win32") {
+    control.socket.write(
+      packet(
+        JSON.stringify({
+          requestId: requestId++,
+          type: "create-session",
+          options: {
+            executable: "/bin/sh",
+            args: ["-c", "trap '' INT TERM; sleep 60 & wait"],
+            environment: { mode: "clean", variables: { PATH: process.env.PATH ?? "/usr/bin:/bin" } },
+            cols: 20,
+            rows: 4,
+            persistence: "terminate-with-app",
+          },
+        }),
+      ),
+    );
+    const stubborn = await nextControlResponse(control, requestId - 1);
+    if (stubborn.type !== "session-created" || !Number.isInteger(stubborn.session.pid)) {
+      throw new Error(`stubborn process creation failed: ${JSON.stringify(stubborn)}`);
+    }
+    control.socket.write(
+      packet(
+        JSON.stringify({
+          requestId: requestId++,
+          type: "terminate",
+          sessionId: stubborn.session.id,
+          source: "application",
+        }),
+      ),
+    );
+    if ((await nextControlResponse(control, requestId - 1)).type !== "ok") {
+      throw new Error("stubborn process termination was rejected");
+    }
+    const terminated = await Promise.race([
+      nextControlEvent(control, "session-exited", (event) => event.sessionId === stubborn.session.id),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("process-group termination timeout")), 10_000)),
+    ]);
+    if (terminated.requestedTermination !== "application" || terminated.exitOutcome !== "application-terminated") {
+      throw new Error(`termination metadata was not classified: ${JSON.stringify(terminated)}`);
+    }
+    try {
+      process.kill(-stubborn.session.pid, 0);
+      throw new Error("terminated PTY process group still exists");
+    } catch (error) {
+      if (error instanceof Error && error.message === "terminated PTY process group still exists") throw error;
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ESRCH")) throw error;
+    }
+  }
+
   control.socket.write(
     packet(
       JSON.stringify({
@@ -724,6 +913,9 @@ try {
     new Promise((_, reject) => setTimeout(() => reject(new Error("session exit event timeout")), 5_000)),
   ]);
   if (exited.sessionId !== created.session.id) throw new Error("wrong session exit event");
+  if (exited.exitCode !== 0 || exited.exitSignal !== null || exited.exitOutcome !== "completed") {
+    throw new Error(`normal exit metadata was incorrect: ${JSON.stringify(exited)}`);
+  }
   control.socket.write(packet(JSON.stringify({ requestId: requestId++, type: "list-sessions" })));
   const remaining = await nextControlResponse(control, requestId - 1);
   if (remaining.type !== "sessions" || remaining.sessions.some((session) => session.id === created.session.id)) {
@@ -748,7 +940,7 @@ try {
   );
   const retained = await nextControlResponse(control, requestId - 1);
   if (retained.type !== "session-created") throw new Error("retained session creation failed");
-  await Promise.race([
+  const retainedExit = await Promise.race([
     nextControlEvent(control, "session-exited", (event) => event.sessionId === retained.session.id),
     new Promise((_, reject) => setTimeout(() => reject(new Error("retained session exit timeout")), 5_000)),
   ]);
@@ -756,7 +948,15 @@ try {
   const withRetained = await nextControlResponse(control, requestId - 1);
   if (
     withRetained.type !== "sessions" ||
-    !withRetained.sessions.some((session) => session.id === retained.session.id && session.exited)
+    !withRetained.sessions.some(
+      (session) =>
+        session.id === retained.session.id &&
+        session.exited &&
+        session.exitCode === 7 &&
+        session.exitOutcome === "crashed",
+    ) ||
+    retainedExit.exitCode !== 7 ||
+    retainedExit.exitOutcome !== "crashed"
   ) {
     throw new Error("keep-until-explicit-close session was not retained");
   }

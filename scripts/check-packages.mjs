@@ -52,9 +52,23 @@ try {
     }
     const packageSpecific =
       workspace === "@vibecook/ghosttea-electron"
-        ? ["dist/main.js", "dist/main.d.ts", "dist/preload.js", "dist/types.js", "dist/bridge-entry.js"]
+        ? [
+            "dist/main.js",
+            "dist/main.d.ts",
+            "dist/preload.js",
+            "dist/types.js",
+            "dist/automation.js",
+            "dist/automation.d.ts",
+            "dist/bridge-entry.js",
+          ]
         : workspace === "@vibecook/ghosttea-react"
-          ? ["dist/styles.css", "dist/terminal-render.worker.js"]
+          ? [
+              "dist/styles.css",
+              "dist/workspace.css",
+              "dist/workspace/index.js",
+              "dist/workspace/index.d.ts",
+              "dist/terminal-render.worker.js",
+            ]
           : [];
     for (const required of packageSpecific) {
       if (!paths.has(required)) throw new Error(`${workspace} tarball is missing ${required}`);
@@ -84,14 +98,17 @@ try {
       'import { ControlClient } from "@vibecook/ghosttea";',
       'import { FRAME_MAGIC } from "@vibecook/ghosttea-frame";',
       'import { PROTOCOL_MAJOR } from "@vibecook/ghosttea-protocol";',
-      'import { existsSync } from "node:fs";',
+      'import { GhostteaAutomationClient } from "@vibecook/ghosttea-electron/automation";',
+      'import { existsSync, readFileSync } from "node:fs";',
       'import { join } from "node:path";',
-      'if (typeof ControlClient !== "function" || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
+      'if (typeof ControlClient !== "function" || typeof GhostteaAutomationClient !== "function" || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
       '  throw new Error("installed Ghosttea packages expose an invalid runtime API");',
       "}",
       'for (const file of ["@vibecook/ghosttea-electron/dist/bridge-entry.js", "@vibecook/ghosttea-react/dist/terminal-render.worker.js"]) {',
       '  if (!existsSync(join("node_modules", file))) throw new Error(`installed Ghosttea package is missing ${file}`);',
       "}",
+      'const worker = readFileSync(join("node_modules", "@vibecook/ghosttea-react/dist/terminal-render.worker.js"), "utf8");',
+      'if (/^\\s*import\\s/m.test(worker)) throw new Error("Ghosttea render worker is not a self-contained browser artifact");',
       'console.log("external npm consumer fixture passed");',
       "",
     ].join("\n"),

@@ -4,7 +4,7 @@ import { GhostteaProvider } from "@vibecook/ghosttea-react";
 import { App } from "./App";
 import { terminalRuntime } from "./terminal";
 import "@vibecook/ghosttea-react/styles.css";
-import "./styles.css";
+import "@vibecook/ghosttea-react/workspace.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
