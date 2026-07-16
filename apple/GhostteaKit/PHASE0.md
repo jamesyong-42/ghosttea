@@ -62,6 +62,13 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   explicit accept-once paths pass before authentication begins. Accept-and-store
   atomically inserts or replaces the OpenSSH entry, preserves file mode, and
   passes a subsequent strict reconnect.
+- a checked-in SwiftUI iOS harness that runs the VT proof, measures deterministic
+  one/four/eight-session physical footprint, executes a bounded SSH command,
+  and presents reject, accept-once, and accept-and-store host-key decisions;
+- a single composed Apple-native XCFramework that carries the Ghostty VT and
+  libssh2/OpenSSL modules without Xcode's multiple-static-binary header collision;
+- reproducible unsigned arm64 builds of that harness for both the iOS Simulator
+  and physical-device SDK.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -87,19 +94,23 @@ UIKit, transport state, and the rest of the application.
 
 ## Remaining gates
 
-1. Run the proof on a physical iOS device once an app harness and signing team are available.
+1. Sign and run `apple/GhostteaHarness` on a physical iOS 17+ device. Record the
+   device/OS, VT result, memory matrix, and launch-server SSH results; the
+   checked-in unsigned simulator/device-SDK build is already green.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
    authentication including encrypted private keys, the asynchronous prompt
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. Remaining work is UIKit/Keychain credential
-   policy, UIKit host-key confirmation,
-   representative-server sampling, adverse-network transitions, resolver and reconnect
-   orchestration, device-footprint instrumentation, and physical-device
-   execution. The public-key partial step remains locked as
+   policy, representative-server sampling, adverse-network transitions,
+   resolver and reconnect orchestration, device-footprint instrumentation, and
+   physical-device execution. The public-key partial step remains locked as
    `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
-3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
+3. Use the harness for the initial VT physical-footprint measurement, then
+   measure the complete terminal stack for one foreground and several
+   background fixtures on the oldest supported device class. Record terminal
+   state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.
 6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.

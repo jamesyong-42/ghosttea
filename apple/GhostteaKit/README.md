@@ -29,9 +29,13 @@ npm run bench:ghostty-vt:apple:matrix
 
 The Ghostty build uses a repository-pinned Zig archive and Ghostty commit. The
 SSH candidate build uses pinned OpenSSL and libssh2 commits. Both produce and
-validate macOS, iOS device, and iOS simulator slices. The test script runs the
-Swift proofs on macOS and cross-compiles the relevant targets for the arm64 iOS
-simulator and device SDKs.
+validate macOS, iOS device, and iOS simulator slices. Before SwiftPM resolves
+the package, `compose-ghosttea-apple-native.mjs` combines both native libraries
+into one generated XCFramework with separate `GhosttyVt` and
+`LibSSH2Candidate` Clang modules. This avoids Xcode's flattened-header collision
+when an application links multiple static binary targets. The test script runs
+the Swift proofs on macOS and cross-compiles the relevant targets for the arm64
+iOS simulator and device SDKs.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

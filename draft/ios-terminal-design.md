@@ -1756,7 +1756,11 @@ Deliverables:
 
 Current progress: the VT build/fixture/host-memory proof, host-neutral
 transport package, and pinned three-slice libssh2/OpenSSL compile probe are
-implemented. The nonblocking libssh2 Swift adapter passes the pinned auth
+implemented. A checked-in SwiftUI harness now composes the native dependencies
+behind one binary package target, builds unsigned for both arm64 simulator and
+device SDKs, runs the VT proof and one/four/eight-session footprint probe, and
+provides an SSH command plus explicit host-key confirmation UI. The nonblocking
+libssh2 Swift adapter passes the pinned auth
 matrix, strict host-key controls, PTY/resize, a byte-exact 32 MiB stalled-reader
 fixture below its macOS RSS gate, no delivered-byte movement while demand is
 paused, no raw socket consumption, receive-window/socket-wait diagnostics, and
@@ -1764,8 +1768,8 @@ blocked-read cancellation, including explicit chained MFA with its `-19`
 return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
-Physical-device VT/network testing, UIKit/Keychain authentication policy,
-UIKit host-key confirmation, representative-server and
+Signed physical-device VT/network execution, UIKit/Keychain authentication
+policy, representative-server and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.

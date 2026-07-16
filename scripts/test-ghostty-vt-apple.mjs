@@ -46,6 +46,8 @@ if (!existsSync(sshCandidateArtifact)) {
   throw new Error("The SSH candidate XCFramework is missing. Run `npm run build:ssh:apple` first.");
 }
 
+run("node", [join(root, "scripts/compose-ghosttea-apple-native.mjs")]);
+
 mkdirSync(moduleCache, { recursive: true });
 run("swift", ["test", "--disable-sandbox"]);
 

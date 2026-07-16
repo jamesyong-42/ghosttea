@@ -17,16 +17,12 @@ let package = Package(
   ],
   targets: [
     .binaryTarget(
-      name: "LibSSH2Candidate",
-      path: "Artifacts/ghosttea-libssh2-candidate.xcframework"
-    ),
-    .binaryTarget(
-      name: "GhosttyVt",
-      path: "Artifacts/ghostty-vt.xcframework"
+      name: "GhostteaAppleNative",
+      path: "Artifacts/ghosttea-apple-native.xcframework"
     ),
     .target(
       name: "CGhostteaSSH",
-      dependencies: ["LibSSH2Candidate"],
+      dependencies: ["GhostteaAppleNative"],
       publicHeadersPath: "include"
     ),
     .target(
@@ -36,11 +32,11 @@ let package = Package(
     .target(name: "GhostteaTransport"),
     .target(
       name: "GhostteaSSHProbe",
-      dependencies: ["GhostteaTransport", "LibSSH2Candidate"]
+      dependencies: ["GhostteaTransport", "GhostteaAppleNative"]
     ),
     .target(
       name: "GhosttyVtProof",
-      dependencies: ["GhosttyVt"]
+      dependencies: ["GhostteaAppleNative"]
     ),
     .executableTarget(
       name: "GhostteaSSHLiveProbe",

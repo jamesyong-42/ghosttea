@@ -25,6 +25,7 @@
     "fixture:ssh:down": "node scripts/ssh-fixture.mjs down",
     "fixture:ssh:up": "node scripts/ssh-fixture.mjs up",
     "test:ghostty-vt:apple": "node scripts/test-ghostty-vt-apple.mjs",
+    "test:ios:harness": "node scripts/test-ios-harness.mjs",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",
     "test:ssh:fixture:candidate": "node scripts/ssh-fixture.mjs candidate",
     "test:ssh:fixture:swift": "node scripts/ssh-fixture.mjs swift",
