@@ -138,6 +138,14 @@ is paused, this observation shows backpressure at the socket/SSH-processing
 boundary; it does not claim that libssh2 consumed packets and advertised a
 smaller remote channel window during the pause.
 
+Strict known-host verification remains the default. For an unknown or changed
+key, an opt-in async responder now receives the host, port, negotiated key
+algorithm, OpenSSH-style SHA-256 fingerprint, and whether the key is unknown or
+changed. It may reject or accept that connection once; authentication never
+starts before the decision. The fixture proves strict rejection and explicit
+accept-once decisions for both states. Atomic known-host persistence and its
+UIKit confirmation flow remain product work.
+
 ## Reproduce
 
 From the repository root on Apple Silicon macOS:
@@ -185,8 +193,9 @@ separately test the host-neutral demand and queue semantics.
 1. Connect the asynchronous challenge responder and encrypted-key path to UIKit
    and Keychain-backed credential policy; add a nonempty name/instruction
    fixture. Mixed echo/no-echo prompts already pass.
-2. Add the explicit user decision boundary for unknown and changed host keys;
-   strict acceptance and rejection controls already pass.
+2. Connect the tested unknown/changed host-key responder to UIKit and implement
+   atomic known-host persistence. Strict rejection and explicit accept-once
+   decisions already pass.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.

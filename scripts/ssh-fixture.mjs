@@ -472,8 +472,22 @@ function swiftCandidate() {
         throw new Error(`Swift libssh2 transport accepted the ${name} host-key control.`);
       }
     }
+    for (const [mode, hostFile] of [
+      ["host-key-unknown", unknownKnownHosts],
+      ["host-key-changed", changedKnownHosts],
+    ]) {
+      const hostKeyDecision = execute(liveProbe, [mode, "127.0.0.1", ports.password, hostFile, publicKey, privateKey], {
+        timeout: 30_000,
+      });
+      if (hostKeyDecision.status !== 0) {
+        throw new Error(
+          `Swift ${mode} decision probe failed: status=${hostKeyDecision.status} stdout=${hostKeyDecision.stdout} stderr=${hostKeyDecision.stderr}`,
+        );
+      }
+      process.stdout.write(hostKeyDecision.stdout);
+    }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, explicit unknown/changed accept-once decisions, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

@@ -11,6 +11,8 @@ extern "C" {
 #define GHOSTTEA_SSH_EAGAIN (-37)
 #define GHOSTTEA_SSH_PUBLICKEY_UNVERIFIED (-19)
 #define GHOSTTEA_SSH_KNOWN_HOST_MATCH 0
+#define GHOSTTEA_SSH_KNOWN_HOST_CHANGED 1
+#define GHOSTTEA_SSH_KNOWN_HOST_UNKNOWN 2
 #define GHOSTTEA_SSH_CONNECT_TIMEOUT (-2)
 #define GHOSTTEA_SSH_CONNECT_CANCELLED (-3)
 
@@ -41,6 +43,11 @@ int ghosttea_ssh_session_verify_known_host(
     const char *host,
     int port,
     const char *known_hosts_path
+);
+int ghosttea_ssh_session_host_key_sha256(
+    ghosttea_ssh_session_t *session,
+    uint8_t *buffer,
+    size_t buffer_length
 );
 const char *ghosttea_ssh_session_negotiated_kex(ghosttea_ssh_session_t *session);
 const char *ghosttea_ssh_session_negotiated_host_key(ghosttea_ssh_session_t *session);

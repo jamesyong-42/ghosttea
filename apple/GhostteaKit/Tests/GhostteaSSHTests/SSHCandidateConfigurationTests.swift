@@ -116,6 +116,38 @@ import Testing
   #expect(configuration.handshakeTimeoutMilliseconds == 10_000)
 }
 
+@Test func configurationRetainsHostKeyDecisionBoundary() async throws {
+  let policy = SSHCandidateHostKeyPolicy.ask { challenge in
+    #expect(challenge.host == "example.test")
+    #expect(challenge.port == 2_222)
+    #expect(challenge.algorithm == "ssh-ed25519")
+    #expect(challenge.fingerprint == "SHA256:fixture")
+    #expect(challenge.status == .unknown)
+    return .acceptOnce
+  }
+  let configuration = try SSHCandidateConfiguration(
+    host: "example.test",
+    port: 2_222,
+    knownHostsPath: "/tmp/known_hosts",
+    hostKeyPolicy: policy,
+    authentication: .password(username: "user", password: "secret")
+  )
+  guard case .ask(let responder) = configuration.hostKeyPolicy else {
+    Issue.record("configuration did not retain host-key responder")
+    return
+  }
+  let decision = try await responder(
+    SSHCandidateHostKeyChallenge(
+      host: "example.test",
+      port: 2_222,
+      algorithm: "ssh-ed25519",
+      fingerprint: "SHA256:fixture",
+      status: .unknown
+    )
+  )
+  #expect(decision == .acceptOnce)
+}
+
 @Test func connectionObservesCancellationBeforeSocketWork() async throws {
   let configuration = try SSHCandidateConfiguration(
     host: "127.0.0.1",

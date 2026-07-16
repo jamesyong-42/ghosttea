@@ -201,6 +201,11 @@ Candidate-only metrics now record raw encrypted socket, delivered, and written
 bytes, socket waits, and libssh2 receive-window state. The socket-receive and
 delivered-byte counters remain unchanged during the 750 ms pause, ruling out
 hidden network or Swift-side prefetch before the exact 32 MiB drain.
+Strict known-host verification remains the default. Unknown and changed keys
+can now cross an opt-in async decision boundary with host, port, algorithm,
+OpenSSH-style SHA-256 fingerprint, and mismatch reason. Live controls prove
+strict rejection and explicit accept-once behavior before authentication;
+atomic persistence and UIKit confirmation remain open.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds plus cancellation.

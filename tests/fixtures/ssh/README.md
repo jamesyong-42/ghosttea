@@ -66,6 +66,9 @@ The automated matrix verifies:
   P-256 plus bidirectional AES-256-GCM.
 - strict known-host verification and a complete shell session using an
   RSA-3072 host key with RSA/SHA-2-512 signatures.
+- strict rejection of unknown and changed host keys, followed by separate
+  explicit accept-once probes that validate the async challenge's host, port,
+  algorithm, SHA-256 fingerprint, and mismatch reason.
 
 The first command proves all server/session scenarios with the system OpenSSH
 client. The candidate command compiles a test-only C client against the packaged

@@ -25,6 +25,7 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case missingCandidateConnection
   case unexpectedAlgorithms(SSHCandidateNegotiatedAlgorithms)
   case unexpectedChallenge(SSHKeyboardInteractiveChallenge)
+  case unexpectedHostKeyChallenge(SSHCandidateHostKeyChallenge)
   case authenticationDidNotCancel
   case cancellationStressIterationFailed(kind: String, iteration: Int, error: String)
   case unexpectedAuthenticationCancellationError(String)
@@ -74,6 +75,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "SSH fixture negotiated unexpected algorithms: \(algorithms)"
     case .unexpectedChallenge(let challenge):
       return "SSH fixture produced an unexpected keyboard challenge: \(challenge)"
+    case .unexpectedHostKeyChallenge(let challenge):
+      return "SSH fixture produced an unexpected host-key challenge: \(challenge)"
     case .authenticationDidNotCancel:
       return "keyboard-interactive authentication completed instead of cancelling"
     case .cancellationStressIterationFailed(let kind, let iteration, let error):
@@ -157,7 +160,8 @@ private func authentication(
   privateKeyPath: String
 ) throws -> SSHCandidateAuthentication {
   switch mode {
-  case "password", "handshake-timeout", "handshake-cancel", "handshake-cancel-stress":
+  case "password", "host-key-unknown", "host-key-changed", "handshake-timeout",
+    "handshake-cancel", "handshake-cancel-stress":
     return .password(username: "ghosttea", password: "ghosttea-password")
   case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm", "rsa-sha2":
     return .publicKey(
@@ -233,6 +237,27 @@ private func runProbe() async throws {
   let knownHostsPath = arguments[4]
   let publicKeyPath = arguments[5]
   let privateKeyPath = arguments[6]
+  let hostKeyPolicy: SSHCandidateHostKeyPolicy
+  switch mode {
+  case "host-key-unknown", "host-key-changed":
+    let expectedStatus: SSHCandidateHostKeyStatus =
+      mode == "host-key-unknown" ? .unknown : .changed
+    hostKeyPolicy = .ask { challenge in
+      guard
+        challenge.host == host,
+        challenge.port == port,
+        challenge.algorithm == "ssh-ed25519",
+        challenge.fingerprint.hasPrefix("SHA256:"),
+        challenge.fingerprint.count > "SHA256:".count,
+        challenge.status == expectedStatus
+      else {
+        throw LiveProbeError.unexpectedHostKeyChallenge(challenge)
+      }
+      return .acceptOnce
+    }
+  default:
+    hostKeyPolicy = .strictKnownHosts
+  }
   let session: SSHCandidateSession
   switch mode {
   case "command":
@@ -252,6 +277,7 @@ private func runProbe() async throws {
     host: host,
     port: port,
     knownHostsPath: knownHostsPath,
+    hostKeyPolicy: hostKeyPolicy,
     authentication: try authentication(
       mode: mode,
       publicKeyPath: publicKeyPath,

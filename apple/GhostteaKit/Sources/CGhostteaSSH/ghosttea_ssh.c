@@ -619,6 +619,26 @@ int ghosttea_ssh_session_verify_known_host(
     return result;
 }
 
+int ghosttea_ssh_session_host_key_sha256(
+    ghosttea_ssh_session_t *session,
+    uint8_t *buffer,
+    size_t buffer_length
+) {
+    const size_t fingerprint_length = 32;
+    if (session == NULL || buffer == NULL || buffer_length < fingerprint_length) {
+        return -1;
+    }
+    const char *fingerprint = libssh2_hostkey_hash(
+        session->session,
+        LIBSSH2_HOSTKEY_HASH_SHA256
+    );
+    if (fingerprint == NULL) {
+        return -1;
+    }
+    memcpy(buffer, fingerprint, fingerprint_length);
+    return (int)fingerprint_length;
+}
+
 const char *ghosttea_ssh_session_negotiated_kex(ghosttea_ssh_session_t *session) {
     return libssh2_session_methods(session->session, LIBSSH2_METHOD_KEX);
 }

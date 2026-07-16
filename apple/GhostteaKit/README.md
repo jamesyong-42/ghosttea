@@ -56,3 +56,7 @@ live flood gate requires its delivered-byte counters to remain unchanged while
 terminal demand is paused. It applies the same invariant to raw encrypted
 socket receives, then verifies exact delivery while reporting the libssh2
 receive window and socket-wait count.
+Strict known-host verification is the default. An opt-in async responder may
+make an explicit accept-once decision for unknown or changed keys after showing
+the host, port, algorithm, and SHA-256 fingerprint; persistence remains owned by
+the future app integration.

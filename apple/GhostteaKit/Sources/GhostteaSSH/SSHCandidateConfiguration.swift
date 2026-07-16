@@ -30,6 +30,32 @@ public struct SSHKeyboardInteractiveChallenge: Equatable, Sendable {
 public typealias SSHKeyboardInteractiveResponder =
   @Sendable (SSHKeyboardInteractiveChallenge) async throws -> [String]
 
+public enum SSHCandidateHostKeyStatus: Equatable, Sendable {
+  case unknown
+  case changed
+}
+
+public struct SSHCandidateHostKeyChallenge: Equatable, Sendable {
+  public let host: String
+  public let port: Int
+  public let algorithm: String
+  public let fingerprint: String
+  public let status: SSHCandidateHostKeyStatus
+}
+
+public enum SSHCandidateHostKeyDecision: Equatable, Sendable {
+  case acceptOnce
+  case reject
+}
+
+public typealias SSHCandidateHostKeyResponder =
+  @Sendable (SSHCandidateHostKeyChallenge) async throws -> SSHCandidateHostKeyDecision
+
+public enum SSHCandidateHostKeyPolicy: Sendable {
+  case strictKnownHosts
+  case ask(SSHCandidateHostKeyResponder)
+}
+
 public enum SSHCandidateAuthentication: Sendable {
   case password(username: String, password: String)
   case publicKey(
@@ -65,6 +91,7 @@ public struct SSHCandidateConfiguration: Sendable {
   public let host: String
   public let port: Int
   public let knownHostsPath: String
+  public let hostKeyPolicy: SSHCandidateHostKeyPolicy
   public let authentication: SSHCandidateAuthentication
   public let session: SSHCandidateSession
   public let terminalType: String
@@ -76,6 +103,7 @@ public struct SSHCandidateConfiguration: Sendable {
     host: String,
     port: Int = 22,
     knownHostsPath: String,
+    hostKeyPolicy: SSHCandidateHostKeyPolicy = .strictKnownHosts,
     authentication: SSHCandidateAuthentication,
     session: SSHCandidateSession = .shell,
     terminalType: String = "xterm-256color",
@@ -105,6 +133,7 @@ public struct SSHCandidateConfiguration: Sendable {
     self.host = host
     self.port = port
     self.knownHostsPath = knownHostsPath
+    self.hostKeyPolicy = hostKeyPolicy
     self.authentication = authentication
     self.session = session
     self.terminalType = terminalType
@@ -124,6 +153,7 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case sessionAllocationFailed
   case operationFailed(operation: String, status: Int32, message: String)
   case hostKeyRejected(status: Int32)
+  case hostKeyFingerprintUnavailable
   case authenticationFailed(status: Int32)
   case keyboardPromptMismatch(expected: Int, actual: Int)
   case keyboardBrokerFailed(String)

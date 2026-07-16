@@ -38,10 +38,12 @@ public struct SSHCandidateTransport: TerminalTransport {
           )
         }
       }
-      guard knownHostStatus == GHOSTTEA_SSH_KNOWN_HOST_MATCH else {
-        throw SSHCandidateError.hostKeyRejected(status: knownHostStatus)
-      }
       let negotiatedAlgorithms = driver.negotiatedAlgorithms()
+      try await verifyHostKey(
+        driver: driver,
+        status: knownHostStatus,
+        algorithm: negotiatedAlgorithms.hostKey
+      )
 
       try await authenticate(driver: driver, method: configuration.authentication)
       guard ghosttea_ssh_session_is_authenticated(driver.requiredHandle) == 1 else {
@@ -77,6 +79,57 @@ public struct SSHCandidateTransport: TerminalTransport {
     } catch {
       driver.destroy()
       throw error
+    }
+  }
+
+  private func verifyHostKey(
+    driver: SSHDriver,
+    status: Int32,
+    algorithm: String
+  ) async throws {
+    guard status != GHOSTTEA_SSH_KNOWN_HOST_MATCH else { return }
+    let challengeStatus: SSHCandidateHostKeyStatus
+    switch status {
+    case GHOSTTEA_SSH_KNOWN_HOST_UNKNOWN:
+      challengeStatus = .unknown
+    case GHOSTTEA_SSH_KNOWN_HOST_CHANGED:
+      challengeStatus = .changed
+    default:
+      throw SSHCandidateError.hostKeyRejected(status: status)
+    }
+    guard case .ask(let responder) = configuration.hostKeyPolicy else {
+      throw SSHCandidateError.hostKeyRejected(status: status)
+    }
+
+    var fingerprintBytes = Data(count: 32)
+    let fingerprintLength = fingerprintBytes.withUnsafeMutableBytes { bytes in
+      ghosttea_ssh_session_host_key_sha256(
+        driver.requiredHandle,
+        bytes.bindMemory(to: UInt8.self).baseAddress,
+        bytes.count
+      )
+    }
+    guard fingerprintLength == fingerprintBytes.count else {
+      throw SSHCandidateError.hostKeyFingerprintUnavailable
+    }
+    let fingerprint =
+      "SHA256:"
+      + fingerprintBytes.base64EncodedString().replacing(
+        "=",
+        with: ""
+      )
+    let decision = try await responder(
+      SSHCandidateHostKeyChallenge(
+        host: configuration.host,
+        port: configuration.port,
+        algorithm: algorithm,
+        fingerprint: fingerprint,
+        status: challengeStatus
+      )
+    )
+    try Task.checkCancellation()
+    guard decision == .acceptOnce else {
+      throw SSHCandidateError.hostKeyRejected(status: status)
     }
   }
 
