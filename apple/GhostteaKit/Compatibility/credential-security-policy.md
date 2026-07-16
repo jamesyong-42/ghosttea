@@ -42,26 +42,31 @@ zeroization. Callers must:
 5. request the credential again after reconnect rather than retaining it in
    workspace or session state.
 
-`GhostteaSSH` now includes an async password-credential resolver receiving an
-opaque `SSHCredentialID`. The iOS harness clears its editable password field,
-stores the bytes in Keychain, resolves them only when authentication begins,
-and removes the item immediately after connection or on every failure path.
-The legacy direct-password case remains for fixture compatibility and must not
-be used by the product app.
-
-Public-key paths and passphrase strings are still carried directly by the Phase
-0 configuration. Production promotion therefore requires applying the same
-opaque resolver boundary to those cases and implementing protected key
-materialization.
+`GhostteaSSH` includes async password and private-key credential cases that
+receive opaque `SSHCredentialID` values. The iOS harness clears its editable
+password field, stores the bytes in Keychain, resolves them only when
+authentication begins, and removes the item immediately after connection or on
+every failure path. The private-key case resolves key and optional passphrase
+bytes only inside `connect()`. The legacy direct-password and path/string
+public-key cases remain for fixture compatibility and must not be used by the
+product app.
 
 ## Private-key materialization
 
-The pinned libssh2 file API currently accepts private-key paths. A production
-resolver may materialize Keychain private-key bytes only immediately before
-authentication into an app-private temporary file with complete file
-protection and backup exclusion. The adapter must delete the file after the
-authentication call on success, failure, timeout, and cancellation. No
-workspace path may refer to that temporary file, and logs must not include it.
+The pinned libssh2 file API currently accepts private-key paths.
+`ProtectedPrivateKeyMaterializer` therefore writes resolved bytes immediately
+before authentication to a randomly named app-private temporary file. Its
+directory is mode `0700`; each key is a regular file with mode `0600`, complete
+file protection, and backup-exclusion metadata. `GhostteaSSH` removes the file
+before `connect()` returns after success and on every thrown failure, timeout,
+or cancellation path. The owning object makes an idempotent deinitialization
+cleanup attempt as a final fallback. No workspace path refers to the temporary
+file, and errors and logs do not include it.
+
+The passphrase crosses the C boundary as counted bytes. The shim rejects
+embedded NUL bytes, creates the null-terminated copy required by libssh2 only
+for the call, and overwrites that copy before freeing it. Swift and libssh2 may
+still make other copies, so this does not claim complete zeroization.
 
 Longer term, prefer a libssh2 in-memory key API or a signing callback if the
 required key formats and algorithms can pass the same compatibility matrix.
@@ -76,10 +81,17 @@ tests and must not silently change existing credential accessibility.
 
 ## Verification
 
-Package tests lock the opaque account format and reject an empty service name.
+Package tests lock the opaque account format, reject an empty service name,
+validate credential kinds, and verify exact private-key bytes, file type and
+permissions, backup-exclusion metadata, explicit deletion, and deinitialization
+cleanup.
 The iOS Phase 0 harness performs a real Keychain save/load/delete round trip
 using random non-user secret data and verifies that removal returns the item to
 the missing state. A second physical-device probe authenticates to the
 disposable SSH fixture through the on-demand resolver and cannot proceed to
 command output unless immediate post-connect deletion succeeds. No test writes
-user credentials to the Keychain.
+user credentials to the Keychain. The disposable macOS OpenSSH matrix also
+authenticates with a passphrase-encrypted key through the opaque resolver,
+rejects an incorrect resolved passphrase, and leaves the protected temporary
+directory empty. Physical-device private-key authentication remains a product
+integration gate.

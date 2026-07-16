@@ -120,9 +120,14 @@ A third command terminates its remote shell with `SIGTERM`; the adapter copies
 and frees libssh2's allocated exit-signal value and returns
 `.signaled(name: "TERM")` instead of the library's default numeric zero.
 The generated-key fixture also authenticates with a passphrase-encrypted
-OpenSSH Ed25519 private key and rejects the same key under an incorrect
-passphrase. This proves the candidate crypto path, not the production secret
-boundary; Keychain loading and passphrase lifetime remain open.
+OpenSSH Ed25519 private key through both the legacy path/string case and the
+production-shaped opaque resolver, and rejects incorrect passphrases through
+both paths. The resolver receives only opaque private-key and passphrase IDs,
+materializes key bytes to a protected random `0600` temporary file for the
+libssh2 call, and removes it before returning. The C shim accepts counted
+passphrase bytes and wipes its required null-terminated copy before freeing it.
+Package tests cover protection metadata and cleanup; the live matrix leaves the
+materialization directory empty.
 
 The candidate exposes diagnostic flow-control counters without changing the
 host-neutral transport protocol: bytes delivered to Swift per channel, raw
@@ -192,10 +197,11 @@ separately test the host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Apply the passing opaque Keychain password-resolver pattern to private keys
-   and passphrases, connect the asynchronous challenge responder to UIKit, and
-   add a nonempty name/instruction fixture. Mixed echo/no-echo prompts already
-   pass.
+1. Connect the asynchronous challenge responder and opaque private-key chooser
+   to UIKit, exercise the private-key resolver on a physical device, and add a
+   nonempty name/instruction fixture. Opaque key/passphrase resolution,
+   protected temporary materialization, and mixed echo/no-echo prompts already
+   pass on the macOS fixture.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.

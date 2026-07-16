@@ -73,6 +73,13 @@ public enum SSHCandidateAuthentication: Sendable {
     privateKeyPath: String,
     passphrase: String?
   )
+  case publicKeyCredential(
+    username: String,
+    publicKeyPath: String,
+    privateKeyCredential: SSHCredentialID,
+    passphraseCredential: SSHCredentialID?,
+    resolver: SSHCredentialResolver
+  )
   case keyboardInteractive(
     username: String,
     responder: SSHKeyboardInteractiveResponder
@@ -143,6 +150,38 @@ public struct SSHCandidateConfiguration: Sendable {
     self.port = port
     self.knownHostsPath = knownHostsPath
     self.hostKeyPolicy = hostKeyPolicy
+    switch authentication {
+    case .passwordCredential(_, let credential, _):
+      guard credential.kind == .password else {
+        throw SSHCandidateError.credentialKindMismatch(
+          expected: .password,
+          actual: credential.kind
+        )
+      }
+    case .publicKeyCredential(
+      _,
+      _,
+      let privateKeyCredential,
+      let passphraseCredential,
+      _
+    ):
+      guard privateKeyCredential.kind == .privateKey else {
+        throw SSHCandidateError.credentialKindMismatch(
+          expected: .privateKey,
+          actual: privateKeyCredential.kind
+        )
+      }
+      if let passphraseCredential,
+        passphraseCredential.kind != .privateKeyPassphrase
+      {
+        throw SSHCandidateError.credentialKindMismatch(
+          expected: .privateKeyPassphrase,
+          actual: passphraseCredential.kind
+        )
+      }
+    default:
+      break
+    }
     self.authentication = authentication
     self.session = session
     self.terminalType = terminalType
@@ -168,6 +207,8 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case keyboardPromptMismatch(expected: Int, actual: Int)
   case keyboardBrokerFailed(String)
   case credentialTooLarge(bytes: Int)
+  case credentialContainsNUL(kind: SSHCredentialKind)
+  case credentialKindMismatch(expected: SSHCredentialKind, actual: SSHCredentialKind)
 }
 
 public struct SSHCandidateNegotiatedAlgorithms: Equatable, Sendable {

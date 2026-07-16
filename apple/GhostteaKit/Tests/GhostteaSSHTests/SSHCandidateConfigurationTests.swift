@@ -150,6 +150,105 @@ import Testing
   #expect(try await resolver(retainedID) == expected)
 }
 
+@Test func configurationRetainsOpaquePrivateKeyResolver() async throws {
+  let connectionID = UUID(uuidString: "12BD069C-2890-4893-A1BE-3BB66BFB2BC7")!
+  let privateKeyCredential = SSHCredentialID(
+    connectionID: connectionID,
+    kind: .privateKey
+  )
+  let passphraseCredential = SSHCredentialID(
+    connectionID: connectionID,
+    kind: .privateKeyPassphrase
+  )
+  let privateKey = Data("private-key".utf8)
+  let passphrase = Data("passphrase".utf8)
+  let authentication = SSHCandidateAuthentication.publicKeyCredential(
+    username: "ghosttea",
+    publicKeyPath: "/keys/id_ed25519.pub",
+    privateKeyCredential: privateKeyCredential,
+    passphraseCredential: passphraseCredential,
+    resolver: { requested in
+      switch requested.kind {
+      case .privateKey:
+        return privateKey
+      case .privateKeyPassphrase:
+        return passphrase
+      case .password:
+        Issue.record("unexpected password credential request")
+        return Data()
+      }
+    }
+  )
+  let configuration = try SSHCandidateConfiguration(
+    host: "example.test",
+    knownHostsPath: "/keys/known_hosts",
+    authentication: authentication
+  )
+
+  guard
+    case .publicKeyCredential(
+      let username,
+      let publicKeyPath,
+      let retainedPrivateKey,
+      let retainedPassphrase,
+      let resolver
+    ) = configuration.authentication
+  else {
+    Issue.record("configuration did not retain private-key credentials")
+    return
+  }
+  #expect(username == "ghosttea")
+  #expect(publicKeyPath == "/keys/id_ed25519.pub")
+  #expect(retainedPrivateKey == privateKeyCredential)
+  #expect(retainedPassphrase == passphraseCredential)
+  #expect(try await resolver(retainedPrivateKey) == privateKey)
+  #expect(try await resolver(retainedPassphrase!) == passphrase)
+}
+
+@Test func configurationRejectsMismatchedCredentialKinds() throws {
+  let connectionID = UUID(uuidString: "1BB465D6-E38D-46C2-BC92-042C5B7C02E3")!
+  let passwordCredential = SSHCredentialID(connectionID: connectionID, kind: .password)
+  let privateKeyCredential = SSHCredentialID(connectionID: connectionID, kind: .privateKey)
+
+  #expect(
+    throws: SSHCandidateError.credentialKindMismatch(
+      expected: .privateKey,
+      actual: .password
+    )
+  ) {
+    try SSHCandidateConfiguration(
+      host: "example.test",
+      knownHostsPath: "/keys/known_hosts",
+      authentication: .publicKeyCredential(
+        username: "ghosttea",
+        publicKeyPath: "/keys/id_ed25519.pub",
+        privateKeyCredential: passwordCredential,
+        passphraseCredential: nil,
+        resolver: { _ in Data() }
+      )
+    )
+  }
+
+  #expect(
+    throws: SSHCandidateError.credentialKindMismatch(
+      expected: .privateKeyPassphrase,
+      actual: .password
+    )
+  ) {
+    try SSHCandidateConfiguration(
+      host: "example.test",
+      knownHostsPath: "/keys/known_hosts",
+      authentication: .publicKeyCredential(
+        username: "ghosttea",
+        publicKeyPath: "/keys/id_ed25519.pub",
+        privateKeyCredential: privateKeyCredential,
+        passphraseCredential: passwordCredential,
+        resolver: { _ in Data() }
+      )
+    )
+  }
+}
+
 @Test func configurationRetainsHostKeyDecisionBoundary() async throws {
   let policy = SSHCandidateHostKeyPolicy.ask { challenge in
     #expect(challenge.host == "example.test")

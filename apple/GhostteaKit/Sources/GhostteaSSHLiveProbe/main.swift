@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCredentials
 import GhostteaSSH
 import GhostteaTransport
 
@@ -184,6 +185,40 @@ private func authentication(
       publicKeyPath: publicKeyPath,
       privateKeyPath: privateKeyPath,
       passphrase: "incorrect-passphrase"
+    )
+  case "encrypted-key-resolver", "encrypted-key-resolver-wrong-passphrase":
+    let connectionID = UUID(uuidString: "F73FBF98-962A-4D24-A71F-5DBA348AA001")!
+    let privateKeyCredential = SSHCredentialID(
+      connectionID: connectionID,
+      kind: .privateKey
+    )
+    let passphraseCredential = SSHCredentialID(
+      connectionID: connectionID,
+      kind: .privateKeyPassphrase
+    )
+    let privateKey = try Data(contentsOf: URL(filePath: privateKeyPath))
+    let passphrase = Data(
+      (mode == "encrypted-key-resolver" ? "ghosttea-key-passphrase" : "incorrect-passphrase")
+        .utf8
+    )
+    return .publicKeyCredential(
+      username: "ghosttea",
+      publicKeyPath: publicKeyPath,
+      privateKeyCredential: privateKeyCredential,
+      passphraseCredential: passphraseCredential,
+      resolver: { credential in
+        switch credential.kind {
+        case .privateKey:
+          return privateKey
+        case .privateKeyPassphrase:
+          return passphrase
+        case .password:
+          throw SSHCandidateError.credentialKindMismatch(
+            expected: .privateKey,
+            actual: .password
+          )
+        }
+      }
     )
   case "keyboard":
     return .keyboardInteractive(

@@ -87,6 +87,15 @@ int ghosttea_ssh_session_auth_public_key(
     const char *private_key_path,
     const char *passphrase
 );
+int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const char *public_key_path,
+    const char *private_key_path,
+    const uint8_t *passphrase,
+    size_t passphrase_length,
+    int passphrase_present
+);
 void ghosttea_ssh_session_reset_keyboard_answers(ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_add_keyboard_answer(
     ghosttea_ssh_session_t *session,

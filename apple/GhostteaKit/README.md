@@ -12,7 +12,10 @@ the shared Ghosttea model and ordered effect stream.
 
 `GhostteaCredentials` defines the first persistent-secret boundary. It stores
 opaque credential references in Apple's device-only, non-synchronizing
-data-protection Keychain. The policy and remaining adapter work are recorded in
+data-protection Keychain. The SSH adapter resolves password, private-key, and
+passphrase bytes only during authentication; private keys use a protected,
+short-lived temporary materializer for libssh2's file API. The policy and
+remaining product integration work are recorded in
 [`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
 
 ## Build and test

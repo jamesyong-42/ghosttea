@@ -1,5 +1,6 @@
 import CGhostteaSSH
 import Foundation
+import GhostteaCredentials
 import GhostteaTransport
 
 public struct SSHCandidateTransport: TerminalTransport {
@@ -204,6 +205,38 @@ public struct SSHCandidateTransport: TerminalTransport {
         passphrase: passphrase
       )
 
+    case .publicKeyCredential(
+      let username,
+      let publicKeyPath,
+      let privateKeyCredential,
+      let passphraseCredential,
+      let resolver
+    ):
+      let privateKey = try await resolver(privateKeyCredential)
+      let passphrase: Data?
+      if let passphraseCredential {
+        passphrase = try await resolver(passphraseCredential)
+      } else {
+        passphrase = nil
+      }
+      if let passphrase, passphrase.contains(0) {
+        throw SSHCandidateError.credentialContainsNUL(kind: .privateKeyPassphrase)
+      }
+      let materializedKey = try ProtectedPrivateKeyMaterializer().materialize(privateKey)
+      do {
+        try await authenticatePublicKey(
+          driver: driver,
+          username: username,
+          publicKeyPath: publicKeyPath,
+          privateKeyPath: materializedKey.path,
+          passphrase: passphrase
+        )
+        try materializedKey.remove()
+      } catch {
+        try? materializedKey.remove()
+        throw error
+      }
+
     case .keyboardInteractive(let username, let responder):
       try await authenticateKeyboardInteractive(
         driver: driver,
@@ -279,6 +312,45 @@ public struct SSHCandidateTransport: TerminalTransport {
                 passphrase
               )
             }
+          }
+        }
+      }
+    }
+  }
+
+  private func authenticatePublicKey(
+    driver: SSHDriver,
+    username: String,
+    publicKeyPath: String,
+    privateKeyPath: String,
+    passphrase: Data?
+  ) async throws {
+    try await driver.run(operation: "public-key authentication") { handle in
+      username.withCString { username in
+        publicKeyPath.withCString { publicKeyPath in
+          privateKeyPath.withCString { privateKeyPath in
+            if let passphrase {
+              return passphrase.withUnsafeBytes { bytes in
+                ghosttea_ssh_session_auth_public_key_passphrase_bytes(
+                  handle,
+                  username,
+                  publicKeyPath,
+                  privateKeyPath,
+                  bytes.bindMemory(to: UInt8.self).baseAddress,
+                  bytes.count,
+                  1
+                )
+              }
+            }
+            return ghosttea_ssh_session_auth_public_key_passphrase_bytes(
+              handle,
+              username,
+              publicKeyPath,
+              privateKeyPath,
+              nil,
+              0,
+              0
+            )
           }
         }
       }

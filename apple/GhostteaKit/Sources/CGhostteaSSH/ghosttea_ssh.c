@@ -852,6 +852,9 @@ int ghosttea_ssh_session_auth_password(
     const char *username,
     const char *password
 ) {
+    if (password == NULL) {
+        return LIBSSH2_ERROR_INVAL;
+    }
     return ghosttea_ssh_session_auth_password_bytes(
         session,
         username,
@@ -866,6 +869,10 @@ int ghosttea_ssh_session_auth_password_bytes(
     const uint8_t *password,
     size_t password_length
 ) {
+    if (session == NULL || username == NULL
+        || (password == NULL && password_length > 0)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
     size_t username_length = strlen(username);
     if (username_length > UINT_MAX || password_length > UINT_MAX) {
         return LIBSSH2_ERROR_INVAL;
@@ -890,14 +897,71 @@ int ghosttea_ssh_session_auth_public_key(
     const char *private_key_path,
     const char *passphrase
 ) {
-    return libssh2_userauth_publickey_fromfile_ex(
-        session->session,
+    return ghosttea_ssh_session_auth_public_key_passphrase_bytes(
+        session,
         username,
-        (unsigned int)strlen(username),
         public_key_path,
         private_key_path,
-        passphrase
+        (const uint8_t *)passphrase,
+        passphrase == NULL ? 0 : strlen(passphrase),
+        passphrase == NULL ? 0 : 1
     );
+}
+
+static void clear_secret_bytes(uint8_t *bytes, size_t length) {
+    volatile uint8_t *cursor = bytes;
+    while (length > 0) {
+        *cursor++ = 0;
+        length--;
+    }
+}
+
+int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const char *public_key_path,
+    const char *private_key_path,
+    const uint8_t *passphrase,
+    size_t passphrase_length,
+    int passphrase_present
+) {
+    if (session == NULL || username == NULL || public_key_path == NULL
+        || private_key_path == NULL || passphrase_length == SIZE_MAX) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    size_t username_length = strlen(username);
+    if (username_length > UINT_MAX || (passphrase_present != 0 && passphrase_present != 1)
+        || (passphrase_present == 0 && passphrase_length != 0)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    if (passphrase_present != 0 && passphrase_length > 0
+        && (passphrase == NULL || memchr(passphrase, '\0', passphrase_length) != NULL)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    char *terminated_passphrase = NULL;
+    if (passphrase_present) {
+        terminated_passphrase = malloc(passphrase_length + 1);
+        if (terminated_passphrase == NULL) {
+            return LIBSSH2_ERROR_ALLOC;
+        }
+        if (passphrase_length > 0) {
+            memcpy(terminated_passphrase, passphrase, passphrase_length);
+        }
+        terminated_passphrase[passphrase_length] = '\0';
+    }
+    int status = libssh2_userauth_publickey_fromfile_ex(
+        session->session,
+        username,
+        (unsigned int)username_length,
+        public_key_path,
+        private_key_path,
+        terminated_passphrase
+    );
+    if (terminated_passphrase != NULL) {
+        clear_secret_bytes((uint8_t *)terminated_passphrase, passphrase_length + 1);
+        free(terminated_passphrase);
+    }
+    return status;
 }
 
 void ghosttea_ssh_session_reset_keyboard_answers(ghosttea_ssh_session_t *session) {

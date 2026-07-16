@@ -1319,12 +1319,15 @@ Ed25519 keys pass and incorrect passphrases are rejected.
 non-synchronizing data-protection Keychain, and its save/load/delete round trip
 passes on a physical iPhone. The password path resolves Keychain bytes only when
 authentication begins and deletes the item immediately after connection; that
-path also passes the physical SSH fixture. Async private-key/passphrase
-resolution and protected key materialization remain open alongside UIKit challenge policy,
-representative-server sampling, adverse-network
-transitions, and complete device evidence remain open. Strict host-key rejection and an
-async accept-once boundary for unknown/changed keys pass with host, port,
-algorithm, SHA-256 fingerprint, and mismatch reason. Accept-and-store uses a
+path also passes the physical SSH fixture. The private-key path now resolves
+opaque key/passphrase IDs only during authentication, materializes key bytes to
+a protected random temporary file, passes the encrypted-key fixture, rejects a
+wrong passphrase, and removes the file before returning. Physical-device
+private-key and UIKit challenge integration, representative-server sampling,
+adverse-network transitions, and complete device evidence remain open. Strict
+host-key rejection and an async accept-once boundary for unknown/changed keys
+pass with host, port, algorithm, SHA-256 fingerprint, and mismatch reason.
+Accept-and-store uses a
 mode-preserving atomic replacement and passes subsequent strict reconnects. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
@@ -1782,14 +1785,16 @@ iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
 confirmation, password authentication, command execution, and output drain
 against the disposable OpenSSH fixture. The measurements and command output are
 recorded in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
-Representative-server and network-transition execution, UIKit/Keychain
-authentication policy, and
+Representative-server and network-transition execution, UIKit authentication
+integration, and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
-an incorrect one; Keychain-backed loading remains open. libssh2 is a candidate,
-not the selected SSH path.
+an incorrect one through both direct fixture and opaque resolver paths.
+Protected temporary materialization and cleanup are covered on macOS;
+Keychain-backed device execution remains open. libssh2 is a candidate, not the
+selected SSH path.
 
 Exit gate:
 

@@ -375,6 +375,7 @@ function swiftCandidate() {
       ["partial", ports.partial],
       ["publickey", ports.publicKey],
       ["encrypted-key", ports.publicKey, encryptedPublicKey, encryptedPrivateKey],
+      ["encrypted-key-resolver", ports.publicKey, encryptedPublicKey, encryptedPrivateKey],
       ["command", ports.publicKey],
       ["half-close", ports.publicKey],
       ["signal", ports.publicKey],
@@ -430,6 +431,21 @@ function swiftCandidate() {
     );
     if (wrongPassphrase.status === 0) {
       throw new Error("Swift libssh2 transport accepted an incorrect private-key passphrase.");
+    }
+    const wrongResolvedPassphrase = execute(
+      liveProbe,
+      [
+        "encrypted-key-resolver-wrong-passphrase",
+        "127.0.0.1",
+        ports.publicKey,
+        knownHosts,
+        encryptedPublicKey,
+        encryptedPrivateKey,
+      ],
+      { timeout: 30_000 },
+    );
+    if (wrongResolvedPassphrase.status === 0) {
+      throw new Error("Swift opaque resolver accepted an incorrect private-key passphrase.");
     }
 
     for (const mode of ["handshake-timeout", "handshake-cancel"]) {
@@ -530,7 +546,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, explicit unknown/changed accept-once decisions, atomic host-key insertion/replacement with strict reconnects, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys through direct and opaque-resolver paths, strict host-key negatives, explicit unknown/changed accept-once decisions, atomic host-key insertion/replacement with strict reconnects, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

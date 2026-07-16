@@ -92,8 +92,9 @@ Passed · device-only, non-synchronizing item removed
 
 The test left no credential item behind and did not use the user's SSH
 credentials. This satisfies the persistent Keychain storage boundary. Async
-private-key/passphrase resolution and protected temporary materialization for
-libssh2's current private-key file API remain production-promotion gates.
+private-key/passphrase resolution and protected temporary materialization now
+pass the macOS OpenSSH fixture; exercising that path with a Keychain-backed key
+on a physical device remains a production-promotion gate.
 
 ## 2026-07-16: on-demand password resolution
 
