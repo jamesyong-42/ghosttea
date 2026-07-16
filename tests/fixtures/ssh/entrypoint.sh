@@ -15,4 +15,5 @@ done
 /usr/sbin/sshd -f /etc/ssh/sshd_config.password
 /usr/sbin/sshd -f /etc/ssh/sshd_config.keyboard-interactive
 /usr/sbin/sshd -f /etc/ssh/sshd_config.partial-success
+nc -lk -p 22026 >/dev/null 2>&1 &
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config.public-key

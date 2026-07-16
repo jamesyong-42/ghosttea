@@ -24,6 +24,7 @@ const ports = {
   keyboard: process.env.GHOSTTEA_SSH_KEYBOARD_PORT ?? "22023",
   partial: process.env.GHOSTTEA_SSH_PARTIAL_PORT ?? "22024",
   publicKey: process.env.GHOSTTEA_SSH_PUBLIC_KEY_PORT ?? "22025",
+  blackhole: process.env.GHOSTTEA_SSH_BLACKHOLE_PORT ?? "22026",
 };
 const commandEnvironment = {
   ...process.env,
@@ -32,6 +33,7 @@ const commandEnvironment = {
   GHOSTTEA_SSH_KEYBOARD_PORT: ports.keyboard,
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
   GHOSTTEA_SSH_PUBLIC_KEY_PORT: ports.publicKey,
+  GHOSTTEA_SSH_BLACKHOLE_PORT: ports.blackhole,
   DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
   CLANG_MODULE_CACHE_PATH: swiftModuleCache,
   SWIFTPM_MODULECACHE_OVERRIDE: swiftModuleCache,
@@ -96,7 +98,7 @@ function waitUntilHealthy() {
 }
 
 function scanKnownHosts() {
-  const entries = Object.values(ports).map((port) => {
+  const entries = [ports.password, ports.keyboard, ports.partial, ports.publicKey].map((port) => {
     const result = execute("ssh-keyscan", ["-T", "5", "-p", port, "127.0.0.1"]);
     if (result.status !== 0 || !result.stdout.trim()) {
       throw new Error(`Could not scan fixture host key on port ${port}: ${result.stderr}`);
@@ -250,7 +252,7 @@ function up() {
   waitUntilHealthy();
   scanKnownHosts();
   console.log(
-    `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}`,
+    `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}`,
   );
 }
 
@@ -370,6 +372,18 @@ function swiftCandidate() {
     }
     process.stdout.write(cancellation.stdout);
 
+    for (const mode of ["handshake-timeout", "handshake-cancel"]) {
+      const result = execute(liveProbe, [mode, "127.0.0.1", ports.blackhole, knownHosts, publicKey, privateKey], {
+        timeout: 30_000,
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `Swift ${mode} probe failed: status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`,
+        );
+      }
+      process.stdout.write(result.stdout);
+    }
+
     const wrongKey = execute(
       liveProbe,
       ["partial", "127.0.0.1", ports.partial, knownHosts, wrongPublicKey, wrongPrivateKey],
@@ -392,7 +406,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, command streams/exit, half-close, lossless stalled-reader flow control, cancellation, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, command streams/exit, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

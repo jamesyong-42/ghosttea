@@ -69,6 +69,8 @@ public struct SSHCandidateConfiguration: Sendable {
   public let session: SSHCandidateSession
   public let terminalType: String
   public let initialSize: TerminalSize
+  public let connectTimeoutMilliseconds: Int
+  public let handshakeTimeoutMilliseconds: Int
 
   public init(
     host: String,
@@ -78,13 +80,27 @@ public struct SSHCandidateConfiguration: Sendable {
     session: SSHCandidateSession = .shell,
     terminalType: String = "xterm-256color",
     columns: Int = 80,
-    rows: Int = 24
+    rows: Int = 24,
+    connectTimeoutMilliseconds: Int = 10_000,
+    handshakeTimeoutMilliseconds: Int = 10_000
   ) throws {
     guard (1...65_535).contains(port) else {
       throw SSHCandidateError.invalidPort(port)
     }
     guard columns <= Int(Int32.max), rows <= Int(Int32.max) else {
       throw SSHCandidateError.terminalSizeOutOfRange(columns: columns, rows: rows)
+    }
+    guard (1...Int(Int32.max)).contains(connectTimeoutMilliseconds) else {
+      throw SSHCandidateError.invalidTimeout(
+        operation: "TCP connect",
+        milliseconds: connectTimeoutMilliseconds
+      )
+    }
+    guard (1...Int(Int32.max)).contains(handshakeTimeoutMilliseconds) else {
+      throw SSHCandidateError.invalidTimeout(
+        operation: "SSH handshake",
+        milliseconds: handshakeTimeoutMilliseconds
+      )
     }
     self.host = host
     self.port = port
@@ -93,13 +109,18 @@ public struct SSHCandidateConfiguration: Sendable {
     self.session = session
     self.terminalType = terminalType
     self.initialSize = try TerminalSize(columns: columns, rows: rows)
+    self.connectTimeoutMilliseconds = connectTimeoutMilliseconds
+    self.handshakeTimeoutMilliseconds = handshakeTimeoutMilliseconds
   }
 }
 
 public enum SSHCandidateError: Error, Equatable, Sendable {
   case invalidPort(Int)
+  case invalidTimeout(operation: String, milliseconds: Int)
   case terminalSizeOutOfRange(columns: Int, rows: Int)
+  case connectorAllocationFailed
   case socketConnect(String)
+  case operationTimedOut(operation: String, milliseconds: Int)
   case sessionAllocationFailed
   case operationFailed(operation: String, status: Int32, message: String)
   case hostKeyRejected(status: Int32)

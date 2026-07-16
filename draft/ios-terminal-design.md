@@ -1307,10 +1307,14 @@ byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
 async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. UIKit/Keychain policy, broader
-algorithm/key coverage, exit-signal semantics, TCP/handshake cancellation, and
-device evidence remain open. The adapter records negotiated methods; the current
-fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256. No
-stack-specific type may escape the adapter.
+algorithm/key coverage, exit-signal semantics, repeated adverse-network
+cancellation, and device evidence remain open. TCP establishment now uses a
+cancellable nonblocking connector and the SSH handshake has a separate deadline;
+a peer that accepts TCP without sending a banner proves deterministic handshake
+timeout and cancellation. The synchronous system resolver remains
+non-interruptible until it returns. The adapter records negotiated methods; the
+current fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
+No stack-specific type may escape the adapter.
 
 The same transport supports PTY shells and non-PTY commands. A live command
 fixture preserves separate stdout and stderr and exit status 37. A second
@@ -1736,11 +1740,13 @@ transport package, and pinned three-slice libssh2/OpenSSL compile probe are
 implemented. The nonblocking libssh2 Swift adapter passes the pinned auth
 matrix, strict host-key controls, PTY/resize, a byte-exact 32 MiB stalled-reader
 fixture below its macOS RSS gate, and blocked-read cancellation, including
-explicit chained MFA with its `-19` return behavior locked under test.
+explicit chained MFA with its `-19` return behavior locked under test. A
+nonblocking TCP connector and separate SSH handshake deadline are implemented;
+the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy, SSH
-algorithm, exit-signal, and connection-cancellation coverage, bundled-font
-licensing, and device-tier memory gates remain open. libssh2 is a candidate,
-not the selected SSH path.
+algorithm, exit-signal, resolver/adverse-network cancellation coverage,
+bundled-font licensing, and device-tier memory gates remain open. libssh2 is a
+candidate, not the selected SSH path.
 
 Exit gate:
 

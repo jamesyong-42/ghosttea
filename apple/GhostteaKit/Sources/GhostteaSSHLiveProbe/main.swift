@@ -23,6 +23,9 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case unexpectedChallenge(SSHKeyboardInteractiveChallenge)
   case authenticationDidNotCancel
   case unexpectedAuthenticationCancellationError(String)
+  case handshakeDidNotTimeOut
+  case handshakeDidNotCancel
+  case unexpectedHandshakeControlError(String)
   case unexpectedCommandStream(stream: String, expected: Data, actual: Data)
   case unexpectedExitStatus(expected: Int32, actual: Int32)
 
@@ -60,6 +63,12 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "keyboard-interactive authentication completed instead of cancelling"
     case .unexpectedAuthenticationCancellationError(let error):
       return "keyboard-interactive cancellation failed with \(error)"
+    case .handshakeDidNotTimeOut:
+      return "SSH handshake completed instead of reaching its deadline"
+    case .handshakeDidNotCancel:
+      return "SSH handshake completed instead of observing task cancellation"
+    case .unexpectedHandshakeControlError(let error):
+      return "SSH handshake control failed with \(error)"
     case .unexpectedCommandStream(let stream, let expected, let actual):
       return
         "unexpected \(stream): expected \(String(reflecting: expected)), received \(String(reflecting: actual))"
@@ -131,7 +140,7 @@ private func authentication(
   privateKeyPath: String
 ) throws -> SSHCandidateAuthentication {
   switch mode {
-  case "password":
+  case "password", "handshake-timeout", "handshake-cancel":
     return .password(username: "ghosttea", password: "ghosttea-password")
   case "publickey", "command", "half-close":
     return .publicKey(
@@ -214,11 +223,20 @@ private func runProbe() async throws {
     ),
     session: session,
     columns: 132,
-    rows: 41
+    rows: 41,
+    handshakeTimeoutMilliseconds: mode == "handshake-timeout" ? 250 : 10_000
   )
   let transport = SSHCandidateTransport(configuration: configuration)
   if mode == "keyboard-cancel" {
     try await verifyAuthenticationCancellation(transport: transport)
+    return
+  }
+  if mode == "handshake-timeout" {
+    try await verifyHandshakeTimeout(transport: transport)
+    return
+  }
+  if mode == "handshake-cancel" {
+    try await verifyHandshakeCancellation(transport: transport)
     return
   }
   let connection = try await transport.connect()
@@ -270,6 +288,56 @@ private func runProbe() async throws {
     await connection.disconnect()
     throw error
   }
+}
+
+private func verifyHandshakeTimeout(
+  transport: SSHCandidateTransport
+) async throws {
+  let clock = ContinuousClock()
+  let start = clock.now
+  let result = await Task { try await transport.connect() }.result
+  let duration = start.duration(to: clock.now)
+  switch result {
+  case .success(let connection):
+    await connection.disconnect()
+    throw LiveProbeError.handshakeDidNotTimeOut
+  case .failure(let error):
+    guard
+      error as? SSHCandidateError
+        == .operationTimedOut(operation: "SSH handshake", milliseconds: 250)
+    else {
+      throw LiveProbeError.unexpectedHandshakeControlError(String(describing: error))
+    }
+  }
+  guard duration < .seconds(2) else {
+    throw LiveProbeError.cancellationTooSlow(duration)
+  }
+  print("Swift SSH handshake deadline fired in \(duration)")
+}
+
+private func verifyHandshakeCancellation(
+  transport: SSHCandidateTransport
+) async throws {
+  let connectionTask = Task { try await transport.connect() }
+  try await Task.sleep(for: .milliseconds(500))
+  let clock = ContinuousClock()
+  let start = clock.now
+  connectionTask.cancel()
+  let result = await connectionTask.result
+  switch result {
+  case .success(let connection):
+    await connection.disconnect()
+    throw LiveProbeError.handshakeDidNotCancel
+  case .failure(let error):
+    guard error is CancellationError else {
+      throw LiveProbeError.unexpectedHandshakeControlError(String(describing: error))
+    }
+  }
+  let duration = start.duration(to: clock.now)
+  guard duration < .seconds(1) else {
+    throw LiveProbeError.cancellationTooSlow(duration)
+  }
+  print("Swift SSH handshake observed cancellation in \(duration)")
 }
 
 private func verifyCommandSession(

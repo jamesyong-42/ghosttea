@@ -47,3 +47,7 @@ Likewise, only `CGhostteaSSH` and the isolated `GhostteaSSHProbe` may import
 handles and implements `TerminalTransport`; it is not yet a selected production
 transport. The current evidence and known chained-MFA return-state ambiguity are recorded in
 [`Compatibility/ssh-candidate-decision.md`](Compatibility/ssh-candidate-decision.md).
+The adapter uses independent TCP-connect and SSH-handshake deadlines. Its local
+banner-blackhole fixture also proves that a stalled handshake observes both its
+deadline and Swift task cancellation; synchronous DNS cancellation remains a
+documented hardening item.

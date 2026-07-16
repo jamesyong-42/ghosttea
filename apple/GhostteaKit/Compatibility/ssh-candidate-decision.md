@@ -89,6 +89,14 @@ by distinct password and verification-code rounds, preserving their exact text
 and `echo=false` metadata. Its responder deliberately suspends before replying.
 Cancelling while that responder is suspended wakes and joins the libssh2 worker
 in under one millisecond on the development Mac.
+TCP establishment now uses a nonblocking connector with an absolute deadline,
+100 ms cancellation polling, and socket shutdown from the Swift task
+cancellation handler. The SSH handshake has a separate deadline. A deterministic
+fixture accepts TCP but never sends an SSH banner: its 250 ms handshake deadline
+fired in approximately 307 ms, and cancellation unwound in approximately 77 ms.
+The system resolver call is still synchronous; a stalled `getaddrinfo` cannot be
+interrupted until it returns, so resolver replacement or Network.framework
+integration remains a production hardening decision.
 The host-neutral transport now includes input half-close and typed exit status.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and
 `fixture-stderr\n` streams and preserves exit status 37. A second command sends
@@ -146,10 +154,12 @@ host-neutral demand and queue semantics.
 3. Add ECDSA and AES-GCM fixture endpoints, then repeat the now-instrumented
    negotiated-method capture against the launch server sample. Decide RSA/SHA-2
    scope from that sample.
-4. Add exit-signal coverage, TCP/handshake cancellation, repeated cancellation
-   stress, and reconnect orchestration. PTY allocation, resize, shell I/O,
-   command streams/status, half-close, graceful close, auth cancellation, and
-   blocked-read cancellation already pass.
+4. Add exit-signal coverage, repeated connection-cancellation stress, resolver
+   cancellation strategy, and reconnect orchestration. PTY allocation, resize,
+   shell I/O, command streams/status, half-close, graceful close, auth/read
+   cancellation, and deterministic handshake timeout/cancellation already pass;
+   the nonblocking TCP connector is implemented but still needs adverse-network
+   and physical-device evidence.
 5. Instrument socket bytes, SSH-channel windows, adapter queues, and physical
    footprint. The macOS adapter flood is already byte-exact and below its
    whole-process RSS gate.

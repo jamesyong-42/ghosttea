@@ -12,7 +12,8 @@ public struct SSHCandidateTransport: TerminalTransport {
   public func connect() async throws -> any TerminalConnection {
     let socket = try await SSHDriver.connectSocket(
       host: configuration.host,
-      port: configuration.port
+      port: configuration.port,
+      timeoutMilliseconds: configuration.connectTimeoutMilliseconds
     )
     guard let driver = SSHDriver(socket: socket) else {
       ghosttea_ssh_socket_close(socket)
@@ -20,7 +21,10 @@ public struct SSHCandidateTransport: TerminalTransport {
     }
 
     do {
-      try await driver.run(operation: "handshake") {
+      try await driver.run(
+        operation: "SSH handshake",
+        timeoutMilliseconds: configuration.handshakeTimeoutMilliseconds
+      ) {
         ghosttea_ssh_session_handshake($0)
       }
 
@@ -131,7 +135,7 @@ public struct SSHCandidateTransport: TerminalTransport {
       let
         responder
     ):
-      let publicKeyStatus = await driver.runAllowingStatus(
+      let publicKeyStatus = try await driver.runAllowingStatus(
         operation: "partial public-key authentication",
         allowedStatus: GHOSTTEA_SSH_PUBLICKEY_UNVERIFIED
       ) { handle in
@@ -564,6 +568,51 @@ private enum SSHReadStream {
   case standardError
 }
 
+private struct SSHConnectResult: Sendable {
+  let status: Int32
+  let message: String
+}
+
+private final class SSHConnector: @unchecked Sendable {
+  private let handle: OpaquePointer
+
+  init?() {
+    guard let handle = ghosttea_ssh_connector_create() else {
+      return nil
+    }
+    self.handle = handle
+  }
+
+  deinit {
+    ghosttea_ssh_connector_destroy(handle)
+  }
+
+  func cancel() {
+    ghosttea_ssh_connector_cancel(handle)
+  }
+
+  func connect(
+    host: String,
+    port: Int,
+    timeoutMilliseconds: Int
+  ) -> SSHConnectResult {
+    var errorBuffer = [CChar](repeating: 0, count: 512)
+    let status = host.withCString { host in
+      String(port).withCString { port in
+        ghosttea_ssh_connector_run(
+          handle,
+          host,
+          port,
+          Int32(timeoutMilliseconds),
+          &errorBuffer,
+          errorBuffer.count
+        )
+      }
+    }
+    return SSHConnectResult(status: status, message: decodeCString(errorBuffer))
+  }
+}
+
 private final class SSHDriver: @unchecked Sendable {
   private static let socketQueue = DispatchQueue(
     label: "com.project100.ghosttea.ssh.socket",
@@ -597,43 +646,75 @@ private final class SSHDriver: @unchecked Sendable {
     destroy()
   }
 
-  static func connectSocket(host: String, port: Int) async throws -> Int32 {
-    let result = await withCheckedContinuation { continuation in
-      socketQueue.async {
-        var errorBuffer = [CChar](repeating: 0, count: 512)
-        let socket = host.withCString { host in
-          String(port).withCString { port in
-            ghosttea_ssh_tcp_connect(
-              host,
-              port,
-              &errorBuffer,
-              errorBuffer.count
-            )
-          }
-        }
-        if socket >= 0 {
-          continuation.resume(returning: Result<Int32, SSHCandidateError>.success(socket))
-        } else {
+  static func connectSocket(
+    host: String,
+    port: Int,
+    timeoutMilliseconds: Int
+  ) async throws -> Int32 {
+    guard let connector = SSHConnector() else {
+      throw SSHCandidateError.connectorAllocationFailed
+    }
+    let result = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        socketQueue.async {
           continuation.resume(
-            returning: .failure(.socketConnect(decodeCString(errorBuffer)))
+            returning: connector.connect(
+              host: host,
+              port: port,
+              timeoutMilliseconds: timeoutMilliseconds
+            )
           )
         }
       }
+    } onCancel: {
+      connector.cancel()
     }
-    return try result.get()
+    if result.status >= 0 {
+      if Task.isCancelled {
+        ghosttea_ssh_socket_close(result.status)
+        throw CancellationError()
+      }
+      return result.status
+    }
+    if result.status == GHOSTTEA_SSH_CONNECT_CANCELLED || Task.isCancelled {
+      throw CancellationError()
+    }
+    if result.status == GHOSTTEA_SSH_CONNECT_TIMEOUT {
+      throw SSHCandidateError.operationTimedOut(
+        operation: "TCP connect",
+        milliseconds: timeoutMilliseconds
+      )
+    }
+    throw SSHCandidateError.socketConnect(result.message)
   }
 
   func run(
     operation: String,
+    timeoutMilliseconds: Int? = nil,
     _ body: (OpaquePointer) -> Int32
   ) async throws {
-    let status = await runAllowingStatus(
-      operation: operation,
-      allowedStatus: 0,
-      body
-    )
-    guard status == 0 else {
-      throw error(operation: operation, status: status)
+    let deadline = timeoutMilliseconds.map {
+      ContinuousClock.now.advanced(by: .milliseconds($0))
+    }
+    while true {
+      try Task.checkCancellation()
+      let status = body(requiredHandle)
+      if status == 0 {
+        return
+      }
+      if status != GHOSTTEA_SSH_EAGAIN {
+        throw error(operation: operation, status: status)
+      }
+      if let deadline,
+        let timeoutMilliseconds,
+        ContinuousClock.now >= deadline
+      {
+        throw SSHCandidateError.operationTimedOut(
+          operation: operation,
+          milliseconds: timeoutMilliseconds
+        )
+      }
+      _ = try await waitOnce()
     }
   }
 
@@ -641,11 +722,9 @@ private final class SSHDriver: @unchecked Sendable {
     operation: String,
     allowedStatus: Int32,
     _ body: (OpaquePointer) -> Int32
-  ) async -> Int32 {
+  ) async throws -> Int32 {
     while true {
-      if Task.isCancelled {
-        return Int32(GHOSTTEA_SSH_EAGAIN)
-      }
+      try Task.checkCancellation()
       let status = body(requiredHandle)
       if status == 0 || status == allowedStatus {
         return status
@@ -653,31 +732,32 @@ private final class SSHDriver: @unchecked Sendable {
       if status != GHOSTTEA_SSH_EAGAIN {
         return status
       }
-      do {
-        try await waitUntilReady()
-      } catch {
-        return ghosttea_ssh_session_last_error(requiredHandle, nil, 0)
-      }
+      try await waitUntilReady()
     }
   }
 
   func waitUntilReady() async throws {
     while true {
-      try Task.checkCancellation()
-      let status = await withCheckedContinuation { continuation in
-        Self.socketQueue.async { [self] in
-          continuation.resume(
-            returning: ghosttea_ssh_session_wait(requiredHandle, 100)
-          )
-        }
-      }
-      if status > 0 {
+      if try await waitOnce() {
         return
       }
-      if status < 0 {
-        throw error(operation: "wait for socket readiness", status: status)
+    }
+  }
+
+  private func waitOnce() async throws -> Bool {
+    try Task.checkCancellation()
+    let status = await withCheckedContinuation { continuation in
+      Self.socketQueue.async { [self] in
+        continuation.resume(
+          returning: ghosttea_ssh_session_wait(requiredHandle, 100)
+        )
       }
     }
+    try Task.checkCancellation()
+    if status < 0 {
+      throw error(operation: "wait for socket readiness", status: status)
+    }
+    return status > 0
   }
 
   func requestShutdown() {

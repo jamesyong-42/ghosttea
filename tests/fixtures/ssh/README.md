@@ -1,6 +1,7 @@
 # OpenSSH compatibility fixtures
 
-This fixture runs four OpenSSH servers in one local container:
+This fixture runs four OpenSSH servers and one protocol blackhole in one local
+container:
 
 | Host port | Authentication policy                 | Purpose                                                              |
 | --------- | ------------------------------------- | -------------------------------------------------------------------- |
@@ -8,6 +9,7 @@ This fixture runs four OpenSSH servers in one local container:
 | `22023`   | keyboard-interactive                  | Deterministic two-prompt password and verification-code conversation |
 | `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                          |
 | `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                  |
+| `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                    |
 
 The fixture credentials are intentionally public and must never be reused:
 
@@ -31,8 +33,8 @@ npm run test:ssh:fixture:swift
 Use `npm run fixture:ssh:up` to leave the endpoints running for an adapter
 spike and `npm run fixture:ssh:down` when finished. Set
 `GHOSTTEA_SSH_PASSWORD_PORT`, `GHOSTTEA_SSH_KEYBOARD_PORT`,
-`GHOSTTEA_SSH_PARTIAL_PORT`, or `GHOSTTEA_SSH_PUBLIC_KEY_PORT` to avoid local
-port conflicts.
+`GHOSTTEA_SSH_PARTIAL_PORT`, `GHOSTTEA_SSH_PUBLIC_KEY_PORT`, or
+`GHOSTTEA_SSH_BLACKHOLE_PORT` to avoid local port conflicts.
 
 The automated matrix verifies:
 
@@ -44,6 +46,8 @@ The automated matrix verifies:
 - initial PTY dimensions and a later window-change request;
 - a 32 MiB output flood that is stalled for 750 ms, remains below a 64 MiB
   client RSS gate, and then drains byte-for-byte without disconnecting.
+- a peer that accepts TCP but never sends an SSH banner, proving the handshake
+  deadline and task-cancellation paths without relying on external networks.
 
 The first command proves all server/session scenarios with the system OpenSSH
 client. The candidate command compiles a test-only C client against the packaged
@@ -67,4 +71,5 @@ requires the blocked native callback worker to unwind within one second.
 Two non-PTY command controls cover termination semantics: one asserts separate,
 byte-exact stdout/stderr and exit 37; the other writes through `cat`, sends SSH
 input EOF, drains the exact output, and completes the channel close handshake
-with exit 0.
+with exit 0. The banner-blackhole controls require a 250 ms handshake deadline
+to fire within two seconds and cancellation to unwind within one second.

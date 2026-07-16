@@ -11,15 +11,24 @@ extern "C" {
 #define GHOSTTEA_SSH_EAGAIN (-37)
 #define GHOSTTEA_SSH_PUBLICKEY_UNVERIFIED (-19)
 #define GHOSTTEA_SSH_KNOWN_HOST_MATCH 0
+#define GHOSTTEA_SSH_CONNECT_TIMEOUT (-2)
+#define GHOSTTEA_SSH_CONNECT_CANCELLED (-3)
 
 typedef struct ghosttea_ssh_session ghosttea_ssh_session_t;
+typedef struct ghosttea_ssh_connector ghosttea_ssh_connector_t;
 
-int ghosttea_ssh_tcp_connect(
+ghosttea_ssh_connector_t *ghosttea_ssh_connector_create(void);
+void ghosttea_ssh_connector_cancel(ghosttea_ssh_connector_t *connector);
+int ghosttea_ssh_connector_run(
+    ghosttea_ssh_connector_t *connector,
     const char *host,
     const char *port,
+    int timeout_milliseconds,
     char *error_buffer,
     size_t error_buffer_length
 );
+void ghosttea_ssh_connector_destroy(ghosttea_ssh_connector_t *connector);
+
 void ghosttea_ssh_socket_close(int socket_fd);
 
 ghosttea_ssh_session_t *ghosttea_ssh_session_create(int socket_fd);

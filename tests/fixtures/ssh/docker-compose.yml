@@ -8,6 +8,7 @@ services:
       - "127.0.0.1:${GHOSTTEA_SSH_KEYBOARD_PORT:-22023}:22023"
       - "127.0.0.1:${GHOSTTEA_SSH_PARTIAL_PORT:-22024}:22024"
       - "127.0.0.1:${GHOSTTEA_SSH_PUBLIC_KEY_PORT:-22025}:22025"
+      - "127.0.0.1:${GHOSTTEA_SSH_BLACKHOLE_PORT:-22026}:22026"
     volumes:
       - type: bind
         source: ${GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY:?set by scripts/ssh-fixture.mjs}

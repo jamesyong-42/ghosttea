@@ -37,6 +37,12 @@ struct ghosttea_ssh_session {
     int keyboard_broker_prompt_count;
 };
 
+struct ghosttea_ssh_connector {
+    pthread_mutex_t mutex;
+    int socket_fd;
+    int cancelled;
+};
+
 static pthread_once_t libssh2_initialization_once = PTHREAD_ONCE_INIT;
 static int libssh2_initialization_status = -1;
 
@@ -49,6 +55,200 @@ static void write_error(char *buffer, size_t length, const char *message) {
         return;
     }
     snprintf(buffer, length, "%s", message == NULL ? "unknown error" : message);
+}
+
+static int64_t monotonic_milliseconds(void) {
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) {
+        return -1;
+    }
+    return (int64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
+}
+
+ghosttea_ssh_connector_t *ghosttea_ssh_connector_create(void) {
+    ghosttea_ssh_connector_t *connector = calloc(1, sizeof(*connector));
+    if (connector == NULL) {
+        return NULL;
+    }
+    connector->socket_fd = -1;
+    if (pthread_mutex_init(&connector->mutex, NULL) != 0) {
+        free(connector);
+        return NULL;
+    }
+    return connector;
+}
+
+void ghosttea_ssh_connector_cancel(ghosttea_ssh_connector_t *connector) {
+    if (connector == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&connector->mutex);
+    connector->cancelled = 1;
+    if (connector->socket_fd >= 0) {
+        shutdown(connector->socket_fd, SHUT_RDWR);
+    }
+    pthread_mutex_unlock(&connector->mutex);
+}
+
+static int connector_is_cancelled(ghosttea_ssh_connector_t *connector) {
+    pthread_mutex_lock(&connector->mutex);
+    int cancelled = connector->cancelled;
+    pthread_mutex_unlock(&connector->mutex);
+    return cancelled;
+}
+
+static int connector_set_socket(
+    ghosttea_ssh_connector_t *connector,
+    int socket_fd
+) {
+    pthread_mutex_lock(&connector->mutex);
+    int cancelled = connector->cancelled;
+    connector->socket_fd = cancelled == 0 ? socket_fd : -1;
+    pthread_mutex_unlock(&connector->mutex);
+    return cancelled == 0 ? 0 : -1;
+}
+
+static void connector_clear_socket(ghosttea_ssh_connector_t *connector) {
+    pthread_mutex_lock(&connector->mutex);
+    connector->socket_fd = -1;
+    pthread_mutex_unlock(&connector->mutex);
+}
+
+int ghosttea_ssh_connector_run(
+    ghosttea_ssh_connector_t *connector,
+    const char *host,
+    const char *port,
+    int timeout_milliseconds,
+    char *error_buffer,
+    size_t error_buffer_length
+) {
+    if (connector == NULL || host == NULL || port == NULL || timeout_milliseconds <= 0) {
+        write_error(error_buffer, error_buffer_length, "invalid connector configuration");
+        return -1;
+    }
+    int64_t start = monotonic_milliseconds();
+    if (start < 0) {
+        write_error(error_buffer, error_buffer_length, strerror(errno));
+        return -1;
+    }
+    int64_t deadline = start + timeout_milliseconds;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo *addresses = NULL;
+    int lookup_status = getaddrinfo(host, port, &hints, &addresses);
+    if (lookup_status != 0) {
+        write_error(error_buffer, error_buffer_length, gai_strerror(lookup_status));
+        return -1;
+    }
+    int64_t after_lookup = monotonic_milliseconds();
+    if (after_lookup < 0) {
+        freeaddrinfo(addresses);
+        write_error(error_buffer, error_buffer_length, strerror(errno));
+        return -1;
+    }
+    if (after_lookup >= deadline) {
+        freeaddrinfo(addresses);
+        write_error(error_buffer, error_buffer_length, "TCP connection timed out during DNS lookup");
+        return GHOSTTEA_SSH_CONNECT_TIMEOUT;
+    }
+
+    for (const struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
+        if (connector_is_cancelled(connector) != 0) {
+            freeaddrinfo(addresses);
+            return GHOSTTEA_SSH_CONNECT_CANCELLED;
+        }
+        int socket_fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (socket_fd < 0) {
+            continue;
+        }
+        int flags = fcntl(socket_fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socket_fd);
+            continue;
+        }
+        if (connector_set_socket(connector, socket_fd) != 0) {
+            close(socket_fd);
+            freeaddrinfo(addresses);
+            return GHOSTTEA_SSH_CONNECT_CANCELLED;
+        }
+
+        int connect_status = connect(socket_fd, address->ai_addr, address->ai_addrlen);
+        if (connect_status == 0) {
+            connector_clear_socket(connector);
+            freeaddrinfo(addresses);
+            return socket_fd;
+        }
+        if (errno != EINPROGRESS) {
+            connector_clear_socket(connector);
+            close(socket_fd);
+            continue;
+        }
+
+        for (;;) {
+            if (connector_is_cancelled(connector) != 0) {
+                connector_clear_socket(connector);
+                close(socket_fd);
+                freeaddrinfo(addresses);
+                return GHOSTTEA_SSH_CONNECT_CANCELLED;
+            }
+            int64_t now = monotonic_milliseconds();
+            if (now < 0 || now >= deadline) {
+                connector_clear_socket(connector);
+                close(socket_fd);
+                freeaddrinfo(addresses);
+                write_error(error_buffer, error_buffer_length, "TCP connection timed out");
+                return GHOSTTEA_SSH_CONNECT_TIMEOUT;
+            }
+            int remaining = (int)(deadline - now);
+            int poll_timeout = remaining < 100 ? remaining : 100;
+            struct pollfd descriptor = {
+                .fd = socket_fd,
+                .events = POLLOUT,
+                .revents = 0,
+            };
+            int poll_status = poll(&descriptor, 1, poll_timeout);
+            if (poll_status < 0 && errno == EINTR) {
+                continue;
+            }
+            if (poll_status < 0) {
+                break;
+            }
+            if (poll_status == 0) {
+                continue;
+            }
+            int socket_error = 0;
+            socklen_t error_length = sizeof(socket_error);
+            if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) == 0
+                && socket_error == 0) {
+                connector_clear_socket(connector);
+                freeaddrinfo(addresses);
+                return socket_fd;
+            }
+            if (socket_error != 0) {
+                errno = socket_error;
+            }
+            break;
+        }
+        connector_clear_socket(connector);
+        close(socket_fd);
+    }
+    freeaddrinfo(addresses);
+    if (connector_is_cancelled(connector) != 0) {
+        return GHOSTTEA_SSH_CONNECT_CANCELLED;
+    }
+    write_error(error_buffer, error_buffer_length, strerror(errno));
+    return -1;
+}
+
+void ghosttea_ssh_connector_destroy(ghosttea_ssh_connector_t *connector) {
+    if (connector == NULL) {
+        return;
+    }
+    pthread_mutex_destroy(&connector->mutex);
+    free(connector);
 }
 
 static void clear_keyboard_answer_values(ghosttea_ssh_session_t *session) {
@@ -218,51 +418,6 @@ static void keyboard_callback(
         }
         session->keyboard_next_answer += 1;
     }
-}
-
-int ghosttea_ssh_tcp_connect(
-    const char *host,
-    const char *port,
-    char *error_buffer,
-    size_t error_buffer_length
-) {
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    struct addrinfo *addresses = NULL;
-    int lookup_status = getaddrinfo(host, port, &hints, &addresses);
-    if (lookup_status != 0) {
-        write_error(error_buffer, error_buffer_length, gai_strerror(lookup_status));
-        return -1;
-    }
-
-    int socket_fd = -1;
-    for (const struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
-        socket_fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-        if (socket_fd < 0) {
-            continue;
-        }
-        if (connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0) {
-            break;
-        }
-        close(socket_fd);
-        socket_fd = -1;
-    }
-    freeaddrinfo(addresses);
-
-    if (socket_fd < 0) {
-        write_error(error_buffer, error_buffer_length, strerror(errno));
-        return -1;
-    }
-    int flags = fcntl(socket_fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        write_error(error_buffer, error_buffer_length, strerror(errno));
-        close(socket_fd);
-        return -1;
-    }
-    return socket_fd;
 }
 
 void ghosttea_ssh_socket_close(int socket_fd) {

@@ -35,6 +35,34 @@ import Testing
       columns: Int(Int32.max) + 1
     )
   }
+
+  #expect(
+    throws: SSHCandidateError.invalidTimeout(
+      operation: "TCP connect",
+      milliseconds: 0
+    )
+  ) {
+    try SSHCandidateConfiguration(
+      host: "localhost",
+      knownHostsPath: "/tmp/known_hosts",
+      authentication: .password(username: "user", password: "secret"),
+      connectTimeoutMilliseconds: 0
+    )
+  }
+
+  #expect(
+    throws: SSHCandidateError.invalidTimeout(
+      operation: "SSH handshake",
+      milliseconds: Int(Int32.max) + 1
+    )
+  ) {
+    try SSHCandidateConfiguration(
+      host: "localhost",
+      knownHostsPath: "/tmp/known_hosts",
+      authentication: .password(username: "user", password: "secret"),
+      handshakeTimeoutMilliseconds: Int(Int32.max) + 1
+    )
+  }
 }
 
 @Test func configurationRetainsCandidateAuthenticationSequence() async throws {
@@ -84,6 +112,32 @@ import Testing
   )
   #expect(answers == ["password", "123456"])
   #expect(configuration.initialSize == TerminalSize(uncheckedColumns: 132, rows: 41))
+  #expect(configuration.connectTimeoutMilliseconds == 10_000)
+  #expect(configuration.handshakeTimeoutMilliseconds == 10_000)
+}
+
+@Test func connectionObservesCancellationBeforeSocketWork() async throws {
+  let configuration = try SSHCandidateConfiguration(
+    host: "127.0.0.1",
+    port: 9,
+    knownHostsPath: "/tmp/known_hosts",
+    authentication: .password(username: "user", password: "secret")
+  )
+  let transport = SSHCandidateTransport(configuration: configuration)
+  let result = await Task {
+    withUnsafeCurrentTask { task in
+      task?.cancel()
+    }
+    return try await transport.connect()
+  }.result
+
+  switch result {
+  case .success(let connection):
+    await connection.disconnect()
+    Issue.record("a pre-cancelled connection opened a socket")
+  case .failure(let error):
+    #expect(error is CancellationError)
+  }
 }
 
 extension TerminalSize {

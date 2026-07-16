@@ -32,12 +32,13 @@ COPY entrypoint.sh /usr/local/bin/ghosttea-ssh-fixture
 
 RUN chmod 0755 /usr/local/bin/ghosttea-ssh-fixture
 
-EXPOSE 22022 22023 22024 22025
+EXPOSE 22022 22023 22024 22025 22026
 
 HEALTHCHECK --interval=2s --timeout=1s --retries=15 \
   CMD nc -z 127.0.0.1 22022 \
       && nc -z 127.0.0.1 22023 \
       && nc -z 127.0.0.1 22024 \
-      && nc -z 127.0.0.1 22025
+      && nc -z 127.0.0.1 22025 \
+      && nc -z 127.0.0.1 22026
 
 ENTRYPOINT ["/usr/local/bin/ghosttea-ssh-fixture"]
