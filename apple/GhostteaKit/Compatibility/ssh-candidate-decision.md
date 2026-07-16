@@ -89,7 +89,9 @@ profiles; they do not replace RSA/SHA-2 or representative production-server
 coverage.
 The live keyboard fixture exercises an informational zero-prompt round followed
 by distinct password and verification-code rounds, preserving their exact text
-and `echo=false` metadata. Its responder deliberately suspends before replying.
+and mixed `echo=false`/`echo=true` metadata. The fixture's empty server name and
+instruction are asserted exactly; a server emitting nonempty values remains to
+be added. Its responder deliberately suspends before replying.
 Cancelling while that responder is suspended wakes and joins the libssh2 worker
 in under one millisecond on the development Mac.
 TCP establishment now uses a nonblocking connector with an absolute deadline,
@@ -159,8 +161,8 @@ host-neutral demand and queue semantics.
 ## Live-fixture work required before selection
 
 1. Connect the asynchronous challenge responder and encrypted-key path to UIKit
-   and Keychain-backed credential policy; add name/instruction and mixed
-   echo/no-echo fixtures.
+   and Keychain-backed credential policy; add a nonempty name/instruction
+   fixture. Mixed echo/no-echo prompts already pass.
 2. Add the explicit user decision boundary for unknown and changed host keys;
    strict acceptance and rejection controls already pass.
 3. Repeat the now-instrumented negotiated-method capture against the launch

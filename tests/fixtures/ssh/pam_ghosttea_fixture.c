@@ -38,7 +38,7 @@ PAM_EXTERN int pam_sm_authenticate(
     const struct pam_conv *conversation = conversation_item;
     const struct pam_message messages[] = {
         {PAM_PROMPT_ECHO_OFF, "Fixture password: "},
-        {PAM_PROMPT_ECHO_OFF, "Verification code: "},
+        {PAM_PROMPT_ECHO_ON, "Verification code: "},
     };
     const struct pam_message *message_pointers[] = {&messages[0], &messages[1]};
     struct pam_response *responses = NULL;

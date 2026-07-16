@@ -190,12 +190,15 @@ private func respondToFixtureChallenge(
   _ challenge: SSHKeyboardInteractiveChallenge
 ) async throws -> [String] {
   try await Task.sleep(for: .milliseconds(10))
+  guard challenge.name.isEmpty, challenge.instruction.isEmpty else {
+    throw LiveProbeError.unexpectedChallenge(challenge)
+  }
   switch challenge.prompts {
   case []:
     return []
   case [SSHKeyboardInteractivePrompt(text: "Fixture password: ", echoesResponse: false)]:
     return ["ghosttea-password"]
-  case [SSHKeyboardInteractivePrompt(text: "Verification code: ", echoesResponse: false)]:
+  case [SSHKeyboardInteractivePrompt(text: "Verification code: ", echoesResponse: true)]:
     return ["123456"]
   default:
     throw LiveProbeError.unexpectedChallenge(challenge)

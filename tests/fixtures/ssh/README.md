@@ -3,14 +3,14 @@
 This fixture runs five OpenSSH servers and one protocol blackhole in one local
 container:
 
-| Host port | Authentication policy                 | Purpose                                                              |
-| --------- | ------------------------------------- | -------------------------------------------------------------------- |
-| `22022`   | password                              | Baseline password authentication                                     |
-| `22023`   | keyboard-interactive                  | Deterministic two-prompt password and verification-code conversation |
-| `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                          |
-| `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                  |
-| `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                    |
-| `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                     |
+| Host port | Authentication policy                 | Purpose                                                             |
+| --------- | ------------------------------------- | ------------------------------------------------------------------- |
+| `22022`   | password                              | Baseline password authentication                                    |
+| `22023`   | keyboard-interactive                  | Deterministic hidden password and echo-on verification-code prompts |
+| `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                         |
+| `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                 |
+| `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                   |
+| `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                    |
 
 The fixture credentials are intentionally public and must never be reused:
 
@@ -41,7 +41,8 @@ local port conflicts.
 
 The automated matrix verifies:
 
-- password, public-key, and two-prompt keyboard-interactive authentication;
+- password, public-key, and mixed echo/no-echo keyboard-interactive
+  authentication;
 - passphrase-encrypted Ed25519 authentication and incorrect-passphrase
   rejection;
 - rejection when the partial-success endpoint is used without its required
