@@ -73,9 +73,10 @@ public enum SSHCandidateAuthentication: Sendable {
     privateKeyPath: String,
     passphrase: String?
   )
+  /// Resolves private-key bytes only during authentication. The pinned
+  /// OpenSSL backend derives the corresponding public key.
   case publicKeyCredential(
     username: String,
-    publicKeyPath: String,
     privateKeyCredential: SSHCredentialID,
     passphraseCredential: SSHCredentialID?,
     resolver: SSHCredentialResolver
@@ -159,7 +160,6 @@ public struct SSHCandidateConfiguration: Sendable {
         )
       }
     case .publicKeyCredential(
-      _,
       _,
       let privateKeyCredential,
       let passphraseCredential,

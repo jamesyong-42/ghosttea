@@ -37,23 +37,28 @@ PAM_EXTERN int pam_sm_authenticate(
 
     const struct pam_conv *conversation = conversation_item;
     const struct pam_message messages[] = {
+        {PAM_TEXT_INFO, "Ghosttea fixture authentication"},
         {PAM_PROMPT_ECHO_OFF, "Fixture password: "},
         {PAM_PROMPT_ECHO_ON, "Verification code: "},
     };
-    const struct pam_message *message_pointers[] = {&messages[0], &messages[1]};
+    const struct pam_message *message_pointers[] = {
+        &messages[0],
+        &messages[1],
+        &messages[2],
+    };
     struct pam_response *responses = NULL;
 
-    status = conversation->conv(2, message_pointers, &responses, conversation->appdata_ptr);
+    status = conversation->conv(3, message_pointers, &responses, conversation->appdata_ptr);
     if (status != PAM_SUCCESS || responses == NULL) {
-        free_responses(responses, 2);
+        free_responses(responses, 3);
         return PAM_AUTH_ERR;
     }
 
-    const int valid = responses[0].resp != NULL
-        && responses[1].resp != NULL
-        && strcmp(responses[0].resp, "ghosttea-password") == 0
-        && strcmp(responses[1].resp, "123456") == 0;
-    free_responses(responses, 2);
+    const int valid = responses[1].resp != NULL
+        && responses[2].resp != NULL
+        && strcmp(responses[1].resp, "ghosttea-password") == 0
+        && strcmp(responses[2].resp, "123456") == 0;
+    free_responses(responses, 3);
     return valid ? PAM_SUCCESS : PAM_AUTH_ERR;
 }
 

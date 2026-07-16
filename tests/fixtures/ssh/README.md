@@ -3,15 +3,15 @@
 This fixture runs six OpenSSH servers and one protocol blackhole in one local
 container:
 
-| Host port | Authentication policy                 | Purpose                                                             |
-| --------- | ------------------------------------- | ------------------------------------------------------------------- |
-| `22022`   | password                              | Baseline password authentication                                    |
-| `22023`   | keyboard-interactive                  | Deterministic hidden password and echo-on verification-code prompts |
-| `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                         |
-| `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                 |
-| `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                   |
-| `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                    |
-| `22028`   | public key                            | RSA-3072 host key with RSA/SHA-2-512 signatures                     |
+| Host port | Authentication policy                 | Purpose                                                               |
+| --------- | ------------------------------------- | --------------------------------------------------------------------- |
+| `22022`   | password                              | Baseline password authentication                                      |
+| `22023`   | keyboard-interactive                  | PAM info text, hidden password, and echo-on verification-code prompts |
+| `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                           |
+| `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                   |
+| `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                     |
+| `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                      |
+| `22028`   | public key                            | RSA-3072 host key with RSA/SHA-2-512 signatures                       |
 
 All ports bind to loopback by default. A physical-device password probe may
 opt in to a specific trusted LAN interface without exposing the other fixture

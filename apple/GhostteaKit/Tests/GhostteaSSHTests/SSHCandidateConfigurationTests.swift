@@ -164,7 +164,6 @@ import Testing
   let passphrase = Data("passphrase".utf8)
   let authentication = SSHCandidateAuthentication.publicKeyCredential(
     username: "ghosttea",
-    publicKeyPath: "/keys/id_ed25519.pub",
     privateKeyCredential: privateKeyCredential,
     passphraseCredential: passphraseCredential,
     resolver: { requested in
@@ -188,7 +187,6 @@ import Testing
   guard
     case .publicKeyCredential(
       let username,
-      let publicKeyPath,
       let retainedPrivateKey,
       let retainedPassphrase,
       let resolver
@@ -198,7 +196,6 @@ import Testing
     return
   }
   #expect(username == "ghosttea")
-  #expect(publicKeyPath == "/keys/id_ed25519.pub")
   #expect(retainedPrivateKey == privateKeyCredential)
   #expect(retainedPassphrase == passphraseCredential)
   #expect(try await resolver(retainedPrivateKey) == privateKey)
@@ -221,7 +218,6 @@ import Testing
       knownHostsPath: "/keys/known_hosts",
       authentication: .publicKeyCredential(
         username: "ghosttea",
-        publicKeyPath: "/keys/id_ed25519.pub",
         privateKeyCredential: passwordCredential,
         passphraseCredential: nil,
         resolver: { _ in Data() }
@@ -240,7 +236,6 @@ import Testing
       knownHostsPath: "/keys/known_hosts",
       authentication: .publicKeyCredential(
         username: "ghosttea",
-        publicKeyPath: "/keys/id_ed25519.pub",
         privateKeyCredential: privateKeyCredential,
         passphraseCredential: passwordCredential,
         resolver: { _ in Data() }

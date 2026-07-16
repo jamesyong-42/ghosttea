@@ -63,6 +63,11 @@ or cancellation path. The owning object makes an idempotent deinitialization
 cleanup attempt as a final fallback. No workspace path refers to the temporary
 file, and errors and logs do not include it.
 
+Because the pinned candidate uses libssh2's OpenSSL backend, the opaque case
+passes no public-key file path; libssh2 derives the public key from the resolved
+private key. Product configuration therefore contains neither a public- nor a
+private-key path.
+
 The passphrase crosses the C boundary as counted bytes. The shim rejects
 embedded NUL bytes, creates the null-terminated copy required by libssh2 only
 for the call, and overwrites that copy before freeing it. Swift and libssh2 may

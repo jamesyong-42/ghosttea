@@ -186,7 +186,8 @@ private func authentication(
       privateKeyPath: privateKeyPath,
       passphrase: "incorrect-passphrase"
     )
-  case "encrypted-key-resolver", "encrypted-key-resolver-wrong-passphrase":
+  case "publickey-resolver", "encrypted-key-resolver",
+    "encrypted-key-resolver-wrong-passphrase":
     let connectionID = UUID(uuidString: "F73FBF98-962A-4D24-A71F-5DBA348AA001")!
     let privateKeyCredential = SSHCredentialID(
       connectionID: connectionID,
@@ -197,15 +198,19 @@ private func authentication(
       kind: .privateKeyPassphrase
     )
     let privateKey = try Data(contentsOf: URL(filePath: privateKeyPath))
-    let passphrase = Data(
-      (mode == "encrypted-key-resolver" ? "ghosttea-key-passphrase" : "incorrect-passphrase")
-        .utf8
-    )
+    let passphrase: Data
+    switch mode {
+    case "publickey-resolver":
+      passphrase = Data()
+    case "encrypted-key-resolver":
+      passphrase = Data("ghosttea-key-passphrase".utf8)
+    default:
+      passphrase = Data("incorrect-passphrase".utf8)
+    }
     return .publicKeyCredential(
       username: "ghosttea",
-      publicKeyPath: publicKeyPath,
       privateKeyCredential: privateKeyCredential,
-      passphraseCredential: passphraseCredential,
+      passphraseCredential: mode == "publickey-resolver" ? nil : passphraseCredential,
       resolver: { credential in
         switch credential.kind {
         case .privateKey:
@@ -253,7 +258,12 @@ private func respondToFixtureChallenge(
   switch challenge.prompts {
   case []:
     return []
-  case [SSHKeyboardInteractivePrompt(text: "Fixture password: ", echoesResponse: false)]:
+  case [
+    SSHKeyboardInteractivePrompt(
+      text: "Ghosttea fixture authentication\nFixture password: ",
+      echoesResponse: false
+    )
+  ]:
     return ["ghosttea-password"]
   case [SSHKeyboardInteractivePrompt(text: "Verification code: ", echoesResponse: true)]:
     return ["123456"]

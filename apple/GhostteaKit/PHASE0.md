@@ -89,7 +89,8 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   by a protected random `0600` temporary-file materializer and a counted-byte C
   passphrase shim. Package tests verify protection and cleanup; the live
   encrypted-key fixture passes the resolver path, rejects a wrong passphrase,
-  and leaves no key file behind.
+  derives the public key without a configured key path, and leaves no key file
+  behind.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

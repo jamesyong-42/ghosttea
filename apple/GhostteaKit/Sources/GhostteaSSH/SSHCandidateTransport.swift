@@ -207,7 +207,6 @@ public struct SSHCandidateTransport: TerminalTransport {
 
     case .publicKeyCredential(
       let username,
-      let publicKeyPath,
       let privateKeyCredential,
       let passphraseCredential,
       let resolver
@@ -227,7 +226,7 @@ public struct SSHCandidateTransport: TerminalTransport {
         try await authenticatePublicKey(
           driver: driver,
           username: username,
-          publicKeyPath: publicKeyPath,
+          publicKeyPath: nil,
           privateKeyPath: materializedKey.path,
           passphrase: passphrase
         )
@@ -321,13 +320,13 @@ public struct SSHCandidateTransport: TerminalTransport {
   private func authenticatePublicKey(
     driver: SSHDriver,
     username: String,
-    publicKeyPath: String,
+    publicKeyPath: String?,
     privateKeyPath: String,
     passphrase: Data?
   ) async throws {
     try await driver.run(operation: "public-key authentication") { handle in
       username.withCString { username in
-        publicKeyPath.withCString { publicKeyPath in
+        withOptionalCString(publicKeyPath) { publicKeyPath in
           privateKeyPath.withCString { privateKeyPath in
             if let passphrase {
               return passphrase.withUnsafeBytes { bytes in

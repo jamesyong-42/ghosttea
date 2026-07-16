@@ -1321,8 +1321,9 @@ passes on a physical iPhone. The password path resolves Keychain bytes only when
 authentication begins and deletes the item immediately after connection; that
 path also passes the physical SSH fixture. The private-key path now resolves
 opaque key/passphrase IDs only during authentication, materializes key bytes to
-a protected random temporary file, passes the encrypted-key fixture, rejects a
-wrong passphrase, and removes the file before returning. Physical-device
+a protected random temporary file, derives the public key through the OpenSSL
+backend without a configured key path, passes the encrypted-key fixture,
+rejects a wrong passphrase, and removes the file before returning. Physical-device
 private-key and UIKit challenge integration, representative-server sampling,
 adverse-network transitions, and complete device evidence remain open. Strict
 host-key rejection and an async accept-once boundary for unknown/changed keys
@@ -1792,7 +1793,8 @@ instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one through both direct fixture and opaque resolver paths.
-Protected temporary materialization and cleanup are covered on macOS;
+The opaque case derives the public key without a configured key path. Protected
+temporary materialization and cleanup are covered on macOS;
 Keychain-backed device execution remains open. libssh2 is a candidate, not the
 selected SSH path.
 

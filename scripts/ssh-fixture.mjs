@@ -374,6 +374,7 @@ function swiftCandidate() {
       ["keyboard", ports.keyboard],
       ["partial", ports.partial],
       ["publickey", ports.publicKey],
+      ["publickey-resolver", ports.publicKey],
       ["encrypted-key", ports.publicKey, encryptedPublicKey, encryptedPrivateKey],
       ["encrypted-key-resolver", ports.publicKey, encryptedPublicKey, encryptedPrivateKey],
       ["command", ports.publicKey],
@@ -546,7 +547,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys through direct and opaque-resolver paths, strict host-key negatives, explicit unknown/changed accept-once decisions, atomic host-key insertion/replacement with strict reconnects, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys through direct and opaque-resolver paths, derived the public key from resolved private-key bytes, preserved PAM informational prompt text, enforced strict host-key controls, and passed PTY/resize, command termination, half-close, lossless flow control, cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

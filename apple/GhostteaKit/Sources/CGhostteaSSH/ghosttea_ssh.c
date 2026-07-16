@@ -925,8 +925,8 @@ int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
     size_t passphrase_length,
     int passphrase_present
 ) {
-    if (session == NULL || username == NULL || public_key_path == NULL
-        || private_key_path == NULL || passphrase_length == SIZE_MAX) {
+    if (session == NULL || username == NULL || private_key_path == NULL
+        || passphrase_length == SIZE_MAX) {
         return LIBSSH2_ERROR_INVAL;
     }
     size_t username_length = strlen(username);

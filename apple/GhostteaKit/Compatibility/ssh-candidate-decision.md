@@ -91,9 +91,11 @@ algorithm. The local feasibility matrix is green; representative
 production-server coverage is still required.
 The live keyboard fixture exercises an informational zero-prompt round followed
 by distinct password and verification-code rounds, preserving their exact text
-and mixed `echo=false`/`echo=true` metadata. The fixture's empty server name and
-instruction are asserted exactly; a server emitting nonempty values remains to
-be added. Its responder deliberately suspends before replying.
+and mixed `echo=false`/`echo=true` metadata. A PAM `PAM_TEXT_INFO` message is
+also preserved exactly where OpenSSH folds it into the hidden-password prompt.
+The fixture's empty protocol-level server name and instruction are asserted
+exactly; a server emitting nonempty values remains to be added. Its responder
+deliberately suspends before replying.
 Cancelling while that responder is suspended wakes and joins the libssh2 worker
 in under one millisecond on the development Mac.
 TCP establishment now uses a nonblocking connector with an absolute deadline,
@@ -124,7 +126,8 @@ OpenSSH Ed25519 private key through both the legacy path/string case and the
 production-shaped opaque resolver, and rejects incorrect passphrases through
 both paths. The resolver receives only opaque private-key and passphrase IDs,
 materializes key bytes to a protected random `0600` temporary file for the
-libssh2 call, and removes it before returning. The C shim accepts counted
+libssh2 call, passes a null public-key path so the OpenSSL backend derives it,
+and removes the temporary file before returning. The C shim accepts counted
 passphrase bytes and wipes its required null-terminated copy before freeing it.
 Package tests cover protection metadata and cleanup; the live matrix leaves the
 materialization directory empty.
@@ -199,9 +202,10 @@ separately test the host-neutral demand and queue semantics.
 
 1. Connect the asynchronous challenge responder and opaque private-key chooser
    to UIKit, exercise the private-key resolver on a physical device, and add a
-   nonempty name/instruction fixture. Opaque key/passphrase resolution,
-   protected temporary materialization, and mixed echo/no-echo prompts already
-   pass on the macOS fixture.
+   nonempty protocol-level name/instruction fixture. Opaque key/passphrase
+   resolution without a public-key path, protected temporary materialization,
+   PAM informational text, and mixed echo/no-echo prompts already pass on the
+   macOS fixture.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.
