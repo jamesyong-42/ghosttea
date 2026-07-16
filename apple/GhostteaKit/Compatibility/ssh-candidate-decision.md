@@ -199,8 +199,9 @@ separately test the host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Connect the asynchronous challenge responder and opaque private-key chooser
-   to UIKit, exercise the private-key resolver on a physical device, and add a
+1. Promote the diagnostic asynchronous challenge responder and opaque
+   private-key chooser into product UIKit, exercise the private-key resolver on
+   a physical device, and add a
    nonempty protocol-level name/instruction fixture. Opaque key/passphrase
    resolution through the in-memory key API, PAM informational text, and mixed
    echo/no-echo prompts already pass on the macOS fixture.

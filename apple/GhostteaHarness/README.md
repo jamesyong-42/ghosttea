@@ -8,7 +8,8 @@ The harness provides:
 - a real data-protection Keychain save/load/delete smoke test using random
   non-user data;
 - deterministic one-, four-, and eight-session physical-footprint measurements before and after scrollback compression;
-- a password-authenticated SSH command probe with bounded output;
+- a password- or in-memory private-key-authenticated SSH command probe with
+  bounded output;
 - negotiated host-key and cipher reporting;
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 
@@ -39,4 +40,8 @@ uses this single binary target so Xcode does not flatten two competing
 5. Record the device model, OS, VT result, and full memory matrix.
 6. Run the SSH command probe against the launch-server sample, verify the displayed fingerprint out of band, and exercise both Wi-Fi and cellular transitions.
 
-Passwords exist only in the in-memory form field and are cleared after each attempt. Keychain-backed product credential policy remains a separate Phase 0 gate.
+Password, pasted private-key, and passphrase fields are cleared before each
+attempt. The probe stores their bytes only under random opaque IDs in the
+device-only, non-synchronizing Keychain, resolves them during authentication,
+and deletes every item before reading command output. Use only disposable
+fixture keys in this diagnostic app.

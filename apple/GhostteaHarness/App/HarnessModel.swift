@@ -6,6 +6,13 @@ import UIKit
 
 @MainActor
 final class HarnessModel: ObservableObject {
+  enum SSHProbeAuthentication: String, CaseIterable, Identifiable {
+    case password = "Password"
+    case privateKey = "Private key"
+
+    var id: Self { self }
+  }
+
   struct PendingHostKey: Identifiable {
     let id = UUID()
     let challenge: SSHCandidateHostKeyChallenge
@@ -18,7 +25,10 @@ final class HarnessModel: ObservableObject {
   @Published var host = ""
   @Published var port = "22"
   @Published var username = ""
+  @Published var sshAuthentication = SSHProbeAuthentication.password
   @Published var password = ""
+  @Published var privateKey = ""
+  @Published var privateKeyPassphrase = ""
   @Published var command = "printf 'ghosttea-device-ok\\n'; uname -a"
   @Published var sshStatus = "Not connected"
   @Published var sshOutput = ""
@@ -99,12 +109,21 @@ final class HarnessModel: ObservableObject {
       sshStatus = "Host and username are required"
       return
     }
+    guard sshAuthentication != .privateKey || !privateKey.isEmpty else {
+      sshStatus = "Paste a disposable OpenSSH private key"
+      return
+    }
 
     let requestedHost = host
     let requestedUsername = username
+    let requestedAuthentication = sshAuthentication
     let requestedPassword = Data(password.utf8)
+    let requestedPrivateKey = Data(privateKey.utf8)
+    let requestedPassphrase = Data(privateKeyPassphrase.utf8)
     let requestedCommand = command
     password = ""
+    privateKey = ""
+    privateKeyPassphrase = ""
     isRunningSSH = true
     sshStatus = "Connecting…"
     sshOutput = ""
@@ -112,9 +131,48 @@ final class HarnessModel: ObservableObject {
     Task {
       do {
         let credentialStore = try KeychainSSHCredentialStore()
-        let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
-        try await credentialStore.store(requestedPassword, for: credential)
+        let connectionID = UUID()
+        let credentials: [SSHCredentialID]
+        let authentication: SSHCandidateAuthentication
         do {
+          switch requestedAuthentication {
+          case .password:
+            let credential = SSHCredentialID(connectionID: connectionID, kind: .password)
+            credentials = [credential]
+            authentication = .passwordCredential(
+              username: requestedUsername,
+              credential: credential,
+              resolver: { requestedCredential in
+                try await credentialStore.require(requestedCredential)
+              }
+            )
+            try await credentialStore.store(requestedPassword, for: credential)
+          case .privateKey:
+            let privateKeyCredential = SSHCredentialID(
+              connectionID: connectionID,
+              kind: .privateKey
+            )
+            let passphraseCredential =
+              requestedPassphrase.isEmpty
+              ? nil
+              : SSHCredentialID(
+                connectionID: connectionID,
+                kind: .privateKeyPassphrase
+              )
+            credentials = [privateKeyCredential, passphraseCredential].compactMap { $0 }
+            authentication = .publicKeyCredential(
+              username: requestedUsername,
+              privateKeyCredential: privateKeyCredential,
+              passphraseCredential: passphraseCredential,
+              resolver: { requestedCredential in
+                try await credentialStore.require(requestedCredential)
+              }
+            )
+            try await credentialStore.store(requestedPrivateKey, for: privateKeyCredential)
+            if let passphraseCredential {
+              try await credentialStore.store(requestedPassphrase, for: passphraseCredential)
+            }
+          }
           let knownHostsPath = try self.knownHostsPath()
           let configuration = try SSHCandidateConfiguration(
             host: requestedHost,
@@ -124,13 +182,7 @@ final class HarnessModel: ObservableObject {
               guard let self else { return .reject }
               return await self.requestHostKeyDecision(challenge)
             },
-            authentication: .passwordCredential(
-              username: requestedUsername,
-              credential: credential,
-              resolver: { requestedCredential in
-                try await credentialStore.require(requestedCredential)
-              }
-            ),
+            authentication: authentication,
             session: .command(requestedCommand, allocatePTY: false),
             connectTimeoutMilliseconds: 15_000,
             handshakeTimeoutMilliseconds: 15_000
@@ -138,7 +190,7 @@ final class HarnessModel: ObservableObject {
           let transport = SSHCandidateTransport(configuration: configuration)
           let connection = try await transport.connect()
           do {
-            try await credentialStore.remove(credential)
+            try await removeCredentials(credentials, from: credentialStore)
             var negotiatedSummary: String?
             if let candidate = connection as? SSHCandidateConnection {
               let summary =
@@ -166,7 +218,7 @@ final class HarnessModel: ObservableObject {
             throw error
           }
         } catch {
-          try? await credentialStore.remove(credential)
+          try? await removeCredentials(credentials, from: credentialStore)
           throw error
         }
       } catch {
@@ -209,6 +261,15 @@ final class HarnessModel: ObservableObject {
       attributes: [.protectionKey: FileProtectionType.complete]
     )
     return directory.appending(path: "known_hosts", directoryHint: .notDirectory).path
+  }
+
+  private func removeCredentials(
+    _ credentials: [SSHCredentialID],
+    from store: KeychainSSHCredentialStore
+  ) async throws {
+    for credential in credentials {
+      try await store.remove(credential)
+    }
   }
 }
 

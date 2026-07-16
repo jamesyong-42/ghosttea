@@ -1797,6 +1797,10 @@ an incorrect one through both direct fixture and opaque resolver paths.
 The opaque case uses libssh2's in-memory API and derives the public key without
 configured public-key bytes or a path. Keychain-backed device execution remains
 open. libssh2 is a candidate, not the selected SSH path.
+The diagnostic harness now accepts a pasted disposable private key and optional
+passphrase through opaque Keychain IDs, clears its fields before connecting,
+and builds for device and simulator SDKs. Its physical-device private-key run
+and the production credential UI remain open.
 
 Exit gate:
 

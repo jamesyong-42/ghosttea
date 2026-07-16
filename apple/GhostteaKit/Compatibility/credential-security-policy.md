@@ -44,12 +44,12 @@ zeroization. Callers must:
 
 `GhostteaSSH` includes async password and private-key credential cases that
 receive opaque `SSHCredentialID` values. The iOS harness clears its editable
-password field, stores the bytes in Keychain, resolves them only when
-authentication begins, and removes the item immediately after connection or on
-every failure path. The private-key case resolves key and optional passphrase
-bytes only inside `connect()`. The legacy direct-password and path/string
-public-key cases remain for fixture compatibility and must not be used by the
-product app.
+password, private-key, and passphrase fields before starting work, stores the
+selected bytes in Keychain, resolves them only when authentication begins, and
+removes every item immediately after connection or on every failure path. The
+private-key case resolves key and optional passphrase bytes only inside
+`connect()`. The legacy direct-password and path/string public-key cases remain
+for fixture compatibility and must not be used by the product app.
 
 ## In-memory private keys
 

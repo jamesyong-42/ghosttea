@@ -58,7 +58,24 @@ struct ContentView: View {
           TextField("Username", text: $model.username)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-          SecureField("Password", text: $model.password)
+          Picker("Authentication", selection: $model.sshAuthentication) {
+            ForEach(HarnessModel.SSHProbeAuthentication.allCases) { authentication in
+              Text(authentication.rawValue).tag(authentication)
+            }
+          }
+          .pickerStyle(.segmented)
+          if model.sshAuthentication == .password {
+            SecureField("Password", text: $model.password)
+          } else {
+            TextField(
+              "Paste disposable OpenSSH private key", text: $model.privateKey, axis: .vertical
+            )
+            .lineLimit(4...10)
+            .font(.system(.caption, design: .monospaced))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            SecureField("Private-key passphrase (optional)", text: $model.privateKeyPassphrase)
+          }
           TextField("Command", text: $model.command, axis: .vertical)
             .lineLimit(2...5)
             .textInputAutocapitalization(.never)
