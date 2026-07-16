@@ -205,8 +205,12 @@ handshake deadline. A local peer that accepts TCP without sending a banner prove
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
 lookup remains non-interruptible until it returns. Remaining gates include
 UIKit/Keychain policy, representative-server/RSA-SHA-2 coverage,
-adverse-network/repeated cancellation, and physical-device evidence, as
+adverse-network transitions, and physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
+
+Repeated cleanup stress now passes 32 stalled-handshake cancellations and 16
+suspended keyboard-interactive cancellations in one process, each bounded below
+one second.
 
 Generated passphrase-encrypted OpenSSH Ed25519 keys now authenticate through
 the adapter, while an incorrect-passphrase control is rejected. This proves the

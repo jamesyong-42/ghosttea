@@ -56,6 +56,8 @@ The automated matrix verifies:
   client RSS gate, and then drains byte-for-byte without disconnecting.
 - a peer that accepts TCP but never sends an SSH banner, proving the handshake
   deadline and task-cancellation paths without relying on external networks.
+- 32 consecutive stalled-handshake cancellations and 16 consecutive suspended
+  keyboard-interactive cancellations in one client process.
 - strict known-host verification and a complete shell session using ECDSA
   P-256 plus bidirectional AES-256-GCM.
 

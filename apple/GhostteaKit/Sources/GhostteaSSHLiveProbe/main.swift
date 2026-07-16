@@ -22,6 +22,7 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case unexpectedAlgorithms(SSHCandidateNegotiatedAlgorithms)
   case unexpectedChallenge(SSHKeyboardInteractiveChallenge)
   case authenticationDidNotCancel
+  case cancellationStressIterationFailed(kind: String, iteration: Int, error: String)
   case unexpectedAuthenticationCancellationError(String)
   case handshakeDidNotTimeOut
   case handshakeDidNotCancel
@@ -61,6 +62,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "SSH fixture produced an unexpected keyboard challenge: \(challenge)"
     case .authenticationDidNotCancel:
       return "keyboard-interactive authentication completed instead of cancelling"
+    case .cancellationStressIterationFailed(let kind, let iteration, let error):
+      return "\(kind) cancellation stress failed at iteration \(iteration): \(error)"
     case .unexpectedAuthenticationCancellationError(let error):
       return "keyboard-interactive cancellation failed with \(error)"
     case .handshakeDidNotTimeOut:
@@ -140,7 +143,7 @@ private func authentication(
   privateKeyPath: String
 ) throws -> SSHCandidateAuthentication {
   switch mode {
-  case "password", "handshake-timeout", "handshake-cancel":
+  case "password", "handshake-timeout", "handshake-cancel", "handshake-cancel-stress":
     return .password(username: "ghosttea", password: "ghosttea-password")
   case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm":
     return .publicKey(
@@ -168,7 +171,7 @@ private func authentication(
       username: "ghosttea",
       responder: respondToFixtureChallenge
     )
-  case "keyboard-cancel":
+  case "keyboard-cancel", "keyboard-cancel-stress":
     return .keyboardInteractive(username: "ghosttea") { _ in
       try await Task.sleep(for: .seconds(60))
       return []
@@ -250,12 +253,20 @@ private func runProbe() async throws {
     try await verifyAuthenticationCancellation(transport: transport)
     return
   }
+  if mode == "keyboard-cancel-stress" {
+    try await verifyAuthenticationCancellationStress(transport: transport)
+    return
+  }
   if mode == "handshake-timeout" {
     try await verifyHandshakeTimeout(transport: transport)
     return
   }
   if mode == "handshake-cancel" {
     try await verifyHandshakeCancellation(transport: transport)
+    return
+  }
+  if mode == "handshake-cancel-stress" {
+    try await verifyHandshakeCancellationStress(transport: transport)
     return
   }
   let connection = try await transport.connect()
@@ -335,10 +346,12 @@ private func verifyHandshakeTimeout(
 }
 
 private func verifyHandshakeCancellation(
-  transport: SSHCandidateTransport
+  transport: SSHCandidateTransport,
+  cancellationDelay: Duration = .milliseconds(500),
+  shouldPrint: Bool = true
 ) async throws {
   let connectionTask = Task { try await transport.connect() }
-  try await Task.sleep(for: .milliseconds(500))
+  try await Task.sleep(for: cancellationDelay)
   let clock = ContinuousClock()
   let start = clock.now
   connectionTask.cancel()
@@ -356,7 +369,31 @@ private func verifyHandshakeCancellation(
   guard duration < .seconds(1) else {
     throw LiveProbeError.cancellationTooSlow(duration)
   }
-  print("Swift SSH handshake observed cancellation in \(duration)")
+  if shouldPrint {
+    print("Swift SSH handshake observed cancellation in \(duration)")
+  }
+}
+
+private func verifyHandshakeCancellationStress(
+  transport: SSHCandidateTransport
+) async throws {
+  let iterations = 32
+  for iteration in 1...iterations {
+    do {
+      try await verifyHandshakeCancellation(
+        transport: transport,
+        cancellationDelay: .milliseconds(25),
+        shouldPrint: false
+      )
+    } catch {
+      throw LiveProbeError.cancellationStressIterationFailed(
+        kind: "handshake",
+        iteration: iteration,
+        error: String(describing: error)
+      )
+    }
+  }
+  print("Swift SSH handshake cancellation stress passed \(iterations) iterations")
 }
 
 private func verifyCommandSession(
@@ -416,12 +453,14 @@ private func verifyCommandSession(
 }
 
 private func verifyAuthenticationCancellation(
-  transport: SSHCandidateTransport
+  transport: SSHCandidateTransport,
+  cancellationDelay: Duration = .milliseconds(500),
+  shouldPrint: Bool = true
 ) async throws {
   let connectionTask = Task {
     try await transport.connect()
   }
-  try await Task.sleep(for: .milliseconds(500))
+  try await Task.sleep(for: cancellationDelay)
   let clock = ContinuousClock()
   let start = clock.now
   connectionTask.cancel()
@@ -441,7 +480,31 @@ private func verifyAuthenticationCancellation(
   guard duration < .seconds(1) else {
     throw LiveProbeError.cancellationTooSlow(duration)
   }
-  print("Swift keyboard-interactive responder cancelled in \(duration)")
+  if shouldPrint {
+    print("Swift keyboard-interactive responder cancelled in \(duration)")
+  }
+}
+
+private func verifyAuthenticationCancellationStress(
+  transport: SSHCandidateTransport
+) async throws {
+  let iterations = 16
+  for iteration in 1...iterations {
+    do {
+      try await verifyAuthenticationCancellation(
+        transport: transport,
+        cancellationDelay: .milliseconds(100),
+        shouldPrint: false
+      )
+    } catch {
+      throw LiveProbeError.cancellationStressIterationFailed(
+        kind: "keyboard-interactive",
+        iteration: iteration,
+        error: String(describing: error)
+      )
+    }
+  }
+  print("Swift keyboard-interactive cancellation stress passed \(iterations) iterations")
 }
 
 private func verifyAlgorithms(

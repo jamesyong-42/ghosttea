@@ -102,6 +102,10 @@ fired in approximately 307 ms, and cancellation unwound in approximately 77 ms.
 The system resolver call is still synchronous; a stalled `getaddrinfo` cannot be
 interrupted until it returns, so resolver replacement or Network.framework
 integration remains a production hardening decision.
+The same process also completes 32 consecutive stalled-handshake cancellations
+and 16 consecutive suspended keyboard-interactive cancellations, with every
+cycle bounded below one second. This exercises repeated session destruction and
+callback-worker cleanup; adverse network transitions remain a device gate.
 The host-neutral transport now includes input half-close and a typed termination
 result that distinguishes `.exited(code:)` from `.signaled(name:)`.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and
@@ -168,12 +172,12 @@ host-neutral demand and queue semantics.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide RSA/SHA-2 scope from that sample. The forced ECDSA
    P-256 and AES-256-GCM endpoint already passes.
-4. Add repeated connection-cancellation stress, a resolver cancellation
-   strategy, and reconnect orchestration. PTY allocation, resize, shell I/O,
+4. Add a resolver cancellation strategy and reconnect orchestration. PTY
+   allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,
-   and deterministic handshake timeout/cancellation already pass; the
-   nonblocking TCP connector is implemented but still needs adverse-network and
-   physical-device evidence.
+   deterministic handshake timeout/cancellation, and repeated auth/handshake
+   cancellation stress already pass; the nonblocking TCP connector still needs
+   adverse-network and physical-device evidence.
 5. Instrument socket bytes, SSH-channel windows, adapter queues, and physical
    footprint. The macOS adapter flood is already byte-exact and below its
    whole-process RSS gate.

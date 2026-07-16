@@ -1311,8 +1311,8 @@ async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
 Ed25519 keys pass and incorrect passphrases are rejected. UIKit/Keychain policy,
-representative-server/RSA-SHA-2 coverage, repeated adverse-network cancellation,
-and device evidence remain open. TCP establishment now uses a
+representative-server/RSA-SHA-2 coverage, adverse-network transitions, and
+device evidence remain open. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
@@ -1320,6 +1320,9 @@ non-interruptible until it returns. The adapter records negotiated methods; the
 current fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 A second forced profile locks ECDSA P-256 and bidirectional AES-256-GCM under
 strict known-host verification. No stack-specific type may escape the adapter.
+Repeated cleanup stress passes 32 stalled-handshake cancellations and 16
+suspended keyboard-interactive cancellations in one process. Physical
+Wi-Fi/cellular transition behavior remains open.
 
 The same transport supports PTY shells and non-PTY commands. A live command
 fixture preserves separate stdout and stderr and exit status 37. A second

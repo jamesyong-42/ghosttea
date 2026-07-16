@@ -389,6 +389,18 @@ function swiftCandidate() {
     }
     process.stdout.write(cancellation.stdout);
 
+    const authenticationCancellationStress = execute(
+      liveProbe,
+      ["keyboard-cancel-stress", "127.0.0.1", ports.keyboard, knownHosts, publicKey, privateKey],
+      { timeout: 30_000 },
+    );
+    if (authenticationCancellationStress.status !== 0) {
+      throw new Error(
+        `Swift keyboard-interactive cancellation stress failed: status=${authenticationCancellationStress.status} stdout=${authenticationCancellationStress.stdout} stderr=${authenticationCancellationStress.stderr}`,
+      );
+    }
+    process.stdout.write(authenticationCancellationStress.stdout);
+
     const wrongPassphrase = execute(
       liveProbe,
       [
@@ -417,6 +429,18 @@ function swiftCandidate() {
       process.stdout.write(result.stdout);
     }
 
+    const handshakeCancellationStress = execute(
+      liveProbe,
+      ["handshake-cancel-stress", "127.0.0.1", ports.blackhole, knownHosts, publicKey, privateKey],
+      { timeout: 30_000 },
+    );
+    if (handshakeCancellationStress.status !== 0) {
+      throw new Error(
+        `Swift handshake cancellation stress failed: status=${handshakeCancellationStress.status} stdout=${handshakeCancellationStress.stdout} stderr=${handshakeCancellationStress.stderr}`,
+      );
+    }
+    process.stdout.write(handshakeCancellationStress.stdout);
+
     const wrongKey = execute(
       liveProbe,
       ["partial", "127.0.0.1", ports.partial, knownHosts, wrongPublicKey, wrongPrivateKey],
@@ -439,7 +463,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, repeated cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

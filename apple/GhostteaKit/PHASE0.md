@@ -44,6 +44,8 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a cancellable nonblocking TCP connector and independent SSH handshake
   deadline, with pre-cancel and deterministic no-banner timeout/cancellation
   controls.
+- repeated cleanup stress covering 32 stalled-handshake cancellations and 16
+  suspended keyboard-interactive cancellations in one process.
 - a second strict-known-host negotiation profile using ECDSA P-256 and
   bidirectional AES-256-GCM.
 - generated encrypted OpenSSH Ed25519 private-key authentication, plus an
@@ -81,8 +83,8 @@ UIKit, transport state, and the rest of the application.
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. Remaining work is UIKit/Keychain credential
    policy, user decisions for unknown/changed hosts, representative-server and
-   RSA/SHA-2 coverage, repeated adverse-network cancellation, resolver and
-   reconnect orchestration, channel-window instrumentation, and physical-device
+   RSA/SHA-2 coverage, adverse-network transitions, resolver and reconnect
+   orchestration, channel-window instrumentation, and physical-device
    execution. The public-key partial step remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
