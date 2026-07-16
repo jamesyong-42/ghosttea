@@ -74,6 +74,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   one/four/eight-session memory matrix completed with every session retaining
   4,977 scrollback rows and reporting compression support. Exact measurements
   are recorded in `Compatibility/ios-device-evidence.md`.
+- a physical-device password SSH probe against the disposable OpenSSH fixture,
+  including an independently verified unknown host key, explicit accept-once
+  decision, authentication, command execution, output drain, and clean exit.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -99,10 +102,11 @@ UIKit, transport state, and the rest of the application.
 
 ## Remaining gates
 
-1. Run the harness SSH probe against the launch-server sample and record
-   authentication, negotiated algorithms, host-key decisions, command output,
-   and Wi-Fi/cellular transition behavior. The signed physical-device VT and
-   raw scrollback-memory run is complete.
+1. Run the harness against representative launch servers and record negotiated
+   algorithms plus Wi-Fi/cellular transition behavior. The signed
+   physical-device VT, raw scrollback-memory, host-key confirmation, password
+   authentication, and command-output baseline is complete against the local
+   fixture.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
    authentication including encrypted private keys, the asynchronous prompt
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,

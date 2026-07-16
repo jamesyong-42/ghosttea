@@ -1769,10 +1769,12 @@ return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 The signed VT proof and raw one/four/eight-session footprint matrix pass on an
-iPhone 14 Pro running iOS 26.5; the measurements are recorded in
-`apple/GhostteaKit/Compatibility/ios-device-evidence.md`. Physical-device SSH
-and network-transition execution, UIKit/Keychain authentication policy,
-representative-server and
+iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
+confirmation, password authentication, command execution, and output drain
+against the disposable OpenSSH fixture. The measurements and command output are
+recorded in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
+Representative-server and network-transition execution, UIKit/Keychain
+authentication policy, and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.

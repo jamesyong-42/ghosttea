@@ -99,9 +99,12 @@ final class HarnessModel: ObservableObject {
         let transport = SSHCandidateTransport(configuration: configuration)
         let connection = try await transport.connect()
         do {
+          var negotiatedSummary: String?
           if let candidate = connection as? SSHCandidateConnection {
-            sshStatus =
-              "Connected · \(candidate.negotiatedAlgorithms.hostKey) · \(candidate.negotiatedAlgorithms.serverToClientCipher)"
+            let summary =
+              "\(candidate.negotiatedAlgorithms.hostKey) · \(candidate.negotiatedAlgorithms.serverToClientCipher)"
+            negotiatedSummary = summary
+            sshStatus = "Connected · \(summary)"
           } else {
             sshStatus = "Connected"
           }
@@ -114,7 +117,9 @@ final class HarnessModel: ObservableObject {
           }
           let termination = try await connection.waitForExit()
           sshOutput = String(decoding: received, as: UTF8.self)
-          sshStatus = "Completed · \(termination.description)"
+          sshStatus = ["Completed", termination.description, negotiatedSummary]
+            .compactMap { $0 }
+            .joined(separator: " · ")
           await connection.disconnect()
         } catch {
           await connection.disconnect()

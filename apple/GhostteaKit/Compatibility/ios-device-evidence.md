@@ -42,3 +42,33 @@ decoded images, Metal resources, transport state, and application UI budgets.
 The physical-device VT build/run gate is satisfied. The same harness still
 needs launch-server SSH, adverse-network transition, and complete terminal-stack
 memory evidence before Phase 0 can close.
+
+## 2026-07-16: password SSH command
+
+The same signed harness connected over Wi-Fi to the repository's disposable
+OpenSSH password fixture, exposed temporarily on the development Mac's trusted
+LAN interface. The fixture was returned to its loopback-only default and shut
+down immediately after the probe.
+
+The device successfully completed all of the following:
+
+- displayed the unknown Ed25519 host-key challenge before authentication;
+- matched its SHA-256 fingerprint against an independently scanned value;
+- applied an explicit accept-once decision without persisting the disposable
+  fixture key;
+- authenticated the `ghosttea` fixture account using the password method;
+- executed the harness's default non-PTY command;
+- drained the command output through the pull-based Swift transport; and
+- observed a clean command exit.
+
+Observed output:
+
+```text
+ghosttea-device-ok
+Linux 361f033ac616 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 GNU/Linux
+```
+
+This satisfies the physical-device password-authentication and basic command
+transport baseline. It does not replace representative launch-server coverage,
+keyboard-interactive or public-key credential UI, adverse-network transitions,
+or the stalled-reader flow-control fixture already covered on macOS.
