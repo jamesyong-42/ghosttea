@@ -24,6 +24,8 @@ const composeFile = join(fixtureRoot, "docker-compose.yml");
 const projectName = "ghosttea-ssh-fixture";
 const command = process.argv[2] ?? "test";
 const keepRunning = process.argv.includes("--keep");
+const passwordBindAddress = process.env.GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS ?? "127.0.0.1";
+const passwordScanHost = passwordBindAddress === "0.0.0.0" ? "127.0.0.1" : passwordBindAddress;
 const ports = {
   password: process.env.GHOSTTEA_SSH_PASSWORD_PORT ?? "22022",
   keyboard: process.env.GHOSTTEA_SSH_KEYBOARD_PORT ?? "22023",
@@ -36,6 +38,7 @@ const ports = {
 const commandEnvironment = {
   ...process.env,
   GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY: authorizedKeys,
+  GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS: passwordBindAddress,
   GHOSTTEA_SSH_PASSWORD_PORT: ports.password,
   GHOSTTEA_SSH_KEYBOARD_PORT: ports.keyboard,
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
@@ -117,16 +120,16 @@ function waitUntilHealthy() {
 
 function scanKnownHosts() {
   const entries = [
-    ports.password,
-    ports.keyboard,
-    ports.partial,
-    ports.publicKey,
-    ports.ecdsaAesGcm,
-    ports.rsaSha2,
-  ].map((port) => {
-    const result = execute("ssh-keyscan", ["-T", "5", "-p", port, "127.0.0.1"]);
+    [ports.password, passwordScanHost],
+    [ports.keyboard, "127.0.0.1"],
+    [ports.partial, "127.0.0.1"],
+    [ports.publicKey, "127.0.0.1"],
+    [ports.ecdsaAesGcm, "127.0.0.1"],
+    [ports.rsaSha2, "127.0.0.1"],
+  ].map(([port, host]) => {
+    const result = execute("ssh-keyscan", ["-T", "5", "-p", port, host]);
     if (result.status !== 0 || !result.stdout.trim()) {
-      throw new Error(`Could not scan fixture host key on port ${port}: ${result.stderr}`);
+      throw new Error(`Could not scan fixture host key at ${host}:${port}: ${result.stderr}`);
     }
     return result.stdout.trim();
   });

@@ -33,7 +33,16 @@ pub struct ControlChanged {
     pub size_changed: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedResize {
+    pub(crate) resize_sequence: u64,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+    pub(crate) layout_epoch: u64,
+    pub(crate) size_changed: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct ViewAuthority {
     views: HashMap<String, AttachedView>,
     controller: Option<ControllerState>,
@@ -143,6 +152,30 @@ impl ViewAuthority {
         cols: u16,
         rows: u16,
     ) -> Result<bool> {
+        let Some(prepared) = self.prepare_resize(
+            view_id,
+            client_id,
+            control_epoch,
+            resize_sequence,
+            cols,
+            rows,
+        )?
+        else {
+            return Ok(false);
+        };
+        self.commit_resize(view_id, prepared);
+        Ok(prepared.size_changed)
+    }
+
+    pub(crate) fn prepare_resize(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        control_epoch: u64,
+        resize_sequence: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Option<PreparedResize>> {
         let authorized = self.controller.as_ref().is_some_and(|controller| {
             controller.view_id == view_id
                 && controller.client_id == client_id
@@ -151,18 +184,35 @@ impl ViewAuthority {
         if !authorized {
             bail!("stale or unauthorized resize controller");
         }
-        let view = self.require_view_mut(view_id, client_id)?;
+        let view = self.require_view(view_id, client_id)?;
         if resize_sequence <= view.last_resize_sequence {
-            return Ok(false);
+            return Ok(None);
         }
-        view.last_resize_sequence = resize_sequence;
-        if (self.cols, self.rows) == (cols, rows) {
-            return Ok(false);
+        let size_changed = (self.cols, self.rows) != (cols, rows);
+        Ok(Some(PreparedResize {
+            resize_sequence,
+            cols,
+            rows,
+            layout_epoch: if size_changed {
+                self.layout_epoch.saturating_add(1)
+            } else {
+                self.layout_epoch
+            },
+            size_changed,
+        }))
+    }
+
+    pub(crate) fn commit_resize(&mut self, view_id: &str, prepared: PreparedResize) {
+        let view = self
+            .views
+            .get_mut(view_id)
+            .expect("prepared resize view must remain attached while authority is locked");
+        view.last_resize_sequence = prepared.resize_sequence;
+        if prepared.size_changed {
+            self.cols = prepared.cols;
+            self.rows = prepared.rows;
+            self.layout_epoch = prepared.layout_epoch;
         }
-        self.cols = cols;
-        self.rows = rows;
-        self.layout_epoch = self.layout_epoch.saturating_add(1);
-        Ok(true)
     }
 
     pub fn authorize_input(

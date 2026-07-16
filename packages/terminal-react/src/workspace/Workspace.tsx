@@ -147,18 +147,27 @@ function sharedInitialization(
 interface SplitViewProps {
   node: PaneNode;
   activePaneId: string;
+  workspaceActive: boolean;
   zoomedPaneId: string | null;
   platform: GhostteaWorkspacePlatform;
   onActivate: (paneId: string) => void;
   onRatio: (splitId: string, ratio: number) => void;
 }
 
-function SplitView({ node, activePaneId, zoomedPaneId, platform, onActivate, onRatio }: SplitViewProps) {
+function SplitView({
+  node,
+  activePaneId,
+  workspaceActive,
+  zoomedPaneId,
+  platform,
+  onActivate,
+  onRatio,
+}: SplitViewProps) {
   const splitRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number } | null>(null);
 
   if (node.kind === "pane") {
-    const active = node.id === activePaneId;
+    const active = workspaceActive && node.id === activePaneId;
     const zoomed = node.id === zoomedPaneId;
     return (
       <div
@@ -170,6 +179,8 @@ function SplitView({ node, activePaneId, zoomedPaneId, platform, onActivate, onR
           session={node.session}
           theme={TERMINAL_THEMES.midnight}
           active={active}
+          visible={workspaceActive}
+          controlsResize
           onActivate={() => onActivate(node.id)}
           readClipboard={platform.readClipboard}
           onContextMenu={platform.showContextMenu}
@@ -199,7 +210,7 @@ function SplitView({ node, activePaneId, zoomedPaneId, platform, onActivate, onR
     <div ref={splitRef} className={`ghostty-split is-${node.axis}`} style={style as CSSProperties}>
       <SplitView
         key={node.first.id}
-        {...{ node: node.first, activePaneId, zoomedPaneId, platform, onActivate, onRatio }}
+        {...{ node: node.first, activePaneId, workspaceActive, zoomedPaneId, platform, onActivate, onRatio }}
       />
       <div
         className="ghostty-split-divider"
@@ -220,7 +231,7 @@ function SplitView({ node, activePaneId, zoomedPaneId, platform, onActivate, onR
       />
       <SplitView
         key={node.second.id}
-        {...{ node: node.second, activePaneId, zoomedPaneId, platform, onActivate, onRatio }}
+        {...{ node: node.second, activePaneId, workspaceActive, zoomedPaneId, platform, onActivate, onRatio }}
       />
     </div>
   );
@@ -561,7 +572,7 @@ export function GhostteaWorkspace({
   );
 
   return (
-    <main className={`ghostty-window${focused ? " is-focused" : ""}`}>
+    <main className={`ghostty-window${active && focused ? " is-focused" : ""}`}>
       {showTitlebar ? (
         <header className="ghostty-titlebar" aria-label={title}>
           <span className="ghostty-title">{title}</span>
@@ -573,11 +584,12 @@ export function GhostteaWorkspace({
             <div className="terminal-error" role="alert">
               {error}
             </div>
-          ) : active && displayedLayout && activePaneId ? (
+          ) : displayedLayout && activePaneId ? (
             <SplitView
               key={displayedLayout.id}
               node={displayedLayout}
               activePaneId={activePaneId}
+              workspaceActive={active}
               zoomedPaneId={null}
               platform={platform}
               onActivate={activatePane}

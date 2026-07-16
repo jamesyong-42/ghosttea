@@ -199,6 +199,8 @@ export interface TerminalKeyEvent {
   alt: boolean;
   meta: boolean;
   timestamp: number;
+  /** Layout-aware Unicode codepoint for this physical key with modifiers removed. */
+  unshiftedCodepoint?: number;
 }
 
 export interface TerminalMouseEvent {

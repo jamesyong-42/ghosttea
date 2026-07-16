@@ -58,6 +58,8 @@ interface ViewRuntimeState {
   inputSequence: number;
   resizeSequence: number;
   controlEpoch: number | undefined;
+  desiredCols: number | undefined;
+  desiredRows: number | undefined;
   pendingInput: Array<(attachmentEpoch: number, inputSequence: number) => void>;
 }
 
@@ -179,16 +181,21 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.dispatchEvent(new CustomEvent("session-exited", { detail }));
     });
     this.#control.addEventListener("control-changed", (event) => {
-      const detail = (
-        event as CustomEvent<{
-          sessionId: string;
-          controllerViewId: string;
-          controlEpoch: number;
-        }>
-      ).detail;
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "control-changed" }>>).detail;
       for (const [viewId, view] of this.#views) {
         if (view.sessionId !== detail.sessionId) continue;
-        view.controlEpoch = viewId === detail.controllerViewId ? detail.controlEpoch : undefined;
+        if (viewId !== detail.controllerViewId) {
+          view.controlEpoch = undefined;
+          continue;
+        }
+        view.controlEpoch = detail.controlEpoch;
+        if (
+          view.desiredCols !== undefined &&
+          view.desiredRows !== undefined &&
+          (view.desiredCols !== detail.cols || view.desiredRows !== detail.rows)
+        ) {
+          this.#sendResize(viewId, view, view.desiredCols, view.desiredRows);
+        }
       }
     });
     this.#frames = ports.frames;
@@ -350,6 +357,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
       inputSequence: 0,
       resizeSequence: 0,
       controlEpoch: undefined,
+      desiredCols: undefined,
+      desiredRows: undefined,
       pendingInput: [],
     };
     this.#views.set(viewId, view);
@@ -473,7 +482,36 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#postWorker({ type: "selection", sessionHandle, selection });
   }
 
+  setVisible(sessionHandle: string, visible: boolean): void {
+    this.#postWorker({ type: "visibility", sessionHandle, visible });
+  }
+
+  claimResizeControl(sessionHandle: string, viewId: string, cols: number, rows: number): void {
+    const view = this.#views.get(viewId);
+    if (view) {
+      view.desiredCols = cols;
+      view.desiredRows = rows;
+    }
+    const session = this.#sessionByHandle.get(sessionHandle);
+    if (!session) return;
+    this.#sendViewInput(viewId, (attachmentEpoch) => {
+      this.#control?.notify({
+        type: "focus-and-resize",
+        sessionId: session.id,
+        viewId,
+        attachmentEpoch,
+        cols,
+        rows,
+      });
+    });
+  }
+
   setFocused(sessionHandle: string, viewId: string, focused: boolean, cols: number, rows: number): void {
+    const view = this.#views.get(viewId);
+    if (view) {
+      view.desiredCols = cols;
+      view.desiredRows = rows;
+    }
     if (this.#focusByView.get(viewId) === focused) return;
     this.#focusByView.set(viewId, focused);
     this.#postWorker({ type: "focus", sessionHandle, focused });
@@ -546,17 +584,19 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   resize(sessionId: string, viewId: string, cols: number, rows: number): void {
     const view = this.#views.get(viewId);
-    if (
-      !view ||
-      view.attachmentEpoch === undefined ||
-      view.controlEpoch === undefined ||
-      !this.#focusByView.get(viewId)
-    )
-      return;
+    if (!view || view.sessionId !== sessionId) return;
+    view.desiredCols = cols;
+    view.desiredRows = rows;
+    if (view.attachmentEpoch === undefined || view.controlEpoch === undefined) return;
+    this.#sendResize(viewId, view, cols, rows);
+  }
+
+  #sendResize(viewId: string, view: ViewRuntimeState, cols: number, rows: number): void {
+    if (view.attachmentEpoch === undefined || view.controlEpoch === undefined) return;
     view.resizeSequence += 1;
     this.#control?.notify({
       type: "resize",
-      sessionId,
+      sessionId: view.sessionId,
       viewId,
       attachmentEpoch: view.attachmentEpoch,
       controlEpoch: view.controlEpoch,

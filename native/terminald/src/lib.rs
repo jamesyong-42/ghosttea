@@ -10,7 +10,8 @@ pub mod tunnel_protocol;
 
 pub use authority::ViewAccess;
 pub use mesh::{
-    RemoteControlClaim, RemoteHostSummary, RemoteResize, RemoteTerminalRuntime, TerminalMesh,
+    RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize,
+    RemoteTerminalRuntime, TerminalMesh,
 };
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;

@@ -21,6 +21,16 @@ pub struct RemoteControlClaim {
     pub layout_epoch: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct RemoteControlChanged {
+    pub session_id: String,
+    pub controller_view_id: String,
+    pub control_epoch: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub layout_epoch: u64,
+}
+
 pub struct RemoteResize {
     pub attachment_epoch: u64,
     pub control_epoch: u64,
@@ -43,6 +53,7 @@ pub struct RemoteHostSummary {
 
 #[async_trait]
 pub trait RemoteTerminalRuntime: Send + Sync {
+    fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged>;
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>>;
     async fn list_sessions(&self, device_id: &str) -> Result<Vec<SharedSessionSummary>>;
     async fn open_session(
@@ -94,6 +105,12 @@ fn unavailable<T>() -> Result<T> {
 
 #[async_trait]
 impl RemoteTerminalRuntime for NoRemoteRuntime {
+    fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged> {
+        let (sender, receiver) = broadcast::channel(1);
+        drop(sender);
+        receiver
+    }
+
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>> {
         Ok(Vec::new())
     }

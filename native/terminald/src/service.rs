@@ -287,6 +287,28 @@ impl TerminalService {
             .as_ref()
             .map(|mesh| mesh.runtime())
             .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
+        let mut remote_controls = mesh_runtime.subscribe_control();
+        let remote_events = event_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match remote_controls.recv().await {
+                    Ok(changed) => {
+                        let _ = remote_events.send(json!({
+                            "requestId": 0,
+                            "type": "control-changed",
+                            "sessionId": changed.session_id,
+                            "controllerViewId": changed.controller_view_id,
+                            "controlEpoch": changed.control_epoch,
+                            "cols": changed.cols,
+                            "rows": changed.rows,
+                            "layoutEpoch": changed.layout_epoch,
+                        }));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
         let text_engine = Arc::new(Mutex::new(
             TextEngine::discover().context("system font discovery failed")?,
         ));
@@ -451,6 +473,29 @@ async fn handle_command(
                     on_exit,
                 )?;
                 let summary = session.summary();
+                let mut controls = session.subscribe_control();
+                let control_session_id = summary.id.clone();
+                let control_events = event_tx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match controls.recv().await {
+                            Ok(changed) => {
+                                let _ = control_events.send(json!({
+                                    "requestId": 0,
+                                    "type": "control-changed",
+                                    "sessionId": control_session_id,
+                                    "controllerViewId": changed.controller.view_id,
+                                    "controlEpoch": changed.controller.control_epoch,
+                                    "cols": changed.cols,
+                                    "rows": changed.rows,
+                                    "layoutEpoch": changed.layout_epoch,
+                                }));
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
                 registry
                     .write()
                     .unwrap()
@@ -769,16 +814,6 @@ async fn handle_command(
                             changed.layout_epoch,
                         )
                     };
-                let _ = event_tx.send(json!({
-                    "requestId": 0,
-                    "type": "control-changed",
-                    "sessionId": session_id,
-                    "controllerViewId": controller_view_id,
-                    "controlEpoch": control_epoch,
-                    "cols": cols,
-                    "rows": rows,
-                    "layoutEpoch": layout_epoch,
-                }));
                 Ok(ResponseBody::ControlClaimed {
                     session_id,
                     controller_view_id,
@@ -1009,6 +1044,42 @@ mod protocol_tests {
                 assert_eq!((cols, rows), (120, 40));
             }
             _ => panic!("expected resize command"),
+        }
+    }
+
+    #[test]
+    fn deserializes_layout_identity_for_key_events_with_legacy_fallback() {
+        let key_command = |unshifted_codepoint: Option<u32>| {
+            let mut event = json!({
+                "type": "down",
+                "key": "w",
+                "code": "KeyW",
+                "repeat": false,
+                "shift": false,
+                "control": false,
+                "alt": false,
+                "meta": false,
+            });
+            if let Some(codepoint) = unshifted_codepoint {
+                event["unshiftedCodepoint"] = json!(codepoint);
+            }
+            serde_json::from_value::<Envelope>(json!({
+                "requestId": 13,
+                "type": "send-key",
+                "sessionId": "session",
+                "viewId": "view",
+                "attachmentEpoch": 3,
+                "inputSequence": 1,
+                "event": event,
+            }))
+            .unwrap()
+        };
+
+        for (value, expected) in [(Some(u32::from('w')), u32::from('w')), (None, 0)] {
+            match key_command(value).command {
+                Command::SendKey { event, .. } => assert_eq!(event.unshifted_codepoint, expected),
+                _ => panic!("expected send-key command"),
+            }
         }
     }
 

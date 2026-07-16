@@ -82,6 +82,7 @@ unsafe extern "C" {
         code_len: usize,
         text: *const u8,
         text_len: usize,
+        unshifted_codepoint: u32,
         mods: u16,
         action: u8,
         out: *mut u8,
@@ -344,6 +345,7 @@ impl GhosttyTerminalCore {
         &mut self,
         code: &str,
         text: &str,
+        unshifted_codepoint: u32,
         mods: u16,
         action: u8,
     ) -> Result<Vec<u8>, GhosttyError> {
@@ -356,6 +358,7 @@ impl GhosttyTerminalCore {
                 code.len(),
                 text.as_ptr(),
                 text.len(),
+                unshifted_codepoint,
                 mods,
                 action,
                 bytes.as_mut_ptr(),
@@ -372,6 +375,7 @@ impl GhosttyTerminalCore {
                     code.len(),
                     text.as_ptr(),
                     text.len(),
+                    unshifted_codepoint,
                     mods,
                     action,
                     bytes.as_mut_ptr(),
@@ -672,11 +676,19 @@ mod tests {
     #[test]
     fn encodes_keys_from_terminal_modes() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
-        assert_eq!(terminal.encode_key("ArrowUp", "", 0, 1).unwrap(), b"\x1b[A");
-        terminal.feed(b"\x1b[?1h");
-        assert_eq!(terminal.encode_key("ArrowUp", "", 0, 1).unwrap(), b"\x1bOA");
         assert_eq!(
-            terminal.encode_key("KeyC", "c", 1 << 1, 1).unwrap(),
+            terminal.encode_key("ArrowUp", "", 0, 0, 1).unwrap(),
+            b"\x1b[A"
+        );
+        terminal.feed(b"\x1b[?1h");
+        assert_eq!(
+            terminal.encode_key("ArrowUp", "", 0, 0, 1).unwrap(),
+            b"\x1bOA"
+        );
+        assert_eq!(
+            terminal
+                .encode_key("KeyC", "c", 'c'.into(), 1 << 1, 1)
+                .unwrap(),
             b"\x03"
         );
     }
@@ -684,10 +696,20 @@ mod tests {
     #[test]
     fn suppresses_release_events_without_kitty_event_reporting() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
-        let press = terminal.encode_key("KeyW", "w", 0, 1).unwrap();
-        let release = terminal.encode_key("KeyW", "w", 0, 0).unwrap();
+        let press = terminal.encode_key("KeyW", "w", 'w'.into(), 0, 1).unwrap();
+        let release = terminal.encode_key("KeyW", "w", 'w'.into(), 0, 0).unwrap();
         assert_eq!(press, b"w");
         assert!(release.is_empty());
+    }
+
+    #[test]
+    fn reports_printable_releases_without_repeating_text_in_kitty_mode() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        terminal.feed(b"\x1b[>7u");
+        let press = terminal.encode_key("KeyW", "w", 'w'.into(), 0, 1).unwrap();
+        let release = terminal.encode_key("KeyW", "w", 'w'.into(), 0, 0).unwrap();
+        assert_eq!(press, b"w");
+        assert_eq!(release, b"\x1b[119;1:3u");
     }
 
     #[test]

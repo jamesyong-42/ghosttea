@@ -18,8 +18,9 @@ use truffle_core::{Node, network::tailscale::TailscaleProvider, transport::quic:
 use uuid::Uuid;
 
 use ghosttea::{
-    RemoteControlClaim, RemoteHostSummary, RemoteReplica, RemoteResize, RemoteTerminalRuntime,
-    Session, SessionRegistry as Registry, SessionSummary, TerminalMesh, ViewAccess,
+    RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica, RemoteResize,
+    RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
+    ViewAccess,
     tunnel_protocol::{
         ConnectionMessage, MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR,
         PROTOCOL_MINOR, SessionControlMessage, SharedSessionSummary, StateMessage, StreamKind,
@@ -38,12 +39,26 @@ type HostStore = truffle::synced_store::SyncedStore<TerminalHostAdvertisement>;
 type RemoteViews = Arc<tokio::sync::Mutex<HashMap<(String, String), Arc<RemoteView>>>>;
 type RemoteConnections = Arc<tokio::sync::Mutex<HashMap<String, Arc<RemoteHostConnection>>>>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MeshRuntime {
     ready: Arc<tokio::sync::RwLock<Option<MeshReady>>>,
     replicas: Arc<tokio::sync::RwLock<HashMap<String, RemoteSession>>>,
     views: RemoteViews,
     connections: RemoteConnections,
+    control_tx: broadcast::Sender<RemoteControlChanged>,
+}
+
+impl Default for MeshRuntime {
+    fn default() -> Self {
+        let (control_tx, _) = broadcast::channel(64);
+        Self {
+            ready: Arc::default(),
+            replicas: Arc::default(),
+            views: Arc::default(),
+            connections: Arc::default(),
+            control_tx,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -64,6 +79,7 @@ struct RemoteSession {
 
 struct RemoteView {
     session_control: tokio::sync::Mutex<ProtocolStream>,
+    control: tokio::sync::watch::Receiver<Option<RemoteControlClaim>>,
     attachment_epoch: u64,
     read_write: bool,
 }
@@ -284,13 +300,17 @@ impl MeshRuntime {
         {
             bail!("remote terminal returned a misrouted state stream");
         }
+        let (control_sender, control) = tokio::sync::watch::channel(None);
         let view = Arc::new(RemoteView {
             session_control: tokio::sync::Mutex::new(session_control),
+            control,
             attachment_epoch,
             read_write,
         });
         self.views.lock().await.insert(key, Arc::clone(&view));
         let replica = Arc::clone(&remote.replica);
+        let local_session_id = session_id.to_owned();
+        let remote_control_tx = self.control_tx.clone();
         tokio::spawn(async move {
             loop {
                 match state
@@ -305,6 +325,30 @@ impl MeshRuntime {
                     }
                     Ok(Some(StateMessage::Patch(_))) => {
                         eprintln!("[terminal-mesh] ignored unsupported incremental remote patch");
+                    }
+                    Ok(Some(StateMessage::ControlChanged {
+                        controller_view_id,
+                        control_epoch,
+                        cols,
+                        rows,
+                        layout_epoch,
+                    })) => {
+                        let claim = RemoteControlClaim {
+                            controller_view_id: controller_view_id.clone(),
+                            control_epoch,
+                            cols,
+                            rows,
+                            layout_epoch,
+                        };
+                        control_sender.send_replace(Some(claim));
+                        let _ = remote_control_tx.send(RemoteControlChanged {
+                            session_id: local_session_id.clone(),
+                            controller_view_id,
+                            control_epoch,
+                            cols,
+                            rows,
+                            layout_epoch,
+                        });
                     }
                     Ok(None) => break,
                     Err(error) => {
@@ -360,8 +404,14 @@ impl MeshRuntime {
         if !view.read_write {
             bail!("remote terminal view is read-only");
         }
-        let mut control = view.session_control.lock().await;
-        control
+        let mut state = view.control.clone();
+        let previous_epoch = state
+            .borrow()
+            .as_ref()
+            .map_or(0, |current| current.control_epoch);
+        view.session_control
+            .lock()
+            .await
             .write_message(
                 &SessionControlMessage::FocusAndResize {
                     view_id: view_id.to_owned(),
@@ -373,34 +423,23 @@ impl MeshRuntime {
                 MAX_CONTROL_MESSAGE_BYTES,
             )
             .await?;
-        loop {
-            match tokio::time::timeout(
-                HANDSHAKE_TIMEOUT,
-                control.read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES),
-            )
-            .await
-            .context("timed out claiming remote terminal control")??
-            .context("remote terminal closed while claiming control")?
-            {
-                SessionControlMessage::ControlChanged {
-                    controller_view_id,
-                    control_epoch,
-                    cols,
-                    rows,
-                    layout_epoch,
-                } => {
-                    return Ok(RemoteControlClaim {
-                        controller_view_id,
-                        control_epoch,
-                        cols,
-                        rows,
-                        layout_epoch,
-                    });
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            loop {
+                state
+                    .changed()
+                    .await
+                    .context("remote terminal control stream closed")?;
+                let current = state.borrow_and_update().clone();
+                if let Some(current) = current
+                    && current.controller_view_id == view_id
+                    && current.control_epoch > previous_epoch
+                {
+                    return Ok(current);
                 }
-                SessionControlMessage::ResizeRejected { .. } => continue,
-                _ => bail!("remote terminal returned an invalid control response"),
             }
-        }
+        })
+        .await
+        .context("timed out claiming remote terminal control")?
     }
 
     pub async fn resize(
@@ -557,10 +596,11 @@ impl MeshRuntime {
         {
             ConnectionMessage::ServerHello {
                 protocol_major,
+                protocol_minor,
                 host_instance_id,
                 nonce: echoed_nonce,
-                ..
             } if protocol_major == PROTOCOL_MAJOR
+                && protocol_minor >= PROTOCOL_MINOR
                 && echoed_nonce == nonce
                 && host_instance_id == advertisement.host_instance_id => {}
             _ => bail!("remote host returned an invalid server hello"),
@@ -599,6 +639,9 @@ async fn validated_advertisement(
     }
     if advertisement.protocol_major != PROTOCOL_MAJOR {
         bail!("remote terminal protocol major is incompatible");
+    }
+    if advertisement.protocol_minor < PROTOCOL_MINOR {
+        bail!("remote terminal protocol minor is too old");
     }
     Ok(advertisement)
 }
@@ -897,10 +940,16 @@ async fn handle_connection(
     let client_nonce = match hello {
         ConnectionMessage::ClientHello {
             protocol_major,
+            protocol_minor,
             local_device_id,
             nonce,
             ..
-        } if protocol_major == PROTOCOL_MAJOR && local_device_id == expected_device_id => nonce,
+        } if protocol_major == PROTOCOL_MAJOR
+            && protocol_minor >= PROTOCOL_MINOR
+            && local_device_id == expected_device_id =>
+        {
+            nonce
+        }
         ConnectionMessage::ClientHello { .. } => {
             bail!("client hello identity or protocol mismatch")
         }
@@ -1067,19 +1116,7 @@ async fn session_control_loop(
                 rows,
                 ..
             } if view_id == attached_view_id && epoch == attachment_epoch => {
-                let changed = session.claim_control(&view_id, client_id, cols, rows)?;
-                control
-                    .write_message(
-                        &SessionControlMessage::ControlChanged {
-                            controller_view_id: changed.controller.view_id,
-                            control_epoch: changed.controller.control_epoch,
-                            cols: changed.cols,
-                            rows: changed.rows,
-                            layout_epoch: changed.layout_epoch,
-                        },
-                        MAX_CONTROL_MESSAGE_BYTES,
-                    )
-                    .await?;
+                session.claim_control(&view_id, client_id, cols, rows)?;
             }
             SessionControlMessage::Resize {
                 view_id,
@@ -1100,20 +1137,7 @@ async fn session_control_loop(
                     )
                     .is_err()
                 {
-                    let (controller, cols, rows, _) = session.control_state();
-                    control
-                        .write_message(
-                            &SessionControlMessage::ResizeRejected {
-                                current_controller_view_id: controller
-                                    .as_ref()
-                                    .map(|value| value.view_id.clone()),
-                                current_control_epoch: controller.map(|value| value.control_epoch),
-                                cols,
-                                rows,
-                            },
-                            MAX_CONTROL_MESSAGE_BYTES,
-                        )
-                        .await?;
+                    session.announce_control();
                 }
             }
             SessionControlMessage::Input {
@@ -1189,29 +1213,56 @@ async fn spawn_state_stream(
             view_id: Some(view_id.to_owned()),
         })
         .await?;
+    let mut controls = session.subscribe_control();
     if let Some(snapshot) = session.logical_snapshot() {
         state
             .write_message(&StateMessage::Snapshot(snapshot), MAX_STATE_MESSAGE_BYTES)
             .await?;
     }
+    let (controller, cols, rows, layout_epoch) = session.control_state();
+    if let Some(controller) = controller {
+        state
+            .write_message(
+                &StateMessage::ControlChanged {
+                    controller_view_id: controller.view_id,
+                    control_epoch: controller.control_epoch,
+                    cols,
+                    rows,
+                    layout_epoch,
+                },
+                MAX_STATE_MESSAGE_BYTES,
+            )
+            .await?;
+    }
     let mut snapshots = session.subscribe_logical();
     tokio::spawn(async move {
         loop {
-            match snapshots.recv().await {
-                Ok(snapshot) => {
-                    if state
-                        .write_message(&StateMessage::Snapshot(snapshot), MAX_STATE_MESSAGE_BYTES)
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+            let message = tokio::select! {
+                snapshot = snapshots.recv() => match snapshot {
+                    Ok(snapshot) => Some(StateMessage::Snapshot(snapshot)),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                changed = controls.recv() => match changed {
+                    Ok(changed) => Some(StateMessage::ControlChanged {
+                        controller_view_id: changed.controller.view_id,
+                        control_epoch: changed.controller.control_epoch,
+                        cols: changed.cols,
+                        rows: changed.rows,
+                        layout_epoch: changed.layout_epoch,
+                    }),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+            };
+            if let Some(message) = message {
+                if state
+                    .write_message(&message, MAX_STATE_MESSAGE_BYTES)
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    // A later snapshot is absolute and supersedes every missed update.
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
@@ -1327,6 +1378,10 @@ impl ProtocolStream {
 
 #[async_trait]
 impl RemoteTerminalRuntime for MeshRuntime {
+    fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged> {
+        self.control_tx.subscribe()
+    }
+
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>> {
         MeshRuntime::hosts(self).await
     }

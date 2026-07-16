@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::session::{KeyInput, MouseInput};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 0;
+pub const PROTOCOL_MINOR: u16 = 1;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -256,6 +256,13 @@ pub enum TunnelInput {
 pub enum StateMessage {
     Snapshot(LogicalTerminalSnapshot),
     Patch(LogicalTerminalPatch),
+    ControlChanged {
+        controller_view_id: String,
+        control_epoch: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -408,6 +415,29 @@ mod tests {
                 attachment_epoch: 7,
                 input_sequence: 9,
                 operation: TunnelInput::Interrupt,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn control_changes_round_trip_on_the_live_state_stream() {
+        let message = StateMessage::ControlChanged {
+            controller_view_id: "view".into(),
+            control_epoch: 11,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 5,
+        };
+        let encoded = encode_message(&message, 1024).unwrap();
+        let (decoded, _) = decode_message::<StateMessage>(&encoded, 1024).unwrap();
+        assert!(matches!(
+            decoded,
+            StateMessage::ControlChanged {
+                control_epoch: 11,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 5,
                 ..
             }
         ));

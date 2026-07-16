@@ -13,6 +13,19 @@ container:
 | `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                    |
 | `22028`   | public key                            | RSA-3072 host key with RSA/SHA-2-512 signatures                     |
 
+All ports bind to loopback by default. A physical-device password probe may
+opt in to a specific trusted LAN interface without exposing the other fixture
+profiles:
+
+```sh
+GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS=192.168.1.20 npm run fixture:ssh:up
+```
+
+Replace `192.168.1.20` with the Mac's address on the trusted test network.
+
+Shut the fixture down immediately after the device probe with
+`npm run fixture:ssh:down`.
+
 The fixture credentials are intentionally public and must never be reused:
 
 - username: `ghosttea`;

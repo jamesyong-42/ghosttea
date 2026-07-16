@@ -145,6 +145,8 @@ pub struct KeyInput {
     pub control: bool,
     pub alt: bool,
     pub meta: bool,
+    #[serde(default)]
+    pub unshifted_codepoint: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -217,6 +219,7 @@ pub struct Session {
     requested_termination: Mutex<Option<TerminationSource>>,
     latest_logical: Mutex<Option<LogicalTerminalSnapshot>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
+    control_tx: broadcast::Sender<ControlChanged>,
 }
 
 enum InputOperation {
@@ -426,6 +429,7 @@ impl Session {
             .unwrap_or_default()
             .as_millis() as u64;
         let (logical_tx, _) = broadcast::channel(8);
+        let (control_tx, _) = broadcast::channel(16);
         let session = Arc::new(Self {
             summary: Mutex::new(SessionSummary {
                 id,
@@ -470,6 +474,7 @@ impl Session {
             requested_termination: Mutex::new(None),
             latest_logical: Mutex::new(None),
             logical_tx,
+            control_tx,
         });
         Self::start_input_actor(&session, input_rx);
         Self::start_reader(&session, reader);
@@ -850,14 +855,16 @@ impl Session {
         cols: u16,
         rows: u16,
     ) -> Result<ControlChanged> {
-        let changed = self
-            .authority
-            .lock()
-            .unwrap()
-            .claim_control(view_id, client_id, cols, rows)?;
+        let mut authority = self.authority.lock().unwrap();
+        let previous_size = authority.size();
+        let mut next = authority.clone();
+        let changed = next.claim_control(view_id, client_id, cols, rows)?;
         if changed.size_changed {
-            self.apply_resize(cols, rows)?;
+            self.apply_resize(cols, rows, changed.layout_epoch, previous_size)?;
         }
+        *authority = next;
+        drop(authority);
+        let _ = self.control_tx.send(changed.clone());
         Ok(changed)
     }
 
@@ -871,18 +878,24 @@ impl Session {
         cols: u16,
         rows: u16,
     ) -> Result<bool> {
-        let changed = self.authority.lock().unwrap().authorize_resize(
+        let mut authority = self.authority.lock().unwrap();
+        let previous_size = authority.size();
+        let Some(prepared) = authority.prepare_resize(
             view_id,
             client_id,
             control_epoch,
             resize_sequence,
             cols,
             rows,
-        )?;
-        if changed {
-            self.apply_resize(cols, rows)?;
+        )?
+        else {
+            return Ok(false);
+        };
+        if prepared.size_changed {
+            self.apply_resize(cols, rows, prepared.layout_epoch, previous_size)?;
         }
-        Ok(changed)
+        authority.commit_resize(view_id, prepared);
+        Ok(prepared.size_changed)
     }
 
     pub fn control_state(&self) -> (Option<ControllerState>, u16, u16, u64) {
@@ -894,6 +907,25 @@ impl Session {
             rows,
             authority.layout_epoch(),
         )
+    }
+
+    pub fn subscribe_control(&self) -> broadcast::Receiver<ControlChanged> {
+        self.control_tx.subscribe()
+    }
+
+    pub fn announce_control(&self) {
+        let authority = self.authority.lock().unwrap();
+        let Some(controller) = authority.controller().cloned() else {
+            return;
+        };
+        let (cols, rows) = authority.size();
+        let _ = self.control_tx.send(ControlChanged {
+            controller,
+            cols,
+            rows,
+            layout_epoch: authority.layout_epoch(),
+            size_changed: false,
+        });
     }
 
     pub fn refresh(&self) -> Result<()> {
@@ -1115,7 +1147,7 @@ impl Session {
                     let mut terminal = self.terminal.lock().unwrap();
                     let mut bytes = terminal.encode_paste(&text)?;
                     if submit {
-                        bytes.extend_from_slice(&terminal.encode_key("Enter", "", 0, 1)?);
+                        bytes.extend_from_slice(&terminal.encode_key("Enter", "", 0, 0, 1)?);
                     }
                     bytes
                 };
@@ -1144,16 +1176,21 @@ impl Session {
             KeyAction::Down if input.repeat => 2,
             KeyAction::Down => 1,
         };
-        let text = if input.key.chars().count() == 1 && !input.key.chars().any(char::is_control) {
+        let text = if !matches!(input.action, KeyAction::Up)
+            && input.key.chars().count() == 1
+            && !input.key.chars().any(char::is_control)
+        {
             input.key.as_str()
         } else {
             ""
         };
-        let bytes = self
-            .terminal
-            .lock()
-            .unwrap()
-            .encode_key(&input.code, text, mods, action)?;
+        let bytes = self.terminal.lock().unwrap().encode_key(
+            &input.code,
+            text,
+            input.unshifted_codepoint,
+            mods,
+            action,
+        )?;
         self.process.write(&bytes)
     }
 
@@ -1202,7 +1239,7 @@ impl Session {
                 let code = if rows < 0 { "ArrowUp" } else { "ArrowDown" };
                 let mut input = Vec::new();
                 for _ in 0..rows.unsigned_abs().min(100) {
-                    input.extend_from_slice(&terminal.encode_key(code, "", 0, 1)?);
+                    input.extend_from_slice(&terminal.encode_key(code, "", 0, 0, 1)?);
                 }
                 (None, input)
             } else {
@@ -1219,17 +1256,30 @@ impl Session {
         Ok(())
     }
 
-    fn apply_resize(&self, cols: u16, rows: u16) -> Result<()> {
+    fn apply_resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+        previous_size: (u16, u16),
+    ) -> Result<()> {
         self.process.resize(cols, rows)?;
         let snapshot = {
             let mut terminal = self.terminal.lock().unwrap();
-            terminal.resize(cols, rows)?;
-            terminal.snapshot()?
+            if let Err(error) = terminal.resize(cols, rows) {
+                let _ = self.process.resize(previous_size.0, previous_size.1);
+                return Err(error.into());
+            }
+            match terminal.snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let _ = terminal.resize(previous_size.0, previous_size.1);
+                    let _ = self.process.resize(previous_size.0, previous_size.1);
+                    return Err(error.into());
+                }
+            }
         };
-        self.layout_epoch.store(
-            self.authority.lock().unwrap().layout_epoch(),
-            Ordering::Release,
-        );
+        self.layout_epoch.store(layout_epoch, Ordering::Release);
         self.publish_snapshot(snapshot);
         Ok(())
     }

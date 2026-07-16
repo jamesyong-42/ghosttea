@@ -58,6 +58,9 @@ const snapshots = new Map<string, Snapshot>();
 const mounts = new Map<string, MountedCanvas>();
 const cursorBlinkTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const dirty = new Set<string>();
+// Occluded surfaces continue ingesting frames so they resume from current state,
+// but do not schedule GPU flushes or cursor timers while their native tab is hidden.
+const occluded = new Set<string>();
 let renderer: TerminalRenderer | undefined;
 let rendererPromise: Promise<TerminalRenderer> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -101,13 +104,14 @@ function scheduleCursorBlink(id: string, reset: boolean): void {
   cursorBlinkTimers.delete(id);
   const value = snapshot(id);
   if (reset) value.cursorBlinkVisible = true;
-  if (!value.focused || !value.cursor.visible || !value.cursor.blinking) return;
+  if (occluded.has(id) || !value.focused || !value.cursor.visible || !value.cursor.blinking) return;
   cursorBlinkTimers.set(
     id,
     setTimeout(() => {
       cursorBlinkTimers.delete(id);
       const current = snapshots.get(id);
-      if (!current || !current.focused || !current.cursor.visible || !current.cursor.blinking) return;
+      if (occluded.has(id) || !current || !current.focused || !current.cursor.visible || !current.cursor.blinking)
+        return;
       current.cursorBlinkVisible = !current.cursorBlinkVisible;
       markDirty(id);
       scheduleCursorBlink(id, false);
@@ -207,8 +211,8 @@ function scheduleFlush(): void {
 
 async function flush(): Promise<void> {
   const backend = await ensureRenderer();
-  const ids = [...dirty];
-  dirty.clear();
+  const ids = [...dirty].filter((id) => !occluded.has(id));
+  for (const id of ids) dirty.delete(id);
   for (const id of ids) {
     if (!mounts.has(id)) continue;
     const snapshot = snapshots.get(id);
@@ -219,12 +223,12 @@ async function flush(): Promise<void> {
       console.error(`[terminal-renderer] failed to render view ${id}`, error);
     }
   }
-  if (dirty.size > 0) scheduleFlush();
+  if ([...dirty].some((id) => !occluded.has(id))) scheduleFlush();
 }
 
 function markDirty(id: string): void {
   dirty.add(id);
-  scheduleFlush();
+  if (!occluded.has(id)) scheduleFlush();
 }
 
 async function mount(id: string, canvas: OffscreenCanvas): Promise<void> {
@@ -342,11 +346,13 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       const timer = cursorBlinkTimers.get(message.sessionHandle);
       if (timer !== undefined) clearTimeout(timer);
       cursorBlinkTimers.delete(message.sessionHandle);
-      snapshots.delete(message.sessionHandle);
+      // The session may be remounted after zoom/layout changes. Keep its decoded
+      // snapshot; only drop-session represents terminal lifetime ending.
     } else if (message.type === "drop-session") {
       mounts.delete(message.sessionHandle);
       dirty.delete(message.sessionHandle);
       snapshots.delete(message.sessionHandle);
+      occluded.delete(message.sessionHandle);
       renderer?.unmount(message.sessionHandle);
       const timer = cursorBlinkTimers.get(message.sessionHandle);
       if (timer !== undefined) clearTimeout(timer);
@@ -365,6 +371,17 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
     } else if (message.type === "selection") {
       snapshot(message.sessionHandle).selection = message.selection;
       markDirty(message.sessionHandle);
+    } else if (message.type === "visibility") {
+      if (message.visible) {
+        occluded.delete(message.sessionHandle);
+        markDirty(message.sessionHandle);
+        scheduleCursorBlink(message.sessionHandle, true);
+      } else {
+        occluded.add(message.sessionHandle);
+        const timer = cursorBlinkTimers.get(message.sessionHandle);
+        if (timer !== undefined) clearTimeout(timer);
+        cursorBlinkTimers.delete(message.sessionHandle);
+      }
     } else if (message.type === "focus") {
       const value = snapshot(message.sessionHandle);
       value.focused = Boolean(message.focused);

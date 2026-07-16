@@ -9,6 +9,7 @@ export type RendererToWorkerMessage =
   | { type: "frame"; packet: ArrayBuffer }
   | { type: "theme"; sessionHandle: string; theme: TerminalTheme }
   | { type: "selection"; sessionHandle: string; selection: CellSelection | null }
+  | { type: "visibility"; sessionHandle: string; visible: boolean }
   | { type: "focus"; sessionHandle: string; focused: boolean }
   | { type: "cursor-activity"; sessionHandle: string }
   | { type: "selection-text"; requestId: number; sessionHandle: string; selection: CellSelection };

@@ -457,12 +457,16 @@ int eg_terminal_encode_key(EgTerminal* state,
                            size_t code_len,
                            const uint8_t* text,
                            size_t text_len,
+                           uint32_t unshifted_codepoint,
                            uint16_t mods,
                            uint8_t action,
                            uint8_t* out,
                            size_t cap,
                            size_t* out_len) {
-  if (state == NULL || out_len == NULL || action > GHOSTTY_KEY_ACTION_REPEAT) return GHOSTTY_INVALID_VALUE;
+  if (state == NULL || out_len == NULL || action > GHOSTTY_KEY_ACTION_REPEAT ||
+      unshifted_codepoint > 0x10FFFF ||
+      (unshifted_codepoint >= 0xD800 && unshifted_codepoint <= 0xDFFF))
+    return GHOSTTY_INVALID_VALUE;
   if (action == GHOSTTY_KEY_ACTION_RELEASE) {
     GhosttyKittyKeyFlags flags = GHOSTTY_KITTY_KEY_DISABLED;
     ghostty_terminal_get(
@@ -481,8 +485,11 @@ int eg_terminal_encode_key(EgTerminal* state,
   ghostty_key_event_set_mods(state->key_event, mods);
   ghostty_key_event_set_consumed_mods(state->key_event, 0);
   ghostty_key_event_set_composing(state->key_event, false);
+  ghostty_key_event_set_unshifted_codepoint(state->key_event, unshifted_codepoint);
   ghostty_key_event_set_utf8(
-      state->key_event, text_len == 0 ? NULL : (const char*)text, text_len);
+      state->key_event,
+      action == GHOSTTY_KEY_ACTION_RELEASE || text_len == 0 ? NULL : (const char*)text,
+      action == GHOSTTY_KEY_ACTION_RELEASE ? 0 : text_len);
   return ghostty_key_encoder_encode(
       state->key_encoder, state->key_event, (char*)out, cap, out_len);
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
 import type { SessionSummary, TerminalKeyEvent } from "@vibecook/ghosttea-protocol";
 import { useGhostteaRuntime } from "./context.js";
+import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
 
 export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
@@ -10,6 +11,9 @@ export interface TerminalSurfaceProps {
   session: SessionSummary;
   theme: TerminalTheme;
   active?: boolean;
+  /** Whether the surface is currently visible enough to spend GPU work painting it. */
+  visible?: boolean;
+  controlsResize?: boolean;
   onActivate?: () => void;
   readClipboard?: () => string;
   onContextMenu?: (canCopy: boolean) => void;
@@ -26,6 +30,8 @@ function TerminalSurfaceSession({
   session,
   theme,
   active = true,
+  visible = true,
+  controlsResize = active,
   onActivate,
   readClipboard,
   onContextMenu,
@@ -60,6 +66,10 @@ function TerminalSurfaceSession({
   useEffect(() => {
     terminalRuntime.setTheme(session.handle, theme);
   }, [session.handle, terminalRuntime, theme]);
+
+  useEffect(() => {
+    void terminalKeyboardLayout.refresh();
+  }, []);
 
   useEffect(() => {
     if (!onMenuAction) return;
@@ -107,6 +117,16 @@ function TerminalSurfaceSession({
       handle.dispose();
     };
   }, [session.handle, session.id, terminalRuntime, viewId]);
+
+  useEffect(() => {
+    terminalRuntime.setVisible(session.handle, visible);
+  }, [session.handle, terminalRuntime, visible]);
+
+  useEffect(() => {
+    if (!controlsResize) return;
+    const { cols, rows } = gridRef.current;
+    terminalRuntime.claimResizeControl(session.handle, viewId, cols, rows);
+  }, [controlsResize, session.handle, terminalRuntime, viewId]);
 
   useEffect(() => {
     const syncFocus = (): void => {
@@ -170,18 +190,7 @@ function TerminalSurfaceSession({
       event.stopPropagation();
       return;
     }
-    const terminalEvent: TerminalKeyEvent = {
-      type: "down",
-      key: event.key,
-      code: event.code,
-      location: event.location,
-      repeat: event.repeat,
-      shift: event.shiftKey,
-      control: event.ctrlKey,
-      alt: event.altKey,
-      meta: event.metaKey,
-      timestamp: event.timeStamp,
-    };
+    const terminalEvent = terminalKeyDown(event.nativeEvent);
     terminalRuntime.sendKey(session.id, viewId, terminalEvent);
     forwardedKeysRef.current.set(event.code, terminalEvent);
     event.preventDefault();
@@ -189,19 +198,10 @@ function TerminalSurfaceSession({
   };
 
   const onKeyUp = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (!forwardedKeysRef.current.delete(event.code)) return;
-    terminalRuntime.sendKey(session.id, viewId, {
-      type: "up",
-      key: event.key,
-      code: event.code,
-      location: event.location,
-      repeat: false,
-      shift: event.shiftKey,
-      control: event.ctrlKey,
-      alt: event.altKey,
-      meta: event.metaKey,
-      timestamp: event.timeStamp,
-    });
+    const pressed = forwardedKeysRef.current.get(event.code);
+    if (!pressed) return;
+    forwardedKeysRef.current.delete(event.code);
+    terminalRuntime.sendKey(session.id, viewId, terminalKeyUp(pressed, event.nativeEvent));
     event.preventDefault();
     event.stopPropagation();
   };
