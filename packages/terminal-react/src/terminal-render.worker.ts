@@ -7,6 +7,7 @@ import {
   decodeFrame,
   decodeGlyphDefinitions,
   decodeRowReplacements,
+  decodeScrollbarState,
   decodeStyleDefinitions,
   FrameFlag,
   type CursorState,
@@ -16,6 +17,7 @@ import {
   type StyleRun,
   SectionKind,
 } from "@vibecook/ghosttea-frame";
+import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { CanvasTerminalRenderer } from "./renderers/canvas-renderer.js";
 import {
   DEFAULT_THEME,
@@ -45,6 +47,7 @@ interface Snapshot {
   sessionEpoch: bigint;
   sequence: bigint;
   awaitingResync: boolean;
+  scrollbar: TerminalScrollbarState | null;
 }
 
 interface MountedCanvas {
@@ -92,6 +95,7 @@ function snapshot(id: string): Snapshot {
       sessionEpoch: 0n,
       sequence: 0n,
       awaitingResync: false,
+      scrollbar: null,
     };
     snapshots.set(id, value);
   }
@@ -274,6 +278,7 @@ function applyFrame(packet: ArrayBuffer): void {
   const glyphSection = frame.sections.find((candidate) => candidate.kind === SectionKind.GlyphDefinitions);
   const styleSection = frame.sections.find((candidate) => candidate.kind === SectionKind.StyleDefinitions);
   const clipboardSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ClipboardWrite);
+  const scrollbarSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ScrollbarState);
   if (!rowSection || !cursorSection) return;
 
   if (glyphSection) {
@@ -290,6 +295,29 @@ function applyFrame(packet: ArrayBuffer): void {
   }
   if (clipboardSection) {
     postToRenderer({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
+  }
+  if (scrollbarSection) {
+    const decoded = decodeScrollbarState(scrollbarSection);
+    const scrollbar = {
+      total: Number(decoded.total),
+      offset: Number(decoded.offset),
+      length: Number(decoded.length),
+    };
+    if (
+      !Number.isSafeInteger(scrollbar.total) ||
+      !Number.isSafeInteger(scrollbar.offset) ||
+      !Number.isSafeInteger(scrollbar.length)
+    )
+      throw new RangeError("Scrollbar state exceeds JavaScript's safe integer range");
+    if (
+      !previous.scrollbar ||
+      previous.scrollbar.total !== scrollbar.total ||
+      previous.scrollbar.offset !== scrollbar.offset ||
+      previous.scrollbar.length !== scrollbar.length
+    ) {
+      previous.scrollbar = scrollbar;
+      postToRenderer({ type: "scrollbar-state", sessionHandle: id, scrollbar });
+    }
   }
 
   const full = (rowSection.flags & 1) !== 0;

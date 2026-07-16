@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::session::{KeyInput, MouseInput};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 1;
+pub const PROTOCOL_MINOR: u16 = 2;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -243,6 +243,7 @@ pub enum TunnelInput {
     Key(KeyInput),
     Mouse(MouseInput),
     Scroll(i64),
+    ScrollTo(u64),
     Focus(bool),
     Interrupt,
 }
@@ -275,6 +276,7 @@ pub struct LogicalTerminalSnapshot {
     pub rows: Vec<LogicalRow>,
     pub cursor: LogicalCursor,
     pub mouse_tracking: bool,
+    pub scrollbar: LogicalScrollbar,
     pub title: Option<String>,
     pub cwd: Option<String>,
 }
@@ -289,6 +291,15 @@ pub struct LogicalTerminalPatch {
     pub row_replacements: Vec<RowReplacement>,
     pub cursor: Option<LogicalCursor>,
     pub mouse_tracking: Option<bool>,
+    pub scrollbar: Option<LogicalScrollbar>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogicalScrollbar {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -415,6 +426,25 @@ mod tests {
                 attachment_epoch: 7,
                 input_sequence: 9,
                 operation: TunnelInput::Interrupt,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn absolute_scroll_input_round_trips() {
+        let message = SessionControlMessage::Input {
+            view_id: "view".into(),
+            attachment_epoch: 7,
+            input_sequence: 10,
+            operation: TunnelInput::ScrollTo(42),
+        };
+        let encoded = encode_message(&message, 1024).unwrap();
+        let (decoded, _) = decode_message::<SessionControlMessage>(&encoded, 1024).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::Input {
+                operation: TunnelInput::ScrollTo(42),
                 ..
             }
         ));

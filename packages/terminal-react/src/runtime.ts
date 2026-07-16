@@ -9,6 +9,7 @@ import {
   type SharedSessionSummary,
   type TerminalKeyEvent,
   type TerminalMouseEvent,
+  type TerminalScrollbarState,
   type TerminationSource,
 } from "@vibecook/ghosttea-protocol";
 import { FrameFlag } from "@vibecook/ghosttea-frame";
@@ -92,6 +93,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #mountedCanvases = new WeakMap<HTMLCanvasElement, MountedCanvas>();
   readonly #mountGenerationByHandle = new Map<string, number>();
   readonly #mouseTrackingByHandle = new Map<string, boolean>();
+  readonly #scrollbarByHandle = new Map<string, TerminalScrollbarState>();
   readonly #focusByView = new Map<string, boolean>();
   readonly #views = new Map<string, ViewRuntimeState>();
   readonly #selectionRequests = new Map<number, SelectionRequest>();
@@ -137,6 +139,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.#selectionRequests.delete(data.requestId);
         window.clearTimeout(request.timeout);
         request.resolve(data.text);
+      } else if (data.type === "scrollbar-state") {
+        this.#scrollbarByHandle.set(data.sessionHandle, data.scrollbar);
+        this.dispatchEvent(
+          new CustomEvent("scrollbar-state", {
+            detail: { sessionHandle: data.sessionHandle, scrollbar: data.scrollbar },
+          }),
+        );
       } else if (data.type === "frame-resync-needed") {
         this.#resync.request(data.sessionHandle);
       } else if (data.type === "frame-resync-complete") {
@@ -456,6 +465,17 @@ export class GhostteaTerminalRuntime extends EventTarget {
     );
   }
 
+  scrollTo(sessionId: string, viewId: string, row: number): void {
+    if (!Number.isSafeInteger(row) || row < 0) return;
+    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
+      this.#control?.notify({ type: "scroll-to", sessionId, viewId, attachmentEpoch, inputSequence, row }),
+    );
+  }
+
+  scrollbar(sessionHandle: string): TerminalScrollbarState | undefined {
+    return this.#scrollbarByHandle.get(sessionHandle);
+  }
+
   isMouseTracking(sessionHandle: string): boolean {
     return this.#mouseTrackingByHandle.get(sessionHandle) ?? false;
   }
@@ -570,6 +590,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (timer !== undefined) window.clearTimeout(timer);
     this.#metadataTimers.delete(handle);
     this.#mouseTrackingByHandle.delete(handle);
+    this.#scrollbarByHandle.delete(handle);
     for (const [viewId, view] of this.#views) {
       if (view.sessionId === sessionId) {
         this.#views.delete(viewId);

@@ -90,6 +90,52 @@ function controlChanged(control: FakePort, controllerViewId: string, cols: numbe
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
+  it("publishes scrollbar state and sends absolute scroll positions through the attached view", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await Promise.resolve();
+
+    const observed: unknown[] = [];
+    runtime.addEventListener("scrollbar-state", (event) => observed.push((event as CustomEvent).detail));
+    worker.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "scrollbar-state",
+          sessionHandle: session.handle,
+          scrollbar: { total: 100, offset: 52, length: 24 },
+        },
+      }),
+    );
+    runtime.scrollTo(session.id, "view-1", 18);
+
+    expect(runtime.scrollbar(session.handle)).toEqual({ total: 100, offset: 52, length: 24 });
+    expect(observed).toEqual([{ sessionHandle: session.handle, scrollbar: { total: 100, offset: 52, length: 24 } }]);
+    expect(control.messages).toContainEqual({
+      requestId: 0,
+      type: "scroll-to",
+      sessionId: session.id,
+      viewId: "view-1",
+      attachmentEpoch: 2,
+      inputSequence: 1,
+      row: 18,
+    });
+  });
+
   it("forwards tab visibility to the renderer without detaching the terminal view", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();

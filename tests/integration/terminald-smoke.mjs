@@ -62,6 +62,16 @@ function sections(frame) {
   return result;
 }
 
+function scrollbarState(frame) {
+  const payload = sections(frame).get(8);
+  if (!payload || payload.length !== 24) return null;
+  return {
+    total: Number(payload.readBigUInt64LE(0)),
+    offset: Number(payload.readBigUInt64LE(8)),
+    length: Number(payload.readBigUInt64LE(16)),
+  };
+}
+
 function glyphFormats(frame) {
   const payload = sections(frame).get(1);
   if (!payload) return [];
@@ -252,10 +262,11 @@ try {
     ]);
     if (
       frame.readUInt32LE(0) !== 0x31465254 ||
-      frame.readUInt16LE(60) !== 5 ||
+      frame.readUInt16LE(60) !== 6 ||
       frame.readUInt16LE(64) !== 1 ||
       frame.readUInt16LE(80) !== 2 ||
-      frame.readUInt16LE(96) !== 3
+      frame.readUInt16LE(96) !== 3 ||
+      frame.readUInt16LE(144) !== 8
     ) {
       throw new Error("terminald did not emit the Phase 4 native-glyph frame layout");
     }
@@ -814,14 +825,23 @@ try {
   await nextControlResponse(control, requestId - 1);
   const floodDeadline = Date.now() + 8_000;
   let foundFloodTail = false;
+  let bottomScrollbar = null;
   while (Date.now() < floodDeadline && !foundFloodTail) {
     const frame = await Promise.race([
       frames.next(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("flood frame timeout")), 8_000)),
     ]);
     foundFloodTail = frame.includes(Buffer.from("ghostty-flood-done"));
+    if (foundFloodTail) bottomScrollbar = scrollbarState(frame);
   }
   if (!foundFloodTail) throw new Error("latest row-replacement frame did not remain current under output flood");
+  if (
+    !bottomScrollbar ||
+    bottomScrollbar.total <= bottomScrollbar.length ||
+    bottomScrollbar.offset + bottomScrollbar.length !== bottomScrollbar.total
+  ) {
+    throw new Error("terminal frame did not expose bottom-anchored scrollbar state");
+  }
 
   control.socket.write(
     packet(
@@ -837,14 +857,42 @@ try {
   await nextControlResponse(control, requestId - 1);
   const scrollDeadline = Date.now() + 5_000;
   let foundHistory = false;
+  let historyScrollbar = null;
   while (Date.now() < scrollDeadline && !foundHistory) {
     const frame = await Promise.race([
       frames.next(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("scroll frame timeout")), 5_000)),
     ]);
     foundHistory = frame.includes(Buffer.from("flood-")) && !frame.includes(Buffer.from("ghostty-flood-done"));
+    if (foundHistory) historyScrollbar = scrollbarState(frame);
   }
   if (!foundHistory) throw new Error("scrollback viewport did not move into session history");
+  if (!historyScrollbar || historyScrollbar.offset >= bottomScrollbar.offset) {
+    throw new Error("scrollbar offset did not follow the history viewport");
+  }
+
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "scroll-to",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+        row: bottomScrollbar.offset,
+      }),
+    ),
+  );
+  await nextControlResponse(control, requestId - 1);
+  const restoreDeadline = Date.now() + 5_000;
+  let restoredBottom = false;
+  while (Date.now() < restoreDeadline && !restoredBottom) {
+    const frame = await Promise.race([
+      frames.next(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("absolute scroll frame timeout")), 5_000)),
+    ]);
+    restoredBottom = scrollbarState(frame)?.offset === bottomScrollbar.offset;
+  }
+  if (!restoredBottom) throw new Error("absolute scrollbar position did not restore the bottom viewport");
 
   if (process.platform !== "win32") {
     control.socket.write(

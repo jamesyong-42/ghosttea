@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use ghosttea_text::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
-use ghosttea_vt::{CellStyle, TerminalCell};
+use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
 use std::collections::BTreeMap;
 
 pub const FRAME_MAGIC: u32 = 0x3146_5254;
@@ -8,6 +8,7 @@ pub const FRAME_HEADER_BYTES: usize = 64;
 pub const SECTION_HEADER_BYTES: usize = 16;
 pub const ACCESSIBILITY_TEXT: u16 = 10;
 pub const CURSOR_STATE: u16 = 4;
+pub const SCROLLBAR_STATE: u16 = 8;
 pub const ROW_REPLACEMENTS: u16 = 3;
 pub const STYLE_DEFINITIONS: u16 = 2;
 pub const GLYPH_DEFINITIONS: u16 = 1;
@@ -135,6 +136,7 @@ pub struct TextSnapshot<'a> {
     pub updated_rows: &'a [u16],
     pub full_snapshot: bool,
     pub mouse_tracking: bool,
+    pub scrollbar: &'a TerminalScrollbar,
     pub new_glyph_definitions: &'a [GlyphDefinition],
     pub clipboard: Option<&'a [u8]>,
     pub cursor: &'a FrameCursor,
@@ -154,6 +156,7 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         updated_rows,
         full_snapshot,
         mouse_tracking,
+        scrollbar,
         new_glyph_definitions,
         clipboard,
         cursor,
@@ -234,12 +237,13 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         bytes.extend_from_slice(text);
         bytes
     });
-    let section_count = 5 + usize::from(clipboard_payload.is_some());
+    let section_count = 6 + usize::from(clipboard_payload.is_some());
     let glyph_offset = FRAME_HEADER_BYTES + SECTION_HEADER_BYTES * section_count;
     let style_offset = glyph_offset + glyph_definitions.len();
     let replacement_offset = style_offset + style_definitions.len();
     let cursor_offset = replacement_offset + replacements.len();
     let accessibility_offset = cursor_offset + 8;
+    let scrollbar_offset = accessibility_offset + accessibility.len();
     let mut packet = vec![0; glyph_offset];
     packet.extend_from_slice(&glyph_definitions);
     packet.extend_from_slice(&style_definitions);
@@ -251,6 +255,9 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     packet.push(u8::from(cursor.blinking));
     packet.push(0);
     packet.extend_from_slice(&accessibility);
+    packet.extend_from_slice(&scrollbar.total.to_le_bytes());
+    packet.extend_from_slice(&scrollbar.offset.to_le_bytes());
+    packet.extend_from_slice(&scrollbar.len.to_le_bytes());
     let clipboard_offset = packet.len();
     if let Some(bytes) = &clipboard_payload {
         packet.extend_from_slice(bytes);
@@ -299,11 +306,15 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     put_u32(&mut packet, 132, accessibility_offset as u32);
     put_u32(&mut packet, 136, accessibility.len() as u32);
     put_u32(&mut packet, 140, updated_rows.len() as u32);
+    put_u16(&mut packet, 144, SCROLLBAR_STATE);
+    put_u32(&mut packet, 148, scrollbar_offset as u32);
+    put_u32(&mut packet, 152, 24);
+    put_u32(&mut packet, 156, 1);
     if let Some(bytes) = &clipboard_payload {
-        put_u16(&mut packet, 144, CLIPBOARD_WRITE);
-        put_u32(&mut packet, 148, clipboard_offset as u32);
-        put_u32(&mut packet, 152, bytes.len() as u32);
-        put_u32(&mut packet, 156, 1);
+        put_u16(&mut packet, 160, CLIPBOARD_WRITE);
+        put_u32(&mut packet, 164, clipboard_offset as u32);
+        put_u32(&mut packet, 168, bytes.len() as u32);
+        put_u32(&mut packet, 172, 1);
     }
     Ok(packet)
 }
@@ -346,6 +357,11 @@ mod tests {
             updated_rows: &[0],
             full_snapshot: true,
             mouse_tracking: false,
+            scrollbar: &TerminalScrollbar {
+                total: 30,
+                offset: 6,
+                len: 24,
+            },
             new_glyph_definitions: &shaped[0].definitions,
             clipboard: None,
             cursor: &cursor,
@@ -353,7 +369,7 @@ mod tests {
         .unwrap();
         assert_eq!(&frame[0..4], &FRAME_MAGIC.to_le_bytes());
         assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()), 3);
-        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 5);
+        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 6);
         assert_eq!(
             u16::from_le_bytes(frame[64..66].try_into().unwrap()),
             GLYPH_DEFINITIONS
@@ -365,6 +381,35 @@ mod tests {
         assert_eq!(u32::from_le_bytes(frame[120..124].try_into().unwrap()), 8);
         let cursor_offset = u32::from_le_bytes(frame[116..120].try_into().unwrap()) as usize;
         assert_eq!(&frame[cursor_offset + 4..cursor_offset + 8], &[1, 1, 1, 0]);
+        assert_eq!(
+            u16::from_le_bytes(frame[144..146].try_into().unwrap()),
+            SCROLLBAR_STATE
+        );
+        let scrollbar_offset = u32::from_le_bytes(frame[148..152].try_into().unwrap()) as usize;
+        assert_eq!(
+            u64::from_le_bytes(
+                frame[scrollbar_offset..scrollbar_offset + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            30
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                frame[scrollbar_offset + 8..scrollbar_offset + 16]
+                    .try_into()
+                    .unwrap()
+            ),
+            6
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                frame[scrollbar_offset + 16..scrollbar_offset + 24]
+                    .try_into()
+                    .unwrap()
+            ),
+            24
+        );
     }
 
     #[test]
@@ -399,6 +444,11 @@ mod tests {
             updated_rows: &[1],
             full_snapshot: false,
             mouse_tracking: false,
+            scrollbar: &TerminalScrollbar {
+                total: 24,
+                offset: 0,
+                len: 24,
+            },
             new_glyph_definitions: &[],
             clipboard: None,
             cursor: &cursor,
@@ -433,6 +483,11 @@ mod tests {
             updated_rows: &[0],
             full_snapshot: false,
             mouse_tracking: true,
+            scrollbar: &TerminalScrollbar {
+                total: 48,
+                offset: 24,
+                len: 24,
+            },
             new_glyph_definitions: &[],
             clipboard: Some(b"copied"),
             cursor: &cursor,
@@ -442,12 +497,12 @@ mod tests {
             u16::from_le_bytes(frame[6..8].try_into().unwrap()) & MOUSE_TRACKING,
             MOUSE_TRACKING
         );
-        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 6);
+        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 7);
         assert_eq!(
-            u16::from_le_bytes(frame[144..146].try_into().unwrap()),
+            u16::from_le_bytes(frame[160..162].try_into().unwrap()),
             CLIPBOARD_WRITE
         );
-        let offset = u32::from_le_bytes(frame[148..152].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(frame[164..168].try_into().unwrap()) as usize;
         assert_eq!(&frame[offset + 4..], b"copied");
     }
 }

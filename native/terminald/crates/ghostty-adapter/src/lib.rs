@@ -42,6 +42,14 @@ struct RawCellStyle {
     bg_b: u8,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct RawScrollbar {
+    total: u64,
+    offset: u64,
+    len: u64,
+}
+
 type CellCallback =
     unsafe extern "C" fn(*mut c_void, u16, u16, u16, *const u8, usize, *const RawCellStyle);
 
@@ -63,6 +71,8 @@ unsafe extern "C" {
         cursor_b: u8,
     ) -> i32;
     fn eg_terminal_scroll(terminal: *mut RawTerminal, rows: isize);
+    fn eg_terminal_scroll_to(terminal: *mut RawTerminal, row: usize);
+    fn eg_terminal_scrollbar(terminal: *mut RawTerminal, scrollbar: *mut RawScrollbar) -> bool;
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_alternate_scroll(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_snapshot(
@@ -140,6 +150,13 @@ pub struct TerminalDamage {
     pub dirty_rows: Vec<u16>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TerminalScrollbar {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CursorState {
     pub x: u16,
@@ -181,6 +198,7 @@ pub struct TerminalSnapshot {
     pub cwd: Option<String>,
     pub bell: bool,
     pub mouse_tracking: bool,
+    pub scrollbar: TerminalScrollbar,
     pub clipboard: Option<Vec<u8>>,
     pub pty_response: Vec<u8>,
 }
@@ -256,6 +274,10 @@ impl GhosttyTerminalCore {
 
     pub fn scroll(&mut self, rows: isize) {
         unsafe { eg_terminal_scroll(self.raw.as_ptr(), rows) };
+    }
+
+    pub fn scroll_to(&mut self, row: usize) {
+        unsafe { eg_terminal_scroll_to(self.raw.as_ptr(), row) };
     }
 
     pub fn alternate_scroll(&self) -> bool {
@@ -491,6 +513,8 @@ impl GhosttyTerminalCore {
                 self.cached_cells[row_index] = std::mem::take(&mut rows.cells[row_index]);
             }
         }
+        let mut scrollbar = RawScrollbar::default();
+        let has_scrollbar = unsafe { eg_terminal_scrollbar(self.raw.as_ptr(), &mut scrollbar) };
         Ok(TerminalSnapshot {
             cols: meta.cols,
             rows: self.cached_rows.clone(),
@@ -510,6 +534,19 @@ impl GhosttyTerminalCore {
             cwd: self.read_string(eg_terminal_pwd),
             bell: meta.effects & EFFECT_BELL != 0,
             mouse_tracking: unsafe { eg_terminal_mouse_tracking(self.raw.as_ptr()) },
+            scrollbar: if has_scrollbar {
+                TerminalScrollbar {
+                    total: scrollbar.total,
+                    offset: scrollbar.offset,
+                    len: scrollbar.len,
+                }
+            } else {
+                TerminalScrollbar {
+                    total: meta.rows.into(),
+                    offset: 0,
+                    len: meta.rows.into(),
+                }
+            },
             clipboard: (meta.effects & EFFECT_CLIPBOARD != 0).then(|| self.take_clipboard()),
             pty_response: self.take_pty_response(),
         })
@@ -747,15 +784,26 @@ mod tests {
     fn scrolls_the_primary_screen_viewport() {
         let mut terminal = GhosttyTerminalCore::new(20, 3, 100).unwrap();
         terminal.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
-        let bottom = terminal.snapshot().unwrap().rows;
+        let bottom = terminal.snapshot().unwrap();
+        assert!(bottom.scrollbar.total > bottom.scrollbar.len);
+        assert_eq!(
+            bottom.scrollbar.offset + bottom.scrollbar.len,
+            bottom.scrollbar.total
+        );
         terminal.scroll(-2);
-        let history = terminal.snapshot().unwrap().rows;
-        assert_ne!(history, bottom);
+        let history = terminal.snapshot().unwrap();
+        assert_ne!(history.rows, bottom.rows);
+        assert!(history.scrollbar.offset < bottom.scrollbar.offset);
         assert!(
             history
+                .rows
                 .iter()
                 .any(|row| row.starts_with("one") || row.starts_with("two"))
         );
+        terminal.scroll_to(bottom.scrollbar.offset as usize);
+        let restored = terminal.snapshot().unwrap();
+        assert_eq!(restored.rows, bottom.rows);
+        assert_eq!(restored.scrollbar, bottom.scrollbar);
     }
 
     #[test]

@@ -22,7 +22,8 @@ use crate::{
     authority::{ControlChanged, ControllerState, ViewAccess, ViewAuthority},
     frame::{FrameCursor, TextSnapshot, encode_text_snapshot},
     tunnel_protocol::{
-        LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalTerminalSnapshot,
+        LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
+        LogicalTerminalSnapshot,
     },
 };
 
@@ -228,6 +229,7 @@ enum InputOperation {
     Key(KeyInput),
     Mouse(MouseInput),
     Scroll(isize),
+    ScrollTo(usize),
     Focus(bool),
     Interrupt,
     Automation(AutomationInputOperation),
@@ -649,6 +651,11 @@ impl Session {
                 blinking: snapshot.cursor.blinking,
             },
             mouse_tracking: snapshot.mouse_tracking,
+            scrollbar: LogicalScrollbar {
+                total: snapshot.scrollbar.total,
+                offset: snapshot.scrollbar.offset,
+                len: snapshot.scrollbar.len,
+            },
             title: snapshot.title.clone(),
             cwd: snapshot.cwd.clone(),
         };
@@ -784,6 +791,7 @@ impl Session {
             updated_rows: &updated_rows,
             full_snapshot,
             mouse_tracking: snapshot.mouse_tracking,
+            scrollbar: &snapshot.scrollbar,
             new_glyph_definitions: &new_definitions,
             clipboard: snapshot.clipboard.as_deref(),
             cursor: &cursor,
@@ -1103,6 +1111,24 @@ impl Session {
         )
     }
 
+    pub fn scroll_to(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        row: usize,
+    ) -> Result<()> {
+        self.authorize_and_enqueue(
+            view_id,
+            client_id,
+            attachment_epoch,
+            input_sequence,
+            InputOperation::ScrollTo(row),
+            true,
+        )
+    }
+
     pub fn interrupt(
         &self,
         view_id: &str,
@@ -1130,6 +1156,7 @@ impl Session {
             InputOperation::Key(input) => self.execute_key(&input),
             InputOperation::Mouse(input) => self.execute_mouse(&input),
             InputOperation::Scroll(rows) => self.execute_scroll(rows),
+            InputOperation::ScrollTo(row) => self.execute_scroll_to(row),
             InputOperation::Focus(focused) => {
                 let bytes = self.terminal.lock().unwrap().encode_focus(focused)?;
                 self.process.write(&bytes)
@@ -1253,6 +1280,16 @@ impl Session {
         if let Some(snapshot) = snapshot {
             self.publish_snapshot(snapshot);
         }
+        Ok(())
+    }
+
+    fn execute_scroll_to(&self, row: usize) -> Result<()> {
+        let snapshot = {
+            let mut terminal = self.terminal.lock().unwrap();
+            terminal.scroll_to(row);
+            terminal.snapshot()?
+        };
+        self.publish_snapshot(snapshot);
         Ok(())
     }
 

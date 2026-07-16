@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "react";
-import type { SessionSummary, TerminalKeyEvent } from "@vibecook/ghosttea-protocol";
+import type { SessionSummary, TerminalKeyEvent, TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { useGhostteaRuntime } from "./context.js";
 import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
+import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
 
 export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
 
@@ -48,8 +49,29 @@ function TerminalSurfaceSession({
   const selectionRef = useRef<{ anchor: CellPoint; focus: CellPoint } | null>(null);
   const pointerModeRef = useRef<"mouse" | "selection" | null>(null);
   const wheelDeltaRef = useRef(0);
+  const pendingScrollRowsRef = useRef(0);
+  const scrollFrameRef = useRef<number | null>(null);
+  const pendingScrollToRef = useRef<number | null>(null);
+  const scrollToFrameRef = useRef<number | null>(null);
+  const scrollbarHideTimerRef = useRef<number | null>(null);
+  const scrollbarDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startOffset: number;
+    maxOffset: number;
+    travel: number;
+  } | null>(null);
   const forwardedKeysRef = useRef(new Map<string, TerminalKeyEvent>());
   const restoreInputFocusRef = useRef(false);
+  const [scrollbar, setScrollbar] = useState<TerminalScrollbarState>(
+    () =>
+      terminalRuntime.scrollbar(session.handle) ?? {
+        total: session.rows,
+        offset: 0,
+        length: session.rows,
+      },
+  );
+  const [scrollbarVisible, setScrollbarVisible] = useState(false);
 
   const releaseForwardedKeys = useCallback((): void => {
     for (const event of forwardedKeysRef.current.values()) {
@@ -121,6 +143,24 @@ function TerminalSurfaceSession({
   useEffect(() => {
     terminalRuntime.setVisible(session.handle, visible);
   }, [session.handle, terminalRuntime, visible]);
+
+  useEffect(() => {
+    const onScrollbar = (event: Event): void => {
+      const detail = (event as CustomEvent<{ sessionHandle: string; scrollbar: TerminalScrollbarState }>).detail;
+      if (detail.sessionHandle === session.handle) setScrollbar(detail.scrollbar);
+    };
+    terminalRuntime.addEventListener("scrollbar-state", onScrollbar);
+    return () => terminalRuntime.removeEventListener("scrollbar-state", onScrollbar);
+  }, [session.handle, terminalRuntime]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+      if (scrollToFrameRef.current !== null) window.cancelAnimationFrame(scrollToFrameRef.current);
+      if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!controlsResize) return;
@@ -248,6 +288,37 @@ function TerminalSurfaceSession({
 
   const mouseButton = (button: number): number => (button === 0 ? 1 : button === 1 ? 3 : button === 2 ? 2 : 0);
 
+  const revealScrollbar = (): void => {
+    setScrollbarVisible(true);
+    if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+    scrollbarHideTimerRef.current = window.setTimeout(() => {
+      scrollbarHideTimerRef.current = null;
+      if (!scrollbarDragRef.current) setScrollbarVisible(false);
+    }, 850);
+  };
+
+  const queueScrollRows = (rows: number): void => {
+    pendingScrollRowsRef.current += rows;
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const pending = pendingScrollRowsRef.current;
+      pendingScrollRowsRef.current = 0;
+      if (pending !== 0) terminalRuntime.scroll(session.id, viewId, Math.max(-1_000, Math.min(1_000, pending)));
+    });
+  };
+
+  const queueScrollTo = (row: number): void => {
+    pendingScrollToRef.current = row;
+    if (scrollToFrameRef.current !== null) return;
+    scrollToFrameRef.current = window.requestAnimationFrame(() => {
+      scrollToFrameRef.current = null;
+      const pending = pendingScrollToRef.current;
+      pendingScrollToRef.current = null;
+      if (pending !== null) terminalRuntime.scrollTo(session.id, viewId, pending);
+    });
+  };
+
   const onPointerDown = (event: PointerEvent<HTMLTextAreaElement>): void => {
     onActivate?.();
     event.currentTarget.focus({ preventScroll: true });
@@ -304,20 +375,78 @@ function TerminalSurfaceSession({
 
   const onWheel = (event: WheelEvent<HTMLTextAreaElement>): void => {
     event.preventDefault();
-    const multiplier =
-      event.deltaMode === 1 ? LINE_HEIGHT : event.deltaMode === 2 ? gridRef.current.rows * LINE_HEIGHT : 1;
-    wheelDeltaRef.current += event.deltaY * multiplier;
-    const rows = Math.trunc(wheelDeltaRef.current / LINE_HEIGHT);
+    const accumulated = accumulateWheelRows(
+      wheelDeltaRef.current,
+      wheelDeltaPixels(event.deltaY, event.deltaMode, gridRef.current.rows, LINE_HEIGHT),
+      LINE_HEIGHT,
+    );
+    wheelDeltaRef.current = accumulated.remainder;
+    const { rows } = accumulated;
     if (rows === 0) return;
-    wheelDeltaRef.current -= rows * LINE_HEIGHT;
     if (terminalRuntime.isMouseTracking(session.handle) && !event.shiftKey) {
       const button = rows < 0 ? 4 : 5;
       for (let count = 0; count < Math.min(12, Math.abs(rows)); count += 1) {
         sendMouse(event, "press", button);
       }
     } else {
-      terminalRuntime.scroll(session.id, viewId, Math.max(-100, Math.min(100, rows)));
+      revealScrollbar();
+      queueScrollRows(rows);
     }
+  };
+
+  const scrollbarScrollable = scrollbar.total > scrollbar.length;
+  const scrollbarMaxOffset = Math.max(0, scrollbar.total - scrollbar.length);
+  const scrollbarPosition = scrollbarMaxOffset === 0 ? 0 : Math.min(1, scrollbar.offset / scrollbarMaxOffset);
+  const scrollbarSize = scrollbar.total === 0 ? 1 : Math.min(1, scrollbar.length / scrollbar.total);
+
+  const onScrollbarPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
+    if (!scrollbarScrollable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onActivate?.();
+    const track = event.currentTarget;
+    const bounds = track.getBoundingClientRect();
+    const thumbHeight = Math.max(24, bounds.height * scrollbarSize);
+    const travel = Math.max(1, bounds.height - thumbHeight);
+    const thumb = (event.target as HTMLElement).closest(".terminal-scrollbar-thumb");
+    let startOffset = scrollbar.offset;
+    if (!thumb) {
+      startOffset = Math.round(
+        Math.max(0, Math.min(1, (event.clientY - bounds.top - thumbHeight / 2) / travel)) * scrollbarMaxOffset,
+      );
+      queueScrollTo(startOffset);
+    }
+    scrollbarDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startOffset,
+      maxOffset: scrollbarMaxOffset,
+      travel,
+    };
+    track.setPointerCapture(event.pointerId);
+    revealScrollbar();
+  };
+
+  const onScrollbarPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
+    const drag = scrollbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const row = Math.round(
+      Math.max(
+        0,
+        Math.min(drag.maxOffset, drag.startOffset + ((event.clientY - drag.startY) / drag.travel) * drag.maxOffset),
+      ),
+    );
+    queueScrollTo(row);
+    revealScrollbar();
+  };
+
+  const onScrollbarPointerUp = (event: PointerEvent<HTMLDivElement>): void => {
+    const drag = scrollbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    scrollbarDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    revealScrollbar();
   };
 
   return (
@@ -360,6 +489,30 @@ function TerminalSurfaceSession({
           if (!event.nativeEvent.isComposing) event.currentTarget.value = "";
         }}
       />
+      {scrollbarScrollable ? (
+        <div
+          className={`terminal-scrollbar${scrollbarVisible ? " is-visible" : ""}`}
+          role="scrollbar"
+          aria-label="Terminal scrollback"
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={scrollbarMaxOffset}
+          aria-valuenow={scrollbar.offset}
+          onPointerDown={onScrollbarPointerDown}
+          onPointerMove={onScrollbarPointerMove}
+          onPointerUp={onScrollbarPointerUp}
+          onPointerCancel={onScrollbarPointerUp}
+        >
+          <div
+            className="terminal-scrollbar-thumb"
+            style={{
+              height: `${scrollbarSize * 100}%`,
+              top: `${scrollbarPosition * 100}%`,
+              transform: `translateY(-${scrollbarPosition * 100}%)`,
+            }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

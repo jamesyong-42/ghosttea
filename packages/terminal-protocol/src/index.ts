@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 2;
+export const PROTOCOL_MINOR = 3;
 
 export type SessionEnvironment =
   { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
@@ -53,6 +53,7 @@ export type ClientCommand =
   | (ViewInputIdentity & { requestId: number; type: "send-key"; sessionId: string; event: TerminalKeyEvent })
   | (ViewInputIdentity & { requestId: number; type: "send-mouse"; sessionId: string; event: TerminalMouseEvent })
   | (ViewInputIdentity & { requestId: number; type: "scroll"; sessionId: string; rows: number })
+  | (ViewInputIdentity & { requestId: number; type: "scroll-to"; sessionId: string; row: number })
   | (ViewInputIdentity & { requestId: number; type: "focus"; sessionId: string; focused: boolean })
   | {
       requestId: number;
@@ -218,6 +219,15 @@ export interface TerminalMouseEvent {
   control: boolean;
   alt: boolean;
   meta: boolean;
+}
+
+export interface TerminalScrollbarState {
+  /** Total rows in scrollback plus the active screen. */
+  total: number;
+  /** First visible row, measured from the top of scrollback. */
+  offset: number;
+  /** Number of visible terminal rows. */
+  length: number;
 }
 
 export function isServerEvent(value: unknown): value is ServerEvent {

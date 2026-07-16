@@ -53,6 +53,12 @@ typedef void (*EgCellFn)(void* userdata,
                          size_t text_len,
                          const EgCellStyle* style);
 
+typedef struct {
+  uint64_t total;
+  uint64_t offset;
+  uint64_t len;
+} EgScrollbar;
+
 EgTerminal* eg_terminal_new(uint16_t cols, uint16_t rows, size_t max_scrollback);
 void eg_terminal_free(EgTerminal* terminal);
 void eg_terminal_write(EgTerminal* terminal, const uint8_t* data, size_t len);
@@ -62,6 +68,8 @@ int eg_terminal_set_colors(EgTerminal* terminal,
                            uint8_t bg_r, uint8_t bg_g, uint8_t bg_b,
                            uint8_t cursor_r, uint8_t cursor_g, uint8_t cursor_b);
 void eg_terminal_scroll(EgTerminal* terminal, intptr_t rows);
+void eg_terminal_scroll_to(EgTerminal* terminal, size_t row);
+bool eg_terminal_scrollbar(EgTerminal* terminal, EgScrollbar* scrollbar);
 bool eg_terminal_mouse_tracking(EgTerminal* terminal);
 bool eg_terminal_alternate_scroll(EgTerminal* terminal);
 int eg_terminal_snapshot(EgTerminal* terminal,

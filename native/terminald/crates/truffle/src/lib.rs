@@ -1169,6 +1169,13 @@ async fn session_control_loop(
                     input_sequence,
                     isize::try_from(rows.clamp(-10_000, 10_000))?,
                 )?,
+                TunnelInput::ScrollTo(row) => session.scroll_to(
+                    &view_id,
+                    client_id,
+                    attachment_epoch,
+                    input_sequence,
+                    usize::try_from(row)?,
+                )?,
                 TunnelInput::Focus(focused) => session.focus(
                     &view_id,
                     client_id,

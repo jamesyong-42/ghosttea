@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use ghosttea_text::{FontStyle, GlyphDefinition, StyleSpan, TextEngine};
-use ghosttea_vt::{CellStyle, TerminalCell};
+use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -143,6 +143,11 @@ impl RemoteReplica {
         drop(summary);
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
         let definitions = definitions.into_values().collect::<Vec<_>>();
+        let scrollbar = TerminalScrollbar {
+            total: snapshot.scrollbar.total,
+            offset: snapshot.scrollbar.offset,
+            len: snapshot.scrollbar.len,
+        };
         let frame = encode_text_snapshot(TextSnapshot {
             session_handle: handle,
             session_epoch: snapshot.session_epoch,
@@ -156,6 +161,7 @@ impl RemoteReplica {
             updated_rows: &updated_rows,
             full_snapshot: true,
             mouse_tracking: snapshot.mouse_tracking,
+            scrollbar: &scrollbar,
             new_glyph_definitions: &definitions,
             clipboard: None,
             cursor: &cursor,
@@ -220,6 +226,11 @@ mod tests {
                     blinking: true,
                 },
                 mouse_tracking: false,
+                scrollbar: crate::tunnel_protocol::LogicalScrollbar {
+                    total: 12,
+                    offset: 11,
+                    len: 1,
+                },
                 title: Some("remote title".into()),
                 cwd: Some("/remote".into()),
             })

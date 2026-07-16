@@ -213,6 +213,27 @@ void eg_terminal_scroll(EgTerminal* state, intptr_t rows) {
   ghostty_terminal_scroll_viewport(state->terminal, behavior);
 }
 
+void eg_terminal_scroll_to(EgTerminal* state, size_t row) {
+  if (state == NULL) return;
+  GhosttyTerminalScrollViewport behavior = {
+      .tag = GHOSTTY_SCROLL_VIEWPORT_ROW,
+      .value.row = row,
+  };
+  ghostty_terminal_scroll_viewport(state->terminal, behavior);
+}
+
+bool eg_terminal_scrollbar(EgTerminal* state, EgScrollbar* scrollbar) {
+  if (state == NULL || scrollbar == NULL) return false;
+  GhosttyTerminalScrollbar value = {0};
+  if (ghostty_terminal_get(
+          state->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &value) != GHOSTTY_SUCCESS)
+    return false;
+  scrollbar->total = value.total;
+  scrollbar->offset = value.offset;
+  scrollbar->len = value.len;
+  return true;
+}
+
 bool eg_terminal_mouse_tracking(EgTerminal* state) {
   bool tracking = false;
   if (state != NULL)

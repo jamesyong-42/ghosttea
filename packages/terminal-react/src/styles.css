@@ -36,3 +36,40 @@
   touch-action: none;
   overscroll-behavior: contain;
 }
+
+.terminal-scrollbar {
+  position: absolute;
+  z-index: 3;
+  top: 3px;
+  right: 2px;
+  bottom: 3px;
+  width: 11px;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease-out;
+}
+
+.terminal-scrollbar.is-visible,
+.terminal-scrollbar:hover {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.terminal-scrollbar-thumb {
+  position: absolute;
+  right: 1px;
+  width: 7px;
+  min-height: 24px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 48%, transparent);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 45%);
+  transition:
+    width 100ms ease-out,
+    background-color 100ms ease-out;
+}
+
+.terminal-scrollbar:hover .terminal-scrollbar-thumb {
+  width: 9px;
+  background: color-mix(in srgb, currentColor 68%, transparent);
+}

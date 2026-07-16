@@ -111,6 +111,13 @@ enum Command {
         input_sequence: u64,
         rows: i64,
     },
+    ScrollTo {
+        session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        input_sequence: u64,
+        row: u64,
+    },
     Focus {
         session_id: String,
         view_id: String,
@@ -444,7 +451,7 @@ async fn handle_command(
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
                     protocol_major: 1,
-                    protocol_minor: 2,
+                    protocol_minor: 3,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
@@ -747,6 +754,35 @@ async fn handle_command(
                             attachment_epoch,
                             input_sequence,
                             tunnel_protocol::TunnelInput::Scroll(rows),
+                        )
+                        .await?;
+                }
+                Ok(ResponseBody::Ok)
+            }
+            Command::ScrollTo {
+                session_id,
+                view_id,
+                attachment_epoch,
+                input_sequence,
+                row,
+            } => {
+                if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
+                    session.scroll_to(
+                        &view_id,
+                        client_id,
+                        attachment_epoch,
+                        input_sequence,
+                        usize::try_from(row)?,
+                    )?;
+                } else {
+                    context
+                        .mesh_runtime
+                        .send_input(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            input_sequence,
+                            tunnel_protocol::TunnelInput::ScrollTo(row),
                         )
                         .await?;
                 }
@@ -1089,7 +1125,7 @@ mod protocol_tests {
             request_id: 7,
             body: ResponseBody::Hello {
                 protocol_major: 1,
-                protocol_minor: 2,
+                protocol_minor: 3,
                 server_build: "test".to_owned(),
             },
         })

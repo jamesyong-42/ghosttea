@@ -1,4 +1,5 @@
 import type { CellSelection, TerminalTheme } from "./renderers/types.js";
+import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 
 export type RendererToWorkerMessage =
   | { type: "renderer-config"; forceCanvasFallback: boolean }
@@ -18,6 +19,7 @@ export type WorkerToRendererMessage =
   | { type: "renderer-status"; backend: string; textEngine?: string; recovered?: boolean }
   | { type: "clipboard-write"; text: string }
   | { type: "selection-text"; requestId: number; text: string }
+  | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }
   | { type: "renderer-reload-required"; reason: string };

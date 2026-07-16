@@ -107,6 +107,12 @@ export interface CursorState {
   blinking: boolean;
 }
 
+export interface ScrollbarState {
+  total: bigint;
+  offset: bigint;
+  length: bigint;
+}
+
 export enum CursorStyle {
   Bar = 0,
   Block = 1,
@@ -322,6 +328,19 @@ export function decodeCursorState(section: FrameSection): CursorState {
     style,
     blinking: blinking === 1,
   };
+}
+
+export function decodeScrollbarState(section: FrameSection): ScrollbarState {
+  assertRange(section.kind === SectionKind.ScrollbarState, "wrong scrollbar section kind");
+  assertRange(section.itemCount === 1, "scrollbar item count mismatch");
+  assertRange(section.bytes.byteLength === 24, "invalid scrollbar payload size");
+  const view = new DataView(section.bytes.buffer, section.bytes.byteOffset, section.bytes.byteLength);
+  const total = view.getBigUint64(0, true);
+  const offset = view.getBigUint64(8, true);
+  const length = view.getBigUint64(16, true);
+  assertRange(length <= total, "scrollbar viewport exceeds total rows");
+  assertRange(offset <= total - length, "scrollbar offset exceeds scrollable range");
+  return { total, offset, length };
 }
 
 export function decodeClipboardWrite(section: FrameSection): string {

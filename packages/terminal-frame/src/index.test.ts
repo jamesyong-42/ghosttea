@@ -6,6 +6,7 @@ import {
   decodeFrame,
   decodeGlyphDefinitions,
   decodeRowReplacements,
+  decodeScrollbarState,
   decodeStyleDefinitions,
   FRAME_HEADER_BYTES,
   FRAME_MAGIC,
@@ -59,6 +60,19 @@ describe("decodeFrame", () => {
       visible: true,
       style: 0,
       blinking: true,
+    });
+  });
+
+  it("decodes bounded scrollbar state", () => {
+    const bytes = new Uint8Array(24);
+    const view = new DataView(bytes.buffer);
+    view.setBigUint64(0, 100n, true);
+    view.setBigUint64(8, 52n, true);
+    view.setBigUint64(16, 24n, true);
+    expect(decodeScrollbarState({ kind: SectionKind.ScrollbarState, flags: 0, itemCount: 1, bytes })).toEqual({
+      total: 100n,
+      offset: 52n,
+      length: 24n,
     });
   });
 
