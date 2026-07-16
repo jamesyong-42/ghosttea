@@ -496,11 +496,20 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
         &channelBytesAvailable,
         &initialReceiveWindowBytes
       )
+      var socketBytesReceived: UInt64 = 0
+      var socketBytesSent: UInt64 = 0
+      ghosttea_ssh_session_socket_bytes(
+        driver.requiredHandle,
+        &socketBytesReceived,
+        &socketBytesSent
+      )
       let result = SSHCandidateFlowControlMetrics(
         standardOutputBytesDelivered: standardOutputBytesDelivered,
         standardErrorBytesDelivered: standardErrorBytesDelivered,
         bytesWritten: bytesWritten,
         socketWaitCalls: driver.socketWaitCalls,
+        socketBytesReceived: socketBytesReceived,
+        socketBytesSent: socketBytesSent,
         receiveWindowBytes: UInt64(receiveWindowBytes),
         channelBytesAvailable: UInt64(channelBytesAvailable),
         initialReceiveWindowBytes: UInt64(initialReceiveWindowBytes)

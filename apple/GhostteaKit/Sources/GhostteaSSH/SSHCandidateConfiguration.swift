@@ -148,6 +148,8 @@ public struct SSHCandidateFlowControlMetrics: Equatable, Sendable {
   public let standardErrorBytesDelivered: UInt64
   public let bytesWritten: UInt64
   public let socketWaitCalls: UInt64
+  public let socketBytesReceived: UInt64
+  public let socketBytesSent: UInt64
   public let receiveWindowBytes: UInt64
   public let channelBytesAvailable: UInt64
   public let initialReceiveWindowBytes: UInt64

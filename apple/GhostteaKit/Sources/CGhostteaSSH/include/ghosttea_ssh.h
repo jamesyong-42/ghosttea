@@ -157,6 +157,11 @@ unsigned long ghosttea_ssh_session_receive_window(
     unsigned long *read_available,
     unsigned long *initial_window
 );
+void ghosttea_ssh_session_socket_bytes(
+    const ghosttea_ssh_session_t *session,
+    uint64_t *received,
+    uint64_t *sent
+);
 int ghosttea_ssh_session_last_error(
     ghosttea_ssh_session_t *session,
     char *buffer,

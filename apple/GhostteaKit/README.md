@@ -53,5 +53,6 @@ deadline and Swift task cancellation; synchronous DNS cancellation remains a
 documented hardening item.
 The candidate connection also exposes diagnostic flow-control metrics. The
 live flood gate requires its delivered-byte counters to remain unchanged while
-terminal demand is paused, then verifies exact delivery while reporting the
-libssh2 receive window and socket-wait count.
+terminal demand is paused. It applies the same invariant to raw encrypted
+socket receives, then verifies exact delivery while reporting the libssh2
+receive window and socket-wait count.

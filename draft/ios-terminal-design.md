@@ -1307,9 +1307,10 @@ rather than a distinct partial-success result, so only the explicit chained
 policy may attempt the second method; a wrong-key control remains rejected. The
 same adapter passes strict host-key negatives, PTY allocation and resize, a
 byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
-candidate-only diagnostics expose delivered/written bytes, socket waits, and
-libssh2 receive-window state. Delivery counters remain unchanged throughout
-the forced 750 ms pause, ruling out Swift-side prefetch before the exact drain.
+candidate-only diagnostics expose raw encrypted socket, delivered, and written
+bytes, socket waits, and libssh2 receive-window state. Socket-receive and
+delivery counters remain unchanged throughout the forced 750 ms pause, ruling
+out network or Swift-side prefetch before the exact drain.
 The async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
@@ -1755,14 +1756,15 @@ transport package, and pinned three-slice libssh2/OpenSSL compile probe are
 implemented. The nonblocking libssh2 Swift adapter passes the pinned auth
 matrix, strict host-key controls, PTY/resize, a byte-exact 32 MiB stalled-reader
 fixture below its macOS RSS gate, no delivered-byte movement while demand is
-paused, receive-window/socket-wait diagnostics, and blocked-read cancellation,
-including explicit chained MFA with its `-19` return behavior locked under test. A
+paused, no raw socket consumption, receive-window/socket-wait diagnostics, and
+blocked-read cancellation, including explicit chained MFA with its `-19`
+return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy,
 representative-server and resolver/adverse-network cancellation coverage,
-raw socket/device-footprint instrumentation, bundled-font licensing, and
-device-tier memory gates remain open.
+device-footprint instrumentation, bundled-font licensing, and device-tier
+memory gates remain open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one; Keychain-backed loading remains open. libssh2 is a candidate,
 not the selected SSH path.

@@ -197,10 +197,10 @@ also rejects unknown and changed host keys, verifies PTY allocation and resize,
 drains a 32 MiB stalled stream byte-for-byte at about 10 MB RSS, and cancels a
 blocked read in about 45 ms. Negotiated-method instrumentation locks the
 fixture profile to Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
-Candidate-only metrics now record delivered/written bytes, socket waits, and
-libssh2 receive-window state. The delivered-byte counters remain unchanged
-during the 750 ms pause, ruling out hidden Swift-side prefetch before the exact
-32 MiB drain.
+Candidate-only metrics now record raw encrypted socket, delivered, and written
+bytes, socket waits, and libssh2 receive-window state. The socket-receive and
+delivered-byte counters remain unchanged during the 750 ms pause, ruling out
+hidden network or Swift-side prefetch before the exact 32 MiB drain.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds plus cancellation.
@@ -242,9 +242,8 @@ A third command killed by `SIGTERM` is reported distinctly as
 4. Measure binary size and VT/scrollback byte-budget memory before and after
    caller-driven compression.
 5. Spike the SSH authentication and algorithm matrix.
-6. Add raw socket and whole-app footprint instrumentation, then repeat the
-   instrumented demand-driven stalled-output fixture on a low-end physical
-   device.
+6. Add whole-app footprint instrumentation, then repeat the instrumented
+   demand-driven stalled-output fixture on a low-end physical device.
 7. Only then extract the shared Ghosttea terminal model.
 8. Begin the extraction after the current Electron embedding refactor lands.
 

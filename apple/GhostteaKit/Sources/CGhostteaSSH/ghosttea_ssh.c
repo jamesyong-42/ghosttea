@@ -35,6 +35,8 @@ struct ghosttea_ssh_session {
     char **keyboard_broker_prompts;
     int *keyboard_broker_echo;
     int keyboard_broker_prompt_count;
+    uint64_t socket_bytes_received;
+    uint64_t socket_bytes_sent;
 };
 
 struct ghosttea_ssh_connector {
@@ -55,6 +57,35 @@ static void write_error(char *buffer, size_t length, const char *message) {
         return;
     }
     snprintf(buffer, length, "%s", message == NULL ? "unknown error" : message);
+}
+
+static ssize_t normalize_socket_result(ssize_t result) {
+    if (result >= 0) {
+        return result;
+    }
+    int error = errno;
+    if (error == EINTR || error == ENOENT || error == EAGAIN || error == EWOULDBLOCK) {
+        return -EAGAIN;
+    }
+    return -error;
+}
+
+static LIBSSH2_RECV_FUNC(counting_receive) {
+    ssize_t result = recv(socket, buffer, length, flags);
+    if (result > 0 && abstract != NULL && *abstract != NULL) {
+        ghosttea_ssh_session_t *session = *abstract;
+        session->socket_bytes_received += (uint64_t)result;
+    }
+    return normalize_socket_result(result);
+}
+
+static LIBSSH2_SEND_FUNC(counting_send) {
+    ssize_t result = send(socket, buffer, length, flags);
+    if (result > 0 && abstract != NULL && *abstract != NULL) {
+        ghosttea_ssh_session_t *session = *abstract;
+        session->socket_bytes_sent += (uint64_t)result;
+    }
+    return normalize_socket_result(result);
 }
 
 static int64_t monotonic_milliseconds(void) {
@@ -453,6 +484,16 @@ ghosttea_ssh_session_t *ghosttea_ssh_session_create(int socket_fd) {
         free(wrapper);
         return NULL;
     }
+    libssh2_session_callback_set2(
+        wrapper->session,
+        LIBSSH2_CALLBACK_RECV,
+        (libssh2_cb_generic *)counting_receive
+    );
+    libssh2_session_callback_set2(
+        wrapper->session,
+        LIBSSH2_CALLBACK_SEND,
+        (libssh2_cb_generic *)counting_send
+    );
     libssh2_session_set_blocking(wrapper->session, 0);
     return wrapper;
 }
@@ -1028,6 +1069,19 @@ unsigned long ghosttea_ssh_session_receive_window(
         read_available,
         initial_window
     );
+}
+
+void ghosttea_ssh_session_socket_bytes(
+    const ghosttea_ssh_session_t *session,
+    uint64_t *received,
+    uint64_t *sent
+) {
+    if (received != NULL) {
+        *received = session == NULL ? 0 : session->socket_bytes_received;
+    }
+    if (sent != NULL) {
+        *sent = session == NULL ? 0 : session->socket_bytes_sent;
+    }
 }
 
 int ghosttea_ssh_session_last_error(

@@ -125,13 +125,15 @@ passphrase. This proves the candidate crypto path, not the production secret
 boundary; Keychain loading and passphrase lifetime remain open.
 
 The candidate exposes diagnostic flow-control counters without changing the
-host-neutral transport protocol: bytes delivered to Swift per channel, bytes
-written, socket-wait calls, and libssh2's current/initial receive-window state.
-During the 750 ms flood pause, the delivered-byte counters do not move, proving
-that the adapter does not prefetch channel data into a hidden Swift queue. The
-subsequent drain remains byte-exact. One representative run reported a
-2,096,949-byte receive window from an initial 2,097,152 bytes and 1,135 socket
-waits after draining. Because the adapter performs no channel read while demand
+host-neutral transport protocol: bytes delivered to Swift per channel, raw
+encrypted socket bytes received/sent, bytes written, socket-wait calls, and
+libssh2's current/initial receive-window state. During the 750 ms flood pause,
+neither the delivered-byte nor raw socket-receive counters move, proving that
+the adapter does not prefetch network or channel data into a hidden queue. The
+subsequent drain remains byte-exact. One representative run consumed 33,848,488
+encrypted socket bytes while delivering the 33,554,432-byte payload, reported a
+2,096,949-byte receive window from an initial 2,097,152 bytes, and performed
+1,143 socket waits. Because the adapter performs no channel read while demand
 is paused, this observation shows backpressure at the socket/SSH-processing
 boundary; it does not claim that libssh2 consumed packets and advertised a
 smaller remote channel window during the pause.
@@ -194,10 +196,10 @@ separately test the host-neutral demand and queue semantics.
    deterministic handshake timeout/cancellation, and repeated auth/handshake
    cancellation stress already pass; the nonblocking TCP connector still needs
    adverse-network and physical-device evidence.
-5. Add raw socket-byte and physical-footprint instrumentation on device. The
-   candidate already exposes delivered/written byte counts, socket-wait counts,
-   and SSH receive-window state; the macOS flood proves no Swift-side prefetch,
-   remains byte-exact, and stays below its whole-process RSS gate.
+5. Add whole-app physical-footprint instrumentation on device. The candidate
+   already exposes raw socket, delivered/written byte, socket-wait, and SSH
+   receive-window counters; the macOS flood proves no socket or Swift-side
+   prefetch, remains byte-exact, and stays below its whole-process RSS gate.
 6. Run the package and network fixture on a physical low-end supported iOS
    device.
 
