@@ -204,9 +204,14 @@ The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
 lookup remains non-interruptible until it returns. Remaining gates include
-UIKit/Keychain policy, broader algorithm coverage, adverse-network/repeated
-cancellation, and physical-device evidence, as
+UIKit/Keychain policy, representative-server/RSA-SHA-2 coverage,
+adverse-network/repeated cancellation, and physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
+
+Generated passphrase-encrypted OpenSSH Ed25519 keys now authenticate through
+the adapter, while an incorrect-passphrase control is rejected. This proves the
+candidate decryption path; production Keychain loading and passphrase lifetime
+remain open.
 
 A second forced negotiation profile now passes with an ECDSA P-256 host key,
 bidirectional AES-256-GCM, strict known-host verification, and a shell session.

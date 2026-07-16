@@ -39,6 +39,16 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   support that preserves stdout, stderr, EOF, exit 37, and the complete channel
   close handshake. A `cat` fixture proves output remains readable after input
   EOF and exits cleanly without truncation.
+- distinct typed termination for numeric exit and remote signal death; a live
+  `SIGTERM` command returns `.signaled(name: "TERM")`.
+- a cancellable nonblocking TCP connector and independent SSH handshake
+  deadline, with pre-cancel and deterministic no-banner timeout/cancellation
+  controls.
+- a second strict-known-host negotiation profile using ECDSA P-256 and
+  bidirectional AES-256-GCM.
+- generated encrypted OpenSSH Ed25519 private-key authentication, plus an
+  incorrect-passphrase rejection control. Fixture keys remain in ignored build
+  state.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -66,14 +76,15 @@ UIKit, transport state, and the rest of the application.
 
 1. Run the proof on a physical iOS device once an app harness and signing team are available.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
-   authentication, the asynchronous prompt broker, strict unknown/changed-host
-   rejection, PTY/resize, auth/read cancellation, and the stalled-reader flood.
-   Remaining work is UIKit/Keychain credential policy, user decisions for
-   unknown/changed hosts, encrypted-key and algorithm coverage,
-   exit-signal semantics, TCP/handshake cancellation, reconnect orchestration,
-   channel-window instrumentation, and physical-device execution. The
-   public-key partial step remains locked as `-19`, so only an explicitly
-   configured chained policy may proceed to keyboard-interactive.
+   authentication including encrypted private keys, the asynchronous prompt
+   broker, strict unknown/changed-host rejection, two modern algorithm profiles,
+   PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
+   and the stalled-reader flood. Remaining work is UIKit/Keychain credential
+   policy, user decisions for unknown/changed hosts, representative-server and
+   RSA/SHA-2 coverage, repeated adverse-network cancellation, resolver and
+   reconnect orchestration, channel-window instrumentation, and physical-device
+   execution. The public-key partial step remains locked as `-19`, so only an
+   explicitly configured chained policy may proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -7,8 +7,11 @@ const fixtureRoot = join(root, "tests/fixtures/ssh");
 const stateRoot = join(root, "native/build/ssh-fixture");
 const privateKey = join(stateRoot, "client_ed25519");
 const publicKey = `${privateKey}.pub`;
+const encryptedPrivateKey = join(stateRoot, "client_encrypted_ed25519");
+const encryptedPublicKey = `${encryptedPrivateKey}.pub`;
 const wrongPrivateKey = join(stateRoot, "wrong_client_ed25519");
 const wrongPublicKey = `${wrongPrivateKey}.pub`;
+const authorizedKeys = join(stateRoot, "authorized_keys");
 const knownHosts = join(stateRoot, "known_hosts");
 const unknownKnownHosts = join(stateRoot, "unknown_known_hosts");
 const changedKnownHosts = join(stateRoot, "changed_known_hosts");
@@ -29,7 +32,7 @@ const ports = {
 };
 const commandEnvironment = {
   ...process.env,
-  GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY: publicKey,
+  GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY: authorizedKeys,
   GHOSTTEA_SSH_PASSWORD_PORT: ports.password,
   GHOSTTEA_SSH_KEYBOARD_PORT: ports.keyboard,
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
@@ -67,17 +70,26 @@ function compose(args, options = {}) {
 
 function ensureClientKey() {
   mkdirSync(stateRoot, { recursive: true });
-  for (const [keyPath, comment] of [
-    [privateKey, "ghosttea-ssh-fixture-only"],
-    [wrongPrivateKey, "ghosttea-ssh-fixture-wrong-key"],
+  for (const [keyPath, comment, passphrase] of [
+    [privateKey, "ghosttea-ssh-fixture-only", ""],
+    [encryptedPrivateKey, "ghosttea-ssh-fixture-encrypted", "ghosttea-key-passphrase"],
+    [wrongPrivateKey, "ghosttea-ssh-fixture-wrong-key", ""],
   ]) {
     if (existsSync(keyPath) && existsSync(`${keyPath}.pub`)) continue;
-    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", keyPath]);
+    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", passphrase, "-C", comment, "-f", keyPath]);
   }
   chmodSync(privateKey, 0o600);
   chmodSync(publicKey, 0o644);
+  chmodSync(encryptedPrivateKey, 0o600);
+  chmodSync(encryptedPublicKey, 0o644);
   chmodSync(wrongPrivateKey, 0o600);
   chmodSync(wrongPublicKey, 0o644);
+  writeFileSync(
+    authorizedKeys,
+    `${readFileSync(publicKey, "utf8").trim()}\n${readFileSync(encryptedPublicKey, "utf8").trim()}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(authorizedKeys, 0o600);
 }
 
 function pause(milliseconds) {
@@ -343,17 +355,18 @@ function swiftCandidate() {
     ]);
     const liveProbe = join(binaryDirectory, "GhostteaSSHLiveProbe");
 
-    for (const [mode, port] of [
+    for (const [mode, port, probePublicKey = publicKey, probePrivateKey = privateKey] of [
       ["password", ports.password],
       ["keyboard", ports.keyboard],
       ["partial", ports.partial],
       ["publickey", ports.publicKey],
+      ["encrypted-key", ports.publicKey, encryptedPublicKey, encryptedPrivateKey],
       ["command", ports.publicKey],
       ["half-close", ports.publicKey],
       ["signal", ports.publicKey],
       ["ecdsa-aesgcm", ports.ecdsaAesGcm],
     ]) {
-      const result = execute(liveProbe, [mode, "127.0.0.1", port, knownHosts, publicKey, privateKey], {
+      const result = execute(liveProbe, [mode, "127.0.0.1", port, knownHosts, probePublicKey, probePrivateKey], {
         timeout: 60_000,
       });
       if (result.status !== 0) {
@@ -375,6 +388,22 @@ function swiftCandidate() {
       );
     }
     process.stdout.write(cancellation.stdout);
+
+    const wrongPassphrase = execute(
+      liveProbe,
+      [
+        "encrypted-key-wrong-passphrase",
+        "127.0.0.1",
+        ports.publicKey,
+        knownHosts,
+        encryptedPublicKey,
+        encryptedPrivateKey,
+      ],
+      { timeout: 30_000 },
+    );
+    if (wrongPassphrase.status === 0) {
+      throw new Error("Swift libssh2 transport accepted an incorrect private-key passphrase.");
+    }
 
     for (const mode of ["handshake-timeout", "handshake-cancel"]) {
       const result = execute(liveProbe, [mode, "127.0.0.1", ports.blackhole, knownHosts, publicKey, privateKey], {
@@ -410,7 +439,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

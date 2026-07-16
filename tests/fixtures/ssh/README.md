@@ -17,11 +17,12 @@ The fixture credentials are intentionally public and must never be reused:
 - username: `ghosttea`;
 - password: `ghosttea-password`;
 - verification code: `123456`.
+- encrypted-key passphrase: `ghosttea-key-passphrase`.
 
-The client key is generated into ignored `native/build/ssh-fixture/` state. No
-private key is committed. Each container creation generates fresh, distinct
-Ed25519 host keys, and the harness records those keys before connecting with
-strict host-key checking.
+The client keys are generated into ignored `native/build/ssh-fixture/` state.
+No private key is committed. Each container creation generates fresh, distinct
+host keys, and the harness records those keys before connecting with strict
+host-key checking.
 
 From the repository root:
 
@@ -41,6 +42,8 @@ local port conflicts.
 The automated matrix verifies:
 
 - password, public-key, and two-prompt keyboard-interactive authentication;
+- passphrase-encrypted Ed25519 authentication and incorrect-passphrase
+  rejection;
 - rejection when the partial-success endpoint is used without its required
   public-key step;
 - public-key plus keyboard-interactive sequential authentication;

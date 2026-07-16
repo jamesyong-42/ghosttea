@@ -111,6 +111,10 @@ socket, preventing buffered stderr from starving behind idle stdout.
 A third command terminates its remote shell with `SIGTERM`; the adapter copies
 and frees libssh2's allocated exit-signal value and returns
 `.signaled(name: "TERM")` instead of the library's default numeric zero.
+The generated-key fixture also authenticates with a passphrase-encrypted
+OpenSSH Ed25519 private key and rejects the same key under an incorrect
+passphrase. This proves the candidate crypto path, not the production secret
+boundary; Keychain loading and passphrase lifetime remain open.
 
 ## Reproduce
 
@@ -154,8 +158,9 @@ host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Connect the asynchronous challenge responder to UIKit and Keychain-backed
-   credential policy; add name/instruction and mixed echo/no-echo fixtures.
+1. Connect the asynchronous challenge responder and encrypted-key path to UIKit
+   and Keychain-backed credential policy; add name/instruction and mixed
+   echo/no-echo fixtures.
 2. Add the explicit user decision boundary for unknown and changed host keys;
    strict acceptance and rejection controls already pass.
 3. Repeat the now-instrumented negotiated-method capture against the launch

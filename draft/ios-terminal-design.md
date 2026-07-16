@@ -1309,9 +1309,10 @@ same adapter passes strict host-key negatives, PTY allocation and resize, a
 byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
 async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
-multiple prompt rounds plus cancellation pass. UIKit/Keychain policy, broader
-representative-server/RSA-SHA-2 coverage, repeated adverse-network
-cancellation, and device evidence remain open. TCP establishment now uses a
+multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
+Ed25519 keys pass and incorrect passphrases are rejected. UIKit/Keychain policy,
+representative-server/RSA-SHA-2 coverage, repeated adverse-network cancellation,
+and device evidence remain open. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
@@ -1750,8 +1751,10 @@ explicit chained MFA with its `-19` return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy,
-representative-server/RSA-SHA-2 and resolver/adverse-network cancellation coverage, bundled-font
-licensing, and device-tier memory gates remain open. libssh2 is a candidate,
+representative-server/RSA-SHA-2 and resolver/adverse-network cancellation
+coverage, bundled-font licensing, and device-tier memory gates remain open.
+Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
+an incorrect one; Keychain-backed loading remains open. libssh2 is a candidate,
 not the selected SSH path.
 
 Exit gate:

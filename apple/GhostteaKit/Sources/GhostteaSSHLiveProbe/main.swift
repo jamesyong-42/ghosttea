@@ -149,6 +149,20 @@ private func authentication(
       privateKeyPath: privateKeyPath,
       passphrase: nil
     )
+  case "encrypted-key":
+    return .publicKey(
+      username: "ghosttea",
+      publicKeyPath: publicKeyPath,
+      privateKeyPath: privateKeyPath,
+      passphrase: "ghosttea-key-passphrase"
+    )
+  case "encrypted-key-wrong-passphrase":
+    return .publicKey(
+      username: "ghosttea",
+      publicKeyPath: publicKeyPath,
+      privateKeyPath: privateKeyPath,
+      passphrase: "incorrect-passphrase"
+    )
   case "keyboard":
     return .keyboardInteractive(
       username: "ghosttea",
