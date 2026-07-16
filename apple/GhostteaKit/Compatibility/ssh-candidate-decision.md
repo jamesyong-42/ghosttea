@@ -125,12 +125,11 @@ The generated-key fixture also authenticates with a passphrase-encrypted
 OpenSSH Ed25519 private key through both the legacy path/string case and the
 production-shaped opaque resolver, and rejects incorrect passphrases through
 both paths. The resolver receives only opaque private-key and passphrase IDs,
-materializes key bytes to a protected random `0600` temporary file for the
-libssh2 call, passes a null public-key path so the OpenSSL backend derives it,
-and removes the temporary file before returning. The C shim accepts counted
-passphrase bytes and wipes its required null-terminated copy before freeing it.
-Package tests cover protection metadata and cleanup; the live matrix leaves the
-materialization directory empty.
+passes counted private-key bytes to libssh2's in-memory API, and supplies no
+public-key data so the OpenSSL backend derives it. No key path or temporary key
+file exists. The C shim also accepts counted passphrase bytes and wipes its
+required null-terminated copy before freeing it. Unencrypted and encrypted
+opaque resolver cases pass, and the wrong-passphrase control is rejected.
 
 The candidate exposes diagnostic flow-control counters without changing the
 host-neutral transport protocol: bytes delivered to Swift per channel, raw
@@ -203,9 +202,8 @@ separately test the host-neutral demand and queue semantics.
 1. Connect the asynchronous challenge responder and opaque private-key chooser
    to UIKit, exercise the private-key resolver on a physical device, and add a
    nonempty protocol-level name/instruction fixture. Opaque key/passphrase
-   resolution without a public-key path, protected temporary materialization,
-   PAM informational text, and mixed echo/no-echo prompts already pass on the
-   macOS fixture.
+   resolution through the in-memory key API, PAM informational text, and mixed
+   echo/no-echo prompts already pass on the macOS fixture.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.

@@ -916,6 +916,35 @@ static void clear_secret_bytes(uint8_t *bytes, size_t length) {
     }
 }
 
+static int copy_optional_secret(
+    const uint8_t *secret,
+    size_t secret_length,
+    int secret_present,
+    char **copy
+) {
+    *copy = NULL;
+    if (secret_length == SIZE_MAX || (secret_present != 0 && secret_present != 1)
+        || (secret_present == 0 && secret_length != 0)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    if (secret_present != 0 && secret_length > 0
+        && (secret == NULL || memchr(secret, '\0', secret_length) != NULL)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    if (secret_present == 0) {
+        return 0;
+    }
+    *copy = malloc(secret_length + 1);
+    if (*copy == NULL) {
+        return LIBSSH2_ERROR_ALLOC;
+    }
+    if (secret_length > 0) {
+        memcpy(*copy, secret, secret_length);
+    }
+    (*copy)[secret_length] = '\0';
+    return 0;
+}
+
 int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
     ghosttea_ssh_session_t *session,
     const char *username,
@@ -925,29 +954,23 @@ int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
     size_t passphrase_length,
     int passphrase_present
 ) {
-    if (session == NULL || username == NULL || private_key_path == NULL
-        || passphrase_length == SIZE_MAX) {
+    if (session == NULL || username == NULL || public_key_path == NULL
+        || private_key_path == NULL) {
         return LIBSSH2_ERROR_INVAL;
     }
     size_t username_length = strlen(username);
-    if (username_length > UINT_MAX || (passphrase_present != 0 && passphrase_present != 1)
-        || (passphrase_present == 0 && passphrase_length != 0)) {
-        return LIBSSH2_ERROR_INVAL;
-    }
-    if (passphrase_present != 0 && passphrase_length > 0
-        && (passphrase == NULL || memchr(passphrase, '\0', passphrase_length) != NULL)) {
+    if (username_length > UINT_MAX) {
         return LIBSSH2_ERROR_INVAL;
     }
     char *terminated_passphrase = NULL;
-    if (passphrase_present) {
-        terminated_passphrase = malloc(passphrase_length + 1);
-        if (terminated_passphrase == NULL) {
-            return LIBSSH2_ERROR_ALLOC;
-        }
-        if (passphrase_length > 0) {
-            memcpy(terminated_passphrase, passphrase, passphrase_length);
-        }
-        terminated_passphrase[passphrase_length] = '\0';
+    int copy_status = copy_optional_secret(
+        passphrase,
+        passphrase_length,
+        passphrase_present,
+        &terminated_passphrase
+    );
+    if (copy_status != 0) {
+        return copy_status;
     }
     int status = libssh2_userauth_publickey_fromfile_ex(
         session->session,
@@ -955,6 +978,50 @@ int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
         (unsigned int)username_length,
         public_key_path,
         private_key_path,
+        terminated_passphrase
+    );
+    if (terminated_passphrase != NULL) {
+        clear_secret_bytes((uint8_t *)terminated_passphrase, passphrase_length + 1);
+        free(terminated_passphrase);
+    }
+    return status;
+}
+
+int ghosttea_ssh_session_auth_public_key_memory_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const uint8_t *private_key,
+    size_t private_key_length,
+    const uint8_t *passphrase,
+    size_t passphrase_length,
+    int passphrase_present
+) {
+    if (session == NULL || username == NULL
+        || (private_key == NULL && private_key_length > 0)) {
+        return LIBSSH2_ERROR_INVAL;
+    }
+    char *terminated_passphrase = NULL;
+    int copy_status = copy_optional_secret(
+        passphrase,
+        passphrase_length,
+        passphrase_present,
+        &terminated_passphrase
+    );
+    if (copy_status != 0) {
+        return copy_status;
+    }
+    const uint8_t *key_bytes = private_key;
+    if (key_bytes == NULL) {
+        key_bytes = (const uint8_t *)"";
+    }
+    int status = libssh2_userauth_publickey_frommemory(
+        session->session,
+        username,
+        strlen(username),
+        NULL,
+        0,
+        (const char *)key_bytes,
+        private_key_length,
         terminated_passphrase
     );
     if (terminated_passphrase != NULL) {

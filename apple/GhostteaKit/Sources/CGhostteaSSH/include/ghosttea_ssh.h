@@ -90,9 +90,17 @@ int ghosttea_ssh_session_auth_public_key(
 int ghosttea_ssh_session_auth_public_key_passphrase_bytes(
     ghosttea_ssh_session_t *session,
     const char *username,
-    /* Nullable: the OpenSSL backend derives it from the private key. */
     const char *public_key_path,
     const char *private_key_path,
+    const uint8_t *passphrase,
+    size_t passphrase_length,
+    int passphrase_present
+);
+int ghosttea_ssh_session_auth_public_key_memory_bytes(
+    ghosttea_ssh_session_t *session,
+    const char *username,
+    const uint8_t *private_key,
+    size_t private_key_length,
     const uint8_t *passphrase,
     size_t passphrase_length,
     int passphrase_present

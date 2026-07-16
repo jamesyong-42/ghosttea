@@ -79,18 +79,17 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   decision, authentication, command execution, output drain, and clean exit.
 - a reusable `GhostteaCredentials` Keychain boundary with device-only,
   non-synchronizing accessibility and opaque connection identifiers, plus a
-  checked-in secret-lifetime and private-key materialization policy. A real
+  checked-in secret-lifetime and in-memory private-key policy. A real
   iPhone save/load/delete round trip passes and leaves no item behind.
 - an async opaque password-credential resolver in `GhostteaSSH`. The iPhone
   harness clears its field before connection, resolves Keychain bytes only at
   authentication time, removes them immediately after connection, and passes
   the physical SSH fixture through that path.
 - async opaque private-key and passphrase resolution in `GhostteaSSH`, backed
-  by a protected random `0600` temporary-file materializer and a counted-byte C
-  passphrase shim. Package tests verify protection and cleanup; the live
-  encrypted-key fixture passes the resolver path, rejects a wrong passphrase,
-  derives the public key without a configured key path, and leaves no key file
-  behind.
+  by libssh2's in-memory key API and a counted-byte C shim. The live fixture
+  passes unencrypted and encrypted resolver paths, rejects a wrong passphrase,
+  derives the public key without configured key bytes or a path, and never
+  writes private-key bytes to disk.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

@@ -51,30 +51,22 @@ bytes only inside `connect()`. The legacy direct-password and path/string
 public-key cases remain for fixture compatibility and must not be used by the
 product app.
 
-## Private-key materialization
+## In-memory private keys
 
-The pinned libssh2 file API currently accepts private-key paths.
-`ProtectedPrivateKeyMaterializer` therefore writes resolved bytes immediately
-before authentication to a randomly named app-private temporary file. Its
-directory is mode `0700`; each key is a regular file with mode `0600`, complete
-file protection, and backup-exclusion metadata. `GhostteaSSH` removes the file
-before `connect()` returns after success and on every thrown failure, timeout,
-or cancellation path. The owning object makes an idempotent deinitialization
-cleanup attempt as a final fallback. No workspace path refers to the temporary
-file, and errors and logs do not include it.
-
-Because the pinned candidate uses libssh2's OpenSSL backend, the opaque case
-passes no public-key file path; libssh2 derives the public key from the resolved
-private key. Product configuration therefore contains neither a public- nor a
-private-key path.
+The pinned libssh2 1.11.1 build exposes
+`libssh2_userauth_publickey_frommemory`. The opaque case passes counted private-
+key bytes directly through the C shim and supplies no public-key bytes, allowing
+the OpenSSL backend to derive the corresponding public key. Product
+configuration contains no key path, and private-key bytes never enter the file
+system.
 
 The passphrase crosses the C boundary as counted bytes. The shim rejects
 embedded NUL bytes, creates the null-terminated copy required by libssh2 only
 for the call, and overwrites that copy before freeing it. Swift and libssh2 may
 still make other copies, so this does not claim complete zeroization.
 
-Longer term, prefer a libssh2 in-memory key API or a signing callback if the
-required key formats and algorithms can pass the same compatibility matrix.
+Longer term, prefer a signing callback when hardware-backed or non-exportable
+keys become a requirement, provided it passes the same compatibility matrix.
 
 ## User presence and background behavior
 
@@ -86,10 +78,8 @@ tests and must not silently change existing credential accessibility.
 
 ## Verification
 
-Package tests lock the opaque account format, reject an empty service name,
-validate credential kinds, and verify exact private-key bytes, file type and
-permissions, backup-exclusion metadata, explicit deletion, and deinitialization
-cleanup.
+Package tests lock the opaque account format, reject an empty service name, and
+validate credential kinds.
 The iOS Phase 0 harness performs a real Keychain save/load/delete round trip
 using random non-user secret data and verifies that removal returns the item to
 the missing state. A second physical-device probe authenticates to the
@@ -97,6 +87,6 @@ disposable SSH fixture through the on-demand resolver and cannot proceed to
 command output unless immediate post-connect deletion succeeds. No test writes
 user credentials to the Keychain. The disposable macOS OpenSSH matrix also
 authenticates with a passphrase-encrypted key through the opaque resolver,
-rejects an incorrect resolved passphrase, and leaves the protected temporary
-directory empty. Physical-device private-key authentication remains a product
-integration gate.
+authenticates with an unencrypted key without a passphrase item, and rejects an
+incorrect resolved passphrase. Physical-device private-key authentication
+remains a product integration gate.
