@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
 import { GhostteaElectronBackend, type GhostteaElectronBackendOptions } from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { DesktopTabRegistry } from "./tab-registry";
 
 app.setName("Ghosttea");
+nativeTheme.themeSource = "dark";
 if (process.platform === "darwin") app.setActivationPolicy("regular");
 const profile = desktopProfile(app.getPath("userData"), process.env[PROFILE_ENV] ?? process.env[LEGACY_PROFILE_ENV]);
 mkdirSync(profile.electronData, { recursive: true, mode: 0o700 });
@@ -195,13 +196,6 @@ function focusRelativeTab(window: BrowserWindow, offset: -1 | 1): void {
   focusTab(group[(index + offset + group.length) % group.length]?.window);
 }
 
-function notifyTabGroup(groupId: string): void {
-  const group = tabs.group(groupId);
-  for (const record of group) {
-    if (!record.window.isDestroyed()) record.window.webContents.send("terminal-tab-count", group.length);
-  }
-}
-
 function terminateClosedTabSessions(sessionIds: ReadonlySet<string>): void {
   if (quitting || !backend || sessionIds.size === 0) return;
   const client = backend.automation;
@@ -239,8 +233,8 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     show: false,
     title: "Ghosttea",
     backgroundColor: "#282c34",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 12, y: 8 }, tabbingIdentifier: groupId } : {}),
+    titleBarStyle: "default",
+    ...(process.platform === "darwin" ? { tabbingIdentifier: groupId } : {}),
     acceptFirstMouse: true,
     fullscreenable: true,
     autoHideMenuBar: process.platform !== "darwin",
@@ -258,7 +252,6 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
   if (options.tabOf && process.platform === "darwin" && !options.tabOf.isDestroyed()) {
     options.tabOf.addTabbedWindow(window);
   }
-  notifyTabGroup(groupId);
   const revealWindow = (): void => {
     if (window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
@@ -286,7 +279,6 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     if (lastFocusedWindow === window) lastFocusedWindow = undefined;
     if (!closed) return;
     terminateClosedTabSessions(closed.sessionIds);
-    notifyTabGroup(closed.groupId);
   });
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[terminal-runtime] preload failed at ${preloadPath}: ${error.stack ?? error.message}`);
@@ -304,7 +296,6 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     if (window.isDestroyed() || !backend?.running) return;
     console.log("[terminal-runtime] renderer loaded; transferring ports");
     backend.attachRenderer(window.webContents);
-    window.webContents.send("terminal-tab-count", tabs.group(groupId).length);
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {

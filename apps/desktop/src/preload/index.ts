@@ -40,11 +40,6 @@ contextBridge.exposeInMainWorld("desktop", {
   closeTab: () => ipcRenderer.send("terminal-close-tab"),
   updateTabSessions: (sessionIds: readonly string[]) => ipcRenderer.send("terminal-tab-sessions", sessionIds),
   updateActiveCwd: (cwd?: string) => ipcRenderer.send("terminal-tab-active-cwd", cwd),
-  onTabCount: (listener: (count: number) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, count: number): void => listener(count);
-    ipcRenderer.on("terminal-tab-count", handler);
-    return () => ipcRenderer.removeListener("terminal-tab-count", handler);
-  },
   onMenuAction: (listener: (action: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, action: string): void => listener(action);
     ipcRenderer.on("terminal-menu-action", handler);

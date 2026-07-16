@@ -3,7 +3,6 @@ import { GhostteaWorkspace } from "@vibecook/ghosttea-react/workspace";
 
 export function App() {
   const [active, setActive] = useState(document.visibilityState !== "hidden");
-  const [tabCount, setTabCount] = useState(1);
   const platform = useMemo(
     () => ({
       defaultShell: window.desktop.defaultShell,
@@ -25,15 +24,13 @@ export function App() {
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
 
-  useEffect(() => window.desktop.onTabCount(setTabCount), []);
-
   return (
     <GhostteaWorkspace
       platform={platform}
       storageKey={`ghosttea:workspace:v2:${window.desktop.tabId}`}
       claimExistingSessions={window.desktop.claimExistingSessions}
       active={active}
-      showTitlebar={tabCount < 2}
+      showTitlebar={false}
       onSessionsChange={window.desktop.updateTabSessions}
       onActiveSessionChange={(session) => window.desktop.updateActiveCwd(session?.cwd ?? undefined)}
       {...(window.desktop.initialCwd ? { initialCwd: window.desktop.initialCwd } : {})}

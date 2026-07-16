@@ -18,7 +18,6 @@ declare global {
       closeTab: () => void;
       updateTabSessions: (sessionIds: readonly string[]) => void;
       updateActiveCwd: (cwd?: string) => void;
-      onTabCount: (listener: (count: number) => void) => () => void;
       onMenuAction: (listener: (action: "copy" | "paste" | "select-all" | "clear-screen") => void) => () => void;
     };
   }
