@@ -145,7 +145,7 @@ private func authentication(
   switch mode {
   case "password", "handshake-timeout", "handshake-cancel", "handshake-cancel-stress":
     return .password(username: "ghosttea", password: "ghosttea-password")
-  case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm":
+  case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm", "rsa-sha2":
     return .publicKey(
       username: "ghosttea",
       publicKeyPath: publicKeyPath,
@@ -523,6 +523,20 @@ private func verifyAlgorithms(
       throw LiveProbeError.unexpectedAlgorithms(algorithms)
     }
     print("Swift negotiated ECDSA/AES-GCM SSH algorithms: \(algorithms)")
+    return
+  }
+  if mode == "rsa-sha2" {
+    guard
+      algorithms.keyExchange == "curve25519-sha256",
+      algorithms.hostKey == "rsa-sha2-512",
+      algorithms.clientToServerCipher == "chacha20-poly1305@openssh.com",
+      algorithms.serverToClientCipher == "chacha20-poly1305@openssh.com",
+      algorithms.clientToServerMAC == "hmac-sha2-256",
+      algorithms.serverToClientMAC == "hmac-sha2-256"
+    else {
+      throw LiveProbeError.unexpectedAlgorithms(algorithms)
+    }
+    print("Swift negotiated RSA/SHA-2 SSH algorithms: \(algorithms)")
     return
   }
   guard

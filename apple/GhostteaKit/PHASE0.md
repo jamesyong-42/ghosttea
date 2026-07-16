@@ -48,6 +48,8 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   suspended keyboard-interactive cancellations in one process.
 - a second strict-known-host negotiation profile using ECDSA P-256 and
   bidirectional AES-256-GCM.
+- a strict-known-host RSA-3072 profile that negotiates RSA/SHA-2-512 rather
+  than deprecated `ssh-rsa` signatures.
 - generated encrypted OpenSSH Ed25519 private-key authentication, plus an
   incorrect-passphrase rejection control. Fixture keys remain in ignored build
   state.
@@ -82,8 +84,8 @@ UIKit, transport state, and the rest of the application.
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. Remaining work is UIKit/Keychain credential
-   policy, user decisions for unknown/changed hosts, representative-server and
-   RSA/SHA-2 coverage, adverse-network transitions, resolver and reconnect
+   policy, user decisions for unknown/changed hosts, representative-server
+   sampling, adverse-network transitions, resolver and reconnect
    orchestration, channel-window instrumentation, and physical-device
    execution. The public-key partial step remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.

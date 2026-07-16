@@ -84,9 +84,11 @@ Every fixture connection also locks the negotiated methods as
 `chacha20-poly1305@openssh.com` in both directions, and `hmac-sha2-256` in both
 directions. A second forced profile passes strict known-host verification and a
 shell session with `ecdsa-sha2-nistp256`, bidirectional
-`aes256-gcm@openssh.com`, and `INTEGRATED-AES-GCM`. These prove two modern
-profiles; they do not replace RSA/SHA-2 or representative production-server
-coverage.
+`aes256-gcm@openssh.com`, and `INTEGRATED-AES-GCM`. A third forced profile
+passes strict known-host verification and a shell session with a 3072-bit RSA
+host key negotiated as `rsa-sha2-512`, never the deprecated `ssh-rsa` signature
+algorithm. The local feasibility matrix is green; representative
+production-server coverage is still required.
 The live keyboard fixture exercises an informational zero-prompt round followed
 by distinct password and verification-code rounds, preserving their exact text
 and mixed `echo=false`/`echo=true` metadata. The fixture's empty server name and
@@ -170,8 +172,8 @@ host-neutral demand and queue semantics.
 2. Add the explicit user decision boundary for unknown and changed host keys;
    strict acceptance and rejection controls already pass.
 3. Repeat the now-instrumented negotiated-method capture against the launch
-   server sample and decide RSA/SHA-2 scope from that sample. The forced ECDSA
-   P-256 and AES-256-GCM endpoint already passes.
+   server sample and decide which profiles must ship. Forced ECDSA P-256,
+   AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.
 4. Add a resolver cancellation strategy and reconnect orchestration. PTY
    allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,

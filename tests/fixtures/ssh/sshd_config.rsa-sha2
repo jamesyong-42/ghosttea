@@ -1,0 +1,12 @@
+Include /etc/ssh/sshd_config.ghosttea-common
+Port 22028
+PidFile /run/ghosttea-sshd/rsa-sha2.pid
+HostKey /run/ghosttea-sshd/host_rsa_sha2_rsa_key
+HostKeyAlgorithms rsa-sha2-512
+Ciphers chacha20-poly1305@openssh.com
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AuthenticationMethods publickey

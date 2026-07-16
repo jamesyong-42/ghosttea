@@ -204,8 +204,8 @@ The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
 lookup remains non-interruptible until it returns. Remaining gates include
-UIKit/Keychain policy, representative-server/RSA-SHA-2 coverage,
-adverse-network transitions, and physical-device evidence, as
+UIKit/Keychain policy, representative-server sampling, adverse-network
+transitions, and physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 Repeated cleanup stress now passes 32 stalled-handshake cancellations and 16
@@ -219,7 +219,9 @@ remain open.
 
 A second forced negotiation profile now passes with an ECDSA P-256 host key,
 bidirectional AES-256-GCM, strict known-host verification, and a shell session.
-RSA/SHA-2 scope still depends on the representative launch-server sample.
+A third passes with an RSA-3072 host key negotiated as RSA/SHA-2-512 rather than
+deprecated `ssh-rsa`. Required production scope still depends on the
+representative launch-server sample.
 
 The candidate also implements non-PTY commands, multiplexed stdout/stderr,
 input half-close, typed exit status or signal, and the SSH EOF/close handshake. Live

@@ -541,6 +541,9 @@ int ghosttea_ssh_session_verify_known_host(
     const char *key = libssh2_session_hostkey(session->session, &key_length, &key_type);
     int known_key_type = LIBSSH2_KNOWNHOST_KEY_UNKNOWN;
     switch (key_type) {
+    case LIBSSH2_HOSTKEY_TYPE_RSA:
+        known_key_type = LIBSSH2_KNOWNHOST_KEY_SSHRSA;
+        break;
     case LIBSSH2_HOSTKEY_TYPE_ED25519:
         known_key_type = LIBSSH2_KNOWNHOST_KEY_ED25519;
         break;

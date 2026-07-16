@@ -1311,15 +1311,17 @@ async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
 Ed25519 keys pass and incorrect passphrases are rejected. UIKit/Keychain policy,
-representative-server/RSA-SHA-2 coverage, adverse-network transitions, and
-device evidence remain open. TCP establishment now uses a
+representative-server sampling, adverse-network transitions, and device
+evidence remain open. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
 non-interruptible until it returns. The adapter records negotiated methods; the
 current fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 A second forced profile locks ECDSA P-256 and bidirectional AES-256-GCM under
-strict known-host verification. No stack-specific type may escape the adapter.
+strict known-host verification. A third locks an RSA-3072 host key to
+RSA/SHA-2-512 rather than deprecated `ssh-rsa`. No stack-specific type may
+escape the adapter.
 Repeated cleanup stress passes 32 stalled-handshake cancellations and 16
 suspended keyboard-interactive cancellations in one process. Physical
 Wi-Fi/cellular transition behavior remains open.
@@ -1754,8 +1756,8 @@ explicit chained MFA with its `-19` return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy,
-representative-server/RSA-SHA-2 and resolver/adverse-network cancellation
-coverage, bundled-font licensing, and device-tier memory gates remain open.
+representative-server and resolver/adverse-network cancellation coverage,
+bundled-font licensing, and device-tier memory gates remain open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one; Keychain-backed loading remains open. libssh2 is a candidate,
 not the selected SSH path.
