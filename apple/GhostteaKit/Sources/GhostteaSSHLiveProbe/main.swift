@@ -15,6 +15,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case corruptFloodByte(UInt8)
   case floodSize(expected: Int, actual: Int)
   case stalledMemoryExceeded(limitBytes: Int, actualBytes: Int)
+  case stalledReadPrefetched(before: UInt64, after: UInt64)
+  case deliveredMetricTooSmall(expectedMinimum: UInt64, actual: UInt64)
   case readCompletedInsteadOfCancelling
   case unexpectedCancellationError(String)
   case cancellationTooSlow(Duration)
@@ -48,6 +50,11 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "flood payload size mismatch: expected \(expected), received \(actual)"
     case .stalledMemoryExceeded(let limitBytes, let actualBytes):
       return "stalled SSH process exceeded \(limitBytes) bytes RSS: \(actualBytes)"
+    case .stalledReadPrefetched(let before, let after):
+      return "stalled SSH connection prefetched bytes into Swift: before=\(before) after=\(after)"
+    case .deliveredMetricTooSmall(let expectedMinimum, let actual):
+      return
+        "SSH delivered-byte metric is too small: expected at least \(expectedMinimum), received \(actual)"
     case .readCompletedInsteadOfCancelling:
       return "blocked SSH read completed instead of observing task cancellation"
     case .unexpectedCancellationError(let error):
@@ -308,7 +315,7 @@ private func runProbe() async throws {
         connection: connection,
         reader: &reader
       )
-      try await verifyStalledFlood(connection: connection, reader: &reader)
+      try await verifyStalledFlood(connection: candidateConnection, reader: &reader)
       try await verifyReadCancellation(connection: connection, reader: &reader)
     }
 
@@ -574,12 +581,13 @@ private func verifyTerminalSize(
 }
 
 private func verifyStalledFlood(
-  connection: any TerminalConnection,
+  connection: SSHCandidateConnection,
   reader: inout ProbeReader
 ) async throws {
   let expectedBytes = 32 * 1_024 * 1_024
   let beginMarker = "GHOSTTEA_FLOOD_BEGIN"
   let endMarker = "GHOSTTEA_FLOOD_END"
+  let before = try await connection.flowControlMetrics()
   try await connection.write(
     Data(
       "printf 'GHOSTTEA_FLOOD_%s' BEGIN; head -c \(expectedBytes) /dev/zero; printf 'GHOSTTEA_FLOOD_%s' END\n"
@@ -588,6 +596,16 @@ private func verifyStalledFlood(
   )
 
   try await Task.sleep(for: .milliseconds(750))
+  let stalled = try await connection.flowControlMetrics()
+  guard
+    stalled.standardOutputBytesDelivered == before.standardOutputBytesDelivered,
+    stalled.standardErrorBytesDelivered == before.standardErrorBytesDelivered
+  else {
+    throw LiveProbeError.stalledReadPrefetched(
+      before: before.standardOutputBytesDelivered + before.standardErrorBytesDelivered,
+      after: stalled.standardOutputBytesDelivered + stalled.standardErrorBytesDelivered
+    )
+  }
   let memoryLimitBytes = 64 * 1_024 * 1_024
   let stalledResidentBytes = maximumResidentBytes()
   if let stalledResidentBytes, stalledResidentBytes > memoryLimitBytes {
@@ -601,9 +619,19 @@ private func verifyStalledFlood(
   guard receivedBytes == expectedBytes else {
     throw LiveProbeError.floodSize(expected: expectedBytes, actual: receivedBytes)
   }
+  let drained = try await connection.flowControlMetrics()
+  let deliveredDuringFlood =
+    drained.standardOutputBytesDelivered
+    - before.standardOutputBytesDelivered
+  guard deliveredDuringFlood >= UInt64(expectedBytes) else {
+    throw LiveProbeError.deliveredMetricTooSmall(
+      expectedMinimum: UInt64(expectedBytes),
+      actual: deliveredDuringFlood
+    )
+  }
   let memoryDescription = stalledResidentBytes.map { ", stalled RSS \($0) bytes" } ?? ""
   print(
-    "Swift stalled-reader flood resumed losslessly: \(receivedBytes) bytes\(memoryDescription)"
+    "Swift stalled-reader flood resumed losslessly: \(receivedBytes) bytes\(memoryDescription), window \(stalled.receiveWindowBytes)/\(stalled.initialReceiveWindowBytes), socket waits \(drained.socketWaitCalls)"
   )
 }
 

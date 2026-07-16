@@ -152,6 +152,11 @@ int ghosttea_ssh_session_exit_signal(
     size_t buffer_length
 );
 int ghosttea_ssh_session_is_eof(const ghosttea_ssh_session_t *session);
+unsigned long ghosttea_ssh_session_receive_window(
+    const ghosttea_ssh_session_t *session,
+    unsigned long *read_available,
+    unsigned long *initial_window
+);
 int ghosttea_ssh_session_last_error(
     ghosttea_ssh_session_t *session,
     char *buffer,

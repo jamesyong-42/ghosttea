@@ -51,3 +51,7 @@ The adapter uses independent TCP-connect and SSH-handshake deadlines. Its local
 banner-blackhole fixture also proves that a stalled handshake observes both its
 deadline and Swift task cancellation; synchronous DNS cancellation remains a
 documented hardening item.
+The candidate connection also exposes diagnostic flow-control metrics. The
+live flood gate requires its delivered-byte counters to remain unchanged while
+terminal demand is paused, then verifies exact delivery while reporting the
+libssh2 receive window and socket-wait count.

@@ -31,26 +31,26 @@ handshake cancellation, two algorithm profiles, and the stalled-reader flood.
 
 ## Live-server matrix
 
-| Area           | Probe                                         | v1 expectation            | libssh2 compile evidence                             | Remaining gate                                                   |
-| -------------- | --------------------------------------------- | ------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------- |
-| Authentication | Password                                      | Required                  | Nonblocking Swift adapter passes                     | Physical-device fixture                                          |
-| Authentication | Ed25519 public key                            | Required                  | Nonblocking unencrypted and encrypted keys pass      | Add Keychain-backed loading                                      |
-| Authentication | ECDSA user key                                | Product-sample dependent  | OpenSSL backend present; host-key profile passes     | Decide from target-server/user-key sample                        |
-| Authentication | Encrypted private-key loading                 | Required                  | Correct passphrase passes; incorrect one is rejected | Define Keychain-backed loading and secret-lifetime policy        |
-| Authentication | Keyboard-interactive, one prompt              | Required for common 2FA   | Async responder preserves prompt text and echo       | Wire UIKit/Keychain policy                                       |
-| Authentication | Keyboard-interactive, multiple prompts        | Required for common 2FA   | Zero-prompt and mixed echo/no-echo rounds pass       | Add a nonempty name/instruction server fixture                   |
-| Authentication | Partial success followed by second factor     | Required for common 2FA   | Explicit policy and async responder pass; key `-19`  | Retain wrong-key regression; wire product policy                 |
-| Host identity  | Known-hosts match, unknown host, changed host | Required                  | Strict match and both rejection controls pass        | Implement explicit user decision and persistent update policy    |
-| Host keys      | Ed25519 and ECDSA                             | Required                  | Ed25519 and ECDSA P-256 negotiated fixtures pass     | Repeat against launch server sample                              |
-| Host keys      | RSA/SHA-2                                     | Scenario-dependent        | RSA-3072 host negotiated as `rsa-sha2-512`           | Decide required scope from target-server sample                  |
-| Key exchange   | Curve25519 SHA-256                            | Required                  | `curve25519-sha256` negotiated and locked            | Repeat against launch server sample                              |
-| Encryption     | AES-GCM and ChaCha20-Poly1305                 | Required                  | AES-256-GCM and ChaCha20-Poly1305 profiles pass      | Repeat against launch server sample                              |
-| Session        | PTY allocation and shell start                | Required                  | Nonblocking adapter fixture passes                   | Physical-device fixture                                          |
-| Session        | Initial and repeated window resize            | Required                  | 41x132 allocation and 50x140 resize pass             | Physical-device fixture                                          |
-| Session        | Exit status/signal, EOF, half-close           | Required                  | Exit 37, `SIGTERM`, half-close, and close pass       | Repeat on physical device                                        |
-| Cancellation   | Cancel auth/connect/handshake/read            | Required                  | One-shot plus 16 auth and 32 handshake cycles pass   | Add adverse-network transition and physical-device tests         |
-| Networking     | Wi-Fi/cellular transition and reconnect UX    | Required product behavior | Adapter/orchestrator responsibility                  | Pass physical-device test                                        |
-| Flow control   | Sustained output with bounded app queues      | Required                  | 32 MiB stalled flood drains exactly at ~10 MB RSS    | Instrument channel windows and repeat on low-end physical device |
+| Area           | Probe                                         | v1 expectation            | libssh2 compile evidence                                                               | Remaining gate                                                |
+| -------------- | --------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Authentication | Password                                      | Required                  | Nonblocking Swift adapter passes                                                       | Physical-device fixture                                       |
+| Authentication | Ed25519 public key                            | Required                  | Nonblocking unencrypted and encrypted keys pass                                        | Add Keychain-backed loading                                   |
+| Authentication | ECDSA user key                                | Product-sample dependent  | OpenSSL backend present; host-key profile passes                                       | Decide from target-server/user-key sample                     |
+| Authentication | Encrypted private-key loading                 | Required                  | Correct passphrase passes; incorrect one is rejected                                   | Define Keychain-backed loading and secret-lifetime policy     |
+| Authentication | Keyboard-interactive, one prompt              | Required for common 2FA   | Async responder preserves prompt text and echo                                         | Wire UIKit/Keychain policy                                    |
+| Authentication | Keyboard-interactive, multiple prompts        | Required for common 2FA   | Zero-prompt and mixed echo/no-echo rounds pass                                         | Add a nonempty name/instruction server fixture                |
+| Authentication | Partial success followed by second factor     | Required for common 2FA   | Explicit policy and async responder pass; key `-19`                                    | Retain wrong-key regression; wire product policy              |
+| Host identity  | Known-hosts match, unknown host, changed host | Required                  | Strict match and both rejection controls pass                                          | Implement explicit user decision and persistent update policy |
+| Host keys      | Ed25519 and ECDSA                             | Required                  | Ed25519 and ECDSA P-256 negotiated fixtures pass                                       | Repeat against launch server sample                           |
+| Host keys      | RSA/SHA-2                                     | Scenario-dependent        | RSA-3072 host negotiated as `rsa-sha2-512`                                             | Decide required scope from target-server sample               |
+| Key exchange   | Curve25519 SHA-256                            | Required                  | `curve25519-sha256` negotiated and locked                                              | Repeat against launch server sample                           |
+| Encryption     | AES-GCM and ChaCha20-Poly1305                 | Required                  | AES-256-GCM and ChaCha20-Poly1305 profiles pass                                        | Repeat against launch server sample                           |
+| Session        | PTY allocation and shell start                | Required                  | Nonblocking adapter fixture passes                                                     | Physical-device fixture                                       |
+| Session        | Initial and repeated window resize            | Required                  | 41x132 allocation and 50x140 resize pass                                               | Physical-device fixture                                       |
+| Session        | Exit status/signal, EOF, half-close           | Required                  | Exit 37, `SIGTERM`, half-close, and close pass                                         | Repeat on physical device                                     |
+| Cancellation   | Cancel auth/connect/handshake/read            | Required                  | One-shot plus 16 auth and 32 handshake cycles pass                                     | Add adverse-network transition and physical-device tests      |
+| Networking     | Wi-Fi/cellular transition and reconnect UX    | Required product behavior | Adapter/orchestrator responsibility                                                    | Pass physical-device test                                     |
+| Flow control   | Sustained output with bounded app queues      | Required                  | No delivery while paused; 32 MiB drains exactly at ~10 MB RSS; receive window captured | Add raw socket metrics and repeat on low-end physical device  |
 
 ## Decision rule
 
@@ -63,6 +63,11 @@ The flood fixture must issue network/channel demand only when the terminal
 actor has capacity and verify that memory remains bounded while the server
 emits sustained output. A `yes` or large-file flood must pause delivery through
 the SSH flow-control mechanism rather than disconnecting or dropping bytes.
+The candidate gate snapshots its delivery counters and receive-window state
+before draining: the counters must remain unchanged throughout the pause, then
+advance by at least the byte-exact fixture payload. This rules out an unbounded
+or hidden Swift-side receive queue. Physical-device measurements must add raw
+socket-byte and whole-app footprint evidence.
 
 See [ssh-candidate-decision.md](ssh-candidate-decision.md) for pins, artifact
 evidence, and the next implementation boundary.

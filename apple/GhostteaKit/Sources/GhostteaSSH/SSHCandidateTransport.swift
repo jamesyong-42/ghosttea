@@ -294,6 +294,9 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
   private let gate = AsyncOperationGate()
   private var isConnected = true
   private var exitStatus: TerminalExitStatus?
+  private var standardOutputBytesDelivered: UInt64 = 0
+  private var standardErrorBytesDelivered: UInt64 = 0
+  private var bytesWritten: UInt64 = 0
 
   fileprivate init(
     driver: SSHDriver,
@@ -335,6 +338,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
         }
         if status > 0 {
           offset += status
+          bytesWritten &+= UInt64(status)
         } else if status == Int(GHOSTTEA_SSH_EAGAIN) {
           try await driver.waitUntilReady()
         } else {
@@ -481,6 +485,34 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     }
   }
 
+  public func flowControlMetrics() async throws -> SSHCandidateFlowControlMetrics {
+    await gate.acquire()
+    do {
+      try requireConnected()
+      var channelBytesAvailable: UInt = 0
+      var initialReceiveWindowBytes: UInt = 0
+      let receiveWindowBytes = ghosttea_ssh_session_receive_window(
+        driver.requiredHandle,
+        &channelBytesAvailable,
+        &initialReceiveWindowBytes
+      )
+      let result = SSHCandidateFlowControlMetrics(
+        standardOutputBytesDelivered: standardOutputBytesDelivered,
+        standardErrorBytesDelivered: standardErrorBytesDelivered,
+        bytesWritten: bytesWritten,
+        socketWaitCalls: driver.socketWaitCalls,
+        receiveWindowBytes: UInt64(receiveWindowBytes),
+        channelBytesAvailable: UInt64(channelBytesAvailable),
+        initialReceiveWindowBytes: UInt64(initialReceiveWindowBytes)
+      )
+      await gate.release()
+      return result
+    } catch {
+      await gate.release()
+      throw error
+    }
+  }
+
   public func disconnect() async {
     driver.requestShutdown()
     await gate.acquire()
@@ -516,6 +548,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
       }
       if status > 0 {
         data.removeSubrange(Int(status)..<data.count)
+        recordDeliveredBytes(Int(status), stream: stream)
         return data
       }
       if status == 0,
@@ -550,6 +583,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     }
     if status > 0 {
       data.removeSubrange(Int(status)..<data.count)
+      recordDeliveredBytes(Int(status), stream: stream)
       return data
     }
     if status == 0 || status == GHOSTTEA_SSH_EAGAIN {
@@ -564,6 +598,15 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
   private func requireConnected() throws {
     guard isConnected else {
       throw TerminalTransportError.disconnected
+    }
+  }
+
+  private func recordDeliveredBytes(_ count: Int, stream: SSHReadStream) {
+    switch stream {
+    case .standardOutput:
+      standardOutputBytesDelivered &+= UInt64(count)
+    case .standardError:
+      standardErrorBytesDelivered &+= UInt64(count)
     }
   }
 }
@@ -632,6 +675,11 @@ private final class SSHDriver: @unchecked Sendable {
 
   private let stateLock = NSLock()
   private var handle: OpaquePointer?
+  private var _socketWaitCalls: UInt64 = 0
+
+  var socketWaitCalls: UInt64 {
+    stateLock.withLock { _socketWaitCalls }
+  }
 
   var requiredHandle: OpaquePointer {
     stateLock.withLock {
@@ -751,6 +799,9 @@ private final class SSHDriver: @unchecked Sendable {
 
   private func waitOnce() async throws -> Bool {
     try Task.checkCancellation()
+    stateLock.withLock {
+      _socketWaitCalls &+= 1
+    }
     let status = await withCheckedContinuation { continuation in
       Self.socketQueue.async { [self] in
         continuation.resume(

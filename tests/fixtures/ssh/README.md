@@ -54,7 +54,9 @@ The automated matrix verifies:
   rather than conflated with exit code zero;
 - initial PTY dimensions and a later window-change request;
 - a 32 MiB output flood that is stalled for 750 ms, remains below a 64 MiB
-  client RSS gate, and then drains byte-for-byte without disconnecting.
+  client RSS gate, delivers no bytes into Swift while demand is paused, and
+  then drains byte-for-byte without disconnecting. The Swift probe snapshots
+  delivery counters and libssh2's receive window and reports socket waits.
 - a peer that accepts TCP but never sends an SSH banner, proving the handshake
   deadline and task-cancellation paths without relying on external networks.
 - 32 consecutive stalled-handshake cancellations and 16 consecutive suspended
@@ -75,6 +77,7 @@ nonblocking adapter through the shared `TerminalTransport` protocol. It repeats
 the authentication matrix, verifies initial and resized PTY dimensions,
 deliberately stops reading during the 32 MiB flood, drains it byte-for-byte, and
 rejects the wrong-key control. It also gates stalled-process RSS below 64 MiB,
+requires delivered-byte counters to remain unchanged during the stall,
 requires a blocked read to observe cancellation within one second, and verifies
 that strict host checking rejects both unknown and changed keys. Negotiated
 methods are asserted as Curve25519, Ed25519, ChaCha20-Poly1305, and

@@ -53,6 +53,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - generated encrypted OpenSSH Ed25519 private-key authentication, plus an
   incorrect-passphrase rejection control. Fixture keys remain in ignored build
   state.
+- candidate-only flow-control metrics for delivered and written bytes, socket
+  waits, and libssh2 receive-window state. During the 750 ms flood pause the
+  delivered-byte counters remain unchanged; the later 32 MiB drain is exact.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -86,8 +89,9 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. Remaining work is UIKit/Keychain credential
    policy, user decisions for unknown/changed hosts, representative-server
    sampling, adverse-network transitions, resolver and reconnect
-   orchestration, channel-window instrumentation, and physical-device
-   execution. The public-key partial step remains locked as `-19`, so only an
+   orchestration, raw socket and device-footprint instrumentation, and
+   physical-device execution. The public-key partial step remains locked as
+   `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.

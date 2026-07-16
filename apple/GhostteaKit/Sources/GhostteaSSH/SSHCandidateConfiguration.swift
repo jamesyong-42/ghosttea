@@ -142,3 +142,13 @@ public enum SSHCandidateOutputChunk: Equatable, Sendable {
   case standardOutput(Data)
   case standardError(Data)
 }
+
+public struct SSHCandidateFlowControlMetrics: Equatable, Sendable {
+  public let standardOutputBytesDelivered: UInt64
+  public let standardErrorBytesDelivered: UInt64
+  public let bytesWritten: UInt64
+  public let socketWaitCalls: UInt64
+  public let receiveWindowBytes: UInt64
+  public let channelBytesAvailable: UInt64
+  public let initialReceiveWindowBytes: UInt64
+}

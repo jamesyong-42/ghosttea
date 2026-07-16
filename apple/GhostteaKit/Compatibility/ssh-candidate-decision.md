@@ -124,6 +124,18 @@ OpenSSH Ed25519 private key and rejects the same key under an incorrect
 passphrase. This proves the candidate crypto path, not the production secret
 boundary; Keychain loading and passphrase lifetime remain open.
 
+The candidate exposes diagnostic flow-control counters without changing the
+host-neutral transport protocol: bytes delivered to Swift per channel, bytes
+written, socket-wait calls, and libssh2's current/initial receive-window state.
+During the 750 ms flood pause, the delivered-byte counters do not move, proving
+that the adapter does not prefetch channel data into a hidden Swift queue. The
+subsequent drain remains byte-exact. One representative run reported a
+2,096,949-byte receive window from an initial 2,097,152 bytes and 1,135 socket
+waits after draining. Because the adapter performs no channel read while demand
+is paused, this observation shows backpressure at the socket/SSH-processing
+boundary; it does not claim that libssh2 consumed packets and advertised a
+smaller remote channel window during the pause.
+
 ## Reproduce
 
 From the repository root on Apple Silicon macOS:
@@ -158,11 +170,13 @@ poll wait is suspended. The generic terminal controller sees only:
 
 No libssh2 type crosses that boundary. Inbound reads must stop when the
 terminal actor has no capacity, and the live flood fixture must demonstrate
-that this propagates to the SSH channel window rather than accumulating in an
-unbounded Swift stream. The live adapter calls neither socket nor channel read
-without a `read(maxBytes:)` request; its stalled-reader fixture remains bounded
-and lossless. `ReplayTransport` and `OrderedTerminalWriter` separately test the
-host-neutral demand and queue semantics.
+that backpressure reaches the transport rather than accumulating in an
+unbounded Swift stream. Depending on where processing pauses, SSH applies this
+by withholding channel-window updates or by stopping socket consumption so TCP
+backpressure reaches the peer. The live adapter calls neither socket nor
+channel read without a `read(maxBytes:)` request; its stalled-reader fixture
+remains bounded and lossless. `ReplayTransport` and `OrderedTerminalWriter`
+separately test the host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
@@ -180,9 +194,10 @@ host-neutral demand and queue semantics.
    deterministic handshake timeout/cancellation, and repeated auth/handshake
    cancellation stress already pass; the nonblocking TCP connector still needs
    adverse-network and physical-device evidence.
-5. Instrument socket bytes, SSH-channel windows, adapter queues, and physical
-   footprint. The macOS adapter flood is already byte-exact and below its
-   whole-process RSS gate.
+5. Add raw socket-byte and physical-footprint instrumentation on device. The
+   candidate already exposes delivered/written byte counts, socket-wait counts,
+   and SSH receive-window state; the macOS flood proves no Swift-side prefetch,
+   remains byte-exact, and stays below its whole-process RSS gate.
 6. Run the package and network fixture on a physical low-end supported iOS
    device.
 
