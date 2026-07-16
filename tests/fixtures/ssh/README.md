@@ -24,6 +24,7 @@ From the repository root:
 
 ```sh
 npm run test:ssh:fixture
+npm run test:ssh:fixture:candidate
 ```
 
 Use `npm run fixture:ssh:up` to leave the endpoints running for an adapter
@@ -43,6 +44,12 @@ The automated matrix verifies:
 - a 32 MiB output flood that is stalled for 750 ms, remains below a 64 MiB
   client RSS gate, and then drains byte-for-byte without disconnecting.
 
-The current harness proves the server scenarios with the system OpenSSH
-client. It does not count as libssh2 compatibility evidence until the
-`GhostteaSSH` candidate adapter runs the same cases.
+The first command proves all server/session scenarios with the system OpenSSH
+client. The candidate command compiles a test-only C client against the packaged
+libssh2 XCFramework and proves password, public key, two-round
+keyboard-interactive, strict known-host matching, command execution, and
+explicit chained authentication. The accepted partial key step currently
+returns `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`); the next method succeeds,
+while a wrong-key control remains rejected. PTY resize and flow control still
+need to move into the nonblocking Swift adapter before they count as candidate
+evidence.

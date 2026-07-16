@@ -42,5 +42,5 @@ No package source should import `GhosttyVt` outside the `GhosttyVtProof` target.
 
 Likewise, only `GhostteaSSHProbe` may import `LibSSH2Candidate`. It is a compile
 and lifecycle proof, not a selected production transport. The current
-candidate decision and known chained-MFA gap are recorded in
+candidate decision and known chained-MFA return-state ambiguity are recorded in
 [`Compatibility/ssh-candidate-decision.md`](Compatibility/ssh-candidate-decision.md).

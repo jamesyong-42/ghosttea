@@ -7,7 +7,10 @@ const fixtureRoot = join(root, "tests/fixtures/ssh");
 const stateRoot = join(root, "native/build/ssh-fixture");
 const privateKey = join(stateRoot, "client_ed25519");
 const publicKey = `${privateKey}.pub`;
+const wrongPrivateKey = join(stateRoot, "wrong_client_ed25519");
+const wrongPublicKey = `${wrongPrivateKey}.pub`;
 const knownHosts = join(stateRoot, "known_hosts");
+const candidateProbe = join(stateRoot, "libssh2-candidate-probe");
 const composeFile = join(fixtureRoot, "docker-compose.yml");
 const projectName = "ghosttea-ssh-fixture";
 const command = process.argv[2] ?? "test";
@@ -52,11 +55,17 @@ function compose(args, options = {}) {
 
 function ensureClientKey() {
   mkdirSync(stateRoot, { recursive: true });
-  if (!existsSync(privateKey) || !existsSync(publicKey)) {
-    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "ghosttea-ssh-fixture-only", "-f", privateKey]);
+  for (const [keyPath, comment] of [
+    [privateKey, "ghosttea-ssh-fixture-only"],
+    [wrongPrivateKey, "ghosttea-ssh-fixture-wrong-key"],
+  ]) {
+    if (existsSync(keyPath) && existsSync(`${keyPath}.pub`)) continue;
+    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", keyPath]);
   }
   chmodSync(privateKey, 0o600);
   chmodSync(publicKey, 0o644);
+  chmodSync(wrongPrivateKey, 0o600);
+  chmodSync(wrongPublicKey, 0o644);
 }
 
 function pause(milliseconds) {
@@ -249,7 +258,56 @@ async function test() {
   }
 }
 
+function runCandidateMode(mode, port, candidatePublicKey = publicKey, candidatePrivateKey = privateKey) {
+  return execute(candidateProbe, [mode, "127.0.0.1", port, knownHosts, candidatePublicKey, candidatePrivateKey]);
+}
+
+function candidate() {
+  run("node", [join(root, "scripts/build-ssh-fixture-probe.mjs")], { inherit: true });
+  up();
+  try {
+    for (const [mode, port] of [
+      ["password", ports.password],
+      ["publickey", ports.publicKey],
+      ["keyboard", ports.keyboard],
+    ]) {
+      const result = runCandidateMode(mode, port);
+      if (result.status !== 0) {
+        throw new Error(
+          `libssh2 ${mode} probe failed: status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`,
+        );
+      }
+      process.stdout.write(result.stdout);
+    }
+
+    const partial = runCandidateMode("partial", ports.partial);
+    if (partial.status !== 0) {
+      throw new Error(
+        `libssh2 explicit partial-success sequence failed: status=${partial.status} stderr=${partial.stderr}`,
+      );
+    }
+    if (!partial.stderr.includes("public-key step: status=-19 authenticated=0")) {
+      throw new Error(`libssh2 partial-success return behavior changed: ${partial.stderr}`);
+    }
+    process.stdout.write(partial.stdout);
+    process.stderr.write(partial.stderr);
+
+    const wrongKey = runCandidateMode("partial", ports.partial, wrongPublicKey, wrongPrivateKey);
+    if (wrongKey.status !== 20) {
+      throw new Error(
+        `libssh2 partial-success fixture accepted or mishandled a wrong key: status=${wrongKey.status} stderr=${wrongKey.stderr}`,
+      );
+    }
+    console.log(
+      "libssh2 chained authentication passed with explicit sequencing and rejected the wrong-key control; the public-key step remains ambiguously reported as -19.",
+    );
+  } finally {
+    if (!keepRunning) down();
+  }
+}
+
 if (command === "up") up();
 else if (command === "down") down();
 else if (command === "test") await test();
+else if (command === "candidate") candidate();
 else throw new Error(`Unknown SSH fixture command: ${command}`);

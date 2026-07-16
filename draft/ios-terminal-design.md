@@ -1291,10 +1291,12 @@ Phase 0 screening found that SwiftNIO SSH 0.14.1 and Citadel 0.12.1 do not
 expose keyboard-interactive client authentication. A pinned libssh2 1.11.1 and
 OpenSSL 3.5.6 candidate now builds and imports for all required Apple slices,
 including the multi-prompt keyboard-interactive API. It is not selected for
-production: libssh2 1.11.1 lacks authentication partial-success handling for
-flows such as public key followed by OTP. The live compatibility matrix must
-decide whether to fund that work, select another stack, or explicitly narrow
-server compatibility. No stack-specific type may escape the adapter.
+production. The pinned authentication fixture passes password, Ed25519 public
+key, two-round keyboard-interactive, and public key followed by
+keyboard-interactive. However, the accepted partial key step returns `-19`
+rather than a distinct partial-success result, so the adapter needs explicit,
+policy-safe method sequencing and negative controls. No stack-specific type may
+escape the adapter.
 
 Secrets and private keys belong in Keychain-backed storage and must never be
 serialized into workspace restoration, logs, crash reports, or terminal
@@ -1712,9 +1714,11 @@ Deliverables:
 
 Current progress: the VT build/fixture/host-memory proof, host-neutral
 transport package, and pinned three-slice libssh2/OpenSSL compile probe are
-implemented. Physical-device VT/network testing, live SSH fixtures,
-partial-success resolution, bundled-font licensing, and device-tier memory
-gates remain open. libssh2 is a candidate, not the selected SSH path.
+implemented. The pinned libssh2 authentication fixture also passes, including
+explicit chained MFA with its `-19` return behavior locked under test.
+Physical-device VT/network testing, the nonblocking SSH session/flow-control
+adapter, bundled-font licensing, and device-tier memory gates remain open.
+libssh2 is a candidate, not the selected SSH path.
 
 Exit gate:
 

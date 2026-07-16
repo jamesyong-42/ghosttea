@@ -186,10 +186,13 @@ library, allocate/free a session, query its version, and import the
 multi-prompt keyboard-interactive function. Every archive slice is also
 validated for that function symbol.
 
-This does not select libssh2. Its released authentication state machine does
-not handle partial success followed by another method, so public-key-plus-OTP
-servers remain a known blocker. The candidate advances only to the live server
-matrix documented in
+This does not select libssh2. The pinned live fixture passes password, Ed25519
+public key, two-round keyboard-interactive, and explicit public-key followed by
+keyboard-interactive. In the chained case libssh2 reports the accepted key step
+as `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`) rather than a distinct partial
+result; the subsequent keyboard-interactive call succeeds. A wrong-key control
+remains rejected. The candidate therefore advances to a policy-safe,
+nonblocking adapter spike documented in
 `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 ## 8. Recommended proof order

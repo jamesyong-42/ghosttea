@@ -1,7 +1,7 @@
 # Phase 0 SSH candidate decision
 
-**Status:** libssh2 advances to a live-fixture spike. No SSH stack is selected
-for production yet.
+**Status:** libssh2 passes the Phase 0 authentication fixture and advances to a
+nonblocking adapter spike. No SSH stack is selected for production yet.
 
 **Recorded:** 2026-07-16
 
@@ -14,12 +14,15 @@ multi-prompt keyboard-interactive callback and a caller-driven nonblocking API,
 and this repository now proves it can be packaged and imported on the supported
 Apple targets.
 
-libssh2 is not yet the production choice. Version 1.11.1 does not handle the
-SSH authentication partial-success state needed for flows such as public key
-followed by OTP. Upstream work for that capability is still unmerged. The next
-gate is a live server matrix; if launch servers require that flow, we must fund
-and maintain the missing work, choose a different stack, or explicitly narrow
-compatibility.
+libssh2 is not yet the production choice. Against the pinned OpenSSH
+`publickey,keyboard-interactive` endpoint, the correct public key returns
+`LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`) with the session still
+unauthenticated; explicitly invoking keyboard-interactive next succeeds with
+two prompts and completes authentication. A wrong-key control does not
+authenticate. Thus chained MFA works, but libssh2 1.11.1 does not expose a
+distinct partial-success result. The adapter must sequence only methods allowed
+by product/server policy and lock this ambiguous return behavior under tests.
+Upstream work to represent partial success explicitly remains relevant.
 
 ## Reproducible evidence
 
@@ -56,8 +59,13 @@ endpoints: password, public key, two-prompt keyboard-interactive, and public key
 followed by keyboard-interactive. Its system-OpenSSH baseline proves the
 scenarios are configured correctly. It also verifies exact stdout/stderr and
 exit status, an initial and repeated PTY size, and a 32 MiB stalled-reader flood
-that resumes without byte loss. Those results do not count as libssh2 evidence;
-the candidate adapter must execute the same matrix.
+that resumes without byte loss. A test-only C probe linked against the packaged
+XCFramework now passes password, Ed25519 public key, two-round
+keyboard-interactive, strict known-host matching, command execution, and the
+explicit chained-authentication sequence. It also locks the current `-19`
+partial-step behavior and rejects a wrong-key control. The PTY and flood results
+still belong only to the system-OpenSSH baseline until the nonblocking adapter
+executes them.
 
 ## Reproduce
 
@@ -69,6 +77,7 @@ npm run build:ssh:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
 npm run test:ssh:fixture
+npm run test:ssh:fixture:candidate
 ```
 
 Generated source checkouts, build directories, and XCFrameworks are ignored.
@@ -96,8 +105,8 @@ the real network adapter remains gated.
 
 ## Live-fixture work required before selection
 
-1. Run the libssh2 candidate against the implemented password, public-key,
-   two-prompt keyboard-interactive, and partial-success-chain fixtures.
+1. Move the proven authentication flows from the blocking C probe into a
+   nonblocking Swift adapter without weakening chained-method policy.
 2. Test known, unknown, and changed host keys with an explicit user decision
    boundary.
 3. Record negotiated host-key, key-exchange, cipher, and MAC algorithms for the

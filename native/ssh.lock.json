@@ -17,6 +17,6 @@
   },
   "candidateStatus": {
     "purpose": "Phase 0 compile and compatibility probe; not a production dependency",
-    "knownGap": "Combined public-key plus second-factor partial-success handling is not in libssh2 1.11.1"
+    "knownGap": "A successful public-key partial step is reported as LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED (-19); explicit second-method sequencing works but must be policy-safe"
   }
 }

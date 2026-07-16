@@ -19,6 +19,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a pinned OpenSSH reference fixture covering password, public key,
   two-prompt keyboard-interactive, chained partial success, exit streams/status,
   PTY resize, and a stalled-reader output flood.
+- a libssh2 candidate fixture probe that passes password, Ed25519 public key,
+  two-round keyboard-interactive, strict host-key matching, command execution,
+  and explicit public-key-plus-keyboard-interactive sequencing, with a
+  wrong-key negative control.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -45,13 +49,13 @@ UIKit, transport state, and the rest of the application.
 ## Remaining gates
 
 1. Run the proof on a physical iOS device once an app harness and signing team are available.
-2. Run the libssh2 candidate against the implemented OpenSSH fixture. The
-   system-OpenSSH baseline passes keyboard-interactive, partial-success chaining,
-   exact exit behavior, PTY resize, and a 32 MiB stalled-reader flood. This is
-   fixture validation, not libssh2 evidence. Host-key policy, cancellation, and
-   SSH-channel window instrumentation also remain open. libssh2 is not selected;
-   its missing partial-success handling remains a blocker for
-   public-key-plus-MFA servers.
+2. Replace the blocking libssh2 probe with a nonblocking Swift adapter and run
+   the remaining session matrix. Authentication now passes, including explicit
+   public-key-plus-keyboard-interactive sequencing and a wrong-key control. The
+   public-key partial step is reported as `-19` rather than a distinct partial
+   result, so production sequencing needs a policy-safe state machine and
+   regression tests. Unknown/changed-host policy, PTY/resize, cancellation,
+   SSH-channel window instrumentation, and adapter flood behavior remain open.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.
