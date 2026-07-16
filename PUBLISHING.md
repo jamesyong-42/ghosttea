@@ -80,12 +80,8 @@ produce an attested workflow artifact.
 Use npm provenance from trusted CI. Do not publish from a developer machine or
 publish the private demo workspaces.
 
-For the first npm release, add a granular `NPM_TOKEN` repository secret with
-permission to publish public packages in the `@vibecook` scope, then dispatch
-`publish-npm.yml` at the version tag. The workflow verifies the tag, builds and
-tests all three packages, and publishes them with provenance in dependency
-order.
-
-After the package names exist, configure `publish-npm.yml` as the trusted
-GitHub publisher for each package, remove `NPM_TOKEN`, and keep subsequent
-publishes token-free through npm's OIDC exchange.
+All npm packages configure `publish-npm.yml` as their trusted GitHub publisher.
+The workflow contains no registry token: npm exchanges GitHub's short-lived
+OIDC identity for publish access and generates provenance automatically. It
+verifies the version tag, builds and tests all three packages, and publishes
+them in dependency order.

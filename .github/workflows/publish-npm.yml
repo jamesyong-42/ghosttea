@@ -35,15 +35,9 @@ jobs:
 
       - name: Publish protocol
         run: npm publish --workspace @vibecook/ghosttea-protocol --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish frame transport
         run: npm publish --workspace @vibecook/ghosttea-frame --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish client
         run: npm publish --workspace @vibecook/ghosttea --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
