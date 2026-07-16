@@ -1,3 +1,4 @@
+import Foundation
 import GhostteaTransport
 
 public struct SSHKeyboardInteractivePrompt: Equatable, Sendable {
@@ -50,6 +51,11 @@ public enum SSHCandidateAuthentication: Sendable {
   )
 }
 
+public enum SSHCandidateSession: Equatable, Sendable {
+  case shell
+  case command(String, allocatePTY: Bool)
+}
+
 /// Phase 0 configuration for the libssh2 transport candidate.
 ///
 /// Keyboard-interactive prompts cross an asynchronous responder boundary. The
@@ -60,6 +66,7 @@ public struct SSHCandidateConfiguration: Sendable {
   public let port: Int
   public let knownHostsPath: String
   public let authentication: SSHCandidateAuthentication
+  public let session: SSHCandidateSession
   public let terminalType: String
   public let initialSize: TerminalSize
 
@@ -68,6 +75,7 @@ public struct SSHCandidateConfiguration: Sendable {
     port: Int = 22,
     knownHostsPath: String,
     authentication: SSHCandidateAuthentication,
+    session: SSHCandidateSession = .shell,
     terminalType: String = "xterm-256color",
     columns: Int = 80,
     rows: Int = 24
@@ -82,6 +90,7 @@ public struct SSHCandidateConfiguration: Sendable {
     self.port = port
     self.knownHostsPath = knownHostsPath
     self.authentication = authentication
+    self.session = session
     self.terminalType = terminalType
     self.initialSize = try TerminalSize(columns: columns, rows: rows)
   }
@@ -106,4 +115,9 @@ public struct SSHCandidateNegotiatedAlgorithms: Equatable, Sendable {
   public let serverToClientCipher: String
   public let clientToServerMAC: String
   public let serverToClientMAC: String
+}
+
+public enum SSHCandidateOutputChunk: Equatable, Sendable {
+  case standardOutput(Data)
+  case standardError(Data)
 }

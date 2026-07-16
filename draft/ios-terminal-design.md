@@ -812,8 +812,10 @@ public protocol TerminalTransport: Sendable {
 public protocol TerminalConnection: Sendable {
     func read(maxBytes: Int) async throws -> ByteBuffer?
     func write(_ bytes: ByteBuffer) async throws
+    func finishInput() async throws
     func resize(columns: Int, rows: Int) async throws
     func interrupt() async throws
+    func waitForExit() async throws -> TerminalExitStatus
     func disconnect() async
 }
 ```
@@ -824,6 +826,10 @@ policies discard elements. Transport implementations preserve byte ordering
 and propagate read demand into their native flow-control primitive. They own
 connection, authentication, host verification, network recovery, and
 protocol-level resize messages. They do not parse terminal escape sequences.
+`finishInput()` is a protocol half-close: it sends input EOF while leaving
+remote output readable. After output is drained, `waitForExit()` completes the
+transport close handshake and returns the typed remote exit status. Abrupt
+`disconnect()` remains available for cancellation and network loss.
 
 Initial implementations:
 
@@ -1301,10 +1307,15 @@ byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
 async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. UIKit/Keychain policy, broader
-algorithm/key coverage, exit semantics, TCP/handshake cancellation, and device
-evidence remain open. The adapter records negotiated methods; the current
+algorithm/key coverage, exit-signal semantics, TCP/handshake cancellation, and
+device evidence remain open. The adapter records negotiated methods; the current
 fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256. No
 stack-specific type may escape the adapter.
+
+The same transport supports PTY shells and non-PTY commands. A live command
+fixture preserves separate stdout and stderr and exit status 37. A second
+fixture writes through `cat`, half-closes input, drains the exact output, and
+completes the channel EOF/close handshake with exit status 0.
 
 Secrets and private keys belong in Keychain-backed storage and must never be
 serialized into workspace restoration, logs, crash reports, or terminal
@@ -1727,9 +1738,9 @@ matrix, strict host-key controls, PTY/resize, a byte-exact 32 MiB stalled-reader
 fixture below its macOS RSS gate, and blocked-read cancellation, including
 explicit chained MFA with its `-19` return behavior locked under test.
 Physical-device VT/network testing, UIKit/Keychain authentication policy, SSH
-algorithm and exit/connection-cancellation coverage, bundled-font licensing,
-and device-tier memory gates remain open. libssh2 is a candidate, not the
-selected SSH path.
+algorithm, exit-signal, and connection-cancellation coverage, bundled-font
+licensing, and device-tier memory gates remain open. libssh2 is a candidate,
+not the selected SSH path.
 
 Exit gate:
 

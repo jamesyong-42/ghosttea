@@ -719,6 +719,13 @@ int ghosttea_ssh_session_start_shell(ghosttea_ssh_session_t *session) {
     return libssh2_channel_shell(session->channel);
 }
 
+int ghosttea_ssh_session_start_command(
+    ghosttea_ssh_session_t *session,
+    const char *command
+) {
+    return libssh2_channel_exec(session->channel, command);
+}
+
 int ghosttea_ssh_session_resize(
     ghosttea_ssh_session_t *session,
     int columns,
@@ -735,6 +742,18 @@ long ghosttea_ssh_session_read(
     return (long)libssh2_channel_read(session->channel, (char *)buffer, buffer_length);
 }
 
+long ghosttea_ssh_session_read_stderr(
+    ghosttea_ssh_session_t *session,
+    uint8_t *buffer,
+    size_t buffer_length
+) {
+    return (long)libssh2_channel_read_stderr(
+        session->channel,
+        (char *)buffer,
+        buffer_length
+    );
+}
+
 long ghosttea_ssh_session_write(
     ghosttea_ssh_session_t *session,
     const uint8_t *buffer,
@@ -749,6 +768,26 @@ long ghosttea_ssh_session_write(
 
 int ghosttea_ssh_session_signal_interrupt(ghosttea_ssh_session_t *session) {
     return libssh2_channel_signal(session->channel, "INT");
+}
+
+int ghosttea_ssh_session_send_eof(ghosttea_ssh_session_t *session) {
+    return libssh2_channel_send_eof(session->channel);
+}
+
+int ghosttea_ssh_session_wait_eof(ghosttea_ssh_session_t *session) {
+    return libssh2_channel_wait_eof(session->channel);
+}
+
+int ghosttea_ssh_session_close_channel(ghosttea_ssh_session_t *session) {
+    return libssh2_channel_close(session->channel);
+}
+
+int ghosttea_ssh_session_wait_closed(ghosttea_ssh_session_t *session) {
+    return libssh2_channel_wait_closed(session->channel);
+}
+
+int ghosttea_ssh_session_exit_status(const ghosttea_ssh_session_t *session) {
+    return libssh2_channel_get_exit_status(session->channel);
 }
 
 int ghosttea_ssh_session_is_eof(const ghosttea_ssh_session_t *session) {

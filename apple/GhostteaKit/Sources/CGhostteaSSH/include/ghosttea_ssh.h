@@ -107,6 +107,10 @@ int ghosttea_ssh_session_request_pty(
     int rows
 );
 int ghosttea_ssh_session_start_shell(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_start_command(
+    ghosttea_ssh_session_t *session,
+    const char *command
+);
 int ghosttea_ssh_session_resize(
     ghosttea_ssh_session_t *session,
     int columns,
@@ -117,12 +121,22 @@ long ghosttea_ssh_session_read(
     uint8_t *buffer,
     size_t buffer_length
 );
+long ghosttea_ssh_session_read_stderr(
+    ghosttea_ssh_session_t *session,
+    uint8_t *buffer,
+    size_t buffer_length
+);
 long ghosttea_ssh_session_write(
     ghosttea_ssh_session_t *session,
     const uint8_t *buffer,
     size_t buffer_length
 );
 int ghosttea_ssh_session_signal_interrupt(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_send_eof(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_wait_eof(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_close_channel(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_wait_closed(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_exit_status(const ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_is_eof(const ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_last_error(
     ghosttea_ssh_session_t *session,

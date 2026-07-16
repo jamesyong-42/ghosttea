@@ -201,8 +201,13 @@ An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds plus cancellation.
 Remaining gates include UIKit/Keychain policy, broader algorithm coverage,
-command exit semantics, TCP/handshake cancellation, and physical-device evidence, as documented in
+exit-signal semantics, TCP/handshake cancellation, and physical-device evidence, as documented in
 `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
+
+The candidate also implements non-PTY commands, multiplexed stdout/stderr,
+input half-close, typed exit status, and the SSH EOF/close handshake. Live
+fixtures preserve separate output streams with exit 37 and prove that output
+remains readable after input EOF without truncation.
 
 ## 8. Recommended proof order
 

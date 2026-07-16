@@ -49,18 +49,21 @@ public struct SSHCandidateTransport: TerminalTransport {
       try await driver.run(operation: "open channel") {
         ghosttea_ssh_session_open_channel($0)
       }
-      try await driver.run(operation: "request PTY") { handle in
-        configuration.terminalType.withCString { terminalType in
-          ghosttea_ssh_session_request_pty(
-            handle,
-            terminalType,
-            Int32(configuration.initialSize.columns),
-            Int32(configuration.initialSize.rows)
-          )
+      switch configuration.session {
+      case .shell:
+        try await requestPTY(driver: driver)
+        try await driver.run(operation: "start shell") {
+          ghosttea_ssh_session_start_shell($0)
         }
-      }
-      try await driver.run(operation: "start shell") {
-        ghosttea_ssh_session_start_shell($0)
+      case .command(let command, let allocatePTY):
+        if allocatePTY {
+          try await requestPTY(driver: driver)
+        }
+        try await driver.run(operation: "start command") { handle in
+          command.withCString {
+            ghosttea_ssh_session_start_command(handle, $0)
+          }
+        }
       }
 
       return SSHCandidateConnection(
@@ -70,6 +73,19 @@ public struct SSHCandidateTransport: TerminalTransport {
     } catch {
       driver.destroy()
       throw error
+    }
+  }
+
+  private func requestPTY(driver: SSHDriver) async throws {
+    try await driver.run(operation: "request PTY") { handle in
+      configuration.terminalType.withCString { terminalType in
+        ghosttea_ssh_session_request_pty(
+          handle,
+          terminalType,
+          Int32(configuration.initialSize.columns),
+          Int32(configuration.initialSize.rows)
+        )
+      }
     }
   }
 
@@ -273,6 +289,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
   private let driver: SSHDriver
   private let gate = AsyncOperationGate()
   private var isConnected = true
+  private var exitStatus: TerminalExitStatus?
 
   fileprivate init(
     driver: SSHDriver,
@@ -330,6 +347,70 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     }
   }
 
+  public func finishInput() async throws {
+    await gate.acquire()
+    do {
+      try requireConnected()
+      try await driver.run(operation: "send channel EOF") {
+        ghosttea_ssh_session_send_eof($0)
+      }
+      await gate.release()
+    } catch {
+      await gate.release()
+      throw error
+    }
+  }
+
+  public func readStandardError(maxBytes: Int) async throws -> Data? {
+    guard maxBytes > 0 else {
+      throw TerminalTransportError.invalidReadSize(maxBytes)
+    }
+    await gate.acquire()
+    do {
+      let result = try await readLocked(maxBytes: maxBytes, stream: .standardError)
+      await gate.release()
+      return result
+    } catch {
+      await gate.release()
+      throw error
+    }
+  }
+
+  public func readCommandOutput(maxBytes: Int) async throws -> SSHCandidateOutputChunk? {
+    guard maxBytes > 0 else {
+      throw TerminalTransportError.invalidReadSize(maxBytes)
+    }
+    await gate.acquire()
+    do {
+      try requireConnected()
+      while true {
+        try Task.checkCancellation()
+        if let bytes = try readAvailableLocked(
+          maxBytes: maxBytes,
+          stream: .standardOutput
+        ) {
+          await gate.release()
+          return .standardOutput(bytes)
+        }
+        if let bytes = try readAvailableLocked(
+          maxBytes: maxBytes,
+          stream: .standardError
+        ) {
+          await gate.release()
+          return .standardError(bytes)
+        }
+        if ghosttea_ssh_session_is_eof(driver.requiredHandle) == 1 {
+          await gate.release()
+          return nil
+        }
+        try await driver.waitUntilReady()
+      }
+    } catch {
+      await gate.release()
+      throw error
+    }
+  }
+
   public func resize(columns: Int, rows: Int) async throws {
     _ = try TerminalSize(columns: columns, rows: rows)
     guard columns <= Int(Int32.max), rows <= Int(Int32.max) else {
@@ -362,6 +443,35 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     }
   }
 
+  public func waitForExit() async throws -> TerminalExitStatus {
+    await gate.acquire()
+    do {
+      try requireConnected()
+      if let exitStatus {
+        await gate.release()
+        return exitStatus
+      }
+      try await driver.run(operation: "wait for channel EOF") {
+        ghosttea_ssh_session_wait_eof($0)
+      }
+      try await driver.run(operation: "close channel") {
+        ghosttea_ssh_session_close_channel($0)
+      }
+      try await driver.run(operation: "wait for channel close") {
+        ghosttea_ssh_session_wait_closed($0)
+      }
+      let result = TerminalExitStatus(
+        code: ghosttea_ssh_session_exit_status(driver.requiredHandle)
+      )
+      exitStatus = result
+      await gate.release()
+      return result
+    } catch {
+      await gate.release()
+      throw error
+    }
+  }
+
   public func disconnect() async {
     driver.requestShutdown()
     await gate.acquire()
@@ -370,17 +480,30 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     await gate.release()
   }
 
-  private func readLocked(maxBytes: Int) async throws -> Data? {
+  private func readLocked(
+    maxBytes: Int,
+    stream: SSHReadStream = .standardOutput
+  ) async throws -> Data? {
     try requireConnected()
     var data = Data(count: maxBytes)
     while true {
       try Task.checkCancellation()
       let status = data.withUnsafeMutableBytes { rawBuffer in
-        ghosttea_ssh_session_read(
-          driver.requiredHandle,
-          rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self),
-          maxBytes
-        )
+        let buffer = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+        switch stream {
+        case .standardOutput:
+          return ghosttea_ssh_session_read(
+            driver.requiredHandle,
+            buffer,
+            maxBytes
+          )
+        case .standardError:
+          return ghosttea_ssh_session_read_stderr(
+            driver.requiredHandle,
+            buffer,
+            maxBytes
+          )
+        }
       }
       if status > 0 {
         data.removeSubrange(Int(status)..<data.count)
@@ -402,11 +525,43 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     }
   }
 
+  private func readAvailableLocked(
+    maxBytes: Int,
+    stream: SSHReadStream
+  ) throws -> Data? {
+    var data = Data(count: maxBytes)
+    let status = data.withUnsafeMutableBytes { rawBuffer in
+      let buffer = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+      switch stream {
+      case .standardOutput:
+        return ghosttea_ssh_session_read(driver.requiredHandle, buffer, maxBytes)
+      case .standardError:
+        return ghosttea_ssh_session_read_stderr(driver.requiredHandle, buffer, maxBytes)
+      }
+    }
+    if status > 0 {
+      data.removeSubrange(Int(status)..<data.count)
+      return data
+    }
+    if status == 0 || status == GHOSTTEA_SSH_EAGAIN {
+      return nil
+    }
+    throw driver.error(
+      operation: "read command stream",
+      status: Int32(clamping: status)
+    )
+  }
+
   private func requireConnected() throws {
     guard isConnected else {
       throw TerminalTransportError.disconnected
     }
   }
+}
+
+private enum SSHReadStream {
+  case standardOutput
+  case standardError
 }
 
 private final class SSHDriver: @unchecked Sendable {

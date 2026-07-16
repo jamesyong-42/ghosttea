@@ -64,3 +64,7 @@ Keyboard-interactive challenges cross an async Swift responder and assert exact
 prompt text plus echo policy across informational, password, and verification
 code rounds. A separate control cancels while that responder is suspended and
 requires the blocked native callback worker to unwind within one second.
+Two non-PTY command controls cover termination semantics: one asserts separate,
+byte-exact stdout/stderr and exit 37; the other writes through `cat`, sends SSH
+input EOF, drains the exact output, and completes the channel close handshake
+with exit 0.

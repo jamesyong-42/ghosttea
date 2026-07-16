@@ -23,6 +23,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case unexpectedChallenge(SSHKeyboardInteractiveChallenge)
   case authenticationDidNotCancel
   case unexpectedAuthenticationCancellationError(String)
+  case unexpectedCommandStream(stream: String, expected: Data, actual: Data)
+  case unexpectedExitStatus(expected: Int32, actual: Int32)
 
   var description: String {
     switch self {
@@ -58,6 +60,11 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "keyboard-interactive authentication completed instead of cancelling"
     case .unexpectedAuthenticationCancellationError(let error):
       return "keyboard-interactive cancellation failed with \(error)"
+    case .unexpectedCommandStream(let stream, let expected, let actual):
+      return
+        "unexpected \(stream): expected \(String(reflecting: expected)), received \(String(reflecting: actual))"
+    case .unexpectedExitStatus(let expected, let actual):
+      return "unexpected exit status: expected \(expected), received \(actual)"
     }
   }
 }
@@ -126,7 +133,7 @@ private func authentication(
   switch mode {
   case "password":
     return .password(username: "ghosttea", password: "ghosttea-password")
-  case "publickey":
+  case "publickey", "command", "half-close":
     return .publicKey(
       username: "ghosttea",
       publicKeyPath: publicKeyPath,
@@ -183,6 +190,18 @@ private func runProbe() async throws {
   let knownHostsPath = arguments[4]
   let publicKeyPath = arguments[5]
   let privateKeyPath = arguments[6]
+  let session: SSHCandidateSession
+  switch mode {
+  case "command":
+    session = .command(
+      "printf 'fixture-stdout\\n'; printf 'fixture-stderr\\n' >&2; exit 37",
+      allocatePTY: false
+    )
+  case "half-close":
+    session = .command("cat", allocatePTY: false)
+  default:
+    session = .shell
+  }
 
   let configuration = try SSHCandidateConfiguration(
     host: host,
@@ -193,6 +212,7 @@ private func runProbe() async throws {
       publicKeyPath: publicKeyPath,
       privateKeyPath: privateKeyPath
     ),
+    session: session,
     columns: 132,
     rows: 41
   )
@@ -206,6 +226,20 @@ private func runProbe() async throws {
     throw LiveProbeError.missingCandidateConnection
   }
   try verifyAlgorithms(candidateConnection.negotiatedAlgorithms)
+  if mode == "command" || mode == "half-close" {
+    do {
+      try await verifyCommandSession(
+        mode: mode,
+        connection: candidateConnection
+      )
+      await connection.disconnect()
+      print("Swift nonblocking libssh2 \(mode) probe passed")
+      return
+    } catch {
+      await connection.disconnect()
+      throw error
+    }
+  }
   var reader = ProbeReader(connection: connection)
 
   do {
@@ -236,6 +270,59 @@ private func runProbe() async throws {
     await connection.disconnect()
     throw error
   }
+}
+
+private func verifyCommandSession(
+  mode: String,
+  connection: SSHCandidateConnection
+) async throws {
+  let expectedStandardOutput: Data
+  let expectedExitCode: Int32
+  if mode == "half-close" {
+    expectedStandardOutput = Data("half-close-payload\n".utf8)
+    expectedExitCode = 0
+    try await connection.write(expectedStandardOutput)
+    try await connection.finishInput()
+  } else {
+    expectedStandardOutput = Data("fixture-stdout\n".utf8)
+    expectedExitCode = 37
+  }
+
+  var standardOutput = Data()
+  var standardError = Data()
+  while let chunk = try await connection.readCommandOutput(maxBytes: 4_096) {
+    switch chunk {
+    case .standardOutput(let bytes):
+      standardOutput.append(bytes)
+    case .standardError(let bytes):
+      standardError.append(bytes)
+    }
+  }
+  let status = try await connection.waitForExit()
+  guard standardOutput == expectedStandardOutput else {
+    throw LiveProbeError.unexpectedCommandStream(
+      stream: "stdout",
+      expected: expectedStandardOutput,
+      actual: standardOutput
+    )
+  }
+  let expectedStandardError = mode == "command" ? Data("fixture-stderr\n".utf8) : Data()
+  guard standardError == expectedStandardError else {
+    throw LiveProbeError.unexpectedCommandStream(
+      stream: "stderr",
+      expected: expectedStandardError,
+      actual: standardError
+    )
+  }
+  guard status.code == expectedExitCode else {
+    throw LiveProbeError.unexpectedExitStatus(
+      expected: expectedExitCode,
+      actual: status.code
+    )
+  }
+  print(
+    "Swift command streams and termination passed: stdout=\(standardOutput.count) stderr=\(standardError.count) exit=\(status.code)"
+  )
 }
 
 private func verifyAuthenticationCancellation(

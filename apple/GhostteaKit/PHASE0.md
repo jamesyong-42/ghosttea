@@ -35,6 +35,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   text and echo policy, keeps the synchronous callback on a dedicated worker,
   handles informational and multiple prompt rounds, and cancels a suspended
   responder without leaking the worker.
+- host-neutral input half-close and typed exit status, plus non-PTY SSH command
+  support that preserves stdout, stderr, EOF, exit 37, and the complete channel
+  close handshake. A `cat` fixture proves output remains readable after input
+  EOF and exits cleanly without truncation.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -66,10 +70,10 @@ UIKit, transport state, and the rest of the application.
    rejection, PTY/resize, auth/read cancellation, and the stalled-reader flood.
    Remaining work is UIKit/Keychain credential policy, user decisions for
    unknown/changed hosts, encrypted-key and algorithm coverage,
-   exit/EOF/half-close semantics, TCP/handshake cancellation, reconnect
-   orchestration, channel-window instrumentation, and physical-device
-   execution. The public-key partial step remains locked as `-19`, so only an
-   explicitly configured chained policy may proceed to keyboard-interactive.
+   exit-signal semantics, TCP/handshake cancellation, reconnect orchestration,
+   channel-window instrumentation, and physical-device execution. The
+   public-key partial step remains locked as `-19`, so only an explicitly
+   configured chained policy may proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.

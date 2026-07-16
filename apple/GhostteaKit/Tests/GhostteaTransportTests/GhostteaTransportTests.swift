@@ -22,16 +22,24 @@ func replayTransportDemandTest() async throws {
 
 @Test("Replay transport records ordered host operations")
 func replayTransportOperationTest() async throws {
-  let connection = ReplayTransport(bytes: Data()).makeConnection()
+  let connection = ReplayTransport(
+    bytes: Data(),
+    exitStatus: TerminalExitStatus(code: 37)
+  ).makeConnection()
   try await connection.write(Data("one".utf8))
   try await connection.write(Data("two".utf8))
   try await connection.resize(columns: 100, rows: 30)
   try await connection.interrupt()
+  try await connection.finishInput()
+  let exitStatus = try await connection.waitForExit()
 
   let snapshot = await connection.snapshot()
   #expect(snapshot.writes == [Data("one".utf8), Data("two".utf8)])
   #expect(snapshot.resizes == [try TerminalSize(columns: 100, rows: 30)])
   #expect(snapshot.interruptCount == 1)
+  #expect(snapshot.didFinishInput)
+  #expect(snapshot.didObserveExit)
+  #expect(exitStatus == TerminalExitStatus(code: 37))
 }
 
 @Test("Ordered writer preserves sequence and rejects byte or item overflow")
