@@ -1,0 +1,13 @@
+{
+  "name": "basic-dsr",
+  "columns": 12,
+  "rows": 4,
+  "maxScrollbackBytes": 8192,
+  "inputHex": "68656c6c6f1b5b366e0d0a7265641b5b366e",
+  "expected": {
+    "cursorColumn": 3,
+    "cursorRow": 1,
+    "replyHex": "1b5b313b36521b5b323b3452",
+    "visibleText": ["hello", "red"]
+  }
+}

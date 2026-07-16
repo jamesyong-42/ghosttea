@@ -11,8 +11,11 @@ target/
 .ghosttea/
 .tools/
 native/build/
+apple/GhostteaKit/Artifacts/*.xcframework/
 artifacts/
 apps/desktop/build/
 native/vendor/ghostty/
+native/vendor/libssh2/
+native/vendor/openssl/
 bench/results.json
 bench/results-*.json

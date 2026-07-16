@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "openssl": {
+    "repository": "https://github.com/openssl/openssl.git",
+    "tag": "openssl-3.5.6",
+    "commit": "286ddeaac037533bbdce65b3c689e3f7ffebf0f6"
+  },
+  "libssh2": {
+    "repository": "https://github.com/libssh2/libssh2.git",
+    "tag": "libssh2-1.11.1",
+    "commit": "a312b43325e3383c865a87bb1d26cb52e3292641"
+  },
+  "appleBuilder": {
+    "architecture": "arm64",
+    "minimumMacosVersion": "14.0",
+    "minimumIosVersion": "17.0"
+  },
+  "candidateStatus": {
+    "purpose": "Phase 0 compile and compatibility probe; not a production dependency",
+    "knownGap": "Combined public-key plus second-factor partial-success handling is not in libssh2 1.11.1"
+  }
+}

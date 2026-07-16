@@ -6,11 +6,17 @@
   "zig": {
     "version": "0.15.2",
     "linuxAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
-    "linuxAarch64Sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f"
+    "linuxAarch64Sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f",
+    "macosAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz",
+    "macosAarch64Sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
   },
   "builder": {
     "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
     "platform": "linux/arm64",
     "target": "aarch64-macos"
+  },
+  "appleBuilder": {
+    "architecture": "arm64",
+    "minimumIosVersion": "17.0"
   }
 }
