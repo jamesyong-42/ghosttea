@@ -356,6 +356,18 @@ function swiftCandidate() {
       process.stdout.write(result.stdout);
     }
 
+    const cancellation = execute(
+      liveProbe,
+      ["keyboard-cancel", "127.0.0.1", ports.keyboard, knownHosts, publicKey, privateKey],
+      { timeout: 30_000 },
+    );
+    if (cancellation.status !== 0) {
+      throw new Error(
+        `Swift keyboard-interactive cancellation probe failed: status=${cancellation.status} stdout=${cancellation.stdout} stderr=${cancellation.stderr}`,
+      );
+    }
+    process.stdout.write(cancellation.stdout);
+
     const wrongKey = execute(
       liveProbe,
       ["partial", "127.0.0.1", ports.partial, knownHosts, wrongPublicKey, wrongPrivateKey],

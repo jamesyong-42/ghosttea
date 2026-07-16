@@ -31,6 +31,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   RSS, and observes blocked-read task cancellation in under 50 ms on the
   development Mac. It locks the negotiated fixture profile to Curve25519,
   Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
+- an asynchronous keyboard-interactive challenge broker that preserves prompt
+  text and echo policy, keeps the synchronous callback on a dedicated worker,
+  handles informational and multiple prompt rounds, and cancels a suspended
+  responder without leaking the worker.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -58,14 +62,14 @@ UIKit, transport state, and the rest of the application.
 
 1. Run the proof on a physical iOS device once an app harness and signing team are available.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
-   authentication, strict unknown/changed-host rejection, PTY/resize, blocked
-   read cancellation, and the stalled-reader flood. Remaining work is an async
-   keyboard-interactive challenge broker, user decisions for unknown/changed
-   hosts, encrypted-key and algorithm coverage, exit/EOF/half-close semantics,
-   connect/auth cancellation, reconnect orchestration, channel-window
-   instrumentation, and physical-device execution. The public-key partial step
-   remains locked as `-19`, so only an explicitly configured chained policy may
-   proceed to keyboard-interactive.
+   authentication, the asynchronous prompt broker, strict unknown/changed-host
+   rejection, PTY/resize, auth/read cancellation, and the stalled-reader flood.
+   Remaining work is UIKit/Keychain credential policy, user decisions for
+   unknown/changed hosts, encrypted-key and algorithm coverage,
+   exit/EOF/half-close semantics, TCP/handshake cancellation, reconnect
+   orchestration, channel-window instrumentation, and physical-device
+   execution. The public-key partial step remains locked as `-19`, so only an
+   explicitly configured chained policy may proceed to keyboard-interactive.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.

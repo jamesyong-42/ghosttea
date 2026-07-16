@@ -1297,12 +1297,14 @@ followed by keyboard-interactive. The accepted partial key step returns `-19`
 rather than a distinct partial-success result, so only the explicit chained
 policy may attempt the second method; a wrong-key control remains rejected. The
 same adapter passes strict host-key negatives, PTY allocation and resize, a
-byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. An
-async challenge broker, broader algorithm/key coverage, exit semantics,
-connect/auth cancellation, and device evidence remain open. The adapter
-records negotiated methods; the current fixture locks Curve25519, Ed25519,
-ChaCha20-Poly1305, and HMAC-SHA2-256. No stack-specific type may escape the
-adapter.
+byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
+async challenge responder preserves server prompt text and echo policy while
+the synchronous callback waits on a dedicated worker; informational and
+multiple prompt rounds plus cancellation pass. UIKit/Keychain policy, broader
+algorithm/key coverage, exit semantics, TCP/handshake cancellation, and device
+evidence remain open. The adapter records negotiated methods; the current
+fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256. No
+stack-specific type may escape the adapter.
 
 Secrets and private keys belong in Keychain-backed storage and must never be
 serialized into workspace restoration, logs, crash reports, or terminal
@@ -1724,9 +1726,10 @@ implemented. The nonblocking libssh2 Swift adapter passes the pinned auth
 matrix, strict host-key controls, PTY/resize, a byte-exact 32 MiB stalled-reader
 fixture below its macOS RSS gate, and blocked-read cancellation, including
 explicit chained MFA with its `-19` return behavior locked under test.
-Physical-device VT/network testing, async authentication UI, SSH algorithm and
-exit/cancellation coverage, bundled-font licensing, and device-tier memory
-gates remain open. libssh2 is a candidate, not the selected SSH path.
+Physical-device VT/network testing, UIKit/Keychain authentication policy, SSH
+algorithm and exit/connection-cancellation coverage, bundled-font licensing,
+and device-tier memory gates remain open. libssh2 is a candidate, not the
+selected SSH path.
 
 Exit gate:
 

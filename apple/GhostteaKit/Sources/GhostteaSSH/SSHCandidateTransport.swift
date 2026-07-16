@@ -96,11 +96,11 @@ public struct SSHCandidateTransport: TerminalTransport {
         passphrase: passphrase
       )
 
-    case .keyboardInteractive(let username, let answers):
+    case .keyboardInteractive(let username, let responder):
       try await authenticateKeyboardInteractive(
         driver: driver,
         username: username,
-        answers: answers
+        responder: responder
       )
 
     case .publicKeyThenKeyboardInteractive(
@@ -113,7 +113,7 @@ public struct SSHCandidateTransport: TerminalTransport {
       let
         passphrase,
       let
-        answers
+        responder
     ):
       let publicKeyStatus = await driver.runAllowingStatus(
         operation: "partial public-key authentication",
@@ -145,7 +145,7 @@ public struct SSHCandidateTransport: TerminalTransport {
         try await authenticateKeyboardInteractive(
           driver: driver,
           username: username,
-          answers: answers
+          responder: responder
         )
       }
     }
@@ -180,31 +180,90 @@ public struct SSHCandidateTransport: TerminalTransport {
   private func authenticateKeyboardInteractive(
     driver: SSHDriver,
     username: String,
-    answers: [String]
+    responder: @escaping SSHKeyboardInteractiveResponder
   ) async throws {
-    ghosttea_ssh_session_reset_keyboard_answers(driver.requiredHandle)
-    for answer in answers {
-      let status = answer.withCString {
-        ghosttea_ssh_session_add_keyboard_answer(driver.requiredHandle, $0)
+    ghosttea_ssh_session_keyboard_broker_begin(driver.requiredHandle)
+    do {
+      try await withTaskCancellationHandler {
+        while true {
+          try Task.checkCancellation()
+          let status = try await performKeyboardInteractiveCall(
+            driver: driver,
+            username: username,
+            responder: responder
+          )
+          if status == 0 {
+            return
+          }
+          guard status == GHOSTTEA_SSH_EAGAIN else {
+            throw driver.error(
+              operation: "keyboard-interactive authentication",
+              status: status
+            )
+          }
+          try await driver.waitUntilReady()
+        }
+      } onCancel: {
+        driver.cancelKeyboardBroker()
       }
-      guard status == 0 else {
-        throw driver.error(operation: "store keyboard-interactive answer", status: status)
+    } catch {
+      driver.cancelKeyboardBroker()
+      throw error
+    }
+  }
+
+  private func performKeyboardInteractiveCall(
+    driver: SSHDriver,
+    username: String,
+    responder: @escaping SSHKeyboardInteractiveResponder
+  ) async throws -> Int32 {
+    let resultLatch = KeyboardAuthenticationResultLatch()
+    let authentication = Task {
+      let status = await driver.invokeKeyboardAuthentication(username: username)
+      await resultLatch.store(status)
+      return status
+    }
+    do {
+      while true {
+        try Task.checkCancellation()
+        if let status = await resultLatch.value() {
+          return status
+        }
+        let promptStatus = await driver.waitForKeyboardPrompt()
+        if let status = await resultLatch.value() {
+          return status
+        }
+        if promptStatus < 0 {
+          throw SSHCandidateError.keyboardBrokerFailed("prompt wait was cancelled")
+        }
+        guard promptStatus > 0 else { continue }
+        let challenge = try driver.keyboardChallenge()
+        let answers = try await responder(challenge)
+        guard answers.count == challenge.prompts.count else {
+          throw SSHCandidateError.keyboardPromptMismatch(
+            expected: challenge.prompts.count,
+            actual: answers.count
+          )
+        }
+        try driver.submitKeyboardAnswers(answers)
       }
+    } catch {
+      driver.cancelKeyboardBroker()
+      _ = await authentication.value
+      throw error
     }
-    try await driver.run(operation: "keyboard-interactive authentication") { handle in
-      username.withCString { username in
-        ghosttea_ssh_session_auth_keyboard_interactive(handle, username)
-      }
-    }
-    let promptCount = Int(
-      ghosttea_ssh_session_keyboard_prompt_count(driver.requiredHandle)
-    )
-    guard promptCount == answers.count else {
-      throw SSHCandidateError.keyboardPromptMismatch(
-        expected: answers.count,
-        actual: promptCount
-      )
-    }
+  }
+}
+
+private actor KeyboardAuthenticationResultLatch {
+  private var result: Int32?
+
+  func store(_ result: Int32) {
+    self.result = result
+  }
+
+  func value() -> Int32? {
+    result
   }
 }
 
@@ -356,6 +415,11 @@ private final class SSHDriver: @unchecked Sendable {
     qos: .userInitiated,
     attributes: .concurrent
   )
+  private static let keyboardQueue = DispatchQueue(
+    label: "com.project100.ghosttea.ssh.keyboard",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
 
   private let stateLock = NSLock()
   private var handle: OpaquePointer?
@@ -467,6 +531,96 @@ private final class SSHDriver: @unchecked Sendable {
         ghosttea_ssh_session_shutdown_socket(handle)
       }
     }
+  }
+
+  func invokeKeyboardAuthentication(username: String) async -> Int32 {
+    await withCheckedContinuation { continuation in
+      Self.keyboardQueue.async { [self] in
+        let status = username.withCString {
+          ghosttea_ssh_session_auth_keyboard_interactive(requiredHandle, $0)
+        }
+        continuation.resume(returning: status)
+      }
+    }
+  }
+
+  func waitForKeyboardPrompt() async -> Int32 {
+    await withCheckedContinuation { continuation in
+      Self.keyboardQueue.async { [self] in
+        continuation.resume(
+          returning: ghosttea_ssh_session_keyboard_broker_wait(requiredHandle, 50)
+        )
+      }
+    }
+  }
+
+  func keyboardChallenge() throws -> SSHKeyboardInteractiveChallenge {
+    let name = try keyboardBrokerString(ghosttea_ssh_session_keyboard_broker_name)
+    let instruction = try keyboardBrokerString(
+      ghosttea_ssh_session_keyboard_broker_instruction
+    )
+    let promptCount = ghosttea_ssh_session_keyboard_broker_prompt_count(requiredHandle)
+    guard promptCount >= 0 else {
+      throw SSHCandidateError.keyboardBrokerFailed("invalid prompt count")
+    }
+    var prompts: [SSHKeyboardInteractivePrompt] = []
+    prompts.reserveCapacity(Int(promptCount))
+    for index in 0..<promptCount {
+      var echo: Int32 = 0
+      let text = try keyboardBrokerString { handle, buffer, length in
+        ghosttea_ssh_session_keyboard_broker_prompt(
+          handle,
+          index,
+          buffer,
+          length,
+          &echo
+        )
+      }
+      prompts.append(
+        SSHKeyboardInteractivePrompt(text: text, echoesResponse: echo != 0)
+      )
+    }
+    return SSHKeyboardInteractiveChallenge(
+      name: name,
+      instruction: instruction,
+      prompts: prompts
+    )
+  }
+
+  func submitKeyboardAnswers(_ answers: [String]) throws {
+    for answer in answers {
+      let status = answer.withCString {
+        ghosttea_ssh_session_keyboard_broker_add_answer(requiredHandle, $0)
+      }
+      guard status == 0 else {
+        throw SSHCandidateError.keyboardBrokerFailed("could not store an answer")
+      }
+    }
+    guard ghosttea_ssh_session_keyboard_broker_complete(requiredHandle) == 0 else {
+      throw SSHCandidateError.keyboardBrokerFailed("answer count changed")
+    }
+  }
+
+  func cancelKeyboardBroker() {
+    stateLock.withLock {
+      if let handle {
+        ghosttea_ssh_session_keyboard_broker_cancel(handle)
+      }
+    }
+  }
+
+  private func keyboardBrokerString(
+    _ copy: (OpaquePointer, UnsafeMutablePointer<CChar>?, Int) -> Int32
+  ) throws -> String {
+    let length = copy(requiredHandle, nil, 0)
+    guard length >= 0 else {
+      throw SSHCandidateError.keyboardBrokerFailed("prompt text was unavailable")
+    }
+    var buffer = [CChar](repeating: 0, count: Int(length) + 1)
+    guard copy(requiredHandle, &buffer, buffer.count) == length else {
+      throw SSHCandidateError.keyboardBrokerFailed("prompt text changed while copying")
+    }
+    return decodeCString(buffer)
   }
 
   func negotiatedAlgorithms() -> SSHCandidateNegotiatedAlgorithms {

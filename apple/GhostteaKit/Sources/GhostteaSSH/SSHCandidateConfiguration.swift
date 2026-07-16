@@ -1,6 +1,35 @@
 import GhostteaTransport
 
-public enum SSHCandidateAuthentication: Equatable, Sendable {
+public struct SSHKeyboardInteractivePrompt: Equatable, Sendable {
+  public let text: String
+  public let echoesResponse: Bool
+
+  public init(text: String, echoesResponse: Bool) {
+    self.text = text
+    self.echoesResponse = echoesResponse
+  }
+}
+
+public struct SSHKeyboardInteractiveChallenge: Equatable, Sendable {
+  public let name: String
+  public let instruction: String
+  public let prompts: [SSHKeyboardInteractivePrompt]
+
+  public init(
+    name: String,
+    instruction: String,
+    prompts: [SSHKeyboardInteractivePrompt]
+  ) {
+    self.name = name
+    self.instruction = instruction
+    self.prompts = prompts
+  }
+}
+
+public typealias SSHKeyboardInteractiveResponder =
+  @Sendable (SSHKeyboardInteractiveChallenge) async throws -> [String]
+
+public enum SSHCandidateAuthentication: Sendable {
   case password(username: String, password: String)
   case publicKey(
     username: String,
@@ -8,23 +37,25 @@ public enum SSHCandidateAuthentication: Equatable, Sendable {
     privateKeyPath: String,
     passphrase: String?
   )
-  case keyboardInteractive(username: String, answers: [String])
+  case keyboardInteractive(
+    username: String,
+    responder: SSHKeyboardInteractiveResponder
+  )
   case publicKeyThenKeyboardInteractive(
     username: String,
     publicKeyPath: String,
     privateKeyPath: String,
     passphrase: String?,
-    answers: [String]
+    responder: SSHKeyboardInteractiveResponder
   )
 }
 
 /// Phase 0 configuration for the libssh2 transport candidate.
 ///
-/// Keyboard-interactive answers are supplied up front so the candidate can
-/// exercise multi-round authentication without making libssh2 callbacks cross
-/// Swift concurrency boundaries. The product authentication UI will replace
-/// this with an asynchronous challenge broker before the transport is promoted.
-public struct SSHCandidateConfiguration: Equatable, Sendable {
+/// Keyboard-interactive prompts cross an asynchronous responder boundary. The
+/// synchronous libssh2 callback waits on a dedicated worker thread, so an app
+/// may present UI without blocking a Swift cooperative executor.
+public struct SSHCandidateConfiguration: Sendable {
   public let host: String
   public let port: Int
   public let knownHostsPath: String
@@ -65,6 +96,7 @@ public enum SSHCandidateError: Error, Equatable, Sendable {
   case hostKeyRejected(status: Int32)
   case authenticationFailed(status: Int32)
   case keyboardPromptMismatch(expected: Int, actual: Int)
+  case keyboardBrokerFailed(String)
 }
 
 public struct SSHCandidateNegotiatedAlgorithms: Equatable, Sendable {

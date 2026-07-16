@@ -68,6 +68,35 @@ int ghosttea_ssh_session_auth_keyboard_interactive(
     ghosttea_ssh_session_t *session,
     const char *username
 );
+void ghosttea_ssh_session_keyboard_broker_begin(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_keyboard_broker_wait(
+    ghosttea_ssh_session_t *session,
+    int timeout_milliseconds
+);
+int ghosttea_ssh_session_keyboard_broker_name(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+);
+int ghosttea_ssh_session_keyboard_broker_instruction(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+);
+int ghosttea_ssh_session_keyboard_broker_prompt_count(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_session_keyboard_broker_prompt(
+    ghosttea_ssh_session_t *session,
+    int index,
+    char *buffer,
+    size_t buffer_length,
+    int *echo
+);
+int ghosttea_ssh_session_keyboard_broker_add_answer(
+    ghosttea_ssh_session_t *session,
+    const char *answer
+);
+int ghosttea_ssh_session_keyboard_broker_complete(ghosttea_ssh_session_t *session);
+void ghosttea_ssh_session_keyboard_broker_cancel(ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_is_authenticated(const ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_keyboard_prompt_count(const ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_open_channel(ghosttea_ssh_session_t *session);

@@ -20,6 +20,9 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case cancellationTooSlow(Duration)
   case missingCandidateConnection
   case unexpectedAlgorithms(SSHCandidateNegotiatedAlgorithms)
+  case unexpectedChallenge(SSHKeyboardInteractiveChallenge)
+  case authenticationDidNotCancel
+  case unexpectedAuthenticationCancellationError(String)
 
   var description: String {
     switch self {
@@ -49,6 +52,12 @@ private enum LiveProbeError: Error, CustomStringConvertible {
       return "SSH transport did not return its candidate connection type"
     case .unexpectedAlgorithms(let algorithms):
       return "SSH fixture negotiated unexpected algorithms: \(algorithms)"
+    case .unexpectedChallenge(let challenge):
+      return "SSH fixture produced an unexpected keyboard challenge: \(challenge)"
+    case .authenticationDidNotCancel:
+      return "keyboard-interactive authentication completed instead of cancelling"
+    case .unexpectedAuthenticationCancellationError(let error):
+      return "keyboard-interactive cancellation failed with \(error)"
     }
   }
 }
@@ -127,18 +136,39 @@ private func authentication(
   case "keyboard":
     return .keyboardInteractive(
       username: "ghosttea",
-      answers: ["ghosttea-password", "123456"]
+      responder: respondToFixtureChallenge
     )
+  case "keyboard-cancel":
+    return .keyboardInteractive(username: "ghosttea") { _ in
+      try await Task.sleep(for: .seconds(60))
+      return []
+    }
   case "partial":
     return .publicKeyThenKeyboardInteractive(
       username: "ghosttea",
       publicKeyPath: publicKeyPath,
       privateKeyPath: privateKeyPath,
       passphrase: nil,
-      answers: ["ghosttea-password", "123456"]
+      responder: respondToFixtureChallenge
     )
   default:
     throw LiveProbeError.usage
+  }
+}
+
+private func respondToFixtureChallenge(
+  _ challenge: SSHKeyboardInteractiveChallenge
+) async throws -> [String] {
+  try await Task.sleep(for: .milliseconds(10))
+  switch challenge.prompts {
+  case []:
+    return []
+  case [SSHKeyboardInteractivePrompt(text: "Fixture password: ", echoesResponse: false)]:
+    return ["ghosttea-password"]
+  case [SSHKeyboardInteractivePrompt(text: "Verification code: ", echoesResponse: false)]:
+    return ["123456"]
+  default:
+    throw LiveProbeError.unexpectedChallenge(challenge)
   }
 }
 
@@ -166,7 +196,12 @@ private func runProbe() async throws {
     columns: 132,
     rows: 41
   )
-  let connection = try await SSHCandidateTransport(configuration: configuration).connect()
+  let transport = SSHCandidateTransport(configuration: configuration)
+  if mode == "keyboard-cancel" {
+    try await verifyAuthenticationCancellation(transport: transport)
+    return
+  }
+  let connection = try await transport.connect()
   guard let candidateConnection = connection as? SSHCandidateConnection else {
     throw LiveProbeError.missingCandidateConnection
   }
@@ -201,6 +236,35 @@ private func runProbe() async throws {
     await connection.disconnect()
     throw error
   }
+}
+
+private func verifyAuthenticationCancellation(
+  transport: SSHCandidateTransport
+) async throws {
+  let connectionTask = Task {
+    try await transport.connect()
+  }
+  try await Task.sleep(for: .milliseconds(500))
+  let clock = ContinuousClock()
+  let start = clock.now
+  connectionTask.cancel()
+  let result = await connectionTask.result
+  switch result {
+  case .success(let connection):
+    await connection.disconnect()
+    throw LiveProbeError.authenticationDidNotCancel
+  case .failure(let error):
+    guard error is CancellationError else {
+      throw LiveProbeError.unexpectedAuthenticationCancellationError(
+        String(describing: error)
+      )
+    }
+  }
+  let duration = start.duration(to: clock.now)
+  guard duration < .seconds(1) else {
+    throw LiveProbeError.cancellationTooSlow(duration)
+  }
+  print("Swift keyboard-interactive responder cancelled in \(duration)")
 }
 
 private func verifyAlgorithms(_ algorithms: SSHCandidateNegotiatedAlgorithms) throws {

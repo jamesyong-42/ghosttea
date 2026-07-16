@@ -60,3 +60,7 @@ requires a blocked read to observe cancellation within one second, and verifies
 that strict host checking rejects both unknown and changed keys. Negotiated
 methods are asserted as Curve25519, Ed25519, ChaCha20-Poly1305, and
 HMAC-SHA2-256 so dependency or server-default drift fails the fixture visibly.
+Keyboard-interactive challenges cross an async Swift responder and assert exact
+prompt text plus echo policy across informational, password, and verification
+code rounds. A separate control cancels while that responder is suspended and
+requires the blocked native callback worker to unwind within one second.

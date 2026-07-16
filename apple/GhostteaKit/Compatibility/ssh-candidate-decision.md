@@ -28,9 +28,10 @@ The repository now implements that narrow policy in `GhostteaSSH`: only the
 explicit `publicKeyThenKeyboardInteractive` configuration accepts the observed
 `-19` step and attempts the second method. A public-key-only configuration
 still fails on `-19`, and the wrong-key chained control remains rejected by the
-server. Keyboard answers are pre-supplied for this Phase 0 adapter; an
-asynchronous prompt broker that preserves prompt metadata is still required for
-the product UI.
+server. Keyboard-interactive authentication uses an asynchronous Swift
+responder receiving the server name, instruction, prompt text, and echo policy.
+The synchronous libssh2 callback waits on a condition variable on a dedicated
+worker rather than blocking a Swift cooperative executor.
 
 ## Reproducible evidence
 
@@ -83,6 +84,11 @@ Every fixture connection also locks the negotiated methods as
 `chacha20-poly1305@openssh.com` in both directions, and `hmac-sha2-256` in both
 directions. This proves one modern launch profile; it does not replace ECDSA,
 AES-GCM, RSA/SHA-2, or representative production-server coverage.
+The live keyboard fixture exercises an informational zero-prompt round followed
+by distinct password and verification-code rounds, preserving their exact text
+and `echo=false` metadata. Its responder deliberately suspends before replying.
+Cancelling while that responder is suspended wakes and joins the libssh2 worker
+in under one millisecond on the development Mac.
 
 ## Reproduce
 
@@ -125,9 +131,8 @@ host-neutral demand and queue semantics.
 
 ## Live-fixture work required before selection
 
-1. Replace pre-supplied keyboard-interactive answers with an asynchronous
-   challenge broker that preserves prompt text and echo policy without calling
-   Swift concurrency from libssh2's synchronous callback.
+1. Connect the asynchronous challenge responder to UIKit and Keychain-backed
+   credential policy; add name/instruction and mixed echo/no-echo fixtures.
 2. Add the explicit user decision boundary for unknown and changed host keys;
    strict acceptance and rejection controls already pass.
 3. Add ECDSA and AES-GCM fixture endpoints, then repeat the now-instrumented

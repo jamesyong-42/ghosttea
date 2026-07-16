@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <poll.h>
@@ -9,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <libssh2.h>
@@ -22,6 +24,17 @@ struct ghosttea_ssh_session {
     size_t keyboard_answer_capacity;
     size_t keyboard_next_answer;
     int keyboard_prompt_count;
+    pthread_mutex_t keyboard_mutex;
+    pthread_cond_t keyboard_condition;
+    int keyboard_broker_enabled;
+    int keyboard_broker_prompt_ready;
+    int keyboard_broker_answers_ready;
+    int keyboard_broker_cancelled;
+    char *keyboard_broker_name;
+    char *keyboard_broker_instruction;
+    char **keyboard_broker_prompts;
+    int *keyboard_broker_echo;
+    int keyboard_broker_prompt_count;
 };
 
 static pthread_once_t libssh2_initialization_once = PTHREAD_ONCE_INIT;
@@ -38,7 +51,7 @@ static void write_error(char *buffer, size_t length, const char *message) {
     snprintf(buffer, length, "%s", message == NULL ? "unknown error" : message);
 }
 
-static void clear_keyboard_answers(ghosttea_ssh_session_t *session) {
+static void clear_keyboard_answer_values(ghosttea_ssh_session_t *session) {
     if (session == NULL) {
         return;
     }
@@ -54,7 +67,90 @@ static void clear_keyboard_answers(ghosttea_ssh_session_t *session) {
     session->keyboard_answer_count = 0;
     session->keyboard_answer_capacity = 0;
     session->keyboard_next_answer = 0;
+}
+
+static void clear_keyboard_answers(ghosttea_ssh_session_t *session) {
+    clear_keyboard_answer_values(session);
     session->keyboard_prompt_count = 0;
+}
+
+static char *copy_sized_string(const char *text, int length) {
+    if (length < 0 || (text == NULL && length > 0)) {
+        return NULL;
+    }
+    char *copy = malloc((size_t)length + 1);
+    if (copy == NULL) {
+        return NULL;
+    }
+    if (length > 0) {
+        memcpy(copy, text, (size_t)length);
+    }
+    copy[length] = '\0';
+    return copy;
+}
+
+static void clear_keyboard_broker_prompt(ghosttea_ssh_session_t *session) {
+    free(session->keyboard_broker_name);
+    free(session->keyboard_broker_instruction);
+    for (int index = 0; index < session->keyboard_broker_prompt_count; index++) {
+        free(session->keyboard_broker_prompts[index]);
+    }
+    free(session->keyboard_broker_prompts);
+    free(session->keyboard_broker_echo);
+    session->keyboard_broker_name = NULL;
+    session->keyboard_broker_instruction = NULL;
+    session->keyboard_broker_prompts = NULL;
+    session->keyboard_broker_echo = NULL;
+    session->keyboard_broker_prompt_count = 0;
+    session->keyboard_broker_prompt_ready = 0;
+}
+
+static int store_keyboard_broker_prompt(
+    ghosttea_ssh_session_t *session,
+    const char *name,
+    int name_length,
+    const char *instruction,
+    int instruction_length,
+    int prompt_count,
+    const LIBSSH2_USERAUTH_KBDINT_PROMPT *prompts
+) {
+    clear_keyboard_broker_prompt(session);
+    session->keyboard_broker_name = copy_sized_string(name, name_length);
+    session->keyboard_broker_instruction = copy_sized_string(instruction, instruction_length);
+    if (session->keyboard_broker_name == NULL
+        || session->keyboard_broker_instruction == NULL) {
+        clear_keyboard_broker_prompt(session);
+        return -1;
+    }
+    if (prompt_count == 0) {
+        return 0;
+    }
+    session->keyboard_broker_prompts = calloc(
+        (size_t)prompt_count,
+        sizeof(*session->keyboard_broker_prompts)
+    );
+    session->keyboard_broker_echo = calloc(
+        (size_t)prompt_count,
+        sizeof(*session->keyboard_broker_echo)
+    );
+    if (session->keyboard_broker_prompts == NULL
+        || session->keyboard_broker_echo == NULL) {
+        clear_keyboard_broker_prompt(session);
+        return -1;
+    }
+    session->keyboard_broker_prompt_count = prompt_count;
+    for (int index = 0; index < prompt_count; index++) {
+        session->keyboard_broker_prompts[index] = copy_sized_string(
+            (const char *)prompts[index].text,
+            (int)prompts[index].length
+        );
+        session->keyboard_broker_echo[index] = prompts[index].echo;
+        if (session->keyboard_broker_prompts[index] == NULL) {
+            clear_keyboard_broker_prompt(session);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static void keyboard_callback(
@@ -67,17 +163,49 @@ static void keyboard_callback(
     LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses,
     void **abstract
 ) {
-    (void)name;
-    (void)name_length;
-    (void)instruction;
-    (void)instruction_length;
-    (void)prompts;
-
     ghosttea_ssh_session_t *session = abstract == NULL ? NULL : *abstract;
-    if (session == NULL
-        || prompt_count < 0
-        || session->keyboard_next_answer + (size_t)prompt_count
-            > session->keyboard_answer_count) {
+    if (session == NULL || prompt_count < 0) {
+        return;
+    }
+
+    if (session->keyboard_broker_enabled != 0) {
+        pthread_mutex_lock(&session->keyboard_mutex);
+        if (store_keyboard_broker_prompt(
+                session,
+                name,
+                name_length,
+                instruction,
+                instruction_length,
+                prompt_count,
+                prompts
+            ) != 0) {
+            session->keyboard_broker_cancelled = 1;
+        } else {
+            session->keyboard_broker_prompt_ready = 1;
+            pthread_cond_broadcast(&session->keyboard_condition);
+        }
+        while (session->keyboard_broker_answers_ready == 0
+            && session->keyboard_broker_cancelled == 0) {
+            pthread_cond_wait(&session->keyboard_condition, &session->keyboard_mutex);
+        }
+        if (session->keyboard_broker_cancelled == 0
+            && session->keyboard_answer_count == (size_t)prompt_count) {
+            for (int index = 0; index < prompt_count; index++) {
+                responses[index].text = strdup(session->keyboard_answers[index]);
+                if (responses[index].text != NULL) {
+                    responses[index].length = (unsigned int)strlen(responses[index].text);
+                }
+            }
+            session->keyboard_prompt_count += prompt_count;
+        }
+        clear_keyboard_answer_values(session);
+        session->keyboard_broker_answers_ready = 0;
+        pthread_mutex_unlock(&session->keyboard_mutex);
+        return;
+    }
+
+    if (session->keyboard_next_answer + (size_t)prompt_count
+        > session->keyboard_answer_count) {
         return;
     }
 
@@ -153,9 +281,20 @@ ghosttea_ssh_session_t *ghosttea_ssh_session_create(int socket_fd) {
     if (wrapper == NULL) {
         return NULL;
     }
+    if (pthread_mutex_init(&wrapper->keyboard_mutex, NULL) != 0) {
+        free(wrapper);
+        return NULL;
+    }
+    if (pthread_cond_init(&wrapper->keyboard_condition, NULL) != 0) {
+        pthread_mutex_destroy(&wrapper->keyboard_mutex);
+        free(wrapper);
+        return NULL;
+    }
     wrapper->socket_fd = socket_fd;
     wrapper->session = libssh2_session_init_ex(NULL, NULL, NULL, wrapper);
     if (wrapper->session == NULL) {
+        pthread_cond_destroy(&wrapper->keyboard_condition);
+        pthread_mutex_destroy(&wrapper->keyboard_mutex);
         free(wrapper);
         return NULL;
     }
@@ -176,9 +315,13 @@ void ghosttea_ssh_session_destroy(ghosttea_ssh_session_t *session) {
     if (session->channel != NULL) {
         libssh2_channel_free(session->channel);
     }
+    ghosttea_ssh_session_keyboard_broker_cancel(session);
     clear_keyboard_answers(session);
+    clear_keyboard_broker_prompt(session);
     libssh2_session_free(session->session);
     ghosttea_ssh_socket_close(session->socket_fd);
+    pthread_cond_destroy(&session->keyboard_condition);
+    pthread_mutex_destroy(&session->keyboard_mutex);
     memset(session, 0, sizeof(*session));
     free(session);
 }
@@ -332,7 +475,7 @@ void ghosttea_ssh_session_reset_keyboard_answers(ghosttea_ssh_session_t *session
     clear_keyboard_answers(session);
 }
 
-int ghosttea_ssh_session_add_keyboard_answer(
+static int add_keyboard_answer(
     ghosttea_ssh_session_t *session,
     const char *answer
 ) {
@@ -356,6 +499,13 @@ int ghosttea_ssh_session_add_keyboard_answer(
     return 0;
 }
 
+int ghosttea_ssh_session_add_keyboard_answer(
+    ghosttea_ssh_session_t *session,
+    const char *answer
+) {
+    return add_keyboard_answer(session, answer);
+}
+
 int ghosttea_ssh_session_auth_keyboard_interactive(
     ghosttea_ssh_session_t *session,
     const char *username
@@ -366,6 +516,165 @@ int ghosttea_ssh_session_auth_keyboard_interactive(
         (unsigned int)strlen(username),
         keyboard_callback
     );
+}
+
+void ghosttea_ssh_session_keyboard_broker_begin(ghosttea_ssh_session_t *session) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    session->keyboard_broker_enabled = 1;
+    session->keyboard_broker_cancelled = 0;
+    session->keyboard_broker_answers_ready = 0;
+    clear_keyboard_answers(session);
+    clear_keyboard_broker_prompt(session);
+    pthread_mutex_unlock(&session->keyboard_mutex);
+}
+
+int ghosttea_ssh_session_keyboard_broker_wait(
+    ghosttea_ssh_session_t *session,
+    int timeout_milliseconds
+) {
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return -1;
+    }
+    deadline.tv_sec += timeout_milliseconds / 1000;
+    deadline.tv_nsec += (long)(timeout_milliseconds % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    pthread_mutex_lock(&session->keyboard_mutex);
+    while (session->keyboard_broker_prompt_ready == 0
+        && session->keyboard_broker_cancelled == 0) {
+        int status = pthread_cond_timedwait(
+            &session->keyboard_condition,
+            &session->keyboard_mutex,
+            &deadline
+        );
+        if (status == ETIMEDOUT) {
+            pthread_mutex_unlock(&session->keyboard_mutex);
+            return 0;
+        }
+        if (status != 0) {
+            pthread_mutex_unlock(&session->keyboard_mutex);
+            return -1;
+        }
+    }
+    int result = session->keyboard_broker_cancelled == 0 ? 1 : -1;
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+static int copy_keyboard_broker_text(
+    const char *text,
+    char *buffer,
+    size_t buffer_length
+) {
+    if (text == NULL) {
+        return -1;
+    }
+    size_t length = strlen(text);
+    if (length > INT_MAX) {
+        return -1;
+    }
+    if (buffer != NULL && buffer_length > 0) {
+        size_t copy_length = length < buffer_length - 1 ? length : buffer_length - 1;
+        memcpy(buffer, text, copy_length);
+        buffer[copy_length] = '\0';
+    }
+    return (int)length;
+}
+
+int ghosttea_ssh_session_keyboard_broker_name(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    int result = copy_keyboard_broker_text(
+        session->keyboard_broker_name,
+        buffer,
+        buffer_length
+    );
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+int ghosttea_ssh_session_keyboard_broker_instruction(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    int result = copy_keyboard_broker_text(
+        session->keyboard_broker_instruction,
+        buffer,
+        buffer_length
+    );
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+int ghosttea_ssh_session_keyboard_broker_prompt_count(ghosttea_ssh_session_t *session) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    int result = session->keyboard_broker_prompt_count;
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+int ghosttea_ssh_session_keyboard_broker_prompt(
+    ghosttea_ssh_session_t *session,
+    int index,
+    char *buffer,
+    size_t buffer_length,
+    int *echo
+) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    if (index < 0 || index >= session->keyboard_broker_prompt_count) {
+        pthread_mutex_unlock(&session->keyboard_mutex);
+        return -1;
+    }
+    if (echo != NULL) {
+        *echo = session->keyboard_broker_echo[index];
+    }
+    int result = copy_keyboard_broker_text(
+        session->keyboard_broker_prompts[index],
+        buffer,
+        buffer_length
+    );
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+int ghosttea_ssh_session_keyboard_broker_add_answer(
+    ghosttea_ssh_session_t *session,
+    const char *answer
+) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    int result = add_keyboard_answer(session, answer);
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return result;
+}
+
+int ghosttea_ssh_session_keyboard_broker_complete(ghosttea_ssh_session_t *session) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    if (session->keyboard_answer_count
+        != (size_t)session->keyboard_broker_prompt_count) {
+        pthread_mutex_unlock(&session->keyboard_mutex);
+        return -1;
+    }
+    session->keyboard_broker_answers_ready = 1;
+    session->keyboard_broker_prompt_ready = 0;
+    pthread_cond_broadcast(&session->keyboard_condition);
+    pthread_mutex_unlock(&session->keyboard_mutex);
+    return 0;
+}
+
+void ghosttea_ssh_session_keyboard_broker_cancel(ghosttea_ssh_session_t *session) {
+    pthread_mutex_lock(&session->keyboard_mutex);
+    session->keyboard_broker_cancelled = 1;
+    pthread_cond_broadcast(&session->keyboard_condition);
+    pthread_mutex_unlock(&session->keyboard_mutex);
 }
 
 int ghosttea_ssh_session_is_authenticated(const ghosttea_ssh_session_t *session) {
