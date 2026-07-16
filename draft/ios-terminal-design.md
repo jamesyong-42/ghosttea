@@ -1768,8 +1768,11 @@ blocked-read cancellation, including explicit chained MFA with its `-19`
 return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
-Signed physical-device VT/network execution, UIKit/Keychain authentication
-policy, representative-server and
+The signed VT proof and raw one/four/eight-session footprint matrix pass on an
+iPhone 14 Pro running iOS 26.5; the measurements are recorded in
+`apple/GhostteaKit/Compatibility/ios-device-evidence.md`. Physical-device SSH
+and network-transition execution, UIKit/Keychain authentication policy,
+representative-server and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.

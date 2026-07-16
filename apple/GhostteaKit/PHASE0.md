@@ -69,6 +69,11 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   libssh2/OpenSSL modules without Xcode's multiple-static-binary header collision;
 - reproducible unsigned arm64 builds of that harness for both the iOS Simulator
   and physical-device SDK.
+- a signed physical-device build installed and launched on an iPhone 14 Pro
+  running iOS 26.5. The VT smoke result matched the host fixture, and the
+  one/four/eight-session memory matrix completed with every session retaining
+  4,977 scrollback rows and reporting compression support. Exact measurements
+  are recorded in `Compatibility/ios-device-evidence.md`.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -94,9 +99,10 @@ UIKit, transport state, and the rest of the application.
 
 ## Remaining gates
 
-1. Sign and run `apple/GhostteaHarness` on a physical iOS 17+ device. Record the
-   device/OS, VT result, memory matrix, and launch-server SSH results; the
-   checked-in unsigned simulator/device-SDK build is already green.
+1. Run the harness SSH probe against the launch-server sample and record
+   authentication, negotiated algorithms, host-key decisions, command output,
+   and Wi-Fi/cellular transition behavior. The signed physical-device VT and
+   raw scrollback-memory run is complete.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
    authentication including encrypted private keys, the asynchronous prompt
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
@@ -107,10 +113,10 @@ UIKit, transport state, and the rest of the application.
    physical-device execution. The public-key partial step remains locked as
    `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
-3. Use the harness for the initial VT physical-footprint measurement, then
-   measure the complete terminal stack for one foreground and several
-   background fixtures on the oldest supported device class. Record terminal
-   state, scrollback, decoded image, and GPU atlas bytes separately.
+3. The initial raw VT physical-footprint measurement is complete. Measure the
+   complete terminal stack for one foreground and several background fixtures
+   on the oldest supported device class. Record terminal state, scrollback,
+   decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.
 6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.
