@@ -16,6 +16,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - XCFramework architecture/header/symbol validation and a Swift lifecycle and
   keyboard-interactive import probe;
 - SSH candidate decision, capability matrix, and flow-control gate.
+- a pinned OpenSSH reference fixture covering password, public key,
+  two-prompt keyboard-interactive, chained partial success, exit streams/status,
+  PTY resize, and a stalled-reader output flood.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -42,7 +45,13 @@ UIKit, transport state, and the rest of the application.
 ## Remaining gates
 
 1. Run the proof on a physical iOS device once an app harness and signing team are available.
-2. Build an SSH fixture service covering the required matrix, especially keyboard-interactive, partial success, host-key policy, resize, cancellation, and a sustained-output flood. libssh2 advances to this gate but is not selected; its missing partial-success handling remains a blocker for public-key-plus-MFA servers.
+2. Run the libssh2 candidate against the implemented OpenSSH fixture. The
+   system-OpenSSH baseline passes keyboard-interactive, partial-success chaining,
+   exact exit behavior, PTY resize, and a 32 MiB stalled-reader flood. This is
+   fixture validation, not libssh2 evidence. Host-key policy, cancellation, and
+   SSH-channel window instrumentation also remain open. libssh2 is not selected;
+   its missing partial-success handling remains a blocker for
+   public-key-plus-MFA servers.
 3. Measure resident memory for one foreground and several background terminal fixtures on the oldest supported device class. Record terminal state, scrollback, decoded image, and GPU atlas bytes separately.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.

@@ -19,6 +19,12 @@ servers. It does not correctly model a server accepting a public key with
 partial success and then requiring a second authentication method. That flow
 is a release blocker if it appears in the launch server sample.
 
+The pinned OpenSSH fixture now proves the required password, public-key,
+two-prompt keyboard-interactive, and `publickey,keyboard-interactive` reference
+server scenarios. Its system-OpenSSH client baseline also passes PTY resize,
+exit-stream/status, and stalled-reader flood checks. Matrix rows remain open
+until the libssh2 adapter—not the reference client—passes them.
+
 ## Live-server matrix
 
 | Area           | Probe                                         | v1 expectation            | libssh2 compile evidence                        | Remaining gate                                                   |

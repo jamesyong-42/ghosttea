@@ -1,0 +1,10 @@
+Include /etc/ssh/sshd_config.ghosttea-common
+Port 22025
+PidFile /run/ghosttea-sshd/public-key.pid
+HostKey /run/ghosttea-sshd/host_public_key_ed25519_key
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AuthenticationMethods publickey

@@ -1,0 +1,14 @@
+ListenAddress 0.0.0.0
+AddressFamily inet
+PermitRootLogin no
+PermitEmptyPasswords no
+AllowUsers ghosttea
+StrictModes yes
+PrintMotd no
+UseDNS no
+AllowAgentForwarding no
+AllowTcpForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+Subsystem sftp internal-sftp

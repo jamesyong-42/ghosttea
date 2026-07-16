@@ -1,0 +1,10 @@
+Include /etc/ssh/sshd_config.ghosttea-common
+Port 22024
+PidFile /run/ghosttea-sshd/partial.pid
+HostKey /run/ghosttea-sshd/host_partial_ed25519_key
+UsePAM yes
+PasswordAuthentication no
+KbdInteractiveAuthentication yes
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AuthenticationMethods publickey,keyboard-interactive:pam

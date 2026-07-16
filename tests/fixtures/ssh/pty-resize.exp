@@ -1,0 +1,51 @@
+#!/usr/bin/expect -f
+
+set timeout 15
+set host [lindex $argv 0]
+set port [lindex $argv 1]
+set known_hosts [lindex $argv 2]
+set private_key [lindex $argv 3]
+
+set remote_command {printf 'INITIAL '; stty size; trap 'printf "RESIZED "; stty size; exit 0' WINCH; while :; do sleep 1; done}
+set command [list ssh \
+  -F /dev/null \
+  -tt \
+  -p $port \
+  -i $private_key \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=$known_hosts \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o IdentitiesOnly=yes \
+  -o ConnectTimeout=5 \
+  "ghosttea@$host" \
+  $remote_command]
+
+spawn {*}$command
+stty rows 41 columns 132 < $spawn_out(slave,name)
+expect {
+  -re {INITIAL 41 132} {}
+  timeout {
+    puts stderr "PTY fixture did not report its initial 41x132 size"
+    exit 1
+  }
+}
+
+stty rows 50 columns 140 < $spawn_out(slave,name)
+expect {
+  -re {RESIZED 50 140} {}
+  timeout {
+    puts stderr "PTY fixture did not report its resized 50x140 size"
+    exit 1
+  }
+}
+
+expect eof
+set wait_status [wait]
+set exit_status [lindex $wait_status 3]
+if {$exit_status != 0} {
+  puts stderr "PTY resize probe failed: exit=$exit_status"
+  exit 1
+}
+
+puts "PTY initial-size and resize probe passed"

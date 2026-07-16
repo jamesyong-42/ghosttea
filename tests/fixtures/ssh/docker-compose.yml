@@ -1,0 +1,15 @@
+services:
+  sshd:
+    build:
+      context: .
+    init: true
+    ports:
+      - "127.0.0.1:${GHOSTTEA_SSH_PASSWORD_PORT:-22022}:22022"
+      - "127.0.0.1:${GHOSTTEA_SSH_KEYBOARD_PORT:-22023}:22023"
+      - "127.0.0.1:${GHOSTTEA_SSH_PARTIAL_PORT:-22024}:22024"
+      - "127.0.0.1:${GHOSTTEA_SSH_PUBLIC_KEY_PORT:-22025}:22025"
+    volumes:
+      - type: bind
+        source: ${GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY:?set by scripts/ssh-fixture.mjs}
+        target: /fixture/authorized_keys
+        read_only: true

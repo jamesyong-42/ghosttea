@@ -21,6 +21,7 @@ npm run bootstrap:ssh:apple
 npm run build:ssh:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
+npm run test:ssh:fixture
 npm run bench:ghostty-vt:apple:matrix
 ```
 

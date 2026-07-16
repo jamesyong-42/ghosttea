@@ -1,0 +1,77 @@
+#!/usr/bin/expect -f
+
+set timeout 15
+set mode [lindex $argv 0]
+set host [lindex $argv 1]
+set port [lindex $argv 2]
+set known_hosts [lindex $argv 3]
+set private_key [lindex $argv 4]
+
+if {$mode ni {password keyboard partial}} {
+  puts stderr "unsupported probe mode: $mode"
+  exit 2
+}
+
+set command [list ssh \
+  -F /dev/null \
+  -p $port \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=$known_hosts \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o IdentitiesOnly=yes \
+  -o NumberOfPasswordPrompts=1 \
+  -o ConnectTimeout=5]
+
+if {$mode eq "password"} {
+  lappend command -o PreferredAuthentications=password
+} elseif {$mode eq "keyboard"} {
+  lappend command -o PreferredAuthentications=keyboard-interactive
+} else {
+  lappend command -i $private_key -o PreferredAuthentications=publickey,keyboard-interactive
+}
+
+lappend command "ghosttea@$host" "printf 'ghosttea-$mode-ok\\n'"
+
+spawn {*}$command
+
+if {$mode eq "password"} {
+  expect {
+    -re {(?i)password: *$} {send -- "ghosttea-password\r"}
+    timeout {
+      puts stderr "$mode probe did not receive its password prompt"
+      exit 1
+    }
+  }
+} else {
+  expect {
+    -re {Fixture password: *$} {send -- "ghosttea-password\r"}
+    timeout {
+      puts stderr "$mode probe did not receive its fixture-password prompt"
+      exit 1
+    }
+  }
+  expect {
+    -re {Verification code: *$} {send -- "123456\r"}
+    timeout {
+      puts stderr "$mode probe did not receive its verification-code prompt"
+      exit 1
+    }
+  }
+}
+
+expect {
+  -re "ghosttea-$mode-ok" {}
+  timeout {
+    puts stderr "$mode probe did not receive its success marker"
+    exit 1
+  }
+}
+expect eof
+set wait_status [wait]
+set exit_status [lindex $wait_status 3]
+if {$exit_status != 0} {
+  puts stderr "$mode probe failed: exit=$exit_status"
+  exit 1
+}
+
+puts "$mode probe passed"

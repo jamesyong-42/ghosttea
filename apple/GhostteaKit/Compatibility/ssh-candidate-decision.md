@@ -51,6 +51,14 @@ API import work on macOS. The same target cross-compiles for iOS device and
 simulator. The upstream 1.11.1 tag reports the runtime string `1.11.1_DEV`; the
 commit pin, rather than that string, is the authoritative source identity.
 
+The repository also contains a pinned OpenSSH reference fixture with four
+endpoints: password, public key, two-prompt keyboard-interactive, and public key
+followed by keyboard-interactive. Its system-OpenSSH baseline proves the
+scenarios are configured correctly. It also verifies exact stdout/stderr and
+exit status, an initial and repeated PTY size, and a 32 MiB stalled-reader flood
+that resumes without byte loss. Those results do not count as libssh2 evidence;
+the candidate adapter must execute the same matrix.
+
 ## Reproduce
 
 From the repository root on Apple Silicon macOS:
@@ -60,6 +68,7 @@ npm run bootstrap:ssh:apple
 npm run build:ssh:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
+npm run test:ssh:fixture
 ```
 
 Generated source checkouts, build directories, and XCFrameworks are ignored.
@@ -87,16 +96,16 @@ the real network adapter remains gated.
 
 ## Live-fixture work required before selection
 
-1. Stand up pinned OpenSSH fixtures for password, public key,
-   keyboard-interactive single/multiple prompt, and partial-success chains.
+1. Run the libssh2 candidate against the implemented password, public-key,
+   two-prompt keyboard-interactive, and partial-success-chain fixtures.
 2. Test known, unknown, and changed host keys with an explicit user decision
    boundary.
 3. Record negotiated host-key, key-exchange, cipher, and MAC algorithms for the
    launch server sample.
-4. Exercise PTY creation, repeated resize, stdout/stderr/EOF, exit status,
-   cancellation, and reconnect orchestration.
-5. Flood a channel while deliberately stalling terminal demand; measure socket,
-   SSH-channel, adapter-queue, and whole-process memory.
+4. Repeat the reference PTY, resize, stdout/stderr/EOF, and exit-status probes
+   through the candidate; add cancellation and reconnect orchestration.
+5. Repeat the reference stalled-reader flood through the candidate while
+   measuring socket, SSH-channel, adapter-queue, and whole-process memory.
 6. Run the package and network fixture on a physical low-end supported iOS
    device.
 

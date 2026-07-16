@@ -1,0 +1,9 @@
+Include /etc/ssh/sshd_config.ghosttea-common
+Port 22023
+PidFile /run/ghosttea-sshd/keyboard.pid
+HostKey /run/ghosttea-sshd/host_keyboard_ed25519_key
+UsePAM yes
+PasswordAuthentication no
+KbdInteractiveAuthentication yes
+PubkeyAuthentication no
+AuthenticationMethods keyboard-interactive:pam
