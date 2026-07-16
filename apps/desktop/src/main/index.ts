@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import { GhostteaElectronBackend, type GhostteaElectronBackendOptions } from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
+import { DesktopTabRegistry } from "./tab-registry";
 
 app.setName("Ghosttea");
 if (process.platform === "darwin") app.setActivationPolicy("regular");
@@ -26,31 +28,70 @@ const ownsProfile = app.requestSingleInstanceLock({ profile: profile.name });
 if (!ownsProfile) app.quit();
 
 ipcMain.on("terminal-context-menu", (event, canCopy: boolean) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) return;
-  const send = (action: string): void => mainWindow?.webContents.send("terminal-menu-action", action);
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  const send = (action: string): void => window.webContents.send("terminal-menu-action", action);
   Menu.buildFromTemplate([
     { label: "Copy", enabled: Boolean(canCopy), click: () => send("copy") },
     { label: "Paste", click: () => send("paste") },
     { type: "separator" },
     { label: "Select All", click: () => send("select-all") },
     { label: "Clear Screen", click: () => send("clear-screen") },
-  ]).popup({ window: mainWindow });
+  ]).popup({ window });
 });
 
 ipcMain.on("terminal-toggle-fullscreen", (event) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) return;
-  mainWindow.setFullScreen(!mainWindow.isFullScreen());
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window) window.setFullScreen(!window.isFullScreen());
 });
 
 ipcMain.on("terminal-close-window", (event) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) return;
-  mainWindow.close();
+  BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
-let mainWindow: BrowserWindow | undefined;
+ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  void createWindow({ tabOf: window, initialCwd: typeof cwd === "string" && cwd.trim() ? cwd : undefined }).catch(
+    (error) => console.error("failed to create tab", error),
+  );
+});
+
+ipcMain.on("terminal-select-tab", (event, target: unknown) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  if (target === "previous") {
+    if (process.platform === "darwin") window.selectPreviousTab();
+    else focusRelativeTab(window, -1);
+  } else if (target === "next") {
+    if (process.platform === "darwin") window.selectNextTab();
+    else focusRelativeTab(window, 1);
+  } else if (typeof target === "number" && Number.isSafeInteger(target)) {
+    focusTab(tabs.tabAt(window, target)?.window);
+  }
+});
+
+ipcMain.on("terminal-close-tab", (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+ipcMain.on("terminal-tab-sessions", (event, sessionIds: unknown) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || !Array.isArray(sessionIds) || !sessionIds.every((id) => typeof id === "string")) return;
+  tabs.updateSessions(window, sessionIds);
+});
+
+ipcMain.on("terminal-tab-active-cwd", (event, cwd: unknown) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  tabs.updateActiveCwd(window, typeof cwd === "string" && cwd.trim() ? cwd : undefined);
+});
+
+const tabs = new DesktopTabRegistry<BrowserWindow>();
 let backend: GhostteaElectronBackend | undefined;
 let quitting = false;
 let recoveringBackend: Promise<void> | undefined;
+let lastFocusedWindow: BrowserWindow | undefined;
 
 function backendOptions(): GhostteaElectronBackendOptions {
   const externalControl = process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET;
@@ -112,7 +153,9 @@ function recoverBackend(): Promise<void> {
     for (let attempt = 0; attempt < 5 && !quitting; attempt += 1) {
       try {
         await ensureBackend();
-        mainWindow?.webContents.reload();
+        for (const record of tabs.records()) {
+          if (!record.window.isDestroyed()) record.window.webContents.reload();
+        }
         return;
       } catch (error) {
         lastError = error;
@@ -127,19 +170,66 @@ function recoverBackend(): Promise<void> {
 }
 
 function focusMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
+  const window =
+    BrowserWindow.getFocusedWindow() ??
+    (lastFocusedWindow && !lastFocusedWindow.isDestroyed() ? lastFocusedWindow : tabs.records()[0]?.window);
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
   if (process.platform === "darwin") app.focus({ steal: true });
-  mainWindow.show();
-  mainWindow.focus();
+  window.show();
+  window.focus();
 }
 
-async function createWindow(): Promise<void> {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    focusMainWindow();
-    return;
+function focusTab(window: BrowserWindow | undefined): void {
+  if (!window || window.isDestroyed()) return;
+  window.show();
+  window.focus();
+}
+
+function focusRelativeTab(window: BrowserWindow, offset: -1 | 1): void {
+  const current = tabs.get(window);
+  if (!current) return;
+  const group = tabs.group(current.groupId);
+  const index = group.findIndex((record) => record.window === window);
+  if (index < 0 || group.length < 2) return;
+  focusTab(group[(index + offset + group.length) % group.length]?.window);
+}
+
+function notifyTabGroup(groupId: string): void {
+  const group = tabs.group(groupId);
+  for (const record of group) {
+    if (!record.window.isDestroyed()) record.window.webContents.send("terminal-tab-count", group.length);
   }
+}
+
+function terminateClosedTabSessions(sessionIds: ReadonlySet<string>): void {
+  if (quitting || !backend || sessionIds.size === 0) return;
+  const client = backend.automation;
+  for (const sessionId of sessionIds) {
+    void client.terminate(sessionId, "user").catch((error) => {
+      console.warn(`[terminal-runtime] failed to terminate closed-tab session ${sessionId}`, error);
+    });
+  }
+}
+
+interface CreateWindowOptions {
+  tabOf?: BrowserWindow;
+  initialCwd?: string | undefined;
+  claimExistingSessions?: boolean;
+}
+
+async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserWindow> {
   await ensureBackend();
+
+  const parentRecord = options.tabOf ? tabs.get(options.tabOf) : undefined;
+  const groupId = parentRecord?.groupId ?? `ghosttea-${profile.name}-${randomUUID()}`;
+  const tabId = randomUUID();
+  const claimExistingSessions = options.claimExistingSessions ?? tabs.records().length === 0;
+  const additionalArguments = [
+    `--ghosttea-tab-id=${tabId}`,
+    `--ghosttea-tab-claim-existing=${claimExistingSessions ? "1" : "0"}`,
+    ...(options.initialCwd ? [`--ghosttea-tab-cwd=${encodeURIComponent(options.initialCwd)}`] : []),
+  ];
 
   const window = new BrowserWindow({
     width: 800,
@@ -150,7 +240,7 @@ async function createWindow(): Promise<void> {
     title: "Ghosttea",
     backgroundColor: "#282c34",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 12, y: 8 } } : {}),
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 12, y: 8 }, tabbingIdentifier: groupId } : {}),
     acceptFirstMouse: true,
     fullscreenable: true,
     autoHideMenuBar: process.platform !== "darwin",
@@ -160,10 +250,15 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
-      backgroundThrottling: false,
+      backgroundThrottling: true,
+      additionalArguments,
     },
   });
-  mainWindow = window;
+  const record = tabs.add(window, tabId, groupId);
+  if (options.tabOf && process.platform === "darwin" && !options.tabOf.isDestroyed()) {
+    options.tabOf.addTabbedWindow(window);
+  }
+  notifyTabGroup(groupId);
   const revealWindow = (): void => {
     if (window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
@@ -178,8 +273,20 @@ async function createWindow(): Promise<void> {
     }
   };
   window.once("ready-to-show", revealWindow);
+  window.on("focus", () => {
+    lastFocusedWindow = window;
+  });
+  window.on("new-window-for-tab", () => {
+    void createWindow({ tabOf: window, initialCwd: record.activeCwd }).catch((error) =>
+      console.error("failed to create native tab", error),
+    );
+  });
   window.once("closed", () => {
-    if (mainWindow === window) mainWindow = undefined;
+    const closed = tabs.delete(window);
+    if (lastFocusedWindow === window) lastFocusedWindow = undefined;
+    if (!closed) return;
+    terminateClosedTabSessions(closed.sessionIds);
+    notifyTabGroup(closed.groupId);
   });
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[terminal-runtime] preload failed at ${preloadPath}: ${error.stack ?? error.message}`);
@@ -197,6 +304,7 @@ async function createWindow(): Promise<void> {
     if (window.isDestroyed() || !backend?.running) return;
     console.log("[terminal-runtime] renderer loaded; transferring ports");
     backend.attachRenderer(window.webContents);
+    window.webContents.send("terminal-tab-count", tabs.group(groupId).length);
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -208,6 +316,7 @@ async function createWindow(): Promise<void> {
   // WebGPU renderer continuously paints. Loading has completed at this point,
   // so reveal explicitly while keeping the event listener as the fast path.
   revealWindow();
+  return window;
 }
 
 app
@@ -226,7 +335,13 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (!mainWindow) void createWindow().catch((error) => console.error("failed to recreate window", error));
+  if (tabs.records().length === 0) {
+    void createWindow({ claimExistingSessions: true }).catch((error) =>
+      console.error("failed to recreate window", error),
+    );
+  } else {
+    focusMainWindow();
+  }
 });
 
 app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => {

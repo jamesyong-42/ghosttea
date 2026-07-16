@@ -12,6 +12,25 @@ const key = (value: string, overrides: Partial<KeyboardEvent> = {}) =>
   }) as KeyboardEvent;
 
 describe("Ghostty pane hotkeys", () => {
+  it("maps native tab creation, selection, and close bindings", () => {
+    expect(ghosttyHotkey(key("t"))).toEqual({ type: "new-tab" });
+    expect(ghosttyHotkey(key("w", { altKey: true }))).toEqual({ type: "close-tab" });
+    expect(ghosttyHotkey(key("[", { shiftKey: true }))).toEqual({
+      type: "select-tab",
+      target: "previous",
+    });
+    expect(ghosttyHotkey(key("}", { shiftKey: true }))).toEqual({ type: "select-tab", target: "next" });
+    expect(ghosttyHotkey(key("4"))).toEqual({ type: "select-tab", target: 4 });
+    expect(ghosttyHotkey(key("Tab", { metaKey: false, ctrlKey: true }))).toEqual({
+      type: "select-tab",
+      target: "next",
+    });
+    expect(ghosttyHotkey(key("Tab", { metaKey: false, ctrlKey: true, shiftKey: true }))).toEqual({
+      type: "select-tab",
+      target: "previous",
+    });
+  });
+
   it("opens the remote session palette", () => {
     expect(ghosttyHotkey(key("o", { shiftKey: true }))).toEqual({ type: "remote-sessions" });
   });

@@ -2,6 +2,9 @@ import type { SplitAxis } from "./pane-layout";
 
 export type GhosttyHotkey =
   | { type: "remote-sessions" }
+  | { type: "new-tab" }
+  | { type: "select-tab"; target: "previous" | "next" | number }
+  | { type: "close-tab" }
   | { type: "split"; axis: SplitAxis }
   | { type: "focus-relative"; offset: -1 | 1 }
   | { type: "focus-direction"; direction: "left" | "right" | "up" | "down" }
@@ -13,8 +16,22 @@ export type GhosttyHotkey =
 type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "shiftKey" | "altKey" | "ctrlKey">;
 
 export function ghosttyHotkey(event: KeyLike): GhosttyHotkey | null {
-  if (!event.metaKey) return null;
   const key = event.key.toLowerCase();
+  if (!event.metaKey && event.ctrlKey && !event.altKey && key === "tab") {
+    return { type: "select-tab", target: event.shiftKey ? "previous" : "next" };
+  }
+  if (!event.metaKey) return null;
+  if (key === "t" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "new-tab" };
+  if (event.shiftKey && !event.altKey && !event.ctrlKey && (key === "[" || key === "{")) {
+    return { type: "select-tab", target: "previous" };
+  }
+  if (event.shiftKey && !event.altKey && !event.ctrlKey && (key === "]" || key === "}")) {
+    return { type: "select-tab", target: "next" };
+  }
+  if (/^[1-9]$/.test(key) && !event.shiftKey && !event.altKey && !event.ctrlKey) {
+    return { type: "select-tab", target: Number(key) };
+  }
+  if (key === "w" && !event.shiftKey && event.altKey && !event.ctrlKey) return { type: "close-tab" };
   if (key === "o" && event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "remote-sessions" };
   if (key === "d" && !event.altKey && !event.ctrlKey)
     return { type: "split", axis: event.shiftKey ? "vertical" : "horizontal" };

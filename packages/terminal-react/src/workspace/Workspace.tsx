@@ -32,6 +32,7 @@ import {
 } from "./pane-layout.js";
 import { ghosttyHotkey } from "./hotkeys.js";
 import { PendingPromiseCache } from "./pending-cache.js";
+import { sessionsToClaim } from "./session-scope.js";
 
 const DEFAULT_STORAGE_KEY = "ghosttea:workspace:v1";
 
@@ -41,6 +42,9 @@ export interface GhostteaWorkspacePlatform {
   showContextMenu: (canCopy: boolean) => void;
   toggleFullscreen: () => void;
   closeWindow: () => void;
+  newTab?: (cwd?: string) => void;
+  selectTab?: (target: "previous" | "next" | number) => void;
+  closeTab?: () => void;
   onMenuAction: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
 
@@ -58,6 +62,11 @@ export interface GhostteaWorkspaceProps {
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
+  active?: boolean;
+  showTitlebar?: boolean;
+  claimExistingSessions?: boolean;
+  initialCwd?: string;
+  onSessionsChange?: (sessionIds: readonly string[]) => void;
 }
 
 interface InitialWorkspace {
@@ -78,21 +87,26 @@ async function initializeWorkspace(
   terminalRuntime: ReturnType<typeof useGhostteaRuntime>,
   storageKey: string,
   defaultShell: string,
+  claimExistingSessions: boolean,
+  initialCwd: string | undefined,
 ): Promise<InitialWorkspace> {
   await terminalRuntime.connect();
   const sessions = await terminalRuntime.listSessions();
   const byId = new Map(sessions.map((session) => [session.id, session]));
   let saved: { layout?: unknown; activePaneId?: unknown; zoomedPaneId?: unknown } | undefined;
+  let hasSavedWorkspace = false;
   try {
     const serialized = localStorage.getItem(storageKey);
-    if (serialized) saved = JSON.parse(serialized) as typeof saved;
+    if (serialized) {
+      saved = JSON.parse(serialized) as typeof saved;
+      hasSavedWorkspace = true;
+    }
   } catch (error) {
     console.warn("[terminal-runtime] ignored invalid saved workspace", error);
   }
   let layout = restoreNode(saved?.layout, byId);
   const attached = new Set(leaves(layout ?? undefined).map((leaf) => leaf.session.id));
-  for (const session of sessions) {
-    if (session.exited || attached.has(session.id)) continue;
+  for (const session of sessionsToClaim(sessions, attached, claimExistingSessions && !hasSavedWorkspace)) {
     const next = pane(layoutId("pane"), session);
     layout = layout ? appendPane(layout, next) : next;
   }
@@ -100,6 +114,7 @@ async function initializeWorkspace(
     const session = await terminalRuntime.createSession({
       executable: defaultShell,
       args: [],
+      ...(initialCwd ? { cwd: initialCwd } : {}),
       environment: { mode: "inherit" },
       cols: 100,
       rows: 30,
@@ -120,10 +135,12 @@ function sharedInitialization(
   terminalRuntime: ReturnType<typeof useGhostteaRuntime>,
   storageKey: string,
   defaultShell: string,
+  claimExistingSessions: boolean,
+  initialCwd: string | undefined,
 ): Promise<InitialWorkspace> {
-  const key = `${storageKey}\u0000${defaultShell}`;
+  const key = `${storageKey}\u0000${defaultShell}\u0000${claimExistingSessions}\u0000${initialCwd ?? ""}`;
   return initializations.get(terminalRuntime, key, () =>
-    initializeWorkspace(terminalRuntime, storageKey, defaultShell),
+    initializeWorkspace(terminalRuntime, storageKey, defaultShell, claimExistingSessions, initialCwd),
   );
 }
 
@@ -216,6 +233,11 @@ export function GhostteaWorkspace({
   onActiveSessionChange,
   createSplitSession,
   enableRemoteSessions = true,
+  active = true,
+  showTitlebar = true,
+  claimExistingSessions = true,
+  initialCwd,
+  onSessionsChange,
 }: GhostteaWorkspaceProps) {
   const Sidebar = sidebar;
   const terminalRuntime = useGhostteaRuntime();
@@ -240,7 +262,13 @@ export function GhostteaWorkspace({
   useEffect(() => {
     let mounted = true;
     mountedRef.current = true;
-    void sharedInitialization(terminalRuntime, storageKey, platform.defaultShell).then(
+    void sharedInitialization(
+      terminalRuntime,
+      storageKey,
+      platform.defaultShell,
+      claimExistingSessions,
+      initialCwd,
+    ).then(
       (workspace) => {
         if (!mounted) return;
         setLayout(workspace.layout);
@@ -255,7 +283,7 @@ export function GhostteaWorkspace({
       mounted = false;
       mountedRef.current = false;
     };
-  }, [platform.defaultShell, storageKey, terminalRuntime]);
+  }, [claimExistingSessions, initialCwd, platform.defaultShell, storageKey, terminalRuntime]);
 
   useEffect(() => {
     layoutRef.current = layout;
@@ -284,6 +312,10 @@ export function GhostteaWorkspace({
   useEffect(() => {
     onActiveSessionChange?.(activePane?.session);
   }, [activePane?.session, onActiveSessionChange]);
+
+  useEffect(() => {
+    onSessionsChange?.(sessions.map((session) => session.id));
+  }, [onSessionsChange, sessions]);
 
   useEffect(() => {
     const onFocus = (): void => setFocused(true);
@@ -476,7 +508,16 @@ export function GhostteaWorkspace({
         return;
       }
       if (!action || (!enableRemoteSessions && action.type === "remote-sessions")) return;
-      if (action.type === "remote-sessions") {
+      if (action.type === "new-tab") {
+        if (!platform.newTab) return;
+        platform.newTab(activePane?.session.cwd ?? undefined);
+      } else if (action.type === "select-tab") {
+        if (!platform.selectTab) return;
+        platform.selectTab(action.target);
+      } else if (action.type === "close-tab") {
+        if (!platform.closeTab) return;
+        platform.closeTab();
+      } else if (action.type === "remote-sessions") {
         setRemotePaletteOpen(true);
       } else if (action.type === "split") {
         void newSplit(action.axis);
@@ -502,7 +543,17 @@ export function GhostteaWorkspace({
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [activePaneId, closeActivePane, enableRemoteSessions, focusDirection, focusRelative, newSplit, remotePaletteOpen]);
+  }, [
+    activePane?.session.cwd,
+    activePaneId,
+    closeActivePane,
+    enableRemoteSessions,
+    focusDirection,
+    focusRelative,
+    newSplit,
+    platform,
+    remotePaletteOpen,
+  ]);
 
   const workspaceContext = useMemo<GhostteaWorkspaceContext>(
     () => ({ activeSession: activePane?.session, sessions, addSession, activateSession }),
@@ -511,16 +562,18 @@ export function GhostteaWorkspace({
 
   return (
     <main className={`ghostty-window${focused ? " is-focused" : ""}`}>
-      <header className="ghostty-titlebar" aria-label={title}>
-        <span className="ghostty-title">{title}</span>
-      </header>
+      {showTitlebar ? (
+        <header className="ghostty-titlebar" aria-label={title}>
+          <span className="ghostty-title">{title}</span>
+        </header>
+      ) : null}
       <div className="ghosttea-workspace-body">
         <section className="terminal-host">
           {error ? (
             <div className="terminal-error" role="alert">
               {error}
             </div>
-          ) : displayedLayout && activePaneId ? (
+          ) : active && displayedLayout && activePaneId ? (
             <SplitView
               key={displayedLayout.id}
               node={displayedLayout}
