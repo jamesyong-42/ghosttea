@@ -28,17 +28,19 @@ COPY sshd_config.password /etc/ssh/sshd_config.password
 COPY sshd_config.keyboard-interactive /etc/ssh/sshd_config.keyboard-interactive
 COPY sshd_config.partial-success /etc/ssh/sshd_config.partial-success
 COPY sshd_config.public-key /etc/ssh/sshd_config.public-key
+COPY sshd_config.ecdsa-aesgcm /etc/ssh/sshd_config.ecdsa-aesgcm
 COPY entrypoint.sh /usr/local/bin/ghosttea-ssh-fixture
 
 RUN chmod 0755 /usr/local/bin/ghosttea-ssh-fixture
 
-EXPOSE 22022 22023 22024 22025 22026
+EXPOSE 22022 22023 22024 22025 22026 22027
 
 HEALTHCHECK --interval=2s --timeout=1s --retries=15 \
   CMD nc -z 127.0.0.1 22022 \
       && nc -z 127.0.0.1 22023 \
       && nc -z 127.0.0.1 22024 \
       && nc -z 127.0.0.1 22025 \
-      && nc -z 127.0.0.1 22026
+      && nc -z 127.0.0.1 22026 \
+      && nc -z 127.0.0.1 22027
 
 ENTRYPOINT ["/usr/local/bin/ghosttea-ssh-fixture"]

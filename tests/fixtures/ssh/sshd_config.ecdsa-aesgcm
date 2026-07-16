@@ -1,0 +1,12 @@
+Include /etc/ssh/sshd_config.ghosttea-common
+Port 22027
+PidFile /run/ghosttea-sshd/ecdsa-aesgcm.pid
+HostKey /run/ghosttea-sshd/host_ecdsa_aesgcm_ecdsa_key
+HostKeyAlgorithms ecdsa-sha2-nistp256
+Ciphers aes256-gcm@openssh.com
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AuthenticationMethods publickey

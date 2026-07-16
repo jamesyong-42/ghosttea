@@ -25,6 +25,7 @@ const ports = {
   partial: process.env.GHOSTTEA_SSH_PARTIAL_PORT ?? "22024",
   publicKey: process.env.GHOSTTEA_SSH_PUBLIC_KEY_PORT ?? "22025",
   blackhole: process.env.GHOSTTEA_SSH_BLACKHOLE_PORT ?? "22026",
+  ecdsaAesGcm: process.env.GHOSTTEA_SSH_ECDSA_AESGCM_PORT ?? "22027",
 };
 const commandEnvironment = {
   ...process.env,
@@ -34,6 +35,7 @@ const commandEnvironment = {
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
   GHOSTTEA_SSH_PUBLIC_KEY_PORT: ports.publicKey,
   GHOSTTEA_SSH_BLACKHOLE_PORT: ports.blackhole,
+  GHOSTTEA_SSH_ECDSA_AESGCM_PORT: ports.ecdsaAesGcm,
   DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
   CLANG_MODULE_CACHE_PATH: swiftModuleCache,
   SWIFTPM_MODULECACHE_OVERRIDE: swiftModuleCache,
@@ -98,7 +100,7 @@ function waitUntilHealthy() {
 }
 
 function scanKnownHosts() {
-  const entries = [ports.password, ports.keyboard, ports.partial, ports.publicKey].map((port) => {
+  const entries = [ports.password, ports.keyboard, ports.partial, ports.publicKey, ports.ecdsaAesGcm].map((port) => {
     const result = execute("ssh-keyscan", ["-T", "5", "-p", port, "127.0.0.1"]);
     if (result.status !== 0 || !result.stdout.trim()) {
       throw new Error(`Could not scan fixture host key on port ${port}: ${result.stderr}`);
@@ -252,7 +254,7 @@ function up() {
   waitUntilHealthy();
   scanKnownHosts();
   console.log(
-    `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}`,
+    `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}, ecdsa-aesgcm=${ports.ecdsaAesGcm}`,
   );
 }
 
@@ -349,6 +351,7 @@ function swiftCandidate() {
       ["command", ports.publicKey],
       ["half-close", ports.publicKey],
       ["signal", ports.publicKey],
+      ["ecdsa-aesgcm", ports.ecdsaAesGcm],
     ]) {
       const result = execute(liveProbe, [mode, "127.0.0.1", port, knownHosts, publicKey, privateKey], {
         timeout: 60_000,

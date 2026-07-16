@@ -540,8 +540,21 @@ int ghosttea_ssh_session_verify_known_host(
     int key_type = 0;
     const char *key = libssh2_session_hostkey(session->session, &key_length, &key_type);
     int known_key_type = LIBSSH2_KNOWNHOST_KEY_UNKNOWN;
-    if (key_type == LIBSSH2_HOSTKEY_TYPE_ED25519) {
+    switch (key_type) {
+    case LIBSSH2_HOSTKEY_TYPE_ED25519:
         known_key_type = LIBSSH2_KNOWNHOST_KEY_ED25519;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_256:
+        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_256;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_384:
+        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_384;
+        break;
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_521:
+        known_key_type = LIBSSH2_KNOWNHOST_KEY_ECDSA_521;
+        break;
+    default:
+        break;
     }
     if (key == NULL || known_key_type == LIBSSH2_KNOWNHOST_KEY_UNKNOWN) {
         libssh2_knownhost_free(known_hosts);

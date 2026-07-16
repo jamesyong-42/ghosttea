@@ -142,7 +142,7 @@ private func authentication(
   switch mode {
   case "password", "handshake-timeout", "handshake-cancel":
     return .password(username: "ghosttea", password: "ghosttea-password")
-  case "publickey", "command", "half-close", "signal":
+  case "publickey", "command", "half-close", "signal", "ecdsa-aesgcm":
     return .publicKey(
       username: "ghosttea",
       publicKeyPath: publicKeyPath,
@@ -245,7 +245,7 @@ private func runProbe() async throws {
   guard let candidateConnection = connection as? SSHCandidateConnection else {
     throw LiveProbeError.missingCandidateConnection
   }
-  try verifyAlgorithms(candidateConnection.negotiatedAlgorithms)
+  try verifyAlgorithms(candidateConnection.negotiatedAlgorithms, mode: mode)
   if mode == "command" || mode == "half-close" || mode == "signal" {
     do {
       try await verifyCommandSession(
@@ -427,7 +427,24 @@ private func verifyAuthenticationCancellation(
   print("Swift keyboard-interactive responder cancelled in \(duration)")
 }
 
-private func verifyAlgorithms(_ algorithms: SSHCandidateNegotiatedAlgorithms) throws {
+private func verifyAlgorithms(
+  _ algorithms: SSHCandidateNegotiatedAlgorithms,
+  mode: String
+) throws {
+  if mode == "ecdsa-aesgcm" {
+    guard
+      algorithms.keyExchange == "curve25519-sha256",
+      algorithms.hostKey == "ecdsa-sha2-nistp256",
+      algorithms.clientToServerCipher == "aes256-gcm@openssh.com",
+      algorithms.serverToClientCipher == "aes256-gcm@openssh.com",
+      algorithms.clientToServerMAC == "INTEGRATED-AES-GCM",
+      algorithms.serverToClientMAC == "INTEGRATED-AES-GCM"
+    else {
+      throw LiveProbeError.unexpectedAlgorithms(algorithms)
+    }
+    print("Swift negotiated ECDSA/AES-GCM SSH algorithms: \(algorithms)")
+    return
+  }
   guard
     algorithms.keyExchange == "curve25519-sha256",
     algorithms.hostKey == "ssh-ed25519",

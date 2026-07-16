@@ -1,6 +1,6 @@
 # OpenSSH compatibility fixtures
 
-This fixture runs four OpenSSH servers and one protocol blackhole in one local
+This fixture runs five OpenSSH servers and one protocol blackhole in one local
 container:
 
 | Host port | Authentication policy                 | Purpose                                                              |
@@ -10,6 +10,7 @@ container:
 | `22024`   | public key, then keyboard-interactive | SSH partial-success and sequential-MFA gate                          |
 | `22025`   | public key                            | Noninteractive session, PTY, exit, and flood probes                  |
 | `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                    |
+| `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                     |
 
 The fixture credentials are intentionally public and must never be reused:
 
@@ -34,7 +35,8 @@ Use `npm run fixture:ssh:up` to leave the endpoints running for an adapter
 spike and `npm run fixture:ssh:down` when finished. Set
 `GHOSTTEA_SSH_PASSWORD_PORT`, `GHOSTTEA_SSH_KEYBOARD_PORT`,
 `GHOSTTEA_SSH_PARTIAL_PORT`, `GHOSTTEA_SSH_PUBLIC_KEY_PORT`, or
-`GHOSTTEA_SSH_BLACKHOLE_PORT` to avoid local port conflicts.
+`GHOSTTEA_SSH_BLACKHOLE_PORT`, or `GHOSTTEA_SSH_ECDSA_AESGCM_PORT` to avoid
+local port conflicts.
 
 The automated matrix verifies:
 
@@ -50,6 +52,8 @@ The automated matrix verifies:
   client RSS gate, and then drains byte-for-byte without disconnecting.
 - a peer that accepts TCP but never sends an SSH banner, proving the handshake
   deadline and task-cancellation paths without relying on external networks.
+- strict known-host verification and a complete shell session using ECDSA
+  P-256 plus bidirectional AES-256-GCM.
 
 The first command proves all server/session scenarios with the system OpenSSH
 client. The candidate command compiles a test-only C client against the packaged
@@ -66,6 +70,8 @@ requires a blocked read to observe cancellation within one second, and verifies
 that strict host checking rejects both unknown and changed keys. Negotiated
 methods are asserted as Curve25519, Ed25519, ChaCha20-Poly1305, and
 HMAC-SHA2-256 so dependency or server-default drift fails the fixture visibly.
+The second profile locks Curve25519, ECDSA P-256, bidirectional AES-256-GCM,
+and libssh2's `INTEGRATED-AES-GCM` MAC report.
 Keyboard-interactive challenges cross an async Swift responder and assert exact
 prompt text plus echo policy across informational, password, and verification
 code rounds. A separate control cancels while that responder is suspended and

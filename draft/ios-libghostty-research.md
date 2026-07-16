@@ -208,6 +208,10 @@ UIKit/Keychain policy, broader algorithm coverage, adverse-network/repeated
 cancellation, and physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
+A second forced negotiation profile now passes with an ECDSA P-256 host key,
+bidirectional AES-256-GCM, strict known-host verification, and a shell session.
+RSA/SHA-2 scope still depends on the representative launch-server sample.
+
 The candidate also implements non-PTY commands, multiplexed stdout/stderr,
 input half-close, typed exit status or signal, and the SSH EOF/close handshake. Live
 fixtures preserve separate output streams with exit 37 and prove that output
