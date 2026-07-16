@@ -43,6 +43,8 @@ The automated matrix verifies:
   public-key step;
 - public-key plus keyboard-interactive sequential authentication;
 - separated stdout/stderr and an exact nonzero remote exit status;
+- a remote shell terminated by `SIGTERM`, reported as signal name `TERM`
+  rather than conflated with exit code zero;
 - initial PTY dimensions and a later window-change request;
 - a 32 MiB output flood that is stalled for 750 ms, remains below a 64 MiB
   client RSS gate, and then drains byte-for-byte without disconnecting.
@@ -68,8 +70,10 @@ Keyboard-interactive challenges cross an async Swift responder and assert exact
 prompt text plus echo policy across informational, password, and verification
 code rounds. A separate control cancels while that responder is suspended and
 requires the blocked native callback worker to unwind within one second.
-Two non-PTY command controls cover termination semantics: one asserts separate,
-byte-exact stdout/stderr and exit 37; the other writes through `cat`, sends SSH
-input EOF, drains the exact output, and completes the channel close handshake
-with exit 0. The banner-blackhole controls require a 250 ms handshake deadline
-to fire within two seconds and cancellation to unwind within one second.
+Three non-PTY command controls cover termination semantics: one asserts
+separate, byte-exact stdout/stderr and exit 37; another writes through `cat`,
+sends SSH input EOF, drains the exact output, and completes the channel close
+handshake with exit 0; the third kills its remote shell with `SIGTERM` and
+requires the typed result `.signaled(name: "TERM")`. The banner-blackhole
+controls require a 250 ms handshake deadline to fire within two seconds and
+cancellation to unwind within one second.

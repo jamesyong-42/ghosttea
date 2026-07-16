@@ -348,6 +348,7 @@ function swiftCandidate() {
       ["publickey", ports.publicKey],
       ["command", ports.publicKey],
       ["half-close", ports.publicKey],
+      ["signal", ports.publicKey],
     ]) {
       const result = execute(liveProbe, [mode, "127.0.0.1", port, knownHosts, publicKey, privateKey], {
         timeout: 60_000,
@@ -406,7 +407,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, command streams/exit, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication, strict host-key negatives, PTY resize, command streams/exit signal, half-close, lossless stalled-reader flow control, handshake timeout/cancellation, cancellation, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

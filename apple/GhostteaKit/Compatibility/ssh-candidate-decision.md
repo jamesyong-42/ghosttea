@@ -97,13 +97,17 @@ fired in approximately 307 ms, and cancellation unwound in approximately 77 ms.
 The system resolver call is still synchronous; a stalled `getaddrinfo` cannot be
 interrupted until it returns, so resolver replacement or Network.framework
 integration remains a production hardening decision.
-The host-neutral transport now includes input half-close and typed exit status.
+The host-neutral transport now includes input half-close and a typed termination
+result that distinguishes `.exited(code:)` from `.signaled(name:)`.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and
 `fixture-stderr\n` streams and preserves exit status 37. A second command sends
 `half-close-payload\n`, calls `finishInput()`, reads the exact echoed bytes, and
 completes `wait_eof`, channel close, and `wait_closed` with exit status 0. The
 candidate command reader services both SSH streams before waiting on the
 socket, preventing buffered stderr from starving behind idle stdout.
+A third command terminates its remote shell with `SIGTERM`; the adapter copies
+and frees libssh2's allocated exit-signal value and returns
+`.signaled(name: "TERM")` instead of the library's default numeric zero.
 
 ## Reproduce
 
@@ -154,12 +158,12 @@ host-neutral demand and queue semantics.
 3. Add ECDSA and AES-GCM fixture endpoints, then repeat the now-instrumented
    negotiated-method capture against the launch server sample. Decide RSA/SHA-2
    scope from that sample.
-4. Add exit-signal coverage, repeated connection-cancellation stress, resolver
-   cancellation strategy, and reconnect orchestration. PTY allocation, resize,
-   shell I/O, command streams/status, half-close, graceful close, auth/read
-   cancellation, and deterministic handshake timeout/cancellation already pass;
-   the nonblocking TCP connector is implemented but still needs adverse-network
-   and physical-device evidence.
+4. Add repeated connection-cancellation stress, a resolver cancellation
+   strategy, and reconnect orchestration. PTY allocation, resize, shell I/O,
+   command exit status/signal, half-close, graceful close, auth/read cancellation,
+   and deterministic handshake timeout/cancellation already pass; the
+   nonblocking TCP connector is implemented but still needs adverse-network and
+   physical-device evidence.
 5. Instrument socket bytes, SSH-channel windows, adapter queues, and physical
    footprint. The macOS adapter flood is already byte-exact and below its
    whole-process RSS gate.

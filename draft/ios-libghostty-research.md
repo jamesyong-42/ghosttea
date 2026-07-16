@@ -204,14 +204,16 @@ The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
 lookup remains non-interruptible until it returns. Remaining gates include
-UIKit/Keychain policy, broader algorithm coverage, exit-signal semantics,
-adverse-network/repeated cancellation, and physical-device evidence, as
+UIKit/Keychain policy, broader algorithm coverage, adverse-network/repeated
+cancellation, and physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 The candidate also implements non-PTY commands, multiplexed stdout/stderr,
-input half-close, typed exit status, and the SSH EOF/close handshake. Live
+input half-close, typed exit status or signal, and the SSH EOF/close handshake. Live
 fixtures preserve separate output streams with exit 37 and prove that output
 remains readable after input EOF without truncation.
+A third command killed by `SIGTERM` is reported distinctly as
+`.signaled(name: "TERM")` rather than numeric exit zero.
 
 ## 8. Recommended proof order
 

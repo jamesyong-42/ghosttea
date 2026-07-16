@@ -24,7 +24,7 @@ func replayTransportDemandTest() async throws {
 func replayTransportOperationTest() async throws {
   let connection = ReplayTransport(
     bytes: Data(),
-    exitStatus: TerminalExitStatus(code: 37)
+    exitStatus: .exited(code: 37)
   ).makeConnection()
   try await connection.write(Data("one".utf8))
   try await connection.write(Data("two".utf8))
@@ -39,7 +39,13 @@ func replayTransportOperationTest() async throws {
   #expect(snapshot.interruptCount == 1)
   #expect(snapshot.didFinishInput)
   #expect(snapshot.didObserveExit)
-  #expect(exitStatus == TerminalExitStatus(code: 37))
+  #expect(exitStatus == .exited(code: 37))
+
+  let signaledConnection = ReplayTransport(
+    bytes: Data(),
+    exitStatus: .signaled(name: "TERM")
+  ).makeConnection()
+  #expect(try await signaledConnection.waitForExit() == .signaled(name: "TERM"))
 }
 
 @Test("Ordered writer preserves sequence and rejects byte or item overflow")

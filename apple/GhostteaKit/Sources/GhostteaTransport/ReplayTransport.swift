@@ -4,7 +4,7 @@ public struct ReplayTransport: TerminalTransport {
   private let bytes: Data
   private let exitStatus: TerminalExitStatus
 
-  public init(bytes: Data, exitStatus: TerminalExitStatus = TerminalExitStatus(code: 0)) {
+  public init(bytes: Data, exitStatus: TerminalExitStatus = .exited(code: 0)) {
     self.bytes = bytes
     self.exitStatus = exitStatus
   }

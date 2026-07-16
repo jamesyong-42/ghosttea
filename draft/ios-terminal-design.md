@@ -830,6 +830,9 @@ protocol-level resize messages. They do not parse terminal escape sequences.
 remote output readable. After output is drained, `waitForExit()` completes the
 transport close handshake and returns the typed remote exit status. Abrupt
 `disconnect()` remains available for cancellation and network loss.
+`TerminalExitStatus` is an enum with `.exited(code:)` and `.signaled(name:)`;
+SSH signal names omit the leading `SIG`. This prevents a remote signal from
+being mistaken for libssh2's default numeric status of zero.
 
 Initial implementations:
 
@@ -1307,8 +1310,8 @@ byte-exact 32 MiB stalled-reader fixture, and blocked-read cancellation. Its
 async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. UIKit/Keychain policy, broader
-algorithm/key coverage, exit-signal semantics, repeated adverse-network
-cancellation, and device evidence remain open. TCP establishment now uses a
+algorithm/key coverage, repeated adverse-network cancellation, and device
+evidence remain open. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
@@ -1320,6 +1323,8 @@ The same transport supports PTY shells and non-PTY commands. A live command
 fixture preserves separate stdout and stderr and exit status 37. A second
 fixture writes through `cat`, half-closes input, drains the exact output, and
 completes the channel EOF/close handshake with exit status 0.
+A third command terminates under `SIGTERM`; its result is preserved as
+`.signaled(name: "TERM")` rather than collapsed into exit code zero.
 
 Secrets and private keys belong in Keychain-backed storage and must never be
 serialized into workspace restoration, logs, crash reports, or terminal
@@ -1744,9 +1749,9 @@ explicit chained MFA with its `-19` return behavior locked under test. A
 nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 Physical-device VT/network testing, UIKit/Keychain authentication policy, SSH
-algorithm, exit-signal, resolver/adverse-network cancellation coverage,
-bundled-font licensing, and device-tier memory gates remain open. libssh2 is a
-candidate, not the selected SSH path.
+algorithm and resolver/adverse-network cancellation coverage, bundled-font
+licensing, and device-tier memory gates remain open. libssh2 is a candidate,
+not the selected SSH path.
 
 Exit gate:
 

@@ -464,9 +464,14 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
       try await driver.run(operation: "wait for channel close") {
         ghosttea_ssh_session_wait_closed($0)
       }
-      let result = TerminalExitStatus(
-        code: ghosttea_ssh_session_exit_status(driver.requiredHandle)
-      )
+      let result: TerminalExitStatus
+      if let signalName = try driver.exitSignal() {
+        result = .signaled(name: signalName)
+      } else {
+        result = .exited(
+          code: ghosttea_ssh_session_exit_status(driver.requiredHandle)
+        )
+      }
       exitStatus = result
       await gate.release()
       return result
@@ -875,6 +880,26 @@ private final class SSHDriver: @unchecked Sendable {
         ghosttea_ssh_session_negotiated_mac_server_to_client(requiredHandle)
       )
     )
+  }
+
+  func exitSignal() throws -> String? {
+    let length = ghosttea_ssh_session_exit_signal(requiredHandle, nil, 0)
+    guard length >= 0 else {
+      throw error(operation: "read channel exit signal", status: length)
+    }
+    guard length > 0 else {
+      return nil
+    }
+    var buffer = [CChar](repeating: 0, count: Int(length) + 1)
+    let copiedLength = ghosttea_ssh_session_exit_signal(
+      requiredHandle,
+      &buffer,
+      buffer.count
+    )
+    guard copiedLength == length else {
+      throw error(operation: "copy channel exit signal", status: copiedLength)
+    }
+    return decodeCString(buffer)
   }
 
   func destroy() {

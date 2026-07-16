@@ -26,12 +26,10 @@ public enum TerminalTransportError: Error, Equatable, Sendable {
   case writerAlreadyDraining
 }
 
-public struct TerminalExitStatus: Equatable, Sendable {
-  public let code: Int32
-
-  public init(code: Int32) {
-    self.code = code
-  }
+public enum TerminalExitStatus: Equatable, Sendable {
+  case exited(code: Int32)
+  /// SSH signal names omit the leading `SIG`, for example `TERM`.
+  case signaled(name: String)
 }
 
 public struct TerminalSize: Equatable, Sendable {

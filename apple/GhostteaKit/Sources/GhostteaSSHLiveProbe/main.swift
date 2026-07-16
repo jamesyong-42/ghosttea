@@ -27,7 +27,7 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case handshakeDidNotCancel
   case unexpectedHandshakeControlError(String)
   case unexpectedCommandStream(stream: String, expected: Data, actual: Data)
-  case unexpectedExitStatus(expected: Int32, actual: Int32)
+  case unexpectedExitStatus(expected: TerminalExitStatus, actual: TerminalExitStatus)
 
   var description: String {
     switch self {
@@ -142,7 +142,7 @@ private func authentication(
   switch mode {
   case "password", "handshake-timeout", "handshake-cancel":
     return .password(username: "ghosttea", password: "ghosttea-password")
-  case "publickey", "command", "half-close":
+  case "publickey", "command", "half-close", "signal":
     return .publicKey(
       username: "ghosttea",
       publicKeyPath: publicKeyPath,
@@ -208,6 +208,8 @@ private func runProbe() async throws {
     )
   case "half-close":
     session = .command("cat", allocatePTY: false)
+  case "signal":
+    session = .command("kill -TERM $$", allocatePTY: false)
   default:
     session = .shell
   }
@@ -244,7 +246,7 @@ private func runProbe() async throws {
     throw LiveProbeError.missingCandidateConnection
   }
   try verifyAlgorithms(candidateConnection.negotiatedAlgorithms)
-  if mode == "command" || mode == "half-close" {
+  if mode == "command" || mode == "half-close" || mode == "signal" {
     do {
       try await verifyCommandSession(
         mode: mode,
@@ -345,15 +347,18 @@ private func verifyCommandSession(
   connection: SSHCandidateConnection
 ) async throws {
   let expectedStandardOutput: Data
-  let expectedExitCode: Int32
-  if mode == "half-close" {
+  let expectedExitStatus: TerminalExitStatus
+  if mode == "signal" {
+    expectedStandardOutput = Data()
+    expectedExitStatus = .signaled(name: "TERM")
+  } else if mode == "half-close" {
     expectedStandardOutput = Data("half-close-payload\n".utf8)
-    expectedExitCode = 0
+    expectedExitStatus = .exited(code: 0)
     try await connection.write(expectedStandardOutput)
     try await connection.finishInput()
   } else {
     expectedStandardOutput = Data("fixture-stdout\n".utf8)
-    expectedExitCode = 37
+    expectedExitStatus = .exited(code: 37)
   }
 
   var standardOutput = Data()
@@ -382,14 +387,14 @@ private func verifyCommandSession(
       actual: standardError
     )
   }
-  guard status.code == expectedExitCode else {
+  guard status == expectedExitStatus else {
     throw LiveProbeError.unexpectedExitStatus(
-      expected: expectedExitCode,
-      actual: status.code
+      expected: expectedExitStatus,
+      actual: status
     )
   }
   print(
-    "Swift command streams and termination passed: stdout=\(standardOutput.count) stderr=\(standardError.count) exit=\(status.code)"
+    "Swift command streams and termination passed: stdout=\(standardOutput.count) stderr=\(standardError.count) termination=\(status)"
   )
 }
 

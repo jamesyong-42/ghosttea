@@ -945,6 +945,50 @@ int ghosttea_ssh_session_exit_status(const ghosttea_ssh_session_t *session) {
     return libssh2_channel_get_exit_status(session->channel);
 }
 
+int ghosttea_ssh_session_exit_signal(
+    ghosttea_ssh_session_t *session,
+    char *buffer,
+    size_t buffer_length
+) {
+    if (session == NULL || session->channel == NULL) {
+        return -1;
+    }
+    char *signal_name = NULL;
+    size_t signal_length = 0;
+    int should_copy = buffer != NULL && buffer_length > 0;
+    int status = libssh2_channel_get_exit_signal(
+        session->channel,
+        should_copy != 0 ? &signal_name : NULL,
+        &signal_length,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+    if (status != 0) {
+        return status;
+    }
+    if (signal_length > INT_MAX) {
+        if (signal_name != NULL) {
+            libssh2_free(session->session, signal_name);
+        }
+        return -1;
+    }
+    if (should_copy != 0) {
+        size_t copy_length = signal_length < buffer_length - 1
+            ? signal_length
+            : buffer_length - 1;
+        if (copy_length > 0 && signal_name != NULL) {
+            memcpy(buffer, signal_name, copy_length);
+        }
+        buffer[copy_length] = '\0';
+    }
+    if (signal_name != NULL) {
+        libssh2_free(session->session, signal_name);
+    }
+    return (int)signal_length;
+}
+
 int ghosttea_ssh_session_is_eof(const ghosttea_ssh_session_t *session) {
     return libssh2_channel_eof(session->channel);
 }
