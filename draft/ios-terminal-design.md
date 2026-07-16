@@ -1314,9 +1314,13 @@ out network or Swift-side prefetch before the exact drain.
 The async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
 multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
-Ed25519 keys pass and incorrect passphrases are rejected. UIKit/Keychain policy,
+Ed25519 keys pass and incorrect passphrases are rejected.
+`GhostteaCredentials` stores opaque credential references in the device-only,
+non-synchronizing data-protection Keychain, and its save/load/delete round trip
+passes on a physical iPhone. Async adapter credential resolution and protected
+private-key materialization remain open alongside UIKit challenge policy,
 representative-server sampling, adverse-network
-transitions, and device evidence remain open. Strict host-key rejection and an
+transitions, and complete device evidence remain open. Strict host-key rejection and an
 async accept-once boundary for unknown/changed keys pass with host, port,
 algorithm, SHA-256 fingerprint, and mismatch reason. Accept-and-store uses a
 mode-preserving atomic replacement and passes subsequent strict reconnects. TCP establishment now uses a
@@ -1484,7 +1488,10 @@ shim or explicitly rely on compression followed by whole-session eviction.
 
 1. All remote host keys must be verified; a first-use prompt must show a
    fingerprint and persist the decision explicitly.
-2. Credentials and private keys use Keychain access controls.
+2. Credentials and private keys use Keychain access controls. The initial
+   concrete policy is `WhenUnlockedThisDeviceOnly`, no iCloud synchronization,
+   and opaque connection UUID metadata; see
+   `apple/GhostteaKit/Compatibility/credential-security-policy.md`.
 3. Logs redact credentials, authentication payloads, environment values, and
    terminal contents by default.
 4. OSC clipboard, hyperlinks, notifications, and file-like transfers are

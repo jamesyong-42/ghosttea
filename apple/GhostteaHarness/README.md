@@ -5,6 +5,8 @@ This is a deliberately small SwiftUI application for completing the physical-dev
 The harness provides:
 
 - an on-device Ghostty VT create/feed/resize/key-encoding smoke test;
+- a real data-protection Keychain save/load/delete smoke test using random
+  non-user data;
 - deterministic one-, four-, and eight-session physical-footprint measurements before and after scrollback compression;
 - a password-authenticated SSH command probe with bounded output;
 - negotiated host-key and cipher reporting;

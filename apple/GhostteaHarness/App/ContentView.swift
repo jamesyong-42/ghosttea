@@ -11,6 +11,11 @@ struct ContentView: View {
         Section("Device") {
           Text(model.deviceSummary)
             .font(.footnote)
+          LabeledContent("Keychain", value: model.keychainResult)
+          Button(model.isRunningKeychain ? "Running…" : "Run Keychain smoke test") {
+            model.runKeychainProof()
+          }
+          .disabled(model.isRunningKeychain)
         }
 
         Section("Ghostty VT") {

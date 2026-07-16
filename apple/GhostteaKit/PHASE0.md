@@ -77,6 +77,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a physical-device password SSH probe against the disposable OpenSSH fixture,
   including an independently verified unknown host key, explicit accept-once
   decision, authentication, command execution, output drain, and clean exit.
+- a reusable `GhostteaCredentials` Keychain boundary with device-only,
+  non-synchronizing accessibility and opaque connection identifiers, plus a
+  checked-in secret-lifetime and private-key materialization policy. A real
+  iPhone save/load/delete round trip passes and leaves no item behind.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -111,8 +115,9 @@ UIKit, transport state, and the rest of the application.
    authentication including encrypted private keys, the asynchronous prompt
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
-   and the stalled-reader flood. Remaining work is UIKit/Keychain credential
-   policy, representative-server sampling, adverse-network transitions,
+   and the stalled-reader flood. The Keychain storage policy and package
+   boundary are implemented; remaining work is adapter credential resolution,
+   representative-server sampling, adverse-network transitions,
    resolver and reconnect orchestration, device-footprint instrumentation, and
    physical-device execution. The public-key partial step remains locked as
    `-19`, so only an

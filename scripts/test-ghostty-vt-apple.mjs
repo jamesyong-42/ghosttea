@@ -52,7 +52,13 @@ mkdirSync(moduleCache, { recursive: true });
 run("swift", ["test", "--disable-sandbox"]);
 
 const simulatorSdk = capture("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-path"]);
-for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe", "GhostteaSSH"]) {
+for (const target of [
+  "GhosttyVtProof",
+  "GhostteaCredentials",
+  "GhostteaTransport",
+  "GhostteaSSHProbe",
+  "GhostteaSSH",
+]) {
   run("swift", [
     "build",
     "--disable-sandbox",
@@ -68,7 +74,13 @@ for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe",
 }
 
 const deviceSdk = capture("xcrun", ["--sdk", "iphoneos", "--show-sdk-path"]);
-for (const target of ["GhosttyVtProof", "GhostteaTransport", "GhostteaSSHProbe", "GhostteaSSH"]) {
+for (const target of [
+  "GhosttyVtProof",
+  "GhostteaCredentials",
+  "GhostteaTransport",
+  "GhostteaSSHProbe",
+  "GhostteaSSH",
+]) {
   run("swift", [
     "build",
     "--disable-sandbox",

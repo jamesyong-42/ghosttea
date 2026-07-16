@@ -72,3 +72,25 @@ This satisfies the physical-device password-authentication and basic command
 transport baseline. It does not replace representative launch-server coverage,
 keyboard-interactive or public-key credential UI, adverse-network transitions,
 or the stalled-reader flow-control fixture already covered on macOS.
+
+## 2026-07-16: data-protection Keychain
+
+The signed harness exercised the production-shaped `GhostteaCredentials`
+package against the real iOS Keychain. It generated a random opaque connection
+UUID and random non-user secret bytes, then:
+
+1. stored the secret as a device-only, non-synchronizing generic-password item;
+2. loaded and compared the bytes exactly;
+3. removed the item; and
+4. verified that a subsequent load returned no item.
+
+Observed result:
+
+```text
+Passed · device-only, non-synchronizing item removed
+```
+
+The test left no credential item behind and did not use the user's SSH
+credentials. This satisfies the persistent Keychain storage boundary. Async
+credential resolution in `GhostteaSSH` and protected temporary materialization
+for libssh2's current private-key file API remain production-promotion gates.

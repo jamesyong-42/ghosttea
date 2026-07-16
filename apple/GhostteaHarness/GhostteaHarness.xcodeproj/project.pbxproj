@@ -13,6 +13,7 @@
 		100000000000000000000004 /* HarnessDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* HarnessDiagnostics.swift */; };
 		100000000000000000000005 /* GhosttyVtProof in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000001 /* GhosttyVtProof */; };
 		100000000000000000000006 /* GhostteaSSH in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* GhostteaSSH */; };
+		100000000000000000000007 /* GhostteaCredentials in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000003 /* GhostteaCredentials */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				100000000000000000000007 /* GhostteaCredentials in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -82,6 +84,7 @@
 			packageProductDependencies = (
 				A00000000000000000000001 /* GhosttyVtProof */,
 				A00000000000000000000002 /* GhostteaSSH */,
+				A00000000000000000000003 /* GhostteaCredentials */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -277,6 +280,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaSSH;
+		};
+		A00000000000000000000003 /* GhostteaCredentials */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaCredentials;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

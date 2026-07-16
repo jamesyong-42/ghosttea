@@ -10,6 +10,11 @@ The raw Ghostty and libssh2 APIs are explicitly not application contracts. The
 planned stable terminal boundary is `GhostteaCoreFFI.xcframework`, backed by
 the shared Ghosttea model and ordered effect stream.
 
+`GhostteaCredentials` defines the first persistent-secret boundary. It stores
+opaque credential references in Apple's device-only, non-synchronizing
+data-protection Keychain. The policy and remaining adapter work are recorded in
+[`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
+
 ## Build and test
 
 From the repository root on Apple Silicon macOS:

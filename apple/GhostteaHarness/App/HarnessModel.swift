@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCredentials
 import GhostteaSSH
 import GhostteaTransport
 import UIKit
@@ -11,6 +12,7 @@ final class HarnessModel: ObservableObject {
   }
 
   @Published var vtResult = "Not run"
+  @Published var keychainResult = "Not run"
   @Published var memoryResults: [HarnessMemoryResult] = []
   @Published var memoryStatus = "Not run"
   @Published var host = ""
@@ -22,6 +24,7 @@ final class HarnessModel: ObservableObject {
   @Published var sshOutput = ""
   @Published var pendingHostKey: PendingHostKey?
   @Published var isRunningMemory = false
+  @Published var isRunningKeychain = false
   @Published var isRunningSSH = false
 
   private var hostKeyContinuation: CheckedContinuation<SSHCandidateHostKeyDecision, Never>?
@@ -37,6 +40,34 @@ final class HarnessModel: ObservableObject {
       vtResult = try HarnessDiagnostics.runVTProof()
     } catch {
       vtResult = "Failed: \(error)"
+    }
+  }
+
+  func runKeychainProof() {
+    guard !isRunningKeychain else { return }
+    isRunningKeychain = true
+    keychainResult = "Running save/load/delete proof…"
+    Task {
+      let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
+      do {
+        let store = try KeychainSSHCredentialStore()
+        let expected = Data(UUID().uuidString.utf8)
+        try await store.store(expected, for: credential)
+        guard try await store.load(credential) == expected else {
+          throw HarnessError.keychainRoundTripMismatch
+        }
+        try await store.remove(credential)
+        guard try await store.load(credential) == nil else {
+          throw HarnessError.keychainRemovalFailed
+        }
+        keychainResult = "Passed · device-only, non-synchronizing item removed"
+      } catch {
+        if let store = try? KeychainSSHCredentialStore() {
+          try? await store.remove(credential)
+        }
+        keychainResult = "Failed: \(error)"
+      }
+      isRunningKeychain = false
     }
   }
 
@@ -170,10 +201,16 @@ final class HarnessModel: ObservableObject {
 }
 
 private enum HarnessError: Error, CustomStringConvertible {
+  case keychainRemovalFailed
+  case keychainRoundTripMismatch
   case outputLimitExceeded
 
   var description: String {
     switch self {
+    case .keychainRemovalFailed:
+      return "credential remained after Keychain removal"
+    case .keychainRoundTripMismatch:
+      return "Keychain credential round trip changed the secret"
     case .outputLimitExceeded:
       return "command output exceeded the 1 MiB harness limit"
     }
