@@ -66,6 +66,26 @@ export function replacePane(node: PaneNode, paneId: string, replacement: PaneNod
   };
 }
 
+export function insertPane(
+  root: PaneNode | undefined,
+  next: PaneLeaf,
+  activePaneId: string | undefined,
+  axis: SplitAxis,
+  splitId: string,
+): PaneNode {
+  if (!root) return next;
+  if (leaves(root).some((candidate) => candidate.session.id === next.session.id)) return root;
+  const active = leaves(root).find((candidate) => candidate.id === activePaneId) ?? leaves(root)[0]!;
+  return replacePane(root, active.id, {
+    kind: "split",
+    id: splitId,
+    axis,
+    ratio: 0.5,
+    first: active,
+    second: next,
+  });
+}
+
 export function updateSession(node: PaneNode, session: SessionSummary): PaneNode {
   if (node.kind === "pane") return node.session.id === session.id ? { ...node, session } : node;
   return { ...node, first: updateSession(node.first, session), second: updateSession(node.second, session) };

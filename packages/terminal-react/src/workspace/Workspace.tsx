@@ -17,17 +17,16 @@ import {
   appendPane,
   containsPane,
   equalize,
+  insertPane,
   layoutId,
   leaves,
   pane,
   removePane,
-  replacePane,
   resizeForPane,
   restoreNode,
   updateSession,
   updateSplit,
   type PaneNode,
-  type PaneSplit,
   type SplitAxis,
 } from "./pane-layout.js";
 import { ghosttyHotkey } from "./hotkeys.js";
@@ -367,21 +366,11 @@ export function GhostteaWorkspace({
         return;
       }
       const next = pane(layoutId("pane"), session);
-      if (!current) {
-        setLayout(next);
-      } else {
-        const active =
-          leaves(current).find((candidate) => candidate.id === activePaneIdRef.current) ?? leaves(current)[0]!;
-        const split: PaneSplit = {
-          kind: "split",
-          id: layoutId("split"),
-          axis,
-          ratio: 0.5,
-          first: active,
-          second: next,
-        };
-        setLayout(replacePane(current, active.id, split));
-      }
+      const updated = insertPane(current, next, activePaneIdRef.current, axis, layoutId("split"));
+      // Commit the ref synchronously so multiple agent/session callbacks in
+      // one React turn compose instead of each splitting the same stale tree.
+      layoutRef.current = updated;
+      setLayout(updated);
       setZoomedPaneId(null);
       setOperationError(undefined);
       activatePane(next.id);
