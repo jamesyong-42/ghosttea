@@ -21,9 +21,9 @@ use truffle_core::{Node, network::tailscale::TailscaleProvider, transport::quic:
 use uuid::Uuid;
 
 use ghosttea::{
-    RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica, RemoteResize,
-    RemoteSelection, RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary,
-    TerminalMesh, ViewAccess,
+    RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica,
+    RemoteResize, RemoteSelection, RemoteTerminalRuntime, Session, SessionRegistry as Registry,
+    SessionSummary, TerminalMesh, ViewAccess,
     tunnel_protocol::{
         ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
@@ -252,7 +252,7 @@ impl MeshRuntime {
             .map(|session| session.replica.summary())
     }
 
-    pub async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<u64> {
+    pub async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<RemoteAttachment> {
         let device_id = self
             .replicas
             .read()
@@ -273,10 +273,13 @@ impl MeshRuntime {
         }
     }
 
-    async fn attach_view_once(&self, session_id: &str, view_id: &str) -> Result<u64> {
+    async fn attach_view_once(&self, session_id: &str, view_id: &str) -> Result<RemoteAttachment> {
         let key = (session_id.to_owned(), view_id.to_owned());
         if let Some(view) = self.views.lock().await.get(&key) {
-            return Ok(view.attachment_epoch);
+            return Ok(RemoteAttachment {
+                attachment_epoch: view.attachment_epoch,
+                read_write: view.read_write,
+            });
         }
         let remote = self
             .replicas
@@ -446,7 +449,11 @@ impl MeshRuntime {
                 }
             }
         });
-        Ok(attachment_epoch)
+        remote.replica.set_read_write(read_write);
+        Ok(RemoteAttachment {
+            attachment_epoch,
+            read_write,
+        })
     }
 
     pub async fn send_input(
@@ -1679,7 +1686,7 @@ impl RemoteTerminalRuntime for MeshRuntime {
         MeshRuntime::summary(self, session_id).await
     }
 
-    async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<u64> {
+    async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<RemoteAttachment> {
         MeshRuntime::attach_view(self, session_id, view_id).await
     }
 

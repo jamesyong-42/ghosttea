@@ -63,6 +63,7 @@ impl RemoteReplica {
                 cols,
                 rows,
                 exited: false,
+                read_write: false,
                 title: Some(title),
                 cwd,
                 bell_count: 0,
@@ -83,6 +84,10 @@ impl RemoteReplica {
 
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
+    }
+
+    pub fn set_read_write(&self, read_write: bool) {
+        self.summary.lock().unwrap().read_write = read_write;
     }
 
     pub fn publish(&self, snapshot: LogicalTerminalSnapshot) -> Result<()> {

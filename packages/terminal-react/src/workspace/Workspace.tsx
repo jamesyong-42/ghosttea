@@ -186,6 +186,7 @@ function SplitView({
           onToggleFullscreen={platform.toggleFullscreen}
           onMenuAction={platform.onMenuAction}
         />
+        {!node.session.readWrite ? <span className="ghostty-pane-access">View only</span> : null}
       </div>
     );
   }

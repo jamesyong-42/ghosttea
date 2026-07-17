@@ -112,6 +112,20 @@ body {
   background: #282c34;
 }
 
+.ghostty-pane-access {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 4;
+  padding: 2px 7px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 999px;
+  color: rgb(255 255 255 / 58%);
+  background: rgb(22 24 29 / 78%);
+  font: 500 10px/1.4 ui-sans-serif, system-ui, sans-serif;
+  pointer-events: none;
+}
+
 .ghostty-pane.is-zoomed {
   position: absolute;
   z-index: 6;

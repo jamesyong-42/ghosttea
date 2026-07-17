@@ -48,6 +48,11 @@ pub struct RemoteSelection {
     pub select_all: bool,
 }
 
+pub struct RemoteAttachment {
+    pub attachment_epoch: u64,
+    pub read_write: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteHostSummary {
@@ -76,7 +81,7 @@ pub trait RemoteTerminalRuntime: Send + Sync {
     ) -> Result<SessionSummary>;
     async fn summaries(&self) -> Vec<SessionSummary>;
     async fn summary(&self, session_id: &str) -> Option<SessionSummary>;
-    async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<u64>;
+    async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<RemoteAttachment>;
     async fn send_input(
         &self,
         session_id: &str,
@@ -154,7 +159,7 @@ impl RemoteTerminalRuntime for NoRemoteRuntime {
         None
     }
 
-    async fn attach_view(&self, _session_id: &str, _view_id: &str) -> Result<u64> {
+    async fn attach_view(&self, _session_id: &str, _view_id: &str) -> Result<RemoteAttachment> {
         unavailable()
     }
 

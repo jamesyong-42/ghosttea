@@ -68,6 +68,7 @@ function TerminalSurfaceSession({
   onMenuAction,
 }: TerminalSurfaceProps) {
   const terminalRuntime = useGhostteaRuntime();
+  const interactive = session.readWrite;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const gridRef = useRef({ cols: session.cols, rows: session.rows });
@@ -132,6 +133,7 @@ function TerminalSurfaceSession({
       if (action === "copy" && selectionRef.current) {
         void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
       } else if (action === "paste") {
+        if (!interactive) return;
         const text = readClipboard?.() ?? "";
         if (text) terminalRuntime.paste(session.id, viewId, text);
       } else if (action === "select-all") {
@@ -144,7 +146,7 @@ function TerminalSurfaceSession({
         terminalRuntime.sendText(session.id, viewId, "\u000c");
       }
     });
-  }, [active, onMenuAction, readClipboard, session.handle, session.id, terminalRuntime, viewId]);
+  }, [active, interactive, onMenuAction, readClipboard, session.handle, session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
     if (active && document.hasFocus()) inputRef.current?.focus({ preventScroll: true });
@@ -216,10 +218,10 @@ function TerminalSurfaceSession({
   );
 
   useEffect(() => {
-    if (!controlsResize) return;
+    if (!controlsResize || !interactive) return;
     const { cols, rows } = gridRef.current;
     terminalRuntime.claimResizeControl(session.handle, viewId, cols, rows);
-  }, [controlsResize, session.handle, terminalRuntime, viewId]);
+  }, [controlsResize, interactive, session.handle, terminalRuntime, viewId]);
 
   useEffect(() => {
     const syncFocus = (): void => {
@@ -276,6 +278,10 @@ function TerminalSurfaceSession({
       }
       return;
     }
+    if (!interactive) {
+      event.preventDefault();
+      return;
+    }
     selectionAnchorRef.current = null;
     selectionRef.current = null;
     selectionAllRef.current = false;
@@ -303,6 +309,10 @@ function TerminalSurfaceSession({
   };
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    if (!interactive) {
+      event.preventDefault();
+      return;
+    }
     const text = event.clipboardData.getData("text/plain");
     if (!text) return;
     terminalRuntime.paste(session.id, viewId, text);
@@ -402,7 +412,7 @@ function TerminalSurfaceSession({
     onActivate?.();
     event.currentTarget.focus({ preventScroll: true });
     const mouseTracking = terminalRuntime.isMouseTracking(session.handle);
-    const localSelection = usesLocalSelection(mouseTracking, event.shiftKey);
+    const localSelection = !interactive || usesLocalSelection(mouseTracking, event.shiftKey);
     if (event.button === 2 && localSelection) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -553,6 +563,7 @@ function TerminalSurfaceSession({
         autoCapitalize="off"
         autoComplete="off"
         spellCheck={false}
+        readOnly={!interactive}
         aria-label="Terminal input"
         onFocus={() => {
           onActivate?.();

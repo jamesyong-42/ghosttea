@@ -55,6 +55,7 @@ interface ViewRuntimeState {
   sessionId: string;
   sessionHandle: string;
   attachmentEpoch?: number;
+  readWrite?: boolean;
   inputSequence: number;
   resizeSequence: number;
   controlEpoch: number | undefined;
@@ -377,7 +378,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
         const current = this.#views.get(viewId);
         if (current !== view) return;
         current.attachmentEpoch = response.attachmentEpoch;
+        current.readWrite = response.readWrite;
+        const previous = this.#sessionByHandle.get(sessionHandle);
+        if (previous && previous.readWrite !== response.readWrite) {
+          const updated = { ...previous, readWrite: response.readWrite };
+          this.#sessionByHandle.set(sessionHandle, updated);
+          this.dispatchEvent(new CustomEvent("session-metadata", { detail: updated }));
+        }
         const pending = current.pendingInput.splice(0);
+        if (!response.readWrite) return;
         for (const operation of pending) {
           current.inputSequence += 1;
           operation(response.attachmentEpoch, current.inputSequence);
@@ -416,7 +425,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   #sendViewInput(viewId: string, operation: (attachmentEpoch: number, inputSequence: number) => void): void {
     const view = this.#views.get(viewId);
-    if (!view) return;
+    if (!view || view.readWrite === false) return;
     if (view.attachmentEpoch === undefined) {
       if (view.pendingInput.length < 256) view.pendingInput.push(operation);
       return;

@@ -10,6 +10,7 @@ function session(id: string): SessionSummary {
     cols: 80,
     rows: 24,
     exited: false,
+    readWrite: true,
     title: null,
     cwd: null,
     bellCount: 0,

@@ -175,7 +175,7 @@ export function RemoteSessionPalette({ onClose, onOpen }: RemoteSessionPalettePr
                     <span className="remote-session-cwd">{choice.session.cwdLabel ?? "Remote shell"}</span>
                   </span>
                   <span className={`remote-session-access${choice.session.readWrite ? " is-write" : ""}`}>
-                    {opening === key ? "Connecting…" : choice.session.readWrite ? "Interactive" : "View only"}
+                    {opening === key ? "Connecting…" : choice.session.readWrite ? "Interactive available" : "View only"}
                   </span>
                 </button>
               </div>

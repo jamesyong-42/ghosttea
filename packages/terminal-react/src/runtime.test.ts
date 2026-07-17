@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 import { GhostteaTerminalRuntime } from "./runtime";
 
 class FakeWorker extends EventTarget {
@@ -11,6 +12,7 @@ class FakeWorker extends EventTarget {
 
 class FakePort extends EventTarget {
   readonly messages: Array<Record<string, unknown>> = [];
+  attachReadWrite = true;
 
   postMessage(message: Record<string, unknown>): void {
     this.messages.push(message);
@@ -36,6 +38,7 @@ class FakePort extends EventTarget {
             sessionId: message.sessionId,
             viewId: message.viewId,
             attachmentEpoch: requestId,
+            readWrite: this.attachReadWrite,
           },
         }),
       );
@@ -65,6 +68,7 @@ const session = {
   cols: 80,
   rows: 24,
   exited: false,
+  readWrite: true,
   title: null,
   cwd: null,
   bellCount: 0,
@@ -215,6 +219,33 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
 
     runtime.terminate(session.id);
     expect(frames.messages.at(-1)).toEqual({ type: "subscribe", sessionHandles: [] });
+  });
+
+  it("propagates actual read-only attachment access and suppresses terminal input", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.attachReadWrite = false;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    const updates: SessionSummary[] = [];
+    runtime.addEventListener("session-metadata", (event) => updates.push((event as CustomEvent<SessionSummary>).detail));
+    runtime.mount(session.id, session.handle, "view-only", canvas());
+    await Promise.resolve();
+
+    runtime.sendText(session.id, "view-only", "blocked");
+
+    expect(updates.at(-1)?.readWrite).toBe(false);
+    expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
   });
 
   it("detaches an obsolete view without unmounting its replacement worker surface", async () => {

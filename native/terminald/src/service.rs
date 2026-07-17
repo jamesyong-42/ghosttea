@@ -228,6 +228,7 @@ enum ResponseBody {
         session_id: String,
         view_id: String,
         attachment_epoch: u64,
+        read_write: bool,
     },
     ControlClaimed {
         session_id: String,
@@ -604,27 +605,43 @@ async fn handle_command(
                 view_id,
             } => {
                 let key = (session_id.clone(), view_id.clone());
-                let attachment_epoch = if let Some(epoch) = attached.get(&key).copied() {
-                    epoch
+                let (attachment_epoch, read_write) = if let Some(epoch) =
+                    attached.get(&key).copied()
+                {
+                    let read_write = if registry.read().unwrap().contains_key(&session_id) {
+                        true
+                    } else {
+                        context
+                            .mesh_runtime
+                            .summary(&session_id)
+                            .await
+                            .context("unknown remote session")?
+                            .read_write
+                    };
+                    (epoch, read_write)
                 } else {
-                    let epoch =
+                    let attachment =
                         if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                             let epoch = session.attach_view(&view_id, client_id)?;
                             session.refresh()?;
-                            epoch
+                            mesh::RemoteAttachment {
+                                attachment_epoch: epoch,
+                                read_write: true,
+                            }
                         } else {
                             context
                                 .mesh_runtime
                                 .attach_view(&session_id, &view_id)
                                 .await?
                         };
-                    attached.insert(key, epoch);
-                    epoch
+                    attached.insert(key, attachment.attachment_epoch);
+                    (attachment.attachment_epoch, attachment.read_write)
                 };
                 Ok(ResponseBody::ViewAttached {
                     session_id,
                     view_id,
                     attachment_epoch,
+                    read_write,
                 })
             }
             Command::DetachSession {

@@ -113,6 +113,7 @@ export interface SessionSummary {
   cols: number;
   rows: number;
   exited: boolean;
+  readWrite: boolean;
   title: string | null;
   cwd: string | null;
   bellCount: number;
@@ -157,7 +158,14 @@ export type ServerEvent =
   | { requestId: number; type: "sessions"; sessions: SessionSummary[] }
   | { requestId: number; type: "remote-hosts"; hosts: RemoteHostSummary[] }
   | { requestId: number; type: "remote-sessions"; deviceId: string; sessions: SharedSessionSummary[] }
-  | { requestId: number; type: "view-attached"; sessionId: string; viewId: string; attachmentEpoch: number }
+  | {
+      requestId: number;
+      type: "view-attached";
+      sessionId: string;
+      viewId: string;
+      attachmentEpoch: number;
+      readWrite: boolean;
+    }
   | {
       requestId: number;
       type: "control-claimed";
@@ -272,6 +280,7 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       Number.isSafeInteger(summary.cols) &&
       Number.isSafeInteger(summary.rows) &&
       typeof summary.exited === "boolean" &&
+      typeof summary.readWrite === "boolean" &&
       (summary.title === null || typeof summary.title === "string") &&
       (summary.cwd === null || typeof summary.cwd === "string") &&
       Number.isSafeInteger(summary.bellCount) &&
@@ -336,7 +345,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       return (
         typeof candidate.sessionId === "string" &&
         typeof candidate.viewId === "string" &&
-        Number.isSafeInteger(candidate.attachmentEpoch)
+        Number.isSafeInteger(candidate.attachmentEpoch) &&
+        typeof candidate.readWrite === "boolean"
       );
     case "control-claimed":
       return (
