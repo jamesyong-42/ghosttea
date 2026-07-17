@@ -105,7 +105,7 @@ precompiled library, drawable presentation, and screenshot goldens remain.
 
 On iOS, `GhostteaTerminalMetalView` is the first public presentation surface.
 It is an event-driven `MTKView`: continuous drawing is paused, accepted frames,
-drawable-size changes, selection/focus changes, and host-driven cursor blink
+drawable-size changes, selection/focus changes, and cursor blink
 transitions request individual draws. Full/incremental/stale classification
 stays inside the view's retained state, with a callback when the core must send
 a full refresh. Drawable submission does not wait on the main run loop. App
@@ -128,6 +128,14 @@ layout epoch, and publishes only a full frame for the newest requested size. A
 core failure attempts to roll the PTY back to the last committed grid. The
 Metal view can bind its deduplicated grid callback directly to this coordinator
 while frame application remains an explicit commit handler owned by the host.
+
+The surface owns the desktop-compatible cursor blink state machine. It uses a
+600 ms one-shot task, resets visible on cursor activity or restored
+focus/visibility, and schedules only for a visible blinking cursor in a focused,
+visible surface. Background/GPU suspension and scene occlusion cancel the task;
+`setTerminalVisible(_:)` lets a multi-scene host report per-scene visibility,
+and `noteCursorActivity()` restarts the interval after local input. Each toggle
+requests one Metal draw rather than enabling a display link.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

@@ -687,3 +687,21 @@ and 92 and publishes only 92, and a core failure records target and rollback
 PTY sizes. The complete GhostteaKit suite passes 49 tests on macOS. iOS SDK and
 simulator runtime validation use the same public package graph; real SSH
 rotation and disconnect-during-resize remain device integration evidence.
+
+## 2026-07-17: cursor blink timing
+
+`GhostteaTerminalMetalView` now owns the same cursor timing rules as the desktop
+render worker: a 600 ms one-shot chain runs only for a visible, blinking cursor
+on a focused and visible surface. Cursor changes and input activity reset the
+cursor to visible. Unchanged terminal frames leave the existing deadline alone.
+Focus or visibility restoration resets and restarts the chain; loss of focus,
+scene occlusion, view detachment, backgrounding, or explicit GPU suspension
+cancels it.
+
+Two main-actor tests exercise toggles and rescheduling without wall-clock waits,
+including reset transitions, static and hidden cursors, focus, and surface
+visibility. The event-driven Metal view receives one invalidation per actual
+blink transition. The complete GhostteaKit suite passes 51 tests on macOS, and
+the harness builds the package for arm64 simulator and physical-device SDKs.
+Physical multi-scene evidence remains a release gate because the owning scene
+controller must route activation changes through `setTerminalVisible(_:)`.

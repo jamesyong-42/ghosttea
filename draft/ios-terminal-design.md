@@ -2043,7 +2043,7 @@ remain Phase 4 work.
 The fifth slice adds the first public iOS presentation surface.
 `GhostteaTerminalMetalView` subclasses `MTKView` with continuous drawing paused
 and `enableSetNeedsDisplay` enabled. Accepted terminal frames, drawable-size
-changes, view-owned selection/focus changes, and host-driven cursor blink state
+changes, view-owned selection/focus changes, and cursor blink state
 request one draw; stale frames do not. Gaps or malformed input preserve the
 last good state and invoke a full-refresh callback. Drawable command buffers
 are presented without waiting on the main run loop, while the offscreen proof
@@ -2053,7 +2053,7 @@ catalogs; foreground or explicit resume lazily reconstructs resources from
 that retained state without another terminal frame. The simulator harness
 proves frame classification and a 20 MiB to zero to 20 MiB suspend/resume
 transition, and embeds the surface as a visible SwiftUI preview. Terminal-size
-negotiation from safe-area geometry, cursor timing, multi-scene ownership,
+negotiation from safe-area geometry, multi-scene ownership,
 precompiled shaders, and screenshot goldens remain.
 
 The sixth slice establishes deterministic view-to-terminal sizing.
@@ -2082,6 +2082,18 @@ the controller's commit handler remains responsible for applying the returned
 frame. Tests use the production core and replay transport to prove ordering,
 full-frame dimensions, burst coalescing, stale-frame suppression, and rollback.
 Real SSH rotation and disconnect-during-resize remain integration gates.
+
+The eighth slice moves cursor timing into the iOS surface while preserving the
+desktop worker's state machine. A one-shot 600 ms task toggles and reschedules
+only while the surface is visible, the terminal is focused, and the current
+cursor is both visible and blinking. Cursor changes, explicit input activity,
+focus restoration, and visibility restoration reset the cursor to visible;
+unchanged frames do not postpone the pending blink. Backgrounding, GPU
+suspension, view detachment, and host-reported scene occlusion cancel the task,
+and restoration schedules from a visible cursor without enabling continuous
+Metal drawing. Pure main-actor tests cover timing, toggles, resets, hidden and
+static cursors, focus, and visibility. Multi-scene controllers must still call
+the surface visibility API as individual scenes activate and deactivate.
 
 Deliverables:
 

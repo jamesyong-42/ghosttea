@@ -15,11 +15,25 @@ private actor ResizeTestRecorder {
   func record(_ event: String) { events.append(event) }
   func commit(_ value: GhostteaResizeCommit) { commits.append(value) }
   func fail(_ value: GhostteaResizeFailure) { failures.append(value) }
+
+  func waitForEvent(_ expected: String) async {
+    while !events.contains(expected) {
+      await Task.yield()
+    }
+  }
 }
 
 private enum ResizeTestError: Error {
   case failed
 }
+
+private let blinkingCursor = TRF1CursorState(
+  x: 4,
+  y: 2,
+  visible: true,
+  style: .block,
+  blinking: true
+)
 
 private func glyph(
   id: UInt32,
@@ -86,6 +100,63 @@ private func productionFrame() async throws -> Data {
   )
 }
 
+@MainActor
+@Test func cursorBlinkMatchesDesktopResetAndEligibilityRules() {
+  #expect(GhostteaCursorBlinkController.interval == .milliseconds(600))
+  var transitions: [Bool] = []
+  let controller = GhostteaCursorBlinkController { transitions.append($0) }
+
+  controller.updateCursor(blinkingCursor)
+  #expect(controller.timerScheduled)
+  #expect(controller.blinkVisible)
+
+  controller.handleTimerFired()
+  #expect(controller.timerScheduled)
+  #expect(!controller.blinkVisible)
+  #expect(transitions == [false])
+
+  controller.noteCursorActivity()
+  #expect(controller.timerScheduled)
+  #expect(controller.blinkVisible)
+  #expect(transitions == [false, true])
+
+  controller.setFocused(false)
+  #expect(!controller.timerScheduled)
+  controller.setFocused(true)
+  #expect(controller.timerScheduled)
+
+  controller.setSurfaceVisible(false)
+  #expect(!controller.timerScheduled)
+  controller.setSurfaceVisible(true)
+  #expect(controller.timerScheduled)
+}
+
+@MainActor
+@Test func cursorBlinkStopsForStaticOrHiddenCursorsAndResetsOnCursorChange() {
+  var transitions: [Bool] = []
+  let controller = GhostteaCursorBlinkController { transitions.append($0) }
+
+  controller.updateCursor(blinkingCursor)
+  controller.handleTimerFired()
+  #expect(!controller.blinkVisible)
+
+  controller.updateCursor(
+    TRF1CursorState(x: 5, y: 2, visible: true, style: .block, blinking: true)
+  )
+  #expect(controller.blinkVisible)
+  #expect(controller.timerScheduled)
+
+  controller.updateCursor(
+    TRF1CursorState(x: 5, y: 2, visible: true, style: .block, blinking: false)
+  )
+  #expect(!controller.timerScheduled)
+  controller.updateCursor(
+    TRF1CursorState(x: 5, y: 2, visible: false, style: .block, blinking: true)
+  )
+  #expect(!controller.timerScheduled)
+  #expect(transitions == [false, true])
+}
+
 @Test func resizeCoordinatorOrdersPTYBeforeCoreAndPublishesAFullFrame() async throws {
   let runtime = try GhostteaRuntime()
   let terminal = try GhostteaTerminal(
@@ -142,7 +213,7 @@ private func productionFrame() async throws -> Data {
   )
 
   await coordinator.request(.init(columns: 90, rows: 25))
-  try await Task.sleep(for: .milliseconds(5))
+  await recorder.waitForEvent("pty:90x25")
   await coordinator.request(.init(columns: 91, rows: 26))
   await coordinator.request(.init(columns: 92, rows: 27))
   await coordinator.waitUntilIdle()

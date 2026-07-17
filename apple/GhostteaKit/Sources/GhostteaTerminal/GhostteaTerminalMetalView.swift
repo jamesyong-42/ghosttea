@@ -60,8 +60,12 @@
     private var retainedState = RetainedTRF1State()
     private var terminalSelection: GhostteaMetalSelection?
     private var terminalFocused = true
+    private var terminalVisible = true
     private var cursorBlinkVisible = true
     private var gpuSuspended = false
+    private lazy var cursorBlinkController = GhostteaCursorBlinkController { [weak self] visible in
+      self?.applyCursorBlinkVisibility(visible)
+    }
 
     public init(terminalFrame: CGRect = .zero) throws {
       let runtime = try GhostteaMetalRuntime()
@@ -113,11 +117,18 @@
       geometryDidChange()
     }
 
+    public override func didMoveToWindow() {
+      super.didMoveToWindow()
+      updateCursorBlinkSurfaceVisibility()
+    }
+
     @discardableResult
     public func apply(frame data: Data) throws -> Bool {
       do {
         switch try retainedState.apply(data) {
         case .applied:
+          updateCursorBlinkSurfaceVisibility()
+          cursorBlinkController.updateCursor(retainedState.cursor)
           updateDiagnostics(acceptedFrames: diagnostics.acceptedFrames + 1, clearError: true)
           requestEventDrivenDraw()
           return true
@@ -156,10 +167,22 @@
     public func setTerminalFocused(_ focused: Bool) {
       guard terminalFocused != focused else { return }
       terminalFocused = focused
+      cursorBlinkController.setFocused(focused)
       requestEventDrivenDraw()
     }
 
-    public func setCursorBlinkVisible(_ visible: Bool) {
+    public func setTerminalVisible(_ visible: Bool) {
+      guard terminalVisible != visible else { return }
+      terminalVisible = visible
+      updateCursorBlinkSurfaceVisibility()
+      if visible { requestEventDrivenDraw() }
+    }
+
+    public func noteCursorActivity() {
+      cursorBlinkController.noteCursorActivity()
+    }
+
+    private func applyCursorBlinkVisibility(_ visible: Bool) {
       guard cursorBlinkVisible != visible else { return }
       cursorBlinkVisible = visible
       requestEventDrivenDraw()
@@ -179,12 +202,14 @@
     public func suspendGPU() {
       guard !gpuSuspended else { return }
       gpuSuspended = true
+      updateCursorBlinkSurfaceVisibility()
       evictRendererResources()
     }
 
     public func resumeGPU() {
       guard gpuSuspended else { return }
       gpuSuspended = false
+      updateCursorBlinkSurfaceVisibility()
       requestEventDrivenDraw()
     }
 
@@ -234,6 +259,11 @@
     private func requestEventDrivenDraw() {
       guard !gpuSuspended else { return }
       setNeedsDisplay()
+    }
+
+    private func updateCursorBlinkSurfaceVisibility() {
+      cursorBlinkController.setSurfaceVisible(
+        terminalVisible && window != nil && !isHidden && !gpuSuspended)
     }
 
     private func geometryDidChange() {
