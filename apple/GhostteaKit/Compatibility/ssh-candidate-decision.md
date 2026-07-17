@@ -112,7 +112,9 @@ absolute connection deadline. The connector polls the resolver at most every
 100 ms, so cancellation and timeout no longer wait for a synchronous
 `getaddrinfo`; numeric IPv4 and IPv6 literals retain a non-resolving fast path.
 The package suite opens a loopback socket through `localhost`, and the full SSH
-fixture authenticates through that hostname path. Both iOS SDK builds pass.
+fixture authenticates through that hostname path. Both iOS SDK builds pass. A
+signed iPhone build also resolves the Mac's Bonjour hostname and completes the
+bounded SSH command through it; representative server DNS remains open.
 The same process also completes 32 consecutive stalled-handshake cancellations
 and 16 consecutive suspended keyboard-interactive cancellations, with every
 cycle bounded below one second. This exercises repeated session destruction and

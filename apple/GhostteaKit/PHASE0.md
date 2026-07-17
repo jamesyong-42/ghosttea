@@ -178,8 +178,8 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is production UI promotion, representative-server
-   sampling, on-device/representative DNS verification, representative-server
-   verification of the implemented path/reconnect orchestration,
+   sampling, representative DNS verification, representative-server verification
+   of the implemented path/reconnect orchestration,
    device-footprint instrumentation, and representative low-end-device
    execution. The public-key partial step
    remains locked as `-19`, so only an

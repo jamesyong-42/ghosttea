@@ -39,6 +39,32 @@ function capture(program, args) {
   return execute(program, args, { capture: true }).stdout.trim();
 }
 
+function fixtureHost() {
+  if (process.env.GHOSTTEA_IOS_FIXTURE_HOST) {
+    return process.env.GHOSTTEA_IOS_FIXTURE_HOST;
+  }
+  const localHostname = capture("scutil", ["--get", "LocalHostName"]);
+  if (!localHostname) {
+    throw new Error("Could not determine the Mac Bonjour hostname; set GHOSTTEA_IOS_FIXTURE_HOST.");
+  }
+  return `${localHostname}.local.`;
+}
+
+function developmentTeam() {
+  if (process.env.GHOSTTEA_IOS_DEVELOPMENT_TEAM) {
+    return process.env.GHOSTTEA_IOS_DEVELOPMENT_TEAM;
+  }
+  const result = execute("defaults", ["read", "com.apple.dt.Xcode", "IDEProvisioningTeamByIdentifier"], {
+    capture: true,
+    allowFailure: true,
+  });
+  const teams = [...new Set([...result.stdout.matchAll(/teamID = "?([A-Z0-9]+)"?;/g)].map((match) => match[1]))];
+  if (teams.length === 1) return teams[0];
+  throw new Error(
+    `Could not choose one Xcode development team (found ${teams.length}). Set GHOSTTEA_IOS_DEVELOPMENT_TEAM.`,
+  );
+}
+
 function findDevice() {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ghosttea-ios-device-"));
   const output = join(temporaryDirectory, "devices.json");
@@ -136,17 +162,10 @@ async function waitForCleanupRequest() {
 }
 
 async function main() {
-  const team = process.env.GHOSTTEA_IOS_DEVELOPMENT_TEAM;
-  if (!team) {
-    throw new Error(
-      "Set GHOSTTEA_IOS_DEVELOPMENT_TEAM to the Apple development-team identifier used to sign the harness.",
-    );
-  }
-
+  const team = developmentTeam();
   const device = findDevice();
   await waitForUnlockedDevice(device, true);
-  const host = process.env.GHOSTTEA_IOS_FIXTURE_HOST ?? capture("ipconfig", ["getifaddr", "en0"]);
-  if (!host) throw new Error("Could not determine the Mac Wi-Fi address; set GHOSTTEA_IOS_FIXTURE_HOST.");
+  const host = fixtureHost();
 
   try {
     execute("xcrun", ["swift", "test", "--package-path", join(root, "apple/GhostteaKit")]);
@@ -156,6 +175,7 @@ async function main() {
       project,
       "-scheme",
       "GhostteaHarness",
+      "-allowProvisioningUpdates",
       "-configuration",
       "Debug",
       "-quiet",

@@ -230,9 +230,10 @@ cycle. Opaque password and encrypted private-key/passphrase resolution also
 pass the disposable SSH fixture on that device, with credential deletion before
 command output is read and no private-key file. The iPhone also preserves
 separate command streams, exit 37, typed `SIGTERM`, PTY allocation/resize, and
-byte-exact input half-close. Remaining gates include product UI promotion,
-representative-server sampling, on-device/representative DNS verification, and
-complete minimum-device evidence, as
+byte-exact input half-close. A signed iPhone build also resolves the Mac's
+Bonjour hostname and completes the bounded SSH command. Remaining gates include
+product UI promotion, representative-server/DNS sampling, and complete
+minimum-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 The local physical-device route-loss baseline now passes: disabling Wi-Fi

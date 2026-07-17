@@ -316,8 +316,8 @@ transitions remain open. The LAN fixture was stopped and removed immediately
 after the probes.
 
 The workflow was then promoted into `npm run test:ios:device`. The runner
-discovers a single paired physical iOS device and the Mac's Wi-Fi address,
-checks device lock state, runs all 21 Swift package tests, builds both iOS SDK
+discovers a single paired physical iOS device and the Mac's Bonjour hostname,
+checks device lock state, runs all 23 Swift package tests, builds both iOS SDK
 destinations, signs and installs the physical build, passes only the non-secret
 fixture host into the launched process, and keeps the fixture alive only while
 the runner is attached. A launch attempt that encountered a re-locked phone
@@ -331,3 +331,29 @@ switching Wi-Fi, restoring Wi-Fi, and backgrounding/reopening the app. Automatic
 route teardown passed, exact-output explicit fresh reconnect passed, and
 background teardown plus foreground reconnect availability passed. Returning
 to the runner stopped and removed the fixture.
+
+## 2026-07-16: cancellable Bonjour hostname resolution
+
+The connector replaced its synchronous resolving `getaddrinfo` call with Apple
+DNS-SD under the same absolute deadline as TCP establishment. A package test
+cancels an actively pending unique `.local.` lookup in approximately 108 ms,
+and a separate loopback test connects through `localhost`. The complete macOS
+SSH fixture also authenticates through `localhost`, and the harness builds for
+the iOS device and simulator SDKs.
+
+The automated physical-device runner now passes the Mac's Bonjour hostname by
+default while continuing to expose the disposable fixture only after all
+builds and a fresh unlock. It selects the sole team configured in Xcode when no
+environment override is supplied and permits automatic profile updates. It
+signed, installed, and launched the harness on the iPhone 14 Pro with
+`Jamess-MacBook-Pro-9.local.:22022`. The bounded password command resolved that
+hostname on-device and returned:
+
+```text
+ghosttea-device-ok
+Linux … aarch64 GNU/Linux
+```
+
+This closes the local physical-device hostname-resolution gate. The runner
+then stopped and removed the fixture. Representative launch-server DNS and
+split-horizon/VPN behavior remain open.
