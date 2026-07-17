@@ -204,6 +204,7 @@ async function main() {
       "--environment-variables",
       JSON.stringify({
         GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
+        GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
         GHOSTTEA_FIXTURE_HOST: host,
       }),
       bundleIdentifier,

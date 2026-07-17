@@ -104,6 +104,57 @@ struct ContentView: View {
           .foregroundStyle(.secondary)
         }
 
+        Section("Active SSH memory gate") {
+          Text(model.activeSSHMemoryStatus)
+            .font(.footnote)
+          if let result = model.activeSSHMemoryResult {
+            LabeledContent(
+              "Stalled process / soft",
+              value:
+                "\(formatBytes(result.stalledFootprintBytes)) / \(formatBytes(result.budget.softApplicationFootprintBytes))"
+            )
+            LabeledContent(
+              "Baseline → connected",
+              value:
+                "\(formatBytes(result.processBaselineFootprintBytes)) → \(formatBytes(result.connectedFootprintBytes))"
+            )
+            LabeledContent(
+              "After lossless drain",
+              value: formatBytes(result.drainedFootprintBytes)
+            )
+            LabeledContent(
+              "Output drained",
+              value:
+                "\(formatBytes(result.drainedOutputBytes)) / \(formatBytes(result.expectedOutputBytes))"
+            )
+            Text(
+              "paused delivered \(result.deliveredBytesBeforeStall) → \(result.deliveredBytesAfterStall) bytes · socket \(result.socketBytesBeforeStall) → \(result.socketBytesAfterStall) bytes"
+            )
+            Text(
+              "receive window \(formatBytes(result.receiveWindowBytes)) / \(formatBytes(result.initialReceiveWindowBytes)) · socket waits \(result.socketWaitCalls)"
+            )
+            if !result.failures.isEmpty {
+              Text(result.failures.joined(separator: " · "))
+                .foregroundStyle(.red)
+            }
+          }
+          Button(
+            model.isRunningActiveSSHMemory
+              ? "Running…" : "Run active SSH memory gate"
+          ) {
+            model.runActiveSSHMemoryGate()
+          }
+          .disabled(
+            model.isRunningActiveSSHMemory || model.isRunningWholeAppMemory
+              || model.isRunningSSH
+          )
+          Text(
+            "The disposable fixture sends 32 MiB while app demand is paused. The gate requires unchanged delivery and socket counters, bounded whole-process memory, and an exact drain."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+
         Section("Automated lifecycle probes") {
           Text(model.lifecycleProbeResult)
             .font(.footnote)

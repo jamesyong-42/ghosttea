@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+import GhostteaCredentials
+import GhostteaSSH
+import GhostteaTransport
 import GhosttyVtProof
 
 struct HarnessMemoryResult: Identifiable, Sendable {
@@ -29,6 +32,43 @@ struct HarnessWholeAppMemoryResult: Sendable {
   let gpuAtlasBytes: UInt64? = nil
 
   var passed: Bool { failures.isEmpty }
+}
+
+struct HarnessActiveSSHMemoryResult: Sendable {
+  let budget: GhostteaMemoryBudget
+  let expectedOutputBytes: UInt64
+  let drainedOutputBytes: UInt64
+  let processBaselineFootprintBytes: UInt64
+  let connectedFootprintBytes: UInt64
+  let stalledFootprintBytes: UInt64
+  let drainedFootprintBytes: UInt64
+  let deliveredBytesBeforeStall: UInt64
+  let deliveredBytesAfterStall: UInt64
+  let socketBytesBeforeStall: UInt64
+  let socketBytesAfterStall: UInt64
+  let receiveWindowBytes: UInt64
+  let initialReceiveWindowBytes: UInt64
+  let socketWaitCalls: UInt64
+  let failures: [String]
+
+  var passed: Bool { failures.isEmpty }
+}
+
+private enum HarnessActiveSSHMemoryError: Error, CustomStringConvertible {
+  case unexpectedConnectionType
+  case standardError(bytes: UInt64)
+  case unexpectedTermination(TerminalExitStatus)
+
+  var description: String {
+    switch self {
+    case .unexpectedConnectionType:
+      return "SSH candidate did not return its instrumented connection"
+    case .standardError(let bytes):
+      return "SSH flood emitted \(bytes) unexpected stderr bytes"
+    case .unexpectedTermination(let status):
+      return "SSH flood terminated with \(status)"
+    }
+  }
 }
 
 enum HarnessDiagnostics {
@@ -109,6 +149,144 @@ enum HarnessDiagnostics {
       retainedScrollbackRows: retainedScrollbackRows,
       failures: failures
     )
+  }
+
+  static func runActiveSSHMemoryGate(
+    host: String,
+    port: Int,
+    username: String,
+    password: Data,
+    knownHostsPath: String,
+    physicalMemoryBytes: UInt64
+  ) async throws -> HarnessActiveSSHMemoryResult {
+    let expectedOutputBytes = UInt64(32 * 1_024 * 1_024)
+    let budget = GhostteaMemoryBudget.recommended(
+      forPhysicalMemoryBytes: physicalMemoryBytes
+    )
+    let baseline = try stablePhysicalFootprintBytes()
+    let credentialStore = try KeychainSSHCredentialStore()
+    let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
+    try await credentialStore.store(password, for: credential)
+
+    var activeConnection: SSHCandidateConnection?
+    do {
+      let configuration = try SSHCandidateConfiguration(
+        host: host,
+        port: port,
+        knownHostsPath: knownHostsPath,
+        hostKeyPolicy: .ask { _ in .acceptOnce },
+        authentication: .passwordCredential(
+          username: username,
+          credential: credential,
+          resolver: { requestedCredential in
+            try await credentialStore.require(requestedCredential)
+          }
+        ),
+        session: .command("head -c \(expectedOutputBytes) /dev/zero", allocatePTY: false),
+        connectTimeoutMilliseconds: 15_000,
+        handshakeTimeoutMilliseconds: 15_000
+      )
+      let genericConnection = try await SSHCandidateTransport(
+        configuration: configuration
+      ).connect()
+      guard let connection = genericConnection as? SSHCandidateConnection else {
+        await genericConnection.disconnect()
+        throw HarnessActiveSSHMemoryError.unexpectedConnectionType
+      }
+      activeConnection = connection
+      try await credentialStore.remove(credential)
+
+      let beforeStall = try await connection.flowControlMetrics()
+      let connected = try stablePhysicalFootprintBytes()
+      try await Task.sleep(for: .milliseconds(750))
+      let stalled = try await connection.flowControlMetrics()
+      let stalledFootprint = try stablePhysicalFootprintBytes()
+
+      var drainedOutputBytes: UInt64 = 0
+      var standardErrorBytes: UInt64 = 0
+      while let chunk = try await connection.readCommandOutput(maxBytes: 64 * 1_024) {
+        switch chunk {
+        case .standardOutput(let bytes):
+          drainedOutputBytes += UInt64(bytes.count)
+        case .standardError(let bytes):
+          standardErrorBytes += UInt64(bytes.count)
+        }
+      }
+      let drainedMetrics = try await connection.flowControlMetrics()
+      let termination = try await connection.waitForExit()
+      let drainedFootprint = try stablePhysicalFootprintBytes()
+      await connection.disconnect()
+      activeConnection = nil
+
+      guard standardErrorBytes == 0 else {
+        throw HarnessActiveSSHMemoryError.standardError(bytes: standardErrorBytes)
+      }
+      guard termination == .exited(code: 0) else {
+        throw HarnessActiveSSHMemoryError.unexpectedTermination(termination)
+      }
+
+      let deliveredBefore =
+        beforeStall.standardOutputBytesDelivered
+        + beforeStall.standardErrorBytesDelivered
+      let deliveredAfter =
+        stalled.standardOutputBytesDelivered
+        + stalled.standardErrorBytesDelivered
+      let deliveredAfterDrain =
+        drainedMetrics.standardOutputBytesDelivered
+        + drainedMetrics.standardErrorBytesDelivered
+      var failures: [String] = []
+      if deliveredAfter != deliveredBefore {
+        failures.append("paused demand delivered bytes into the app")
+      }
+      if stalled.socketBytesReceived != beforeStall.socketBytesReceived {
+        failures.append("paused demand continued reading from the socket")
+      }
+      if drainedOutputBytes != expectedOutputBytes {
+        failures.append("SSH flood did not drain byte-for-byte")
+      }
+      if positiveDifference(deliveredAfterDrain, deliveredBefore) < expectedOutputBytes {
+        failures.append("delivered-byte metrics did not cover the flood")
+      }
+      if positiveDifference(
+        drainedMetrics.socketBytesReceived,
+        beforeStall.socketBytesReceived
+      )
+        < expectedOutputBytes
+      {
+        failures.append("socket-byte metrics did not cover the flood")
+      }
+      if stalledFootprint > budget.softApplicationFootprintBytes {
+        failures.append("stalled SSH process footprint exceeds the soft budget")
+      }
+      let stallGrowth = positiveDifference(stalledFootprint, connected)
+      if stallGrowth > 8 * 1_024 * 1_024 {
+        failures.append("stalled SSH process grew by more than 8 MiB")
+      }
+
+      return HarnessActiveSSHMemoryResult(
+        budget: budget,
+        expectedOutputBytes: expectedOutputBytes,
+        drainedOutputBytes: drainedOutputBytes,
+        processBaselineFootprintBytes: baseline,
+        connectedFootprintBytes: connected,
+        stalledFootprintBytes: stalledFootprint,
+        drainedFootprintBytes: drainedFootprint,
+        deliveredBytesBeforeStall: deliveredBefore,
+        deliveredBytesAfterStall: deliveredAfter,
+        socketBytesBeforeStall: beforeStall.socketBytesReceived,
+        socketBytesAfterStall: stalled.socketBytesReceived,
+        receiveWindowBytes: stalled.receiveWindowBytes,
+        initialReceiveWindowBytes: stalled.initialReceiveWindowBytes,
+        socketWaitCalls: drainedMetrics.socketWaitCalls,
+        failures: failures
+      )
+    } catch {
+      if let activeConnection {
+        await activeConnection.disconnect()
+      }
+      try? await credentialStore.remove(credential)
+      throw error
+    }
   }
 
   private static func runMemoryProbe(sessions sessionCount: Int) throws -> HarnessMemoryResult {

@@ -62,6 +62,8 @@ final class HarnessModel: ObservableObject {
   @Published var memoryStatus = "Not run"
   @Published var wholeAppMemoryResult: HarnessWholeAppMemoryResult?
   @Published var wholeAppMemoryStatus = "Not run"
+  @Published var activeSSHMemoryResult: HarnessActiveSSHMemoryResult?
+  @Published var activeSSHMemoryStatus = "Not run"
   @Published var host = "10.0.0.103"
   @Published var port = "22022"
   @Published var username = "ghosttea"
@@ -79,6 +81,7 @@ final class HarnessModel: ObservableObject {
   @Published private var isBridgingSSHInteraction = false
   @Published var isRunningMemory = false
   @Published var isRunningWholeAppMemory = false
+  @Published var isRunningActiveSSHMemory = false
   @Published var isRunningKeychain = false
   @Published var isRunningSSH = false
 
@@ -203,6 +206,42 @@ final class HarnessModel: ObservableObject {
         wholeAppMemoryStatus = "Failed: \(error)"
       }
       isRunningWholeAppMemory = false
+      if ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE"] == "1" {
+        runActiveSSHMemoryGate()
+      }
+    }
+  }
+
+  func runActiveSSHMemoryGate() {
+    guard !isRunningActiveSSHMemory, !isRunningSSH else { return }
+    let fixtureHost = disposableFixtureHost
+    let physicalMemory = ProcessInfo.processInfo.physicalMemory
+    let knownHosts: String
+    do {
+      knownHosts = try knownHostsPath()
+    } catch {
+      activeSSHMemoryStatus = "Failed: \(error)"
+      return
+    }
+    isRunningActiveSSHMemory = true
+    activeSSHMemoryResult = nil
+    activeSSHMemoryStatus = "Connecting, pausing demand, then draining 32 MiB…"
+    Task {
+      do {
+        let result = try await HarnessDiagnostics.runActiveSSHMemoryGate(
+          host: fixtureHost,
+          port: 22_022,
+          username: "ghosttea",
+          password: Data("ghosttea-password".utf8),
+          knownHostsPath: knownHosts,
+          physicalMemoryBytes: physicalMemory
+        )
+        activeSSHMemoryResult = result
+        activeSSHMemoryStatus = result.passed ? "Passed" : "Failed"
+      } catch {
+        activeSSHMemoryStatus = "Failed: \(error)"
+      }
+      isRunningActiveSSHMemory = false
     }
   }
 

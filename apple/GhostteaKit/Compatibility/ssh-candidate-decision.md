@@ -237,13 +237,11 @@ separately test the host-neutral demand and queue semantics.
    automatic Wi-Fi-to-cellular teardown, explicit fresh reconnect, background
    suspension, and foreground reconnect availability pass; representative-server
    transitions remain.
-5. Extend the whole-app physical-footprint gate to an active SSH flood once the
-   terminal controller is integrated. The standard-tier iPhone gate now passes
-   one active and seven compressed background VT sessions at 30.5 MB process
-   footprint. The candidate already exposes raw socket, delivered/written byte,
-   socket-wait, and SSH receive-window counters; the macOS flood proves no
-   socket or Swift-side prefetch, remains byte-exact, and stays below its
-   whole-process RSS gate.
+5. Carry the completed active-SSH gate into the terminal controller. The
+   standard-tier iPhone pauses app demand with unchanged delivered and raw
+   socket counters, holds the process at 16.9 MB, and then drains the complete
+   32 MiB flood byte-for-byte. The same device also passes one active and seven
+   compressed background VT sessions at 30.5 MB process footprint.
 6. Run the package and network fixture on a physical low-end supported iOS
    device.
 

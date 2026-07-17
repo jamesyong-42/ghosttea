@@ -184,15 +184,14 @@ UIKit, transport state, and the rest of the application.
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is production UI promotion, representative-server
    sampling, representative DNS verification, representative-server verification
-   of the implemented path/reconnect orchestration,
-   active-SSH footprint integration, and representative compact-tier device
-   execution. The public-key partial step
+   of the implemented path/reconnect orchestration, and representative
+   compact-tier device execution. The public-key partial step
    remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
-3. The raw VT and standard-tier whole-process gates are complete. Repeat the
-   compact-tier policy on a low-memory supported device, then add transport,
-   decoded-image, shaping/cache, TRF1, and GPU-atlas categories as those
-   components enter the iOS application.
+3. The raw VT, standard-tier whole-process, and active-SSH backpressure gates
+   are complete. Repeat the compact-tier policy on a low-memory supported
+   device, then add decoded-image, shaping/cache, TRF1, and GPU-atlas categories
+   as those components enter the iOS application.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.
 6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.

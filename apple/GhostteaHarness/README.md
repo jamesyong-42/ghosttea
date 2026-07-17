@@ -11,6 +11,9 @@ The harness provides:
 - an enforceable compact/standard whole-process memory gate that measures one
   active session plus compressed background sessions and starts automatically
   under the device runner;
+- an automatic active-SSH gate that pauses application demand during a 32 MiB
+  server flood, proves that both delivery and raw socket counters remain fixed,
+  then drains the stream exactly under the whole-process memory budget;
 - a password-, in-memory private-key-, or keyboard-interactive-authenticated SSH
   command probe with bounded output;
 - separate bounded stdout and stderr capture plus deterministic exit-37 and
@@ -60,7 +63,7 @@ development team configured in Xcode, and the Mac's Bonjour hostname. It checks
 device lock state, runs package and dual-SDK build gates, and signs the app
 before opening a network service. It then waits for an unlocked device, starts
 only the disposable password fixture, installs, and launches the harness with
-the non-secret hostname and automatic memory gate enabled. It always removes
+the non-secret hostname and both automatic memory gates enabled. It always removes
 the fixture on error, Return, Ctrl-C, or termination:
 
 ```sh

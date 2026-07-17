@@ -390,3 +390,36 @@ scenario. The Phase 0 app has no TRF1 renderer, decoded images, or Metal atlas,
 so those categories remain explicitly unavailable rather than being reported
 as zero-cost implementation. They become measurable gates after the renderer
 exists.
+
+## 2026-07-17: active SSH backpressure and whole-process memory gate
+
+The device runner installed a signed build that automatically ran the VT
+whole-application scenario above and then connected to the disposable password
+fixture for an active transport scenario. The server command emitted exactly
+33,554,432 zero bytes. The app intentionally made no channel-read request for
+750 ms, sampled both the instrumented transport and the complete UIKit process,
+then drained output in bounded 64 KiB reads without accumulating it in Swift.
+
+The gate passed with:
+
+| Measurement                              |                        Result |
+| ---------------------------------------- | ----------------------------: |
+| Process footprint before connection      |                       26.7 MB |
+| Connected and stalled footprint          |                       16.9 MB |
+| Footprint after lossless drain           |                       17.0 MB |
+| Standard-tier soft budget                |                        160 MB |
+| Application-delivered bytes during pause |                         0 → 0 |
+| Raw socket bytes received during pause   |                 1,957 → 1,957 |
+| Output drained                           | 33,554,432 / 33,554,432 bytes |
+| Receive window while paused              |         2 MiB / 2 MiB initial |
+| Socket readiness waits after drain       |                         1,115 |
+
+The lower connected sample reflects reclamation after the preceding automatic
+VT memory scenario; the enforced claims use the absolute stalled footprint and
+nonnegative growth, not an assumption that samples must increase. Most
+importantly, neither application delivery nor socket receipt advanced while
+demand was paused. This is direct physical-device evidence that inbound
+backpressure reaches the transport boundary rather than filling an unbounded
+Swift stream. Resuming demand drained the fixture output byte-for-byte while the
+whole process remained far below the standard-tier soft limit. The runner then
+removed the fixture.
