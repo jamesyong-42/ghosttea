@@ -273,6 +273,16 @@ final class HarnessModel: ObservableObject {
         let retained = try GhostteaTerminalFrameDecoder.retain([frame, incremental, incremental])
         let metal = try GhostteaMetalProof.run(frame: frame)
         let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+        var gridChanges: [GhostteaTerminalGridSize] = []
+        surface.onGridSizeChange = { gridChanges.append($0) }
+        surface.terminalContentInsets = UIEdgeInsets(top: 59, left: 0, bottom: 34, right: 0)
+        surface.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        surface.layoutIfNeeded()
+        let portraitGridSize = surface.currentGridSize
+        surface.terminalContentInsets = UIEdgeInsets(top: 0, left: 59, bottom: 21, right: 59)
+        surface.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+        surface.layoutIfNeeded()
+        let landscapeGridSize = surface.currentGridSize
         let surfaceAcceptedFull = try surface.apply(frame: frame)
         let surfaceAcceptedIncremental = try surface.apply(frame: incremental)
         let surfaceAcceptedStale = try surface.apply(frame: incremental)
@@ -321,6 +331,10 @@ final class HarnessModel: ObservableObject {
           surface.diagnostics.resourceEvictions == 1,
           surface.diagnostics.resourceRebuilds == 2,
           surface.diagnostics.residentAtlasBytes == 20 * 1024 * 1024,
+          portraitGridSize == GhostteaTerminalGridSize(columns: 49, rows: 39),
+          landscapeGridSize == GhostteaTerminalGridSize(columns: 92, rows: 19),
+          gridChanges.contains(GhostteaTerminalGridSize(columns: 49, rows: 39)),
+          gridChanges.last == GhostteaTerminalGridSize(columns: 92, rows: 19),
           surface.isPaused,
           surface.enableSetNeedsDisplay
         else {

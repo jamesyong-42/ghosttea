@@ -37,7 +37,23 @@
   @MainActor
   public final class GhostteaTerminalMetalView: MTKView, MTKViewDelegate {
     public var onNeedsFullRefresh: (() -> Void)?
+    public var onGridSizeChange: ((GhostteaTerminalGridSize) -> Void)? {
+      didSet { updateGridSize(notifyUnchanged: true) }
+    }
+    public var includesSafeAreaInsets = true {
+      didSet {
+        guard includesSafeAreaInsets != oldValue else { return }
+        geometryDidChange()
+      }
+    }
+    public var terminalContentInsets = UIEdgeInsets.zero {
+      didSet {
+        guard terminalContentInsets != oldValue else { return }
+        geometryDidChange()
+      }
+    }
     public private(set) var diagnostics = GhostteaTerminalMetalDiagnostics()
+    public private(set) var currentGridSize: GhostteaTerminalGridSize?
 
     private let metalRuntime: GhostteaMetalRuntime
     private var terminalRenderer: GhostteaMetalRenderer?
@@ -85,6 +101,16 @@
 
     deinit {
       NotificationCenter.default.removeObserver(self)
+    }
+
+    public override func layoutSubviews() {
+      super.layoutSubviews()
+      geometryDidChange()
+    }
+
+    public override func safeAreaInsetsDidChange() {
+      super.safeAreaInsetsDidChange()
+      geometryDidChange()
     }
 
     @discardableResult
@@ -158,7 +184,7 @@
 
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
       guard size.width > 0, size.height > 0 else { return }
-      requestEventDrivenDraw()
+      geometryDidChange()
     }
 
     public func draw(in view: MTKView) {
@@ -171,6 +197,7 @@
           state: retainedState,
           target: drawable.texture,
           scale: Float(contentScaleFactor),
+          contentInsets: effectiveContentInsets(),
           selection: terminalSelection,
           focused: terminalFocused,
           cursorBlinkVisible: cursorBlinkVisible,
@@ -201,6 +228,36 @@
     private func requestEventDrivenDraw() {
       guard !gpuSuspended else { return }
       setNeedsDisplay()
+    }
+
+    private func geometryDidChange() {
+      updateGridSize()
+      requestEventDrivenDraw()
+    }
+
+    private func updateGridSize(notifyUnchanged: Bool = false) {
+      guard bounds.width > 0, bounds.height > 0 else { return }
+      let next = GhostteaTerminalLayout.gridSize(
+        width: Float(bounds.width),
+        height: Float(bounds.height),
+        contentInsets: effectiveContentInsets()
+      )
+      guard next != currentGridSize else {
+        if notifyUnchanged { onGridSizeChange?(next) }
+        return
+      }
+      currentGridSize = next
+      onGridSizeChange?(next)
+    }
+
+    private func effectiveContentInsets() -> GhostteaTerminalContentInsets {
+      let safeArea = includesSafeAreaInsets ? safeAreaInsets : .zero
+      return GhostteaTerminalContentInsets(
+        top: Float(safeArea.top + terminalContentInsets.top),
+        left: Float(safeArea.left + terminalContentInsets.left),
+        bottom: Float(safeArea.bottom + terminalContentInsets.bottom),
+        right: Float(safeArea.right + terminalContentInsets.right)
+      )
     }
 
     private func requestFullRefresh() {

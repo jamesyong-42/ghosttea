@@ -2056,6 +2056,21 @@ transition, and embeds the surface as a visible SwiftUI preview. Terminal-size
 negotiation from safe-area geometry, cursor timing, multi-scene ownership,
 precompiled shaders, and screenshot goldens remain.
 
+The sixth slice establishes deterministic view-to-terminal sizing.
+`GhostteaTerminalLayout` converts point-space bounds to `UInt16` columns and
+rows using the desktop demo's 7.83-by-19 cell and two-point padding, clamps
+degenerate and extreme inputs, and does not depend on display scale. The iOS
+surface combines live safe-area insets with host-provided content insets and
+uses the same effective top/left origin for Metal geometry, preventing PTY size
+and rendered placement from diverging. Layout, safe-area, and drawable-size
+changes emit a deduplicated grid callback; attaching a callback after layout
+immediately reports the current grid. The host controller, not the view, will
+sequence that callback into core resize and SSH PTY resize effects. Pure tests
+cover exact desktop geometry, degenerate bounds, and representative portrait
+and landscape safe areas. The simulator harness observes 49-by-39 portrait and
+92-by-19 landscape callbacks. Controller-side resize serialization and a real
+device rotation gesture remain before this gate is fully production-integrated.
+
 Deliverables:
 
 - strict Swift TRF1 decoder;

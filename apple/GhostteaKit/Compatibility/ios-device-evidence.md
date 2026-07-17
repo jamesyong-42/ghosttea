@@ -646,3 +646,28 @@ The harness also contains a SwiftUI-hosted live Metal preview for manual visual
 inspection. Safe-area-to-terminal resize negotiation, real scene detach/attach
 gestures, multi-window ownership, and screenshot conformance are subsequent
 Phase 4 gates.
+
+## 2026-07-17: safe-area and rotation grid negotiation
+
+The presentation surface now derives terminal columns and rows from point-space
+bounds using the desktop renderer's 7.83-by-19 cell and two-point padding.
+UIKit safe-area insets and explicit host content insets are combined once and
+fed to both the grid calculation and Metal content origin. Layout,
+safe-area-inset, and drawable-size changes produce a deduplicated callback for
+the controller to route into core and SSH PTY resize operations; transport I/O
+remains outside the view.
+
+Two pure tests prove the exact 100-by-30 desktop fixture geometry, conservative
+one-cell behavior for degenerate input, `UInt16` clamping, and representative
+iPhone portrait and landscape results. The complete GhostteaKit suite now
+passes 46 tests on macOS. Both iOS SDK builds pass. The arm64 iPhone 17 Pro
+Simulator exercised the actual view callback and observed 49-by-39 portrait
+and 92-by-19 landscape grids before completing the existing render and GPU
+lifecycle gates and emitting:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+A physical rotation gesture and controller-side ordering of core resize, PTY
+resize, and the resulting full render frame remain release evidence.

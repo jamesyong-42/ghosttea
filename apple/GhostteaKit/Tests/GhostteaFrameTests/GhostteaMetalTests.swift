@@ -38,6 +38,39 @@ private func productionFrame() async throws -> Data {
   return try #require(update.effects.first { $0.kind == .frameReady }?.payload)
 }
 
+@Test func terminalLayoutMatchesDesktopGeometryAndSafeAreaInsets() {
+  #expect(
+    GhostteaTerminalLayout.gridSize(width: 787, height: 574)
+      == GhostteaTerminalGridSize(columns: 100, rows: 30)
+  )
+  #expect(
+    GhostteaTerminalLayout.gridSize(
+      width: 390,
+      height: 844,
+      contentInsets: .init(top: 59, bottom: 34)
+    ) == GhostteaTerminalGridSize(columns: 49, rows: 39)
+  )
+  #expect(
+    GhostteaTerminalLayout.gridSize(
+      width: 844,
+      height: 390,
+      contentInsets: .init(left: 59, bottom: 21, right: 59)
+    ) == GhostteaTerminalGridSize(columns: 92, rows: 19)
+  )
+}
+
+@Test func terminalLayoutClampsDegenerateAndUnboundedViewports() {
+  #expect(
+    GhostteaTerminalLayout.gridSize(width: 0, height: .nan)
+      == GhostteaTerminalGridSize(columns: 1, rows: 1)
+  )
+  #expect(
+    GhostteaTerminalLayout.gridSize(
+      width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+      == GhostteaTerminalGridSize(columns: .max, rows: .max)
+  )
+}
+
 @Test func metalProofUploadsAProductionFrameAndThenHitsTheCache() async throws {
   let frame = try await productionFrame()
   let result = try GhostteaMetalProof.run(frame: frame)

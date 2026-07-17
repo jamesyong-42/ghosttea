@@ -124,10 +124,10 @@ private struct GhostteaMetalMesh {
 }
 
 final class GhostteaMetalRenderer {
-  static let cellWidth: Float = 7.83
-  static let lineHeight: Float = 19
-  static let originX: Float = 2
-  static let originY: Float = 2
+  static let cellWidth = GhostteaTerminalLayout.cellWidth
+  static let lineHeight = GhostteaTerminalLayout.lineHeight
+  static let originX = GhostteaTerminalLayout.horizontalPadding
+  static let originY = GhostteaTerminalLayout.verticalPadding
 
   let runtime: GhostteaMetalRuntime
   let atlases: GhostteaMetalAtlasSet
@@ -180,6 +180,7 @@ final class GhostteaMetalRenderer {
     height: Int,
     scale: Float = 1,
     theme: GhostteaMetalTheme = GhostteaMetalTheme(),
+    contentInsets: GhostteaTerminalContentInsets = .zero,
     selection: GhostteaMetalSelection? = nil,
     focused: Bool = true,
     cursorBlinkVisible: Bool = true
@@ -201,6 +202,7 @@ final class GhostteaMetalRenderer {
       target: target,
       scale: scale,
       theme: theme,
+      contentInsets: contentInsets,
       selection: selection,
       focused: focused,
       cursorBlinkVisible: cursorBlinkVisible
@@ -224,6 +226,7 @@ final class GhostteaMetalRenderer {
     target: any MTLTexture,
     scale: Float = 1,
     theme: GhostteaMetalTheme = GhostteaMetalTheme(),
+    contentInsets: GhostteaTerminalContentInsets = .zero,
     selection: GhostteaMetalSelection? = nil,
     focused: Bool = true,
     cursorBlinkVisible: Bool = true,
@@ -242,6 +245,7 @@ final class GhostteaMetalRenderer {
       height: height,
       scale: scale,
       theme: theme,
+      contentInsets: contentInsets,
       selection: selection,
       focused: focused,
       cursorBlinkVisible: cursorBlinkVisible
@@ -282,11 +286,14 @@ final class GhostteaMetalRenderer {
     height: Int,
     scale: Float,
     theme: GhostteaMetalTheme,
+    contentInsets: GhostteaTerminalContentInsets,
     selection: GhostteaMetalSelection?,
     focused: Bool,
     cursorBlinkVisible: Bool
   ) throws -> GhostteaMetalMesh {
     var mesh = GhostteaMetalMesh()
+    let originX = Self.originX + contentInsets.left
+    let originY = Self.originY + contentInsets.top
     let orderedSelection = ordered(selection)
     for (rowIndex, row) in state.rows.enumerated() {
       for run in row.styles {
@@ -294,8 +301,8 @@ final class GhostteaMetalRenderer {
         if let background = style.background {
           pushRectangle(
             into: &mesh.backgrounds,
-            x: (Self.originX + Float(run.cellStart) * Self.cellWidth) * scale,
-            y: (Self.originY + Float(rowIndex) * Self.lineHeight) * scale,
+            x: (originX + Float(run.cellStart) * Self.cellWidth) * scale,
+            y: (originY + Float(rowIndex) * Self.lineHeight) * scale,
             width: Float(run.cellSpan) * Self.cellWidth * scale,
             height: Self.lineHeight * scale,
             color: background,
@@ -316,8 +323,8 @@ final class GhostteaMetalRenderer {
           : max(0, Int(state.columns) - 1)
         pushRectangle(
           into: &mesh.selection,
-          x: (Self.originX + Float(first) * Self.cellWidth) * scale,
-          y: (Self.originY + Float(row) * Self.lineHeight) * scale,
+          x: (originX + Float(first) * Self.cellWidth) * scale,
+          y: (originY + Float(row) * Self.lineHeight) * scale,
           width: Float(max(1, last - first + 1)) * Self.cellWidth * scale,
           height: Self.lineHeight * scale,
           color: theme.selection,
@@ -344,8 +351,8 @@ final class GhostteaMetalRenderer {
           ? \GhostteaMetalMesh.alphaGlyphs : \GhostteaMetalMesh.colorGlyphs
         pushGlyph(
           into: &mesh[keyPath: output],
-          x: (Self.originX + instance.x) * scale,
-          y: (Self.originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
+          x: (originX + instance.x) * scale,
+          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
           width: instance.width * scale,
           height: instance.height * scale,
           location: location,
@@ -357,8 +364,8 @@ final class GhostteaMetalRenderer {
       for run in row.styles {
         let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
         if style.invisible { continue }
-        let x = (Self.originX + Float(run.cellStart) * Self.cellWidth) * scale
-        let rowTop = (Self.originY + Float(rowIndex) * Self.lineHeight) * scale
+        let x = (originX + Float(run.cellStart) * Self.cellWidth) * scale
+        let rowTop = (originY + Float(rowIndex) * Self.lineHeight) * scale
         let runWidth = Float(run.cellSpan) * Self.cellWidth * scale
         let stroke = max(1, scale.rounded())
         if style.underline {
@@ -391,8 +398,8 @@ final class GhostteaMetalRenderer {
       guard Int(cursor.x) < Int(state.columns), Int(cursor.y) < state.rows.count else {
         throw TRF1DecodingError("cursor exceeds viewport")
       }
-      let x = (Self.originX + Float(cursor.x) * Self.cellWidth) * scale
-      let y = (Self.originY + Float(cursor.y) * Self.lineHeight) * scale
+      let x = (originX + Float(cursor.x) * Self.cellWidth) * scale
+      let y = (originY + Float(cursor.y) * Self.lineHeight) * scale
       let cursorStyle: TRF1CursorStyle = focused ? cursor.style : .hollowBlock
       let cursorWidth = cursorStyle == .bar ? max(2, (2 * scale).rounded()) : Self.cellWidth * scale
       pushRectangle(

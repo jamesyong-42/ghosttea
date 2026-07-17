@@ -114,6 +114,14 @@ backgrounding and memory warnings discard the reconstructible renderer and its
 rebuilds those resources. The harness embeds the surface as a visible preview
 after its renderer fixture runs.
 
+`GhostteaTerminalLayout` converts point-space bounds into a clamped terminal
+grid using the desktop demo's 7.83-by-19 cell metrics and two-point padding.
+`GhostteaTerminalMetalView` combines UIKit safe-area insets with explicit host
+content insets, uses that same value for both Metal's content origin and grid
+calculation, and emits a deduplicated `onGridSizeChange` callback on layout,
+safe-area, and drawable-size changes. The controller can route that callback to
+the production core and SSH PTY without putting transport I/O in the view.
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,
