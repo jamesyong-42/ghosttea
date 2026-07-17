@@ -266,7 +266,7 @@ pub enum StateMessage {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalTerminalSnapshot {
     pub session_epoch: u64,
@@ -281,7 +281,7 @@ pub struct LogicalTerminalSnapshot {
     pub cwd: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalTerminalPatch {
     pub session_epoch: u64,
@@ -302,7 +302,7 @@ pub struct LogicalScrollbar {
     pub len: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RowReplacement {
     pub row_index: u16,
@@ -310,14 +310,14 @@ pub struct RowReplacement {
     pub row: LogicalRow,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalRow {
     pub text: String,
     pub cells: Vec<LogicalCell>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalCell {
     pub column: u16,
@@ -326,7 +326,7 @@ pub struct LogicalCell {
     pub style: LogicalCellStyle,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalCellStyle {
     pub bold: bool,
@@ -340,7 +340,7 @@ pub struct LogicalCellStyle {
     pub background: Option<[u8; 3]>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalCursor {
     pub x: u16,

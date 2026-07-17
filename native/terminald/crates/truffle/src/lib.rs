@@ -25,8 +25,9 @@ use ghosttea::{
     RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
     ViewAccess,
     tunnel_protocol::{
-        ConnectionMessage, MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR,
-        PROTOCOL_MINOR, SessionControlMessage, SharedSessionSummary, StateMessage, StreamKind,
+        ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
+        MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+        RowReplacement, SessionControlMessage, SharedSessionSummary, StateMessage, StreamKind,
         StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_message, decode_preface,
         encode_message, encode_preface,
     },
@@ -385,8 +386,13 @@ impl MeshRuntime {
                             break;
                         }
                     }
-                    Ok(Some(StateMessage::Patch(_))) => {
-                        eprintln!("[terminal-mesh] ignored unsupported incremental remote patch");
+                    Ok(Some(StateMessage::Patch(patch))) => {
+                        if let Err(error) = replica.publish_patch(patch) {
+                            eprintln!(
+                                "[terminal-mesh] failed to apply remote state patch: {error:#}"
+                            );
+                            break;
+                        }
                     }
                     Ok(Some(StateMessage::ControlChanged {
                         controller_view_id,
@@ -1336,9 +1342,14 @@ async fn spawn_state_stream(
         })
         .await?;
     let mut controls = session.subscribe_control();
-    if let Some(snapshot) = session.logical_snapshot() {
+    let mut snapshots = session.subscribe_logical();
+    let mut previous = session.logical_snapshot();
+    if let Some(snapshot) = previous.as_ref() {
         state
-            .write_message(&StateMessage::Snapshot(snapshot), MAX_STATE_MESSAGE_BYTES)
+            .write_message(
+                &StateMessage::Snapshot(snapshot.clone()),
+                MAX_STATE_MESSAGE_BYTES,
+            )
             .await?;
     }
     let (controller, cols, rows, layout_epoch) = session.control_state();
@@ -1356,8 +1367,8 @@ async fn spawn_state_stream(
             )
             .await?;
     }
-    let mut snapshots = session.subscribe_logical();
     tokio::spawn(async move {
+        let mut patch_sequence = 0_u64;
         loop {
             let message = tokio::select! {
                 changed = cancelled.changed() => {
@@ -1367,7 +1378,21 @@ async fn spawn_state_stream(
                     continue;
                 },
                 snapshot = snapshots.recv() => match snapshot {
-                    Ok(snapshot) => Some(StateMessage::Snapshot(snapshot)),
+                    Ok(snapshot) => {
+                        let next_sequence = patch_sequence.saturating_add(1);
+                        let message = previous
+                            .as_ref()
+                            .and_then(|previous| logical_patch(previous, &snapshot, next_sequence))
+                            .map(StateMessage::Patch)
+                            .unwrap_or_else(|| StateMessage::Snapshot(snapshot.clone()));
+                        if matches!(message, StateMessage::Patch(_)) {
+                            patch_sequence = next_sequence;
+                        } else {
+                            patch_sequence = 0;
+                        }
+                        previous = Some(snapshot);
+                        Some(message)
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
@@ -1395,6 +1420,50 @@ async fn spawn_state_stream(
         }
     });
     Ok(())
+}
+
+fn logical_patch(
+    previous: &LogicalTerminalSnapshot,
+    current: &LogicalTerminalSnapshot,
+    patch_sequence: u64,
+) -> Option<LogicalTerminalPatch> {
+    if previous.session_epoch != current.session_epoch
+        || previous.layout_epoch != current.layout_epoch
+        || previous.cols != current.cols
+        || previous.rows.len() != current.rows.len()
+        || previous.title != current.title
+        || previous.cwd != current.cwd
+        || current.terminal_revision <= previous.terminal_revision
+    {
+        return None;
+    }
+    let row_replacements = previous
+        .rows
+        .iter()
+        .zip(&current.rows)
+        .enumerate()
+        .filter_map(|(index, (old, new))| {
+            if old == new {
+                return None;
+            }
+            Some(RowReplacement {
+                row_index: u16::try_from(index).ok()?,
+                row_revision: current.terminal_revision,
+                row: new.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(LogicalTerminalPatch {
+        session_epoch: current.session_epoch,
+        layout_epoch: current.layout_epoch,
+        patch_sequence,
+        terminal_revision: current.terminal_revision,
+        row_replacements,
+        cursor: (previous.cursor != current.cursor).then_some(current.cursor),
+        mouse_tracking: (previous.mouse_tracking != current.mouse_tracking)
+            .then_some(current.mouse_tracking),
+        scrollbar: (previous.scrollbar != current.scrollbar).then_some(current.scrollbar),
+    })
 }
 
 fn shared_sessions(
@@ -1613,6 +1682,24 @@ impl TerminalMesh for TruffleTerminalMesh {
 mod tests {
     use super::*;
 
+    fn logical_snapshot(revision: u64, text: &str) -> LogicalTerminalSnapshot {
+        LogicalTerminalSnapshot {
+            session_epoch: 1,
+            layout_epoch: 2,
+            terminal_revision: revision,
+            cols: 80,
+            rows: vec![ghosttea::tunnel_protocol::LogicalRow {
+                text: text.into(),
+                cells: vec![],
+            }],
+            cursor: ghosttea::tunnel_protocol::LogicalCursor::default(),
+            mouse_tracking: false,
+            scrollbar: ghosttea::tunnel_protocol::LogicalScrollbar::default(),
+            title: Some("terminal".into()),
+            cwd: Some("/tmp".into()),
+        }
+    }
+
     #[test]
     fn terminal_access_policy_requires_an_explicit_write_grant() {
         let config = TruffleTerminalConfig {
@@ -1645,6 +1732,20 @@ mod tests {
         assert!(connection_is_reusable("host-a", true, "host-a"));
         assert!(!connection_is_reusable("host-a", false, "host-a"));
         assert!(!connection_is_reusable("host-a", true, "host-b"));
+    }
+
+    #[test]
+    fn logical_state_uses_patches_only_with_a_compatible_baseline() {
+        let previous = logical_snapshot(4, "before");
+        let current = logical_snapshot(5, "after");
+        let patch = logical_patch(&previous, &current, 1).unwrap();
+        assert_eq!(patch.patch_sequence, 1);
+        assert_eq!(patch.row_replacements.len(), 1);
+        assert_eq!(patch.row_replacements[0].row.text, "after");
+
+        let mut resized = current;
+        resized.layout_epoch += 1;
+        assert!(logical_patch(&previous, &resized, 1).is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
