@@ -7,13 +7,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use ghosttea_core::{FrameCursor, TextSnapshot, encode_text_snapshot};
 use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
 use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{
-    frame::{FrameCursor, TextSnapshot, encode_text_snapshot},
     session::SessionSummary,
     tunnel_protocol::{
         LogicalCellStyle, LogicalRow, LogicalTerminalPatch, LogicalTerminalSnapshot,

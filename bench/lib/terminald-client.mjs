@@ -236,6 +236,7 @@ export class TerminaldHarness {
   #requestId = 1;
   #demux;
   #views = new Map();
+  #sessionHandles = new Set();
   control;
   frames;
 
@@ -345,7 +346,10 @@ export class TerminaldHarness {
       viewId,
       attachmentEpoch: attached.attachmentEpoch,
       inputSequence: 0,
+      handle: created.session.handle,
     });
+    this.#sessionHandles.add(created.session.handle);
+    this.#syncFrameSubscriptions();
     // Drop attach/refresh frames so marker waits only see this session's workload.
     this.#demux.clearRecent();
     return created.session;
@@ -372,7 +376,14 @@ export class TerminaldHarness {
 
   async terminate(sessionId) {
     await this.request("terminate", { sessionId });
+    const view = this.#views.get(sessionId);
+    if (view) this.#sessionHandles.delete(view.handle);
     this.#views.delete(sessionId);
+    this.#syncFrameSubscriptions();
+  }
+
+  #syncFrameSubscriptions() {
+    this.frames.socket.write(packet(JSON.stringify({ sessionHandles: [...this.#sessionHandles] })));
   }
 
   /**

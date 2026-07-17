@@ -1860,11 +1860,12 @@ Optional parallel spike:
 **Estimated effort:** 2-3 weeks
 
 **Started:** 2026-07-17. The new dependency-clean `ghosttea-core` crate owns
-the ordered `TerminalUpdate`/`TerminalEffect` contract and the logical snapshot
-types. `terminald` re-exports those types through the unchanged tunnel protocol,
-and the complete Rust workspace plus the pre-extraction TRF1 golden pass. The
-next mechanical slice moves model mutation and effect production behind this
-boundary.
+the ordered `TerminalUpdate`/`TerminalEffect` contract, Ghostty model, logical
+snapshots, shaping/render cache, counters, and TRF1 producer. Desktop `Session`
+is now a PTY adapter that executes returned effects after releasing the model
+lock. The unchanged tunnel protocol, complete Rust workspace, daemon smoke test,
+pre-extraction TRF1 golden, and terminal benchmark pass. The next slice moves
+remaining reusable remote-replica rendering and input/view ordering policy.
 
 The embedding refactor has landed and passed its package and integration checks.
 `native/terminald/fixtures/phase1/ansi-baseline.json` now freezes the

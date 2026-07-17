@@ -1,9 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::HashMap,
     io::{Read, Write},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
@@ -11,21 +11,17 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
-use ghosttea_vt::{GhosttyTerminalCore, TerminalSnapshot};
+use ghosttea_core::{
+    ClipboardRequest, LogicalTerminalSnapshot, RenderRequest, TerminalEffect, TerminalModel,
+    TerminalModelOptions, TerminalRuntime, TerminalUpdate,
+};
+use ghosttea_text::TextEngine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::{
-    authority::{ControlChanged, ControllerState, ViewAccess, ViewAuthority},
-    frame::{FrameCursor, TextSnapshot, encode_text_snapshot},
-    tunnel_protocol::{
-        LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
-        LogicalTerminalSnapshot,
-    },
-};
+use crate::authority::{ControlChanged, ControllerState, ViewAccess, ViewAuthority};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -202,18 +198,11 @@ pub struct SessionSummary {
 
 pub struct Session {
     summary: Mutex<SessionSummary>,
-    handle: u64,
-    session_epoch: u64,
     created_at_ms: u64,
     process: PtyProcess,
-    terminal: Mutex<GhosttyTerminalCore>,
-    sequence: AtomicU64,
-    revision: AtomicU64,
-    layout_epoch: AtomicU64,
+    model: Mutex<TerminalModel>,
     exited: AtomicBool,
     frames: broadcast::Sender<Vec<u8>>,
-    text_engine: Arc<Mutex<TextEngine>>,
-    render_cache: Mutex<RenderCache>,
     persistence: Persistence,
     on_exit: ExitCallback,
     authority: Mutex<ViewAuthority>,
@@ -221,7 +210,6 @@ pub struct Session {
     input_order: Mutex<InputOrderState>,
     termination_started: AtomicBool,
     requested_termination: Mutex<Option<TerminationSource>>,
-    latest_logical: Mutex<Option<LogicalTerminalSnapshot>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
     control_tx: broadcast::Sender<ControlChanged>,
 }
@@ -357,36 +345,6 @@ fn configure_environment(
     command.env("TERM", "xterm-256color");
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct RowShapeKey {
-    text: String,
-    spans: Vec<(usize, usize, FontStyle)>,
-}
-
-#[derive(Clone)]
-struct CachedRow {
-    key: RowShapeKey,
-    shaped: ShapedRow,
-}
-
-struct RenderCache {
-    rows: Vec<Option<CachedRow>>,
-    sent_glyphs: HashSet<u32>,
-    force_full: bool,
-    reset_catalog: bool,
-}
-
-impl RenderCache {
-    fn new() -> Self {
-        Self {
-            rows: Vec::new(),
-            sent_glyphs: HashSet::new(),
-            force_full: true,
-            reset_catalog: true,
-        }
-    }
-}
-
 impl Session {
     pub fn spawn(
         options: SpawnOptions,
@@ -436,6 +394,18 @@ impl Session {
             .as_millis() as u64;
         let (logical_tx, _) = broadcast::channel(8);
         let (control_tx, _) = broadcast::channel(16);
+        let runtime = Arc::new(TerminalRuntime::from_shared_text_engine(text_engine));
+        let model = TerminalModel::new(
+            runtime,
+            TerminalModelOptions {
+                session_handle: handle,
+                session_epoch,
+                layout_epoch: 1,
+                cols,
+                rows,
+                scrollback_bytes: 10_000,
+            },
+        )?;
         let session = Arc::new(Self {
             summary: Mutex::new(SessionSummary {
                 id,
@@ -456,8 +426,6 @@ impl Session {
                 exit_outcome: None,
                 owner_id,
             }),
-            handle,
-            session_epoch,
             created_at_ms,
             process: PtyProcess {
                 master: Mutex::new(pair.master),
@@ -465,14 +433,9 @@ impl Session {
                 child: Mutex::new(child),
                 pid,
             },
-            terminal: Mutex::new(GhosttyTerminalCore::new(cols, rows, 10_000)?),
-            sequence: AtomicU64::new(0),
-            revision: AtomicU64::new(0),
-            layout_epoch: AtomicU64::new(1),
+            model: Mutex::new(model),
             exited: AtomicBool::new(false),
             frames,
-            text_engine,
-            render_cache: Mutex::new(RenderCache::new()),
             persistence,
             on_exit,
             authority: Mutex::new(ViewAuthority::new(cols, rows)),
@@ -480,7 +443,6 @@ impl Session {
             input_order: Mutex::new(InputOrderState::default()),
             termination_started: AtomicBool::new(false),
             requested_termination: Mutex::new(None),
-            latest_logical: Mutex::new(None),
             logical_tx,
             control_tx,
         });
@@ -547,24 +509,16 @@ impl Session {
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     }
-                    let (snapshot, response) = {
-                        let mut terminal = session.terminal.lock().unwrap();
-                        terminal.feed(&batch);
-                        if session.has_active_views() {
-                            (Some(terminal.snapshot()), Vec::new())
-                        } else {
-                            (None, terminal.take_pty_response())
-                        }
+                    let render = if session.has_active_views() {
+                        RenderRequest::Damage
+                    } else {
+                        RenderRequest::None
                     };
-                    if !response.is_empty() {
-                        let _ = session.process.write(&response);
-                    }
-                    if let Some(snapshot) = snapshot {
-                        match snapshot {
-                            Ok(snapshot) => session.publish_snapshot(snapshot),
-                            Err(error) => {
-                                eprintln!("ghostty snapshot failed for {}: {error}", session.id())
-                            }
+                    let update = session.model.lock().unwrap().feed(&batch, render);
+                    match update {
+                        Ok(update) => session.execute_update(update),
+                        Err(error) => {
+                            eprintln!("terminal model feed failed for {}: {error:#}", session.id())
                         }
                     }
                 }
@@ -590,226 +544,53 @@ impl Session {
                     summary.requested_termination = exit.requested_termination;
                     summary.exit_outcome = Some(exit.exit_outcome);
                 }
-                if session.has_active_views()
-                    && let Ok(snapshot) = session.terminal.lock().unwrap().snapshot()
-                {
-                    session.publish_snapshot(snapshot);
+                if session.has_active_views() {
+                    match session.model.lock().unwrap().refresh(RenderRequest::Damage) {
+                        Ok(update) => session.execute_update(update),
+                        Err(error) => eprintln!(
+                            "terminal model final refresh failed for {}: {error:#}",
+                            session.id()
+                        ),
+                    }
                 }
                 (session.on_exit)(session.id(), exit, session.persistence);
             })
             .expect("PTY reader thread");
     }
 
-    fn publish_snapshot(&self, snapshot: TerminalSnapshot) {
-        if !snapshot.pty_response.is_empty() {
-            let _ = self.process.write(&snapshot.pty_response);
-        }
-        let mut summary = self.summary.lock().unwrap();
-        summary.cols = snapshot.cols;
-        summary.rows = snapshot.rows.len() as u16;
-        summary.title = snapshot.title.clone();
-        summary.cwd = snapshot.cwd.clone();
-        if snapshot.bell {
-            summary.bell_count = summary.bell_count.saturating_add(1);
-        }
-        let cols = summary.cols;
-        drop(summary);
-        let sequence = self.sequence.fetch_add(1, Ordering::AcqRel) + 1;
-        let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
-        let logical = LogicalTerminalSnapshot {
-            session_epoch: self.session_epoch,
-            layout_epoch: self.layout_epoch.load(Ordering::Acquire),
-            terminal_revision: revision,
-            cols,
-            rows: snapshot
-                .rows
-                .iter()
-                .cloned()
-                .zip(snapshot.cells.iter())
-                .map(|(text, cells)| LogicalRow {
-                    text,
-                    cells: cells
-                        .iter()
-                        .map(|cell| LogicalCell {
-                            column: cell.column,
-                            span: cell.span,
-                            text: cell.text.clone(),
-                            style: LogicalCellStyle {
-                                bold: cell.style.bold,
-                                italic: cell.style.italic,
-                                faint: cell.style.faint,
-                                inverse: cell.style.inverse,
-                                invisible: cell.style.invisible,
-                                strikethrough: cell.style.strikethrough,
-                                underline: cell.style.underline,
-                                foreground: cell.style.foreground,
-                                background: cell.style.background,
-                            },
-                        })
-                        .collect(),
-                })
-                .collect(),
-            cursor: LogicalCursor {
-                x: snapshot.cursor.x,
-                y: snapshot.cursor.y,
-                visible: snapshot.cursor.visible,
-                style: snapshot.cursor.style,
-                blinking: snapshot.cursor.blinking,
-            },
-            mouse_tracking: snapshot.mouse_tracking,
-            scrollbar: LogicalScrollbar {
-                total: snapshot.scrollbar.total,
-                offset: snapshot.scrollbar.offset,
-                len: snapshot.scrollbar.len,
-            },
-            title: snapshot.title.clone(),
-            cwd: snapshot.cwd.clone(),
-        };
-        *self.latest_logical.lock().unwrap() = Some(logical.clone());
-        let _ = self.logical_tx.send(logical);
-        let cursor = FrameCursor {
-            x: snapshot.cursor.x,
-            y: snapshot.cursor.y,
-            visible: snapshot.cursor.visible,
-            style: snapshot.cursor.style,
-            blinking: snapshot.cursor.blinking,
-        };
-        let (shaped_rows, updated_rows, full_snapshot, new_definitions) = {
-            let mut cache = self.render_cache.lock().unwrap();
-            let row_count = snapshot.rows.len();
-            let cache_resized = cache.rows.len() != row_count;
-            if cache_resized {
-                cache.rows.resize_with(row_count, || None);
-            }
-            let full_snapshot = snapshot.damage.full || cache.force_full || cache_resized;
-            let mut updated: BTreeSet<u16> = if full_snapshot {
-                (0..row_count.min(u16::MAX as usize))
-                    .map(|row| row as u16)
-                    .collect()
-            } else {
-                snapshot
-                    .damage
-                    .dirty_rows
-                    .iter()
-                    .copied()
-                    .filter(|row| (*row as usize) < row_count)
-                    .collect()
-            };
-            for (row, cached) in cache.rows.iter().enumerate() {
-                if cached.is_none() {
-                    updated.insert(row as u16);
-                }
-            }
-            if cache.reset_catalog {
-                cache.sent_glyphs.clear();
-                cache.reset_catalog = false;
-            }
-
-            let mut engine = self.text_engine.lock().unwrap();
-            for row_index in updated.iter().copied() {
-                let row = &snapshot.rows[row_index as usize];
-                let cells = &snapshot.cells[row_index as usize];
-                let mut byte_offset = 0;
-                let span_tuples: Vec<_> = cells
-                    .iter()
-                    .filter_map(|cell| {
-                        if byte_offset >= row.len() {
-                            return None;
-                        }
-                        let byte_start = byte_offset;
-                        byte_offset = (byte_offset + cell.text.len()).min(row.len());
-                        Some((
-                            byte_start,
-                            byte_offset,
-                            FontStyle {
-                                bold: cell.style.bold,
-                                italic: cell.style.italic,
-                            },
-                        ))
-                    })
-                    .collect();
-                let key = RowShapeKey {
-                    text: row.clone(),
-                    spans: span_tuples.clone(),
-                };
-                if cache.rows[row_index as usize]
-                    .as_ref()
-                    .is_some_and(|cached| cached.key == key)
-                {
-                    continue;
-                }
-                let spans: Vec<_> = span_tuples
-                    .into_iter()
-                    .map(|(byte_start, byte_end, style)| StyleSpan {
-                        byte_start,
-                        byte_end,
-                        style,
-                    })
-                    .collect();
-                match engine.shape_styled_row(row, &spans) {
-                    Ok(shaped) => cache.rows[row_index as usize] = Some(CachedRow { key, shaped }),
-                    Err(error) => {
+    fn execute_update(&self, update: TerminalUpdate) {
+        for effect in update {
+            match effect {
+                TerminalEffect::WriteToTransport(bytes) => {
+                    if let Err(error) = self.process.write(&bytes) {
                         eprintln!(
-                            "native text shaping failed for {} row {row_index}: {error}",
+                            "[ghosttea] terminal reply write failed for {}: {error:#}",
                             self.id()
                         );
-                        cache.force_full = true;
-                        cache.reset_catalog = true;
-                        return;
                     }
                 }
-            }
-            cache.force_full = false;
-            let shaped_rows: Vec<_> = cache
-                .rows
-                .iter()
-                .map(|row| {
-                    row.as_ref()
-                        .map(|cached| cached.shaped.clone())
-                        .unwrap_or_default()
-                })
-                .collect();
-            let mut new_definitions = BTreeMap::<u32, GlyphDefinition>::new();
-            for row_index in &updated {
-                for definition in &shaped_rows[*row_index as usize].definitions {
-                    if cache.sent_glyphs.insert(definition.id) {
-                        new_definitions.insert(definition.id, definition.clone());
-                    }
+                TerminalEffect::MetadataChanged(metadata) => {
+                    let mut summary = self.summary.lock().unwrap();
+                    summary.cols = metadata.cols;
+                    summary.rows = metadata.rows;
+                    summary.title = metadata.title;
+                    summary.cwd = metadata.cwd;
                 }
-            }
-            (
-                shaped_rows,
-                updated.into_iter().collect::<Vec<_>>(),
-                full_snapshot,
-                new_definitions.into_values().collect::<Vec<_>>(),
-            )
-        };
-        match encode_text_snapshot(TextSnapshot {
-            session_handle: self.handle,
-            session_epoch: self.session_epoch,
-            layout_epoch: self.layout_epoch.load(Ordering::Acquire),
-            sequence,
-            revision,
-            cols,
-            rows: &snapshot.rows,
-            shaped_rows: &shaped_rows,
-            cells: &snapshot.cells,
-            updated_rows: &updated_rows,
-            full_snapshot,
-            mouse_tracking: snapshot.mouse_tracking,
-            scrollbar: &snapshot.scrollbar,
-            new_glyph_definitions: &new_definitions,
-            clipboard: snapshot.clipboard.as_deref(),
-            cursor: &cursor,
-        }) {
-            Ok(frame) => {
-                let _ = self.frames.send(frame);
-            }
-            Err(error) => {
-                eprintln!("frame encoding failed for {}: {error}", self.id());
-                let mut cache = self.render_cache.lock().unwrap();
-                cache.force_full = true;
-                cache.reset_catalog = true;
+                TerminalEffect::Bell => {
+                    let mut summary = self.summary.lock().unwrap();
+                    summary.bell_count = summary.bell_count.saturating_add(1);
+                }
+                TerminalEffect::ClipboardRequest(ClipboardRequest::Write(_)) => {
+                    // The existing desktop renderer applies clipboard policy from the
+                    // matching ordered TRF1 frame. Native Apple hosts handle this effect
+                    // directly at their policy boundary.
+                }
+                TerminalEffect::LogicalSnapshotReady(snapshot) => {
+                    let _ = self.logical_tx.send(snapshot);
+                }
+                TerminalEffect::FrameReady(frame) => {
+                    let _ = self.frames.send(frame);
+                }
             }
         }
     }
@@ -829,20 +610,20 @@ impl Session {
         end_row: u32,
         select_all: bool,
     ) -> Result<String> {
-        self.terminal
+        self.model
             .lock()
             .unwrap()
             .selection_text((start_column, start_row), (end_column, end_row), select_all)
             .context("format terminal selection")
     }
     pub fn session_epoch(&self) -> u64 {
-        self.session_epoch
+        self.model.lock().unwrap().session_epoch()
     }
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
     }
     pub fn logical_snapshot(&self) -> Option<LogicalTerminalSnapshot> {
-        self.latest_logical.lock().unwrap().clone()
+        self.model.lock().unwrap().latest_logical()
     }
     pub fn subscribe_logical(&self) -> broadcast::Receiver<LogicalTerminalSnapshot> {
         self.logical_tx.subscribe()
@@ -863,10 +644,13 @@ impl Session {
         client_id: &str,
         access: ViewAccess,
     ) -> Result<u64> {
-        self.authority
-            .lock()
-            .unwrap()
-            .attach(view_id, client_id, access)
+        let attachment_epoch = {
+            let mut authority = self.authority.lock().unwrap();
+            authority.attach(view_id, client_id, access)?
+        };
+        let update = self.model.lock().unwrap().refresh(RenderRequest::Full)?;
+        self.execute_update(update);
+        Ok(attachment_epoch)
     }
 
     pub fn detach_view(&self, view_id: &str, client_id: &str) -> bool {
@@ -958,13 +742,8 @@ impl Session {
     }
 
     pub fn refresh(&self) -> Result<()> {
-        {
-            let mut cache = self.render_cache.lock().unwrap();
-            cache.force_full = true;
-            cache.reset_catalog = true;
-        }
-        let snapshot = self.terminal.lock().unwrap().snapshot()?;
-        self.publish_snapshot(snapshot);
+        let update = self.model.lock().unwrap().refresh(RenderRequest::Full)?;
+        self.execute_update(update);
         Ok(())
     }
 
@@ -1171,7 +950,7 @@ impl Session {
         match operation {
             InputOperation::Text(text) => self.process.write(text.as_bytes()),
             InputOperation::Paste(text) => {
-                let bytes = self.terminal.lock().unwrap().encode_paste(&text)?;
+                let bytes = self.model.lock().unwrap().encode_paste(&text)?;
                 self.process.write(&bytes)
             }
             InputOperation::Key(input) => self.execute_key(&input),
@@ -1179,7 +958,7 @@ impl Session {
             InputOperation::Scroll(rows) => self.execute_scroll(rows),
             InputOperation::ScrollTo(row) => self.execute_scroll_to(row),
             InputOperation::Focus(focused) => {
-                let bytes = self.terminal.lock().unwrap().encode_focus(focused)?;
+                let bytes = self.model.lock().unwrap().encode_focus(focused)?;
                 self.process.write(&bytes)
             }
             InputOperation::Interrupt => self.process.write(b"\x03"),
@@ -1192,10 +971,10 @@ impl Session {
             AutomationInputOperation::Text { text } => self.process.write(text.as_bytes()),
             AutomationInputOperation::Paste { text, submit } => {
                 let bytes = {
-                    let mut terminal = self.terminal.lock().unwrap();
-                    let mut bytes = terminal.encode_paste(&text)?;
+                    let mut model = self.model.lock().unwrap();
+                    let mut bytes = model.encode_paste(&text)?;
                     if submit {
-                        bytes.extend_from_slice(&terminal.encode_key("Enter", "", 0, 0, 1)?);
+                        bytes.extend_from_slice(&model.encode_key("Enter", "", 0, 0, 1)?);
                     }
                     bytes
                 };
@@ -1232,7 +1011,7 @@ impl Session {
         } else {
             ""
         };
-        let bytes = self.terminal.lock().unwrap().encode_key(
+        let bytes = self.model.lock().unwrap().encode_key(
             &input.code,
             text,
             input.unshifted_codepoint,
@@ -1261,7 +1040,7 @@ impl Session {
         if input.meta {
             mods |= 1 << 3;
         }
-        let bytes = self.terminal.lock().unwrap().encode_mouse(
+        let bytes = self.model.lock().unwrap().encode_mouse(
             action,
             input.button,
             mods,
@@ -1281,36 +1060,35 @@ impl Session {
         if rows == 0 {
             return Ok(());
         }
-        let (snapshot, alternate_input) = {
-            let mut terminal = self.terminal.lock().unwrap();
-            if terminal.alternate_scroll() {
+        let (update, alternate_input) = {
+            let mut model = self.model.lock().unwrap();
+            if model.alternate_scroll() {
                 let code = if rows < 0 { "ArrowUp" } else { "ArrowDown" };
                 let mut input = Vec::new();
                 for _ in 0..rows.unsigned_abs().min(100) {
-                    input.extend_from_slice(&terminal.encode_key(code, "", 0, 0, 1)?);
+                    input.extend_from_slice(&model.encode_key(code, "", 0, 0, 1)?);
                 }
                 (None, input)
             } else {
-                terminal.scroll(rows);
-                (Some(terminal.snapshot()?), Vec::new())
+                (Some(model.scroll(rows, RenderRequest::Damage)?), Vec::new())
             }
         };
         if !alternate_input.is_empty() {
             self.process.write(&alternate_input)?;
         }
-        if let Some(snapshot) = snapshot {
-            self.publish_snapshot(snapshot);
+        if let Some(update) = update {
+            self.execute_update(update);
         }
         Ok(())
     }
 
     fn execute_scroll_to(&self, row: usize) -> Result<()> {
-        let snapshot = {
-            let mut terminal = self.terminal.lock().unwrap();
-            terminal.scroll_to(row);
-            terminal.snapshot()?
-        };
-        self.publish_snapshot(snapshot);
+        let update = self
+            .model
+            .lock()
+            .unwrap()
+            .scroll_to(row, RenderRequest::Damage)?;
+        self.execute_update(update);
         Ok(())
     }
 
@@ -1322,23 +1100,20 @@ impl Session {
         previous_size: (u16, u16),
     ) -> Result<()> {
         self.process.resize(cols, rows)?;
-        let snapshot = {
-            let mut terminal = self.terminal.lock().unwrap();
-            if let Err(error) = terminal.resize(cols, rows) {
-                let _ = self.process.resize(previous_size.0, previous_size.1);
-                return Err(error.into());
-            }
-            match terminal.snapshot() {
-                Ok(snapshot) => snapshot,
+        let update =
+            match self
+                .model
+                .lock()
+                .unwrap()
+                .resize(cols, rows, layout_epoch, RenderRequest::Full)
+            {
+                Ok(update) => update,
                 Err(error) => {
-                    let _ = terminal.resize(previous_size.0, previous_size.1);
                     let _ = self.process.resize(previous_size.0, previous_size.1);
-                    return Err(error.into());
+                    return Err(error);
                 }
-            }
-        };
-        self.layout_epoch.store(layout_epoch, Ordering::Release);
-        self.publish_snapshot(snapshot);
+            };
+        self.execute_update(update);
         Ok(())
     }
 
@@ -1348,12 +1123,13 @@ impl Session {
         background: [u8; 3],
         cursor: [u8; 3],
     ) -> Result<()> {
-        let snapshot = {
-            let mut terminal = self.terminal.lock().unwrap();
-            terminal.set_colors(foreground, background, cursor)?;
-            terminal.snapshot()?
-        };
-        self.publish_snapshot(snapshot);
+        let update = self.model.lock().unwrap().set_colors(
+            foreground,
+            background,
+            cursor,
+            RenderRequest::Full,
+        )?;
+        self.execute_update(update);
         Ok(())
     }
 

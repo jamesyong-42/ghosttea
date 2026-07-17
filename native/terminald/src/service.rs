@@ -650,7 +650,6 @@ async fn handle_command(
                     let attachment =
                         if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                             let epoch = session.attach_view(&view_id, client_id)?;
-                            session.refresh()?;
                             mesh::RemoteAttachment {
                                 attachment_epoch: epoch,
                                 read_write: true,

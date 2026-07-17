@@ -669,7 +669,11 @@ dependencies = [
 name = "ghosttea-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "ghosttea-text",
+ "ghosttea-vt",
  "serde",
+ "serde_json",
  "smallvec",
 ]
 

@@ -566,7 +566,8 @@ mod tests {
     #[test]
     fn phase1_desktop_baseline_is_invariant_to_input_chunking() {
         let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../fixtures/phase1/ansi-baseline.json")).unwrap();
+            serde_json::from_str(include_str!("../../../fixtures/phase1/ansi-baseline.json"))
+                .unwrap();
         let input = decode_hex(fixture["inputHex"].as_str().unwrap());
         let expected_frame = decode_hex(fixture["expectedFrameHex"].as_str().unwrap());
         let expected_reply = decode_hex(fixture["expectedReplyHex"].as_str().unwrap());
