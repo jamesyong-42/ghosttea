@@ -1331,9 +1331,8 @@ command output is read. A continuous diagnostic host-key/authentication sheet
 also passes the exact two-prompt, mixed-echo metadata fixture on a physical
 iPhone; cancelling from that sheet unwinds the suspended responder and native
 callback worker in 162 ms. Product authentication UI promotion,
-representative-server sampling, physical verification of the implemented
-path-state/reconnect orchestration, and complete device evidence remain open.
-Physical Wi-Fi route-loss
+representative-server sampling and complete minimum-device evidence remain
+open. Physical Wi-Fi route-loss
 cancellation completes in 23 ms and a fresh connection succeeds after Wi-Fi
 restoration. Strict
 host-key rejection and an async accept-once boundary for unknown/changed keys
@@ -1355,8 +1354,9 @@ Repeated cleanup stress passes 32 stalled-handshake cancellations and 16
 suspended keyboard-interactive cancellations in one process. A
 transport-neutral reconnect reducer and Network.framework observer now build
 for iOS with explicit route, background, and stale-generation policy. The
-automatic transition still needs its physical-device and representative-server
-evidence.
+physical iPhone passes automatic Wi-Fi-to-cellular teardown, explicit fresh
+reconnect, background teardown, and foreground reconnect availability;
+representative-server evidence remains open.
 
 The same transport supports PTY shells and non-PTY commands. A live command
 fixture preserves separate stdout and stderr and exit status 37. A second

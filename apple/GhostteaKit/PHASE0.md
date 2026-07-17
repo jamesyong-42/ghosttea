@@ -127,8 +127,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   changes and background transitions order teardown before reconnect
   availability, stale task completions are ignored, and restoration never
   silently starts a fresh connection or reuses submitted credentials. The iOS
-  harness exposes the path and lifecycle states and is ready for its physical
-  automatic-transition probe.
+  harness exposes the path and lifecycle states. Automatic Wi-Fi-to-cellular
+  teardown, explicit fresh reconnect, background teardown, and foreground
+  reconnect availability pass on the physical iPhone.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -166,10 +167,10 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is production UI promotion, representative-server
-   sampling, resolver replacement, physical verification of the implemented
-   path/reconnect orchestration, device-footprint instrumentation, and
-   representative low-end-device execution. The public-key partial step remains
-   locked as `-19`, so only an
+   sampling, resolver replacement, representative-server verification of the
+   implemented path/reconnect orchestration, device-footprint instrumentation,
+   and representative low-end-device execution. The public-key partial step
+   remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
 3. The initial raw VT physical-footprint measurement is complete. Measure the
    complete terminal stack for one foreground and several background fixtures

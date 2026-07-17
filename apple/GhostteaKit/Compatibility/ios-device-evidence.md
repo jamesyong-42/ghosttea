@@ -291,3 +291,26 @@ ghosttea-half-close-device-ok
 These results close the local physical-device PTY allocation, live resize,
 input half-close, post-EOF output drain, and clean channel-close gates. The LAN
 fixture was stopped and removed immediately after both successful probes.
+
+## 2026-07-16: automatic path and background reconnect state
+
+The signed harness next used the reusable `GhostteaTransport` reconnect reducer
+and Network.framework observer on the same iPhone. Before connecting, the UI
+reported `Satisfied · Wi-Fi` and lifecycle `Idle`. A long-lived command reached
+the connected state through the LAN password fixture.
+
+Without pressing **Cancel**, the user disabled Wi-Fi. Network.framework selected
+the cellular route and the harness reported `Satisfied · Cellular · expensive`
+plus lifecycle `Reconnect available`. The route event invalidated and cancelled
+the active SSH generation before offering the explicit fresh-connection state;
+it did not silently reuse the old ordinary SSH session. After Wi-Fi restoration,
+the user reloaded the disposable credential, explicitly ran a fresh bounded
+command, and confirmed it passed.
+
+A separate long-lived connection exercised application suspension. Sending the
+app to the background tore down the active generation. Reopening the app showed
+`Reconnect available`; no connection started automatically. This closes the
+local physical-device automatic selected-route, background teardown, stale-task
+isolation, and explicit-reconnect state gates. Representative launch-server
+transitions remain open. The LAN fixture was stopped and removed immediately
+after the probes.

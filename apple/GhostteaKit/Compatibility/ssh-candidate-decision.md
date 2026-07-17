@@ -118,8 +118,9 @@ LAN command and explicitly cancelling shuts down the socket and unwinds in 23
 ms. After Wi-Fi restoration, a fresh connection to a new fixture completes a
 bounded command. A reusable transport-neutral reducer and Network.framework
 observer now implement generation-checked route state, automatic teardown,
-background suspension, and explicit fresh-reconnect availability; the
-on-device automatic transition is the remaining local verification step.
+background suspension, and explicit fresh-reconnect availability. Automatic
+Wi-Fi-to-cellular teardown, explicit fresh reconnect, background teardown, and
+foreground reconnect availability now pass on the physical iPhone.
 The host-neutral transport now includes input half-close and a typed termination
 result that distinguishes `.exited(code:)` from `.signaled(name:)`.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and
