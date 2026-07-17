@@ -317,7 +317,7 @@ after the probes.
 
 The workflow was then promoted into `npm run test:ios:device`. The runner
 discovers a single paired physical iOS device and the Mac's Bonjour hostname,
-checks device lock state, runs all 23 Swift package tests, builds both iOS SDK
+checks device lock state, runs all 25 Swift package tests, builds both iOS SDK
 destinations, signs and installs the physical build, passes only the non-secret
 fixture host into the launched process, and keeps the fixture alive only while
 the runner is attached. A launch attempt that encountered a re-locked phone
@@ -357,3 +357,36 @@ Linux … aarch64 GNU/Linux
 This closes the local physical-device hostname-resolution gate. The runner
 then stopped and removed the fixture. Representative launch-server DNS and
 split-horizon/VPN behavior remain open.
+
+## 2026-07-16: standard-tier whole-application memory gate
+
+The signed harness introduced explicit initial device tiers and automatically
+ran the standard-tier policy on the same iPhone 14 Pro. Standard devices
+(reported physical memory above 4 GiB) admit eight resident sessions with a
+5,000,000-byte scrollback budget each, a 160 MiB soft application budget, and a
+224 MiB hard bound. Compact devices admit four sessions with 3,000,000 bytes
+each and 96/128 MiB soft/hard bounds; that tier still requires execution on a
+representative low-memory device.
+
+The process-level scenario loaded 5,000 deterministic lines into all eight
+sessions, compressed seven background sessions while retaining one active
+session, then compressed the active session as the final memory-warning step.
+It passed with:
+
+| Measurement                                          | Physical footprint |
+| ---------------------------------------------------- | -----------------: |
+| Process baseline                                     |            16.5 MB |
+| Eight loaded sessions (peak)                         |            44.6 MB |
+| One active plus seven compressed background sessions |            30.5 MB |
+| All eight sessions compressed                        |            28.5 MB |
+| Empty terminal-handle delta                          |             1.9 MB |
+| Loaded scrollback delta                              |            26.2 MB |
+
+Every session retained 4,977 scrollback rows. The scenario samples the entire
+UIKit process rather than only native allocations, verifies that both
+background and active compression reduce physical footprint, and enforces the
+soft/hard bounds in code. Transport buffers were idle at zero for this
+scenario. The Phase 0 app has no TRF1 renderer, decoded images, or Metal atlas,
+so those categories remain explicitly unavailable rather than being reported
+as zero-cost implementation. They become measurable gates after the renderer
+exists.

@@ -13,6 +13,24 @@ struct HarnessMemoryResult: Identifiable, Sendable {
   var id: Int { sessions }
 }
 
+struct HarnessWholeAppMemoryResult: Sendable {
+  let budget: GhostteaMemoryBudget
+  let processBaselineFootprintBytes: UInt64
+  let emptyTerminalDeltaBytes: UInt64
+  let loadedScrollbackDeltaBytes: UInt64
+  let peakProcessFootprintBytes: UInt64
+  let foregroundAndBackgroundFootprintBytes: UInt64
+  let allCompressedFootprintBytes: UInt64
+  let retainedScrollbackRows: [Int]
+  let failures: [String]
+
+  let transportBufferBytes: UInt64 = 0
+  let decodedImageBytes: UInt64? = nil
+  let gpuAtlasBytes: UInt64? = nil
+
+  var passed: Bool { failures.isEmpty }
+}
+
 enum HarnessDiagnostics {
   static func runVTProof() throws -> String {
     let result = try GhosttyVtProof.run()
@@ -24,16 +42,21 @@ enum HarnessDiagnostics {
     try [1, 4, 8].map(runMemoryProbe)
   }
 
-  private static func runMemoryProbe(sessions sessionCount: Int) throws -> HarnessMemoryResult {
-    let baseline = try physicalFootprintBytes()
-    let sessions = try (0..<sessionCount).map { _ in
+  static func runWholeAppMemoryGate(physicalMemoryBytes: UInt64) throws
+    -> HarnessWholeAppMemoryResult
+  {
+    let budget = GhostteaMemoryBudget.recommended(
+      forPhysicalMemoryBytes: physicalMemoryBytes
+    )
+    let baseline = try stablePhysicalFootprintBytes()
+    let sessions = try (0..<budget.maximumResidentSessions).map { _ in
       try GhosttyVtProofSession(
         columns: 80,
         rows: 24,
-        maxScrollbackBytes: 5_000_000
+        maxScrollbackBytes: budget.scrollbackBytesPerSession
       )
     }
-    let empty = try physicalFootprintBytes()
+    let empty = try stablePhysicalFootprintBytes()
 
     for offset in stride(from: 0, to: 5_000, by: 64) {
       let lineCount = min(64, 5_000 - offset)
@@ -43,10 +66,74 @@ enum HarnessDiagnostics {
       }
     }
     let states = try sessions.map { try $0.state() }
-    let loaded = try withExtendedLifetime(sessions) { try physicalFootprintBytes() }
+    let loaded = try withExtendedLifetime(sessions) {
+      try stablePhysicalFootprintBytes()
+    }
+
+    var compressionResults: [Bool] = []
+    for session in sessions.dropFirst() {
+      compressionResults.append(try session.compressScrollbackFull())
+    }
+    let foregroundAndBackground = try withExtendedLifetime(sessions) {
+      try stablePhysicalFootprintBytes()
+    }
+    if let foreground = sessions.first {
+      compressionResults.append(try foreground.compressScrollbackFull())
+    }
+    let allCompressed = try withExtendedLifetime(sessions) {
+      try stablePhysicalFootprintBytes()
+    }
+    let compressionSupported = compressionResults.allSatisfy { $0 }
+    let retainedScrollbackRows = states.map(\.scrollbackRows)
+    var failures = budget.failures(
+      peakApplicationFootprintBytes: loaded,
+      foregroundAndBackgroundFootprintBytes: foregroundAndBackground,
+      compressionSupported: compressionSupported,
+      retainedScrollbackRows: retainedScrollbackRows
+    )
+    if foregroundAndBackground > loaded {
+      failures.append("background compression did not reduce process footprint")
+    }
+    if allCompressed > foregroundAndBackground {
+      failures.append("active-session compression did not reduce process footprint")
+    }
+
+    return HarnessWholeAppMemoryResult(
+      budget: budget,
+      processBaselineFootprintBytes: baseline,
+      emptyTerminalDeltaBytes: positiveDifference(empty, baseline),
+      loadedScrollbackDeltaBytes: positiveDifference(loaded, empty),
+      peakProcessFootprintBytes: loaded,
+      foregroundAndBackgroundFootprintBytes: foregroundAndBackground,
+      allCompressedFootprintBytes: allCompressed,
+      retainedScrollbackRows: retainedScrollbackRows,
+      failures: failures
+    )
+  }
+
+  private static func runMemoryProbe(sessions sessionCount: Int) throws -> HarnessMemoryResult {
+    let baseline = try stablePhysicalFootprintBytes()
+    let sessions = try (0..<sessionCount).map { _ in
+      try GhosttyVtProofSession(
+        columns: 80,
+        rows: 24,
+        maxScrollbackBytes: 5_000_000
+      )
+    }
+    let empty = try stablePhysicalFootprintBytes()
+
+    for offset in stride(from: 0, to: 5_000, by: 64) {
+      let lineCount = min(64, 5_000 - offset)
+      let bytes = makeLines(start: offset, count: lineCount, columns: 80)
+      for session in sessions {
+        session.feed(bytes)
+      }
+    }
+    let states = try sessions.map { try $0.state() }
+    let loaded = try withExtendedLifetime(sessions) { try stablePhysicalFootprintBytes() }
     let compressed = try sessions.map { try $0.compressScrollbackFull() }
     let compressedFootprint = try withExtendedLifetime(sessions) {
-      try physicalFootprintBytes()
+      try stablePhysicalFootprintBytes()
     }
 
     return HarnessMemoryResult(
@@ -95,6 +182,17 @@ enum HarnessDiagnostics {
       throw GhosttyVtProofError.operationFailed("task_info failed with \(result)")
     }
     return UInt64(info.phys_footprint)
+  }
+
+  private static func stablePhysicalFootprintBytes() throws -> UInt64 {
+    var minimum = UInt64.max
+    for sample in 0..<3 {
+      minimum = min(minimum, try physicalFootprintBytes())
+      if sample < 2 {
+        usleep(20_000)
+      }
+    }
+    return minimum
   }
 
   private static func positiveDifference(_ end: UInt64, _ start: UInt64) -> UInt64 {

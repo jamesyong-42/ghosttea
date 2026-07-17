@@ -3,6 +3,49 @@ import Testing
 
 @testable import GhosttyVtProof
 
+@Test("Memory budgets select conservative compact and standard device tiers")
+func memoryBudgetTierSelection() {
+  let compact = GhostteaMemoryBudget.recommended(
+    forPhysicalMemoryBytes: 4 * 1_073_741_824
+  )
+  #expect(compact.tier == .compact)
+  #expect(compact.maximumResidentSessions == 4)
+  #expect(compact.scrollbackBytesPerSession == 3_000_000)
+  #expect(compact.softApplicationFootprintBytes == 96 * 1_048_576)
+  #expect(compact.hardApplicationFootprintBytes == 128 * 1_048_576)
+
+  let standard = GhostteaMemoryBudget.recommended(
+    forPhysicalMemoryBytes: 4 * 1_073_741_824 + 1
+  )
+  #expect(standard.tier == .standard)
+  #expect(standard.maximumResidentSessions == 8)
+  #expect(standard.scrollbackBytesPerSession == 5_000_000)
+  #expect(standard.softApplicationFootprintBytes == 160 * 1_048_576)
+  #expect(standard.hardApplicationFootprintBytes == 224 * 1_048_576)
+}
+
+@Test("Memory budget evaluation enforces process and retained-session gates")
+func memoryBudgetEvaluation() {
+  let budget = GhostteaMemoryBudget.recommended(
+    forPhysicalMemoryBytes: 3 * 1_073_741_824
+  )
+  #expect(
+    budget.failures(
+      peakApplicationFootprintBytes: 100 * 1_048_576,
+      foregroundAndBackgroundFootprintBytes: 80 * 1_048_576,
+      compressionSupported: true,
+      retainedScrollbackRows: [1, 1, 1, 1]
+    ).isEmpty
+  )
+  let failures = budget.failures(
+    peakApplicationFootprintBytes: 129 * 1_048_576,
+    foregroundAndBackgroundFootprintBytes: 97 * 1_048_576,
+    compressionSupported: false,
+    retainedScrollbackRows: [1]
+  )
+  #expect(failures.count == 4)
+}
+
 @Test("Ghostty VT is callable from Swift and preserves terminal state")
 func ghosttyVtSmokeTest() throws {
   let snapshot = try GhosttyVtProof.run()

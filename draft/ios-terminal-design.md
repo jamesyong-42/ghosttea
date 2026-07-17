@@ -1506,6 +1506,16 @@ incremental page compression. Phase 0 measures resident and physical-footprint
 curves before and after compression; Phase 1 or 2 must either add a tested trim
 shim or explicitly rely on compression followed by whole-session eviction.
 
+The initial Phase 0 policy defines a compact tier at 4 GiB physical memory or
+less (four resident sessions, 3,000,000 scrollback bytes per session, 96/128
+MiB soft/hard application bounds) and a standard tier above 4 GiB (eight
+sessions, 5,000,000 bytes each, 160/224 MiB bounds). On an iPhone 14 Pro, the
+standard scenario measured 44.6 MB with all sessions loaded, 30.5 MB with one
+active plus seven compressed background sessions, and 28.5 MB after compressing
+all sessions. Renderer, decoded-image, TRF1/cache, transport-under-load, and GPU
+atlas categories remain future gates because the Phase 0 harness does not yet
+contain those components.
+
 ---
 
 ## 18. Security and App Store considerations
@@ -1808,8 +1818,8 @@ typed `SIGTERM`, PTY allocation/resize, and byte-exact input half-close. The
 measurements and command output are recorded in
 `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
-promotion, representative DNS verification, device-footprint
-instrumentation, bundled-font licensing, and device-tier memory gates remain
+promotion, representative DNS verification, compact-tier device execution,
+active-transport/renderer memory categories, and bundled-font licensing remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one through both direct fixture and opaque resolver paths.

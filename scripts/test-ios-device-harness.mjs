@@ -202,7 +202,10 @@ async function main() {
       device.identifier,
       "--terminate-existing",
       "--environment-variables",
-      JSON.stringify({ GHOSTTEA_FIXTURE_HOST: host }),
+      JSON.stringify({
+        GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
+        GHOSTTEA_FIXTURE_HOST: host,
+      }),
       bundleIdentifier,
     ]);
 

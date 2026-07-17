@@ -277,6 +277,11 @@ A third command killed by `SIGTERM` is reported distinctly as
 7. Only then extract the shared Ghosttea terminal model.
 8. Begin the extraction after the current Electron embedding refactor lands.
 
+The standard-tier whole-process gate now passes on an iPhone 14 Pro: eight
+loaded VT sessions peak at 44.6 MB, one active plus seven compressed background
+sessions use 30.5 MB, and all compressed sessions use 28.5 MB. Compact-tier
+execution and active transport/renderer categories remain open.
+
 ## 9. Sources
 
 Primary and upstream sources:

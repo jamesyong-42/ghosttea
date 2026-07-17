@@ -80,6 +80,11 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   one/four/eight-session memory matrix completed with every session retaining
   4,977 scrollback rows and reporting compression support. Exact measurements
   are recorded in `Compatibility/ios-device-evidence.md`.
+- an enforceable whole-process memory policy with compact and standard device
+  tiers. The standard-tier iPhone gate passes eight loaded sessions at 44.6 MB
+  peak, one active plus seven compressed background sessions at 30.5 MB, and
+  all sessions compressed at 28.5 MB. Renderer/image/atlas categories remain
+  unavailable until those components exist.
 - a physical-device password SSH probe against the disposable OpenSSH fixture,
   including an independently verified unknown host key, explicit accept-once
   decision, authentication, command execution, output drain, and clean exit.
@@ -180,14 +185,14 @@ UIKit, transport state, and the rest of the application.
    remaining credential work is production UI promotion, representative-server
    sampling, representative DNS verification, representative-server verification
    of the implemented path/reconnect orchestration,
-   device-footprint instrumentation, and representative low-end-device
+   active-SSH footprint integration, and representative compact-tier device
    execution. The public-key partial step
    remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
-3. The initial raw VT physical-footprint measurement is complete. Measure the
-   complete terminal stack for one foreground and several background fixtures
-   on the oldest supported device class. Record terminal state, scrollback,
-   decoded image, and GPU atlas bytes separately.
+3. The raw VT and standard-tier whole-process gates are complete. Repeat the
+   compact-tier policy on a low-memory supported device, then add transport,
+   decoded-image, shaping/cache, TRF1, and GPU-atlas categories as those
+   components enter the iOS application.
 4. Decide the SSH implementation from fixture evidence.
 5. Decide the v1 connection scope and bundled-font licensing.
 6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.

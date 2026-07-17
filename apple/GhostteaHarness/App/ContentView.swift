@@ -52,6 +52,58 @@ struct ContentView: View {
           .disabled(model.isRunningMemory)
         }
 
+        Section("Whole-app memory gate") {
+          Text(model.wholeAppMemoryStatus)
+            .font(.footnote)
+          if let result = model.wholeAppMemoryResult {
+            LabeledContent(
+              "Policy",
+              value:
+                "\(result.budget.tier.rawValue) · \(result.budget.maximumResidentSessions) sessions"
+            )
+            LabeledContent(
+              "Process baseline",
+              value: formatBytes(result.processBaselineFootprintBytes)
+            )
+            LabeledContent(
+              "Loaded peak / hard",
+              value:
+                "\(formatBytes(result.peakProcessFootprintBytes)) / \(formatBytes(result.budget.hardApplicationFootprintBytes))"
+            )
+            LabeledContent(
+              "1 active + background / soft",
+              value:
+                "\(formatBytes(result.foregroundAndBackgroundFootprintBytes)) / \(formatBytes(result.budget.softApplicationFootprintBytes))"
+            )
+            LabeledContent(
+              "All compressed",
+              value: formatBytes(result.allCompressedFootprintBytes)
+            )
+            Text(
+              "terminal handles \(formatBytes(result.emptyTerminalDeltaBytes)) · loaded scrollback \(formatBytes(result.loadedScrollbackDeltaBytes))"
+            )
+            Text(
+              "transport buffers \(formatBytes(result.transportBufferBytes)) (idle) · decoded images n/a · GPU atlas n/a"
+            )
+            Text("rows \(result.retainedScrollbackRows.map(String.init).joined(separator: ", "))")
+            if !result.failures.isEmpty {
+              Text(result.failures.joined(separator: " · "))
+                .foregroundStyle(.red)
+            }
+          }
+          Button(
+            model.isRunningWholeAppMemory ? "Running…" : "Run whole-app memory gate"
+          ) {
+            model.runWholeAppMemoryGate()
+          }
+          .disabled(model.isRunningWholeAppMemory || model.isRunningMemory)
+          Text(
+            "Phase 0 has no TRF1 renderer, decoded images, or Metal atlas; those categories remain explicit future gates."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+
         Section("Automated lifecycle probes") {
           Text(model.lifecycleProbeResult)
             .font(.footnote)

@@ -60,6 +60,8 @@ final class HarnessModel: ObservableObject {
   @Published var lifecycleProbeResult = "Not run"
   @Published var memoryResults: [HarnessMemoryResult] = []
   @Published var memoryStatus = "Not run"
+  @Published var wholeAppMemoryResult: HarnessWholeAppMemoryResult?
+  @Published var wholeAppMemoryStatus = "Not run"
   @Published var host = "10.0.0.103"
   @Published var port = "22022"
   @Published var username = "ghosttea"
@@ -76,6 +78,7 @@ final class HarnessModel: ObservableObject {
   @Published var pendingKeyboardChallenge: PendingKeyboardChallenge?
   @Published private var isBridgingSSHInteraction = false
   @Published var isRunningMemory = false
+  @Published var isRunningWholeAppMemory = false
   @Published var isRunningKeychain = false
   @Published var isRunningSSH = false
 
@@ -103,6 +106,12 @@ final class HarnessModel: ObservableObject {
       for await path in updates {
         guard let self else { return }
         self.handleNetworkPathChange(path)
+      }
+    }
+    if ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_MEMORY_GATE"] == "1" {
+      Task { [weak self] in
+        await Task.yield()
+        self?.runWholeAppMemoryGate()
       }
     }
   }
@@ -172,6 +181,28 @@ final class HarnessModel: ObservableObject {
         memoryStatus = "Failed: \(error)"
       }
       isRunningMemory = false
+    }
+  }
+
+  func runWholeAppMemoryGate() {
+    guard !isRunningWholeAppMemory else { return }
+    isRunningWholeAppMemory = true
+    wholeAppMemoryStatus = "Running foreground/background process gate…"
+    wholeAppMemoryResult = nil
+    let physicalMemory = ProcessInfo.processInfo.physicalMemory
+    Task {
+      do {
+        let result = try await Task.detached(priority: .userInitiated) {
+          try HarnessDiagnostics.runWholeAppMemoryGate(
+            physicalMemoryBytes: physicalMemory
+          )
+        }.value
+        wholeAppMemoryResult = result
+        wholeAppMemoryStatus = result.passed ? "Passed" : "Failed"
+      } catch {
+        wholeAppMemoryStatus = "Failed: \(error)"
+      }
+      isRunningWholeAppMemory = false
     }
   }
 

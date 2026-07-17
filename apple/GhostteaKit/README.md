@@ -49,8 +49,10 @@ The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,
 four, and eight raw VT sessions before and after upstream scrollback
-compression. It is a repeatable host baseline; physical-device jetsam and
-energy measurements remain required.
+compression. The iOS harness adds compact/standard whole-process budgets and a
+foreground/background compression gate. Standard-tier physical-device evidence
+is recorded; compact-device, renderer, active-transport, jetsam, and energy
+measurements remain.
 
 No package source should import `GhosttyVt` outside the `GhosttyVtProof` target. This keeps the unstable upstream API from leaking into future app code.
 
@@ -59,10 +61,11 @@ Likewise, only `CGhostteaSSH` and the isolated `GhostteaSSHProbe` may import
 handles and implements `TerminalTransport`; it is not yet a selected production
 transport. The current evidence and known chained-MFA return-state ambiguity are recorded in
 [`Compatibility/ssh-candidate-decision.md`](Compatibility/ssh-candidate-decision.md).
-The adapter uses independent TCP-connect and SSH-handshake deadlines. Its local
-banner-blackhole fixture also proves that a stalled handshake observes both its
-deadline and Swift task cancellation; synchronous DNS cancellation remains a
-documented hardening item.
+The adapter uses one deadline across cancellable Apple DNS-SD resolution and
+TCP connect, plus an independent SSH-handshake deadline. Its local
+banner-blackhole fixture proves that a stalled handshake observes both its
+deadline and Swift task cancellation; the iPhone resolves the Mac's Bonjour
+hostname through the same connector.
 The candidate connection also exposes diagnostic flow-control metrics. The
 live flood gate requires its delivered-byte counters to remain unchanged while
 terminal demand is paused. It applies the same invariant to raw encrypted
