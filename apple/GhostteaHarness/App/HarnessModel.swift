@@ -257,7 +257,7 @@ final class HarnessModel: ObservableObject {
           configuration: .init(sessionHandle: 74, columns: 100, rows: 30)
         )
         let fullUpdate = try await terminal.feed(
-          Data("phase4-device ✓ 界 🙂 \u{1b}[31;44;4;9mstyled\u{1b}[0m\r\n".utf8),
+          Data("Metal proof ✓ 界 \u{1b}[31;44;4;9mstyled\u{1b}[0m 🙂\r\n".utf8),
           render: .full
         )
         let incrementalUpdate = try await terminal.feed(
@@ -272,6 +272,7 @@ final class HarnessModel: ObservableObject {
         let summary = try GhostteaTerminalFrameDecoder.inspect(frame)
         let retained = try GhostteaTerminalFrameDecoder.retain([frame, incremental, incremental])
         let metal = try GhostteaMetalProof.run(frame: frame)
+        let visualDifference = try GhostteaVisualGolden.evaluate(metal.visualFingerprint)
         let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
         var gridChanges: [GhostteaTerminalGridSize] = []
         surface.onGridSizeChange = { gridChanges.append($0) }
@@ -299,14 +300,14 @@ final class HarnessModel: ObservableObject {
           summary.glyphDefinitionCount > 0,
           summary.styleDefinitionCount > 0,
           summary.rowReplacementCount == 30,
-          summary.accessibilityRows.contains(where: { $0.contains("phase4-device ✓ 界") }),
+          summary.accessibilityRows.contains(where: { $0.contains("Metal proof ✓ 界") }),
           summary.cursorRow == 1,
           summary.scrollbarLength == 30,
           retained.appliedFrameCount == 2,
           retained.staleFrameCount == 1,
           retained.refreshRequestCount == 0,
           !retained.awaitingResync,
-          retained.rows.contains(where: { $0.contains("phase4-device ✓ 界") }),
+          retained.rows.contains(where: { $0.contains("Metal proof ✓ 界") }),
           retained.rows.contains(where: { $0.contains("retained-state") }),
           !metal.deviceName.isEmpty,
           metal.uploadedBytes > 0,
@@ -321,6 +322,7 @@ final class HarnessModel: ObservableObject {
           metal.colorGlyphVertexCount > 0,
           metal.nonBackgroundPixelCount > 0,
           metal.pixelHash != 0,
+          visualDifference.passed,
           surfaceAcceptedFull,
           surfaceAcceptedIncremental,
           !surfaceAcceptedStale,
@@ -344,6 +346,12 @@ final class HarnessModel: ObservableObject {
         framePreview = frame
         frameDecoderResult =
           "Passed · TRF1 offscreen Metal render (\(metal.deviceName), \(atlasMiB) MiB atlases)"
+        print(
+          "GHOSTTEA_VISUAL_PASS hash=\(String(format: "%016llx", metal.pixelHash)) "
+            + "edges=\(visualDifference.edgeHammingDistance) "
+            + "channels=\(visualDifference.maxMeanChannelDelta) "
+            + "content=\(visualDifference.nonBackgroundPixelDelta)"
+        )
         print("GHOSTTEA_TRF1_PASS")
         finishFrameDecoderAutomation(exitCode: 0)
       } catch {

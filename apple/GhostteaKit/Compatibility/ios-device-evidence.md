@@ -728,3 +728,28 @@ GHOSTTEA_TRF1_PASS
 
 Xcode 26.1 requires its optional Metal Toolchain component on the build host;
 the package README records the one-time installation command.
+
+## 2026-07-17: initial visual golden
+
+The production styled Unicode/emoji frame now has a reproducible visual golden.
+It records the exact 787-by-574 reference pixel hash and a portable 96-by-64
+horizontal/vertical edge fingerprint, mean RGBA channels, and non-background
+pixel count. The declared tolerance permits at most 48 changed edge bits, one
+mean-channel level, and 128 content pixels; dimensions must remain exact. A
+fully erased terminal with the correct background and dimensions fails the
+gate.
+
+`GhostteaVisualGoldenRecorder` regenerates the 2.6 KB JSON through the
+production core and packaged Metal renderer. The complete GhostteaKit suite
+passes 53 tests on macOS. The arm64 simulator and physical-device SDK builds
+pass. The independently compiled iPhone 17 Pro Simulator output is byte-exact
+with the macOS reference:
+
+```text
+GHOSTTEA_VISUAL_PASS hash=3f7623275f6bf056 edges=0 channels=0 content=0
+GHOSTTEA_TRF1_PASS
+```
+
+The paired iPhone 14 Pro was visible over the local network but its CoreDevice
+tunnel was disconnected, so this slice does not claim a physical-GPU pass.
+Physical-device and desktop-WebGPU comparisons remain visual-parity gates.

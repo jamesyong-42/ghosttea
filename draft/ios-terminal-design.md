@@ -2104,6 +2104,18 @@ fallback. Tests load the library, require the complete five-function catalog,
 and execute the existing deterministic pixel proof. The simulator harness runs
 the full TRF1/Metal automation with only the plugin library in the bundle.
 
+The tenth slice establishes the initial screenshot-conformance suite without
+claiming impossible raw equality across all GPU families. The reproducible
+`phase4-styled-unicode-v1` fixture records an exact reference pixel hash plus a
+96-by-64 horizontal/vertical perceptual edge map, mean RGBA channels, and
+non-background pixel count. Its checked-in JSON declares maximum edge Hamming,
+channel, and content-count deltas. Tests require exact macOS output, prove an
+erased terminal fails the tolerant comparison, and expose a recorder executable
+for intentional golden updates. The independently compiled iOS Simulator
+library currently produces the exact reference hash and zero differences.
+Physical-iPhone and desktop-WebGPU comparisons remain before visual parity is
+complete.
+
 Deliverables:
 
 - strict Swift TRF1 decoder;

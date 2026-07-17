@@ -71,6 +71,7 @@ let package = Package(
       name: "GhostteaTerminal",
       dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTransport"],
       exclude: ["GhostteaTerminal.metal"],
+      resources: [.copy("Resources/terminal-visual-golden.json")],
       linkerSettings: [
         .linkedFramework("Metal"),
         .linkedFramework("MetalKit", .when(platforms: [.iOS])),
@@ -94,6 +95,10 @@ let package = Package(
     .executableTarget(
       name: "GhosttyVtMemoryProbe",
       dependencies: ["GhosttyVtProof"]
+    ),
+    .executableTarget(
+      name: "GhostteaVisualGoldenRecorder",
+      dependencies: ["GhostteaCore", "GhostteaTerminal"]
     ),
     .testTarget(
       name: "GhostteaCredentialsTests",

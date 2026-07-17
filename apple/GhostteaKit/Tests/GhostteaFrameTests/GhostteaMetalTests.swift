@@ -277,6 +277,39 @@ private func productionFrame() async throws -> Data {
   )
 }
 
+@Test func productionMetalScreenshotMatchesTheBundledVisualGolden() async throws {
+  let proof = try GhostteaMetalProof.run(frame: await productionFrame())
+  let golden = try GhostteaVisualGolden.bundled()
+  let difference = GhostteaVisualGolden.evaluate(proof.visualFingerprint, against: golden)
+
+  #expect(golden.fixture == "phase4-styled-unicode-v1")
+  #expect(golden.referencePixelHash == String(format: "%016llx", proof.pixelHash))
+  #expect(difference.dimensionsMatch)
+  #expect(difference.edgeHammingDistance == 0)
+  #expect(difference.maxMeanChannelDelta == 0)
+  #expect(difference.nonBackgroundPixelDelta == 0)
+  #expect(difference.passed)
+
+  var erasedPixels = [UInt8](
+    repeating: 0, count: proof.renderedWidth * proof.renderedHeight * 4)
+  for offset in stride(from: 0, to: erasedPixels.count, by: 4) {
+    erasedPixels[offset] = 40
+    erasedPixels[offset + 1] = 44
+    erasedPixels[offset + 2] = 52
+    erasedPixels[offset + 3] = 255
+  }
+  let erased = GhostteaVisualFingerprint(
+    pixels: erasedPixels,
+    width: proof.renderedWidth,
+    height: proof.renderedHeight,
+    nonBackgroundPixelCount: 0
+  )
+  let erasedDifference = GhostteaVisualGolden.evaluate(erased, against: golden)
+  #expect(!erasedDifference.passed)
+  #expect(
+    erasedDifference.nonBackgroundPixelDelta > golden.tolerance.maxNonBackgroundPixelDelta)
+}
+
 @Test func metalRendererPreservesPixelsAcrossCachedFramesAndAddsViewSelection() async throws {
   let frame = try await productionFrame()
   var state = RetainedTRF1State()

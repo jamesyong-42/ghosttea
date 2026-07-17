@@ -290,6 +290,7 @@ public struct GhostteaMetalProofResult: Equatable, Sendable {
   public let colorGlyphVertexCount: Int
   public let nonBackgroundPixelCount: Int
   public let pixelHash: UInt64
+  public let visualFingerprint: GhostteaVisualFingerprint
 }
 
 public enum GhostteaMetalProof {
@@ -328,7 +329,8 @@ public enum GhostteaMetalProof {
       alphaGlyphVertexCount: first.alphaGlyphVertexCount,
       colorGlyphVertexCount: first.colorGlyphVertexCount,
       nonBackgroundPixelCount: first.nonBackgroundPixelCount,
-      pixelHash: first.pixelHash
+      pixelHash: first.pixelHash,
+      visualFingerprint: first.visualFingerprint
     )
   }
 }

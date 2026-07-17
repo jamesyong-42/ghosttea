@@ -154,6 +154,23 @@ fallback. This keeps simulator, physical-device, and macOS libraries separate
 while making a missing build toolchain or packaged function a build/test
 failure.
 
+The initial visual-conformance gate uses the same styled Unicode/emoji TRF1
+fixture at 787 by 574 pixels. Same-device runs retain an exact FNV-1a pixel
+hash. Cross-device runs compare a 96-by-64 horizontal and vertical perceptual
+edge map, mean RGBA channels, and non-background pixel count with explicit
+tolerances stored beside the golden. `GhostteaVisualGoldenRecorder` reproduces
+the 2.6 KB JSON fixture from the production model and Metal renderer. The
+macOS and iPhone Simulator outputs are currently byte-identical; a physical
+iPhone and the desktop WebGPU renderer remain required visual-parity evidence.
+Regenerate the golden intentionally from the repository root with:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcrun swift run --package-path apple/GhostteaKit \
+  GhostteaVisualGoldenRecorder \
+  apple/GhostteaKit/Sources/GhostteaTerminal/Resources/terminal-visual-golden.json
+```
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,

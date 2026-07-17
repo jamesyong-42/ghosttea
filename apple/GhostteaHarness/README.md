@@ -25,6 +25,8 @@ The harness provides:
   cancellation routed through the measured SSH task-cancellation path;
 - explicit cancellation with measured unwind latency for physical-device
   adverse-network checks;
+- strict TRF1 retained-state, packaged-Metal, GPU lifecycle, grid geometry, and
+  visual-golden automation using the production styled Unicode/emoji fixture;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a
@@ -35,7 +37,10 @@ The harness provides:
 - negotiated host-key and cipher reporting;
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 
-The harness is diagnostic scaffolding, not the production terminal UI. It does not render TRF1 frames, store credentials, or attempt to keep SSH alive indefinitely in the background.
+The harness is diagnostic scaffolding, not the production terminal UI. Its
+offscreen and preview surfaces render TRF1 only for conformance; it does not
+store user credentials or attempt to keep SSH alive indefinitely in the
+background.
 Its Debug UI starts with this development Mac's disposable LAN fixture values
 and can reload them with one tap; replace the host when the trusted-network
 address changes. These values are test-only and must never be reused elsewhere.

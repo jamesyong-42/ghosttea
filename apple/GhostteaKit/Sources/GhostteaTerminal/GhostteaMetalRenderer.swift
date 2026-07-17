@@ -40,6 +40,7 @@ struct GhostteaMetalRenderResult: Equatable, Sendable {
   let colorGlyphVertexCount: Int
   let nonBackgroundPixelCount: Int
   let pixelHash: UInt64
+  let visualFingerprint: GhostteaVisualFingerprint
   let atlasUpload: GhostteaMetalUploadResult
   let residentBytes: Int
 }
@@ -163,14 +164,22 @@ final class GhostteaMetalRenderer {
       cursorBlinkVisible: cursorBlinkVisible
     )
     let pixels = readPixels(texture: target, width: width, height: height)
+    let nonBackgroundPixelCount = countNonBackgroundPixels(
+      pixels, background: theme.background)
     return GhostteaMetalRenderResult(
       width: width,
       height: height,
       rectangleVertexCount: draw.rectangleVertexCount,
       alphaGlyphVertexCount: draw.alphaGlyphVertexCount,
       colorGlyphVertexCount: draw.colorGlyphVertexCount,
-      nonBackgroundPixelCount: countNonBackgroundPixels(pixels, background: theme.background),
+      nonBackgroundPixelCount: nonBackgroundPixelCount,
       pixelHash: fnv1a64(pixels),
+      visualFingerprint: GhostteaVisualFingerprint(
+        pixels: pixels,
+        width: width,
+        height: height,
+        nonBackgroundPixelCount: nonBackgroundPixelCount
+      ),
       atlasUpload: draw.atlasUpload,
       residentBytes: atlases.residentBytes + pixels.count
     )
