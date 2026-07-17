@@ -222,3 +222,25 @@ Cancelled in 162 ms
 This is below the one-second Phase 0 gate and closes the diagnostic on-device
 keyboard-interactive cancellation check. Each LAN fixture was stopped and
 removed immediately after its probe.
+
+## 2026-07-16: host-key persistence and replacement
+
+The physical iPhone next exercised both persistent host-key decisions against
+the disposable password endpoint. For the first fresh key, the user compared
+the displayed Ed25519 fingerprint with the independently scanned value, chose
+**Accept & Store**, authenticated, and completed the default command.
+
+The fixture was then removed and recreated at the same host and port, producing
+a different Ed25519 key. On the next connection the harness identified the
+stored-key mismatch, displayed **Host key changed** with the red warning to
+verify independently, and showed the newly scanned fingerprint. After the user
+chose **Accept & Store**, authentication and command execution succeeded. A
+third connection to the unchanged replacement fixture completed without any
+host-key prompt, proving that the old entry was replaced and that the new entry
+passed strict verification.
+
+This closes the diagnostic physical-device unknown-key persistence,
+changed-key warning/replacement, and strict-reconnect UI gate. Representative
+launch-server host-key behavior and promotion into the production connection
+UI remain open. Both disposable LAN fixtures were stopped and removed
+immediately after their respective probes.

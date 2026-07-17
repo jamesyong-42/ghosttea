@@ -1338,7 +1338,9 @@ restoration. Strict
 host-key rejection and an async accept-once boundary for unknown/changed keys
 pass with host, port, algorithm, SHA-256 fingerprint, and mismatch reason.
 Accept-and-store uses a
-mode-preserving atomic replacement and passes subsequent strict reconnects. TCP establishment now uses a
+mode-preserving atomic replacement and passes subsequent strict reconnects. A
+physical iPhone persists an unknown key, warns before replacing a changed key,
+and reconnects without another prompt. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
 timeout and cancellation. The synchronous system resolver remains
@@ -1792,10 +1794,10 @@ nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 The signed VT proof and raw one/four/eight-session footprint matrix pass on an
 iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
-confirmation, password and keyboard-interactive authentication, command
-execution, and output drain against disposable fixtures. The measurements and
-command output are recorded in
-`apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
+confirmation including changed-key replacement and strict reconnect, password
+and keyboard-interactive authentication, command execution, and output drain
+against disposable fixtures. The measurements and command output are recorded
+in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
 promotion, resolver cancellation, automatic path-state/reconnect behavior,
 device-footprint

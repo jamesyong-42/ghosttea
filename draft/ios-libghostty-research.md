@@ -207,8 +207,9 @@ can now cross an opt-in async decision boundary with host, port, algorithm,
 OpenSSH-style SHA-256 fingerprint, and mismatch reason. Live controls prove
 strict rejection and explicit accept-once behavior before authentication;
 accept-and-store atomically inserts or replaces the OpenSSH entry, preserves
-its file mode, and passes strict reconnect controls. UIKit confirmation remains
-open.
+its file mode, and passes strict reconnect controls. A physical iPhone also
+persists an unknown key, warns before replacing a changed key, and reconnects
+strictly without another prompt; production UI promotion remains open.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds, exact nonempty

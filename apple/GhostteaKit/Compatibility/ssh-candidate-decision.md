@@ -213,9 +213,11 @@ separately test the host-neutral demand and queue semantics.
    passes both the macOS fixture and a physical iPhone. PAM informational text
    passes on macOS; nonempty protocol name/instruction metadata and mixed
    echo/no-echo prompts pass through the diagnostic UI on a physical iPhone.
-2. Connect the tested unknown/changed host-key responder to UIKit. Strict
-   rejection, explicit accept-once decisions, atomic insertion/replacement,
-   permission preservation, and strict reconnects already pass.
+2. Promote the tested unknown/changed host-key responder into the product
+   connection UI. Strict rejection, explicit accept-once decisions, atomic
+   insertion/replacement, and permission preservation pass in fixtures. A
+   physical iPhone persists an unknown key, warns before replacing a changed
+   key, and then reconnects strictly without another prompt.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.
