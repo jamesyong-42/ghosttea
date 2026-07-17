@@ -74,3 +74,86 @@ func replayDisconnectTest() async throws {
     _ = try await connection.read(maxBytes: 1)
   }
 }
+
+private let wifiPath = TerminalNetworkPath(
+  availability: .satisfied,
+  interfaces: [.wifi]
+)
+
+private let cellularPath = TerminalNetworkPath(
+  availability: .satisfied,
+  interfaces: [.cellular],
+  isExpensive: true
+)
+
+@Test("Reconnect model starts only on an explicitly requested usable path")
+func reconnectExplicitStartTest() {
+  var model = TerminalReconnectModel(initialPath: wifiPath)
+
+  #expect(model.update(.connectRequested) == [.startFreshConnection(generation: 1)])
+  #expect(model.state == .connecting(generation: 1))
+  #expect(model.update(.connectionEstablished(generation: 1)).isEmpty)
+  #expect(model.state == .connected(generation: 1))
+  #expect(model.update(.connectionCompleted(generation: 1)).isEmpty)
+  #expect(model.state == .idle)
+}
+
+@Test("A satisfied route change tears down before offering a fresh reconnect")
+func reconnectRouteChangeTest() {
+  var model = TerminalReconnectModel(initialPath: wifiPath)
+  _ = model.update(.connectRequested)
+  _ = model.update(.connectionEstablished(generation: 1))
+
+  #expect(
+    model.update(.pathChanged(cellularPath)) == [
+      .tearDownConnection(generation: 1),
+      .reconnectBecameAvailable,
+    ]
+  )
+  #expect(model.state == .reconnectAvailable)
+
+  // A completion from the invalidated task cannot change reconnect state.
+  #expect(model.update(.connectionCompleted(generation: 1)).isEmpty)
+  #expect(model.state == .reconnectAvailable)
+  #expect(model.update(.connectRequested) == [.startFreshConnection(generation: 2)])
+}
+
+@Test("Path restoration offers reconnect but never starts it silently")
+func reconnectWaitsForPathTest() {
+  let offline = TerminalNetworkPath(availability: .unsatisfied)
+  var model = TerminalReconnectModel(initialPath: offline)
+
+  #expect(model.update(.connectRequested).isEmpty)
+  #expect(model.state == .waitingForNetwork)
+  #expect(model.update(.pathChanged(wifiPath)) == [.reconnectBecameAvailable])
+  #expect(model.state == .reconnectAvailable)
+  #expect(model.update(.connectRequested) == [.startFreshConnection(generation: 1)])
+}
+
+@Test("Backgrounding tears down and foregrounding requires explicit reconnect")
+func reconnectBackgroundTest() {
+  var model = TerminalReconnectModel(initialPath: wifiPath)
+  _ = model.update(.connectRequested)
+  _ = model.update(.connectionEstablished(generation: 1))
+
+  #expect(model.update(.enteredBackground) == [.tearDownConnection(generation: 1)])
+  #expect(model.state == .suspended)
+  #expect(model.update(.becameActive) == [.reconnectBecameAvailable])
+  #expect(model.state == .reconnectAvailable)
+}
+
+@Test("Cost metadata changes do not invalidate an otherwise identical route")
+func reconnectCostChangeTest() {
+  var model = TerminalReconnectModel(initialPath: wifiPath)
+  _ = model.update(.connectRequested)
+  _ = model.update(.connectionEstablished(generation: 1))
+
+  let constrainedWifi = TerminalNetworkPath(
+    availability: .satisfied,
+    interfaces: [.wifi],
+    isExpensive: true,
+    isConstrained: true
+  )
+  #expect(model.update(.pathChanged(constrainedWifi)).isEmpty)
+  #expect(model.state == .connected(generation: 1))
+}

@@ -116,8 +116,10 @@ cycle bounded below one second. This exercises repeated session destruction and
 callback-worker cleanup. On a physical iPhone, disabling Wi-Fi during an active
 LAN command and explicitly cancelling shuts down the socket and unwinds in 23
 ms. After Wi-Fi restoration, a fresh connection to a new fixture completes a
-bounded command. Automatic path-state and reconnect orchestration remain
-product work.
+bounded command. A reusable transport-neutral reducer and Network.framework
+observer now implement generation-checked route state, automatic teardown,
+background suspension, and explicit fresh-reconnect availability; the
+on-device automatic transition is the remaining local verification step.
 The host-neutral transport now includes input half-close and a typed termination
 result that distinguishes `.exited(code:)` from `.signaled(name:)`.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and

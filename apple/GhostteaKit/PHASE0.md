@@ -122,6 +122,13 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - physical-device session probes that allocate a 41x132 PTY, resize the live
   shell to 50x140, and separately send input EOF to `cat` before draining the
   exact echoed payload and observing a clean exit.
+- a transport-neutral, generation-checked reconnect reducer plus a
+  Network.framework path observer with newest-state buffering. Selected-route
+  changes and background transitions order teardown before reconnect
+  availability, stale task completions are ignored, and restoration never
+  silently starts a fresh connection or reuses submitted credentials. The iOS
+  harness exposes the path and lifecycle states and is ready for its physical
+  automatic-transition probe.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -159,9 +166,10 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is production UI promotion, representative-server
-   sampling, resolver and reconnect orchestration, automatic network-path state,
-   device-footprint instrumentation, and representative low-end-device
-   execution. The public-key partial step remains locked as `-19`, so only an
+   sampling, resolver replacement, physical verification of the implemented
+   path/reconnect orchestration, device-footprint instrumentation, and
+   representative low-end-device execution. The public-key partial step remains
+   locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
 3. The initial raw VT physical-footprint measurement is complete. Measure the
    complete terminal stack for one foreground and several background fixtures

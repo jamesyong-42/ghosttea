@@ -19,6 +19,10 @@ The harness provides:
   cancellation routed through the measured SSH task-cancellation path;
 - explicit cancellation with measured unwind latency for physical-device
   adverse-network checks;
+- automatic Network.framework path monitoring and generation-checked lifecycle
+  policy. A selected-route change or background transition tears down the live
+  SSH attempt, while path restoration offers (but never silently starts) a
+  fresh connection;
 - negotiated host-key and cipher reporting;
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 
@@ -52,11 +56,19 @@ uses this single binary target so Xcode does not flatten two competing
 5. Record the device model, OS, VT result, and full memory matrix.
 6. Run the SSH command probe against the launch-server sample, verify the displayed fingerprint out of band, and exercise both Wi-Fi and cellular transitions.
 
-For the adverse-network diagnostic, run a bounded long-lived command, interrupt
-the active network path, and tap **Cancel**. Record the displayed cancellation
-latency, restore the path, then run the bounded command again to prove an
-explicit fresh connection. The harness does not claim that the original SSH
-session survives the transition.
+For the adverse-network diagnostic, first confirm that **Network** reports
+`Satisfied · Wi-Fi`. Run a bounded long-lived command, then disable Wi-Fi from
+Control Center without tapping **Cancel**. The selected-route change must
+automatically cancel the active generation, and **SSH lifecycle** must move to
+`Reconnect available` (or `Waiting for network` when no alternate path exists).
+Restore Wi-Fi, reload disposable fixture credentials if needed, and explicitly
+run the bounded command again. Record both cancellation latency and the fresh
+connection result. The harness does not claim that the original SSH session
+survives the transition.
+
+Also background the app during a bounded command. It must cancel the live
+generation and show `Suspended`; returning to the foreground may offer a fresh
+reconnect but must not start one or retain submitted credential bytes.
 
 Password, pasted private-key, and passphrase fields are cleared before each
 attempt. The probe stores their bytes only under random opaque IDs in the

@@ -6,6 +6,12 @@ import UIKit
 
 @MainActor
 final class HarnessModel: ObservableObject {
+  private enum SSHCancellationReason {
+    case user
+    case networkChange
+    case background
+  }
+
   enum SSHCommandPreset {
     case defaultOutput
     case exitStreams
@@ -40,6 +46,8 @@ final class HarnessModel: ObservableObject {
 
   @Published var vtResult = "Not run"
   @Published var keychainResult = "Not run"
+  @Published var networkPathSummary = "Starting monitor…"
+  @Published var reconnectStateSummary = "Idle"
   @Published var memoryResults: [HarnessMemoryResult] = []
   @Published var memoryStatus = "Not run"
   @Published var host = "10.0.0.103"
@@ -65,6 +73,24 @@ final class HarnessModel: ObservableObject {
   private var keyboardChallengeContinuation: CheckedContinuation<[String], Error>?
   private var sshTask: Task<Void, Never>?
   private var sshCancellationRequestedAt: ContinuousClock.Instant?
+  private var sshCancellationReason: SSHCancellationReason?
+  private var sshGeneration: UInt64?
+  private var reconnectModel = TerminalReconnectModel()
+  private var networkPathTask: Task<Void, Never>?
+
+  init() {
+    let updates = AppleTerminalNetworkPathMonitor().updates()
+    networkPathTask = Task { [weak self] in
+      for await path in updates {
+        guard let self else { return }
+        self.handleNetworkPathChange(path)
+      }
+    }
+  }
+
+  deinit {
+    networkPathTask?.cancel()
+  }
 
   var isPresentingSSHInteraction: Bool {
     pendingHostKey != nil || pendingKeyboardChallenge != nil || isBridgingSSHInteraction
@@ -145,6 +171,15 @@ final class HarnessModel: ObservableObject {
       return
     }
 
+    let reconnectEffects = reconnectModel.update(.connectRequested)
+    guard
+      case .startFreshConnection(let generation) = reconnectEffects.first
+    else {
+      updateReconnectStateSummary()
+      sshStatus = "Waiting for a usable network path"
+      return
+    }
+
     let requestedHost = host
     let requestedUsername = username
     let requestedAuthentication = sshAuthentication
@@ -163,6 +198,8 @@ final class HarnessModel: ObservableObject {
     isBridgingSSHInteraction = false
 
     sshCancellationRequestedAt = nil
+    sshCancellationReason = nil
+    sshGeneration = generation
     sshTask = Task {
       do {
         let credentialStore = try KeychainSSHCredentialStore()
@@ -252,6 +289,8 @@ final class HarnessModel: ObservableObject {
           )
           let transport = SSHCandidateTransport(configuration: configuration)
           let connection = try await transport.connect()
+          _ = reconnectModel.update(.connectionEstablished(generation: generation))
+          updateReconnectStateSummary()
           finishSSHInteraction()
           do {
             try await removeCredentials(credentials, from: credentialStore)
@@ -326,6 +365,8 @@ final class HarnessModel: ObservableObject {
             sshStatus = ["Completed", termination.description, negotiatedSummary]
               .compactMap { $0 }
               .joined(separator: " · ")
+            _ = reconnectModel.update(.connectionCompleted(generation: generation))
+            updateReconnectStateSummary()
             await connection.disconnect()
           } catch {
             await connection.disconnect()
@@ -336,16 +377,34 @@ final class HarnessModel: ObservableObject {
           throw error
         }
       } catch {
-        if let requestedAt = sshCancellationRequestedAt {
+        if let requestedAt = sshCancellationRequestedAt,
+          let cancellationReason = sshCancellationReason
+        {
           let duration = requestedAt.duration(to: .now)
-          sshStatus = "Cancelled in \(durationMilliseconds(duration)) ms"
+          let milliseconds = durationMilliseconds(duration)
+          switch cancellationReason {
+          case .user:
+            sshStatus = "Cancelled in \(milliseconds) ms"
+          case .networkChange:
+            sshStatus = reconnectModel.path.canAttemptConnection
+              ? "Network route changed · reconnect available · cancelled in \(milliseconds) ms"
+              : "Network unavailable · waiting to reconnect · cancelled in \(milliseconds) ms"
+          case .background:
+            sshStatus = "Suspended in background · cancelled in \(milliseconds) ms"
+          }
         } else {
+          _ = reconnectModel.update(
+            .connectionFailed(generation: generation, reconnectable: false)
+          )
+          updateReconnectStateSummary()
           sshStatus = "Failed: \(error)"
         }
       }
       finishSSHInteraction()
       isRunningSSH = false
       sshCancellationRequestedAt = nil
+      sshCancellationReason = nil
+      sshGeneration = nil
       sshTask = nil
     }
   }
@@ -370,12 +429,110 @@ final class HarnessModel: ObservableObject {
   }
 
   func cancelSSHCommand() {
+    let effects = reconnectModel.update(.disconnectRequested)
+    applyReconnectEffects(effects, cancellationReason: .user)
+    updateReconnectStateSummary()
+  }
+
+  func sceneDidEnterBackground() {
+    let effects = reconnectModel.update(.enteredBackground)
+    applyReconnectEffects(effects, cancellationReason: .background)
+    updateReconnectStateSummary()
+  }
+
+  func sceneDidBecomeActive() {
+    let effects = reconnectModel.update(.becameActive)
+    applyReconnectEffects(effects, cancellationReason: .networkChange)
+    updateReconnectStateSummary()
+  }
+
+  private func requestSSHCancellation(_ reason: SSHCancellationReason) {
     guard isRunningSSH, sshCancellationRequestedAt == nil else { return }
     sshCancellationRequestedAt = .now
-    sshStatus = "Cancelling…"
+    sshCancellationReason = reason
+    switch reason {
+    case .user:
+      sshStatus = "Cancelling…"
+    case .networkChange:
+      sshStatus = "Network route changed · cancelling…"
+    case .background:
+      sshStatus = "Suspending · cancelling…"
+    }
     resolveHostKey(.reject)
     cancelKeyboardChallenge()
     sshTask?.cancel()
+  }
+
+  private func handleNetworkPathChange(_ path: TerminalNetworkPath) {
+    networkPathSummary = describe(path)
+    let effects = reconnectModel.update(.pathChanged(path))
+    applyReconnectEffects(effects, cancellationReason: .networkChange)
+    updateReconnectStateSummary()
+  }
+
+  private func applyReconnectEffects(
+    _ effects: [TerminalReconnectEffect],
+    cancellationReason: SSHCancellationReason
+  ) {
+    for effect in effects {
+      switch effect {
+      case .startFreshConnection:
+        // Fresh connections are started only by `runSSHCommand`, after fields
+        // and credentials have been validated and captured.
+        break
+      case .tearDownConnection(let generation):
+        guard sshGeneration == generation else { continue }
+        requestSSHCancellation(cancellationReason)
+      case .reconnectBecameAvailable:
+        if !isRunningSSH {
+          sshStatus = "Reconnect available · submit credentials to start a fresh SSH session"
+        }
+      }
+    }
+  }
+
+  private func updateReconnectStateSummary() {
+    switch reconnectModel.state {
+    case .idle:
+      reconnectStateSummary = "Idle"
+    case .waitingForNetwork:
+      reconnectStateSummary = "Waiting for network"
+    case .connecting(let generation):
+      reconnectStateSummary = "Connecting · generation \(generation)"
+    case .connected(let generation):
+      reconnectStateSummary = "Connected · generation \(generation)"
+    case .reconnectAvailable:
+      reconnectStateSummary = "Reconnect available"
+    case .suspended:
+      reconnectStateSummary = "Suspended"
+    case .failed:
+      reconnectStateSummary = "Failed"
+    }
+  }
+
+  private func describe(_ path: TerminalNetworkPath) -> String {
+    let availability: String
+    switch path.availability {
+    case .unknown: availability = "Unknown"
+    case .satisfied: availability = "Satisfied"
+    case .unsatisfied: availability = "Unsatisfied"
+    case .requiresConnection: availability = "Requires connection"
+    }
+
+    let interfaceNames = path.interfaces.map { interface in
+      switch interface {
+      case .wifi: return "Wi-Fi"
+      case .cellular: return "Cellular"
+      case .wiredEthernet: return "Ethernet"
+      case .loopback: return "Loopback"
+      case .other: return "Other"
+      }
+    }.sorted()
+    let route = interfaceNames.isEmpty ? "no route" : interfaceNames.joined(separator: ", ")
+    var qualifiers: [String] = []
+    if path.isExpensive { qualifiers.append("expensive") }
+    if path.isConstrained { qualifiers.append("constrained") }
+    return ([availability, route] + qualifiers).joined(separator: " · ")
   }
 
   func resolveHostKey(_ decision: SSHCandidateHostKeyDecision) {

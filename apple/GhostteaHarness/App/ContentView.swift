@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
   @EnvironmentObject private var model: HarnessModel
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     NavigationStack {
@@ -11,6 +12,8 @@ struct ContentView: View {
         Section("Device") {
           Text(model.deviceSummary)
             .font(.footnote)
+          LabeledContent("Network", value: model.networkPathSummary)
+          LabeledContent("SSH lifecycle", value: model.reconnectStateSummary)
           LabeledContent("Keychain", value: model.keychainResult)
           Button(model.isRunningKeychain ? "Running…" : "Run Keychain smoke test") {
             model.runKeychainProof()
@@ -142,6 +145,18 @@ struct ContentView: View {
         SSHInteractionView()
           .environmentObject(model)
           .interactiveDismissDisabled()
+      }
+      .onChange(of: scenePhase) { _, phase in
+        switch phase {
+        case .active:
+          model.sceneDidBecomeActive()
+        case .background:
+          model.sceneDidEnterBackground()
+        case .inactive:
+          break
+        @unknown default:
+          break
+        }
       }
     }
   }
