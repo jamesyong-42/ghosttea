@@ -9,6 +9,7 @@ import {
   type GhostteaElectronBackendOptions,
 } from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
+import { orderNativeTabs } from "./native-tab-order";
 import { DesktopTabRegistry } from "./tab-registry";
 
 app.setName("Ghosttea");
@@ -72,7 +73,12 @@ ipcMain.on("terminal-select-tab", (event, target: unknown) => {
     if (process.platform === "darwin") window.selectNextTab();
     else focusRelativeTab(window, 1);
   } else if (typeof target === "number" && Number.isSafeInteger(target)) {
-    focusTab(tabs.tabAt(window, target)?.window);
+    const current = tabs.get(window);
+    if (!current) return;
+    const group = tabs.group(current.groupId);
+    const orderedWindows = orderNativeTabs(group.map((record) => record.window));
+    const index = Math.min(Math.max(target, 1), orderedWindows.length) - 1;
+    focusTab(orderedWindows[index]);
   }
 });
 

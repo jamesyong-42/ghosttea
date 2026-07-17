@@ -42,12 +42,4 @@ export class DesktopTabRegistry<Window extends object> {
     const record = this.#byWindow.get(window);
     if (record) record.activeCwd = cwd;
   }
-
-  tabAt(window: Window, oneBasedIndex: number): DesktopTabRecord<Window> | undefined {
-    const current = this.#byWindow.get(window);
-    if (!current) return undefined;
-    const group = this.group(current.groupId);
-    if (!group.length) return undefined;
-    return group[Math.min(Math.max(oneBasedIndex, 1), group.length) - 1];
-  }
 }

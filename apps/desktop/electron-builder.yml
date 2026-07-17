@@ -11,6 +11,9 @@ extraResources:
     to: bin/ghosttead
 mac:
   category: public.app-category.developer-tools
+  extraResources:
+    - from: native/build/Release/ghosttea_native_tabs.node
+      to: native/ghosttea_native_tabs.node
   target:
     - dmg
     - zip

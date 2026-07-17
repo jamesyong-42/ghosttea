@@ -13,7 +13,6 @@ describe("DesktopTabRegistry", () => {
     registry.updateSessions(second, ["session-2"]);
 
     expect(registry.group("group-a").map((record) => record.id)).toEqual(["first", "second"]);
-    expect(registry.tabAt(first, 9)?.id).toBe("second");
     expect(registry.get(second)?.sessionIds).toEqual(new Set(["session-2"]));
     expect(registry.get(otherWindow)?.sessionIds).toEqual(new Set());
   });
