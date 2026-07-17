@@ -195,6 +195,18 @@ try {
   );
   const control = await open(controlSocket);
   const frames = await open(frameSocket);
+  const frameHandles = new Set();
+  const subscribeFrames = (handle) => {
+    frameHandles.add(handle);
+    frames.socket.write(
+      packet(
+        JSON.stringify({
+          type: "subscribe",
+          sessionHandles: [...frameHandles],
+        }),
+      ),
+    );
+  };
   control.socket.write(
     packet(
       JSON.stringify({
@@ -206,6 +218,7 @@ try {
   );
   const created = await nextControlResponse(control, 1);
   if (created.type !== "session-created") throw new Error(`create failed: ${JSON.stringify(created)}`);
+  subscribeFrames(created.session.handle);
   if (
     !Number.isInteger(created.session.pid) ||
     created.session.pid <= 0 ||
@@ -373,6 +386,7 @@ try {
   );
   const cleanEnvironment = await nextControlResponse(control, requestId - 1);
   if (cleanEnvironment.type !== "session-created") throw new Error("clean environment session creation failed");
+  subscribeFrames(cleanEnvironment.session.handle);
   control.socket.write(
     packet(
       JSON.stringify({
@@ -650,6 +664,7 @@ try {
   const mouseCreated = await nextControlResponse(control, requestId - 1);
   if (mouseCreated.type !== "session-created")
     throw new Error(`mouse session create failed: ${JSON.stringify(mouseCreated)}`);
+  subscribeFrames(mouseCreated.session.handle);
   const mouseView = { viewId: "smoke-mouse", attachmentEpoch: 0, inputSequence: 0 };
   control.socket.write(
     packet(
@@ -738,6 +753,7 @@ try {
   const interruptCreated = await nextControlResponse(control, requestId - 1);
   if (interruptCreated.type !== "session-created")
     throw new Error(`interrupt session create failed: ${JSON.stringify(interruptCreated)}`);
+  subscribeFrames(interruptCreated.session.handle);
   const interruptView = { viewId: "smoke-interrupt", attachmentEpoch: 0, inputSequence: 0 };
   control.socket.write(
     packet(
@@ -915,6 +931,7 @@ try {
     if (stubborn.type !== "session-created" || !Number.isInteger(stubborn.session.pid)) {
       throw new Error(`stubborn process creation failed: ${JSON.stringify(stubborn)}`);
     }
+    subscribeFrames(stubborn.session.handle);
     control.socket.write(
       packet(
         JSON.stringify({
@@ -988,6 +1005,7 @@ try {
   );
   const retained = await nextControlResponse(control, requestId - 1);
   if (retained.type !== "session-created") throw new Error("retained session creation failed");
+  subscribeFrames(retained.session.handle);
   const retainedExit = await Promise.race([
     nextControlEvent(control, "session-exited", (event) => event.sessionId === retained.session.id),
     new Promise((_, reject) => setTimeout(() => reject(new Error("retained session exit timeout")), 5_000)),

@@ -43,8 +43,7 @@ export function workspaceOwnsHotkey(
 ): boolean {
   if (!active || !root) return false;
   return (
-    (target instanceof Node && root.contains(target)) ||
-    (activeElement instanceof Node && root.contains(activeElement))
+    (target instanceof Node && root.contains(target)) || (activeElement instanceof Node && root.contains(activeElement))
   );
 }
 

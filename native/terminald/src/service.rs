@@ -41,7 +41,7 @@ struct Envelope {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameSubscription {
-    session_handles: Vec<u64>,
+    session_handles: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -593,15 +593,15 @@ async fn handle_command(
                 }
                 let session = context
                     .mesh_runtime
-                    .open_session(
-                        &device_id,
-                        &remote_session_id,
+                    .open_session(mesh::RemoteSessionOpen {
+                        device_id,
+                        remote_session_id,
                         cols,
                         rows,
                         owner_id,
-                        context.frame_tx.clone(),
-                        Arc::clone(&context.text_engine),
-                    )
+                        frames: context.frame_tx.clone(),
+                        text_engine: Arc::clone(&context.text_engine),
+                    })
                     .await?;
                 drop(owner_lifecycle);
                 Ok(ResponseBody::SessionCreated { session })
@@ -1186,7 +1186,15 @@ async fn serve_frames(
                         if subscription.session_handles.len() > MAX_FRAME_SUBSCRIPTIONS {
                             break;
                         }
-                        subscriptions = subscription.session_handles.into_iter().collect();
+                        let Ok(parsed) = subscription
+                            .session_handles
+                            .into_iter()
+                            .map(|handle| handle.parse::<u64>())
+                            .collect::<Result<HashSet<_>, _>>()
+                        else {
+                            break;
+                        };
+                        subscriptions = parsed;
                     }
                     frame = rx.recv() => match frame {
                         Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
@@ -1284,10 +1292,10 @@ mod protocol_tests {
     fn frame_subscriptions_and_frame_handles_are_typed() {
         let subscription: FrameSubscription = serde_json::from_value(json!({
             "type": "subscribe",
-            "sessionHandles": [7, 11]
+            "sessionHandles": ["7", "11"]
         }))
         .unwrap();
-        assert_eq!(subscription.session_handles, vec![7, 11]);
+        assert_eq!(subscription.session_handles, vec!["7", "11"]);
 
         let mut frame = vec![0_u8; 16];
         frame[8..16].copy_from_slice(&11_u64.to_le_bytes());

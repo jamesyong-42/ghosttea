@@ -247,7 +247,9 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     const updates: SessionSummary[] = [];
-    runtime.addEventListener("session-metadata", (event) => updates.push((event as CustomEvent<SessionSummary>).detail));
+    runtime.addEventListener("session-metadata", (event) =>
+      updates.push((event as CustomEvent<SessionSummary>).detail),
+    );
     runtime.mount(session.id, session.handle, "view-only", canvas());
     await Promise.resolve();
 

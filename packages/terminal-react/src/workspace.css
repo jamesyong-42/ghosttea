@@ -122,7 +122,10 @@ body {
   border-radius: 999px;
   color: rgb(255 255 255 / 58%);
   background: rgb(22 24 29 / 78%);
-  font: 500 10px/1.4 ui-sans-serif, system-ui, sans-serif;
+  font:
+    500 10px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
   pointer-events: none;
 }
 

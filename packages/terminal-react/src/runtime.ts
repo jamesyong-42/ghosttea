@@ -584,12 +584,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
   }
 
-  async copySelection(
-    sessionId: string,
-    viewId: string,
-    selection: CellSelection,
-    selectAll = false,
-  ): Promise<string> {
+  async copySelection(sessionId: string, viewId: string, selection: CellSelection, selectAll = false): Promise<string> {
     await this.connect();
     const view = this.#views.get(viewId);
     if (!view || view.sessionId !== sessionId || view.attachmentEpoch === undefined) return "";

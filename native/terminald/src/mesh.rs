@@ -65,21 +65,22 @@ pub struct RemoteHostSummary {
     pub sessions: Vec<SharedSessionSummary>,
 }
 
+pub struct RemoteSessionOpen {
+    pub device_id: String,
+    pub remote_session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub owner_id: Option<String>,
+    pub frames: broadcast::Sender<Vec<u8>>,
+    pub text_engine: Arc<Mutex<TextEngine>>,
+}
+
 #[async_trait]
 pub trait RemoteTerminalRuntime: Send + Sync {
     fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged>;
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>>;
     async fn list_sessions(&self, device_id: &str) -> Result<Vec<SharedSessionSummary>>;
-    async fn open_session(
-        &self,
-        device_id: &str,
-        remote_session_id: &str,
-        cols: u16,
-        rows: u16,
-        owner_id: Option<String>,
-        frames: broadcast::Sender<Vec<u8>>,
-        text_engine: Arc<Mutex<TextEngine>>,
-    ) -> Result<SessionSummary>;
+    async fn open_session(&self, request: RemoteSessionOpen) -> Result<SessionSummary>;
     async fn summaries(&self) -> Vec<SessionSummary>;
     async fn summary(&self, session_id: &str) -> Option<SessionSummary>;
     async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<RemoteAttachment>;
@@ -140,16 +141,7 @@ impl RemoteTerminalRuntime for NoRemoteRuntime {
         unavailable()
     }
 
-    async fn open_session(
-        &self,
-        _device_id: &str,
-        _remote_session_id: &str,
-        _cols: u16,
-        _rows: u16,
-        _owner_id: Option<String>,
-        _frames: broadcast::Sender<Vec<u8>>,
-        _text_engine: Arc<Mutex<TextEngine>>,
-    ) -> Result<SessionSummary> {
+    async fn open_session(&self, _request: RemoteSessionOpen) -> Result<SessionSummary> {
         unavailable()
     }
 

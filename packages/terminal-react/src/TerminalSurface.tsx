@@ -141,7 +141,10 @@ function TerminalSurfaceSession({
         const total = Math.max(rows, scrollbarRef.current.total);
         selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
         selectionAllRef.current = true;
-        terminalRuntime.setSelection(session.handle, viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows));
+        terminalRuntime.setSelection(
+          session.handle,
+          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+        );
       } else if (action === "clear-screen") {
         terminalRuntime.sendText(session.id, viewId, "\u000c");
       }
@@ -270,7 +273,10 @@ function TerminalSurfaceSession({
         const total = Math.max(rows, scrollbarRef.current.total);
         selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
         selectionAllRef.current = true;
-        terminalRuntime.setSelection(session.handle, viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows));
+        terminalRuntime.setSelection(
+          session.handle,
+          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+        );
         event.preventDefault();
       } else if (event.key === "Enter" || (event.ctrlKey && event.key.toLowerCase() === "f")) {
         onToggleFullscreen?.();

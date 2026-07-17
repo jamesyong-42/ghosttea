@@ -12,7 +12,6 @@ use std::env;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use ghosttea_text::TextEngine;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
@@ -22,8 +21,8 @@ use uuid::Uuid;
 
 use ghosttea::{
     RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica,
-    RemoteResize, RemoteSelection, RemoteTerminalRuntime, Session, SessionRegistry as Registry,
-    SessionSummary, TerminalMesh, ViewAccess,
+    RemoteResize, RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, Session,
+    SessionRegistry as Registry, SessionSummary, TerminalMesh, ViewAccess,
     tunnel_protocol::{
         ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
@@ -196,21 +195,21 @@ impl MeshRuntime {
         Ok(sessions)
     }
 
-    pub async fn open_session(
-        &self,
-        device_id: &str,
-        remote_session_id: &str,
-        cols: u16,
-        rows: u16,
-        owner_id: Option<String>,
-        frames: broadcast::Sender<Vec<u8>>,
-        text_engine: Arc<std::sync::Mutex<TextEngine>>,
-    ) -> Result<SessionSummary> {
+    pub async fn open_session(&self, request: RemoteSessionOpen) -> Result<SessionSummary> {
+        let RemoteSessionOpen {
+            device_id,
+            remote_session_id,
+            cols,
+            rows,
+            owner_id,
+            frames,
+            text_engine,
+        } = request;
         let ready = self.ready().await?;
         // Advertised sessions are discovery hints and may lag registry
         // changes. Resolve the selected session against the host's live
         // registry before creating a local replica.
-        let sessions = self.list_sessions(device_id).await?;
+        let sessions = self.list_sessions(&device_id).await?;
         let remote = sessions
             .iter()
             .find(|session| session.session_id == remote_session_id && session.attachable)
@@ -228,8 +227,8 @@ impl MeshRuntime {
         self.replicas.write().await.insert(
             summary.id.clone(),
             RemoteSession {
-                device_id: device_id.to_owned(),
-                remote_session_id: remote_session_id.to_owned(),
+                device_id,
+                remote_session_id,
                 access_token: ready.capability,
                 replica,
             },
@@ -1659,27 +1658,8 @@ impl RemoteTerminalRuntime for MeshRuntime {
         MeshRuntime::list_sessions(self, device_id).await
     }
 
-    async fn open_session(
-        &self,
-        device_id: &str,
-        remote_session_id: &str,
-        cols: u16,
-        rows: u16,
-        owner_id: Option<String>,
-        frames: broadcast::Sender<Vec<u8>>,
-        text_engine: Arc<std::sync::Mutex<TextEngine>>,
-    ) -> Result<SessionSummary> {
-        MeshRuntime::open_session(
-            self,
-            device_id,
-            remote_session_id,
-            cols,
-            rows,
-            owner_id,
-            frames,
-            text_engine,
-        )
-        .await
+    async fn open_session(&self, request: RemoteSessionOpen) -> Result<SessionSummary> {
+        MeshRuntime::open_session(self, request).await
     }
 
     async fn summaries(&self) -> Vec<SessionSummary> {
