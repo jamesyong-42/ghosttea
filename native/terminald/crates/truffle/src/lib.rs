@@ -83,6 +83,7 @@ struct RemoteSession {
 struct RemoteView {
     session_control: tokio::sync::Mutex<ProtocolStream>,
     control: tokio::sync::watch::Receiver<Option<RemoteControlClaim>>,
+    state_cancel: tokio::sync::watch::Sender<bool>,
     attachment_epoch: u64,
     read_write: bool,
 }
@@ -346,9 +347,11 @@ impl MeshRuntime {
             bail!("remote terminal returned a misrouted state stream");
         }
         let (control_sender, control) = tokio::sync::watch::channel(None);
+        let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
         let view = Arc::new(RemoteView {
             session_control: tokio::sync::Mutex::new(session_control),
             control,
+            state_cancel,
             attachment_epoch,
             read_write,
         });
@@ -363,11 +366,19 @@ impl MeshRuntime {
         let connections = Arc::clone(&self.connections);
         let remote_control_tx = self.control_tx.clone();
         tokio::spawn(async move {
+            let mut connection_failed = true;
             loop {
-                match state
-                    .read_message::<StateMessage>(MAX_STATE_MESSAGE_BYTES)
-                    .await
-                {
+                let message = tokio::select! {
+                    changed = state_cancelled.changed() => {
+                        if changed.is_err() || *state_cancelled.borrow() {
+                            connection_failed = false;
+                            break;
+                        }
+                        continue;
+                    }
+                    message = state.read_message::<StateMessage>(MAX_STATE_MESSAGE_BYTES) => message,
+                };
+                match message {
                     Ok(Some(StateMessage::Snapshot(snapshot))) => {
                         if let Err(error) = replica.publish(snapshot) {
                             eprintln!("[terminal-mesh] failed to render remote state: {error:#}");
@@ -417,14 +428,16 @@ impl MeshRuntime {
             }
             drop(current_views);
 
-            remote_host.healthy.store(false, Ordering::Release);
-            remote_host.connection.close();
-            let mut current_connections = connections.lock().await;
-            if current_connections
-                .get(&remote_device_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &remote_host))
-            {
-                current_connections.remove(&remote_device_id);
+            if connection_failed {
+                remote_host.healthy.store(false, Ordering::Release);
+                remote_host.connection.close();
+                let mut current_connections = connections.lock().await;
+                if current_connections
+                    .get(&remote_device_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &remote_host))
+                {
+                    current_connections.remove(&remote_device_id);
+                }
             }
         });
         Ok(attachment_epoch)
@@ -577,6 +590,7 @@ impl MeshRuntime {
                 )
                 .await;
         }
+        view.state_cancel.send_replace(true);
     }
 
     pub async fn close_session(&self, session_id: &str) -> bool {
@@ -1170,7 +1184,14 @@ async fn handle_application_stream(
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await?;
-    spawn_state_stream(Arc::clone(&connection), Arc::clone(&session), &view_id).await?;
+    let (state_cancel, state_cancelled) = tokio::sync::watch::channel(false);
+    spawn_state_stream(
+        Arc::clone(&connection),
+        Arc::clone(&session),
+        &view_id,
+        state_cancelled.clone(),
+    )
+    .await?;
 
     let result = session_control_loop(
         &mut control,
@@ -1179,8 +1200,10 @@ async fn handle_application_stream(
         &client_id,
         &view_id,
         attachment_epoch,
+        state_cancelled,
     )
     .await;
+    state_cancel.send_replace(true);
     session.detach_view(&view_id, &client_id);
     result
 }
@@ -1192,6 +1215,7 @@ async fn session_control_loop(
     client_id: &str,
     attached_view_id: &str,
     attachment_epoch: u64,
+    state_cancelled: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     while let Some(message) = control
         .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
@@ -1281,6 +1305,7 @@ async fn session_control_loop(
                     Arc::clone(&connection),
                     Arc::clone(&session),
                     attached_view_id,
+                    state_cancelled.clone(),
                 )
                 .await?;
             }
@@ -1299,6 +1324,7 @@ async fn spawn_state_stream(
     connection: Arc<truffle::transport::quic::QuicConnection>,
     session: Arc<Session>,
     view_id: &str,
+    mut cancelled: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
@@ -1334,6 +1360,12 @@ async fn spawn_state_stream(
     tokio::spawn(async move {
         loop {
             let message = tokio::select! {
+                changed = cancelled.changed() => {
+                    if changed.is_err() || *cancelled.borrow() {
+                        break;
+                    }
+                    continue;
+                },
                 snapshot = snapshots.recv() => match snapshot {
                     Ok(snapshot) => Some(StateMessage::Snapshot(snapshot)),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
