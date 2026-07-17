@@ -23,6 +23,9 @@ The harness provides:
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a
   fresh connection;
+- guided lifecycle probes that select commands and disposable credentials,
+  capture teardown latency, enforce the one-second gate, validate exact fresh
+  reconnect output, and report pass/fail on the device;
 - negotiated host-key and cipher reporting;
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 
@@ -48,6 +51,30 @@ uses this single binary target so Xcode does not flatten two competing
 `module.modulemap` files into the same output path.
 
 ## Run on a physical device
+
+The automated launcher discovers one connected physical iOS device, checks its
+lock state, runs package and dual-SDK build gates, and signs the app before
+opening a network service. It then waits for an unlocked device, starts only the
+disposable password fixture on the Mac's LAN address, installs, and launches the
+harness with that address. It always removes the fixture on error, Return,
+Ctrl-C, or termination:
+
+```sh
+GHOSTTEA_IOS_DEVELOPMENT_TEAM=YOUR_TEAM_ID npm run test:ios:device
+```
+
+Set `GHOSTTEA_IOS_DEVICE_ID` when more than one physical iOS device is connected,
+or `GHOSTTEA_IOS_FIXTURE_HOST` when the Mac's LAN interface is not `en0`. Keep
+the command running while using **Automated lifecycle probes** in the app, then
+press Return to clean up. The launcher never passes credential bytes through
+the process environment.
+
+System Wi-Fi changes and application backgrounding remain manual gestures;
+ordinary iOS apps are not permitted to perform those actions themselves. The
+harness automates setup, command selection, measurement, validation, and result
+recording around those gestures.
+
+Manual Xcode fallback:
 
 1. Open `GhostteaHarness.xcodeproj` in Xcode.
 2. Select the `GhostteaHarness` target and choose a development team.

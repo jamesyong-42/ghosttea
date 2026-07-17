@@ -12,6 +12,15 @@ final class HarnessModel: ObservableObject {
     case background
   }
 
+  private enum LifecycleProbe {
+    case none
+    case routeAwaitingConnection
+    case routeAwaitingTransition
+    case freshReconnect
+    case backgroundAwaitingConnection
+    case backgroundAwaitingReturn
+  }
+
   enum SSHCommandPreset {
     case defaultOutput
     case exitStreams
@@ -48,6 +57,7 @@ final class HarnessModel: ObservableObject {
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
+  @Published var lifecycleProbeResult = "Not run"
   @Published var memoryResults: [HarnessMemoryResult] = []
   @Published var memoryStatus = "Not run"
   @Published var host = "10.0.0.103"
@@ -77,8 +87,17 @@ final class HarnessModel: ObservableObject {
   private var sshGeneration: UInt64?
   private var reconnectModel = TerminalReconnectModel()
   private var networkPathTask: Task<Void, Never>?
+  private var lifecycleProbe = LifecycleProbe.none
+  private var backgroundCancellationMilliseconds: Int64?
+  private var disposableFixtureHost = "10.0.0.103"
 
   init() {
+    if let configuredHost = ProcessInfo.processInfo.environment["GHOSTTEA_FIXTURE_HOST"],
+      !configuredHost.isEmpty
+    {
+      disposableFixtureHost = configuredHost
+      host = configuredHost
+    }
     let updates = AppleTerminalNetworkPathMonitor().updates()
     networkPathTask = Task { [weak self] in
       for await path in updates {
@@ -156,19 +175,20 @@ final class HarnessModel: ObservableObject {
     }
   }
 
-  func runSSHCommand() {
-    guard !isRunningSSH else { return }
+  @discardableResult
+  func runSSHCommand() -> Bool {
+    guard !isRunningSSH else { return false }
     guard let numericPort = Int(port), (1...65_535).contains(numericPort) else {
       sshStatus = "Enter a valid port"
-      return
+      return false
     }
     guard !host.isEmpty, !username.isEmpty else {
       sshStatus = "Host and username are required"
-      return
+      return false
     }
     guard sshAuthentication != .privateKey || !privateKey.isEmpty else {
       sshStatus = "Paste a disposable OpenSSH private key"
-      return
+      return false
     }
 
     let reconnectEffects = reconnectModel.update(.connectRequested)
@@ -177,7 +197,7 @@ final class HarnessModel: ObservableObject {
     else {
       updateReconnectStateSummary()
       sshStatus = "Waiting for a usable network path"
-      return
+      return false
     }
 
     let requestedHost = host
@@ -291,6 +311,7 @@ final class HarnessModel: ObservableObject {
           let connection = try await transport.connect()
           _ = reconnectModel.update(.connectionEstablished(generation: generation))
           updateReconnectStateSummary()
+          didEstablishConnectionForLifecycleProbe()
           finishSSHInteraction()
           do {
             try await removeCredentials(credentials, from: credentialStore)
@@ -360,6 +381,11 @@ final class HarnessModel: ObservableObject {
               sentResize: sentResize,
               halfClosePayload: halfClosePayload
             )
+            try validateFreshReconnectProbe(
+              standardOutput: standardOutput,
+              standardError: standardError,
+              termination: termination
+            )
             sshOutput = String(decoding: standardOutput, as: UTF8.self)
             sshStandardError = String(decoding: standardError, as: UTF8.self)
             sshStatus = ["Completed", termination.description, negotiatedSummary]
@@ -367,6 +393,7 @@ final class HarnessModel: ObservableObject {
               .joined(separator: " · ")
             _ = reconnectModel.update(.connectionCompleted(generation: generation))
             updateReconnectStateSummary()
+            completeFreshReconnectProbeIfNeeded()
             await connection.disconnect()
           } catch {
             await connection.disconnect()
@@ -392,12 +419,17 @@ final class HarnessModel: ObservableObject {
           case .background:
             sshStatus = "Suspended in background · cancelled in \(milliseconds) ms"
           }
+          recordLifecycleProbeCancellation(
+            reason: cancellationReason,
+            milliseconds: milliseconds
+          )
         } else {
           _ = reconnectModel.update(
             .connectionFailed(generation: generation, reconnectable: false)
           )
           updateReconnectStateSummary()
           sshStatus = "Failed: \(error)"
+          failLifecycleProbeIfActive("SSH failed: \(error)")
         }
       }
       finishSSHInteraction()
@@ -406,7 +438,9 @@ final class HarnessModel: ObservableObject {
       sshCancellationReason = nil
       sshGeneration = nil
       sshTask = nil
+      evaluateBackgroundLifecycleProbe()
     }
+    return true
   }
 
   func loadSSHCommandPreset(_ preset: SSHCommandPreset) {
@@ -421,11 +455,65 @@ final class HarnessModel: ObservableObject {
   }
 
   func loadDisposableFixtureDefaults() {
-    host = "10.0.0.103"
+    host = disposableFixtureHost
     port = "22022"
     username = "ghosttea"
     sshAuthentication = .password
     password = "ghosttea-password"
+  }
+
+  func runAutomaticRouteChangeProbe() {
+    guard !isRunningSSH else { return }
+    guard reconnectModel.path.canAttemptConnection,
+      reconnectModel.path.interfaces.contains(.wifi)
+    else {
+      lifecycleProbeResult = "Failed · start on a satisfied Wi-Fi path"
+      return
+    }
+    loadDisposableFixtureDefaults()
+    sshSession = .command
+    command = "printf 'READY\\n'; while :; do sleep 1; done"
+    lifecycleProbe = .routeAwaitingConnection
+    lifecycleProbeResult = "Connecting · host-key confirmation may be required"
+    if !runSSHCommand() {
+      lifecycleProbe = .none
+      lifecycleProbeResult = "Failed · \(sshStatus)"
+    }
+  }
+
+  func runAutomaticFreshReconnectProbe() {
+    guard !isRunningSSH else { return }
+    guard reconnectModel.path.canAttemptConnection else {
+      lifecycleProbeResult = "Failed · restore a satisfied path first"
+      return
+    }
+    loadDisposableFixtureDefaults()
+    sshSession = .command
+    command = "printf 'ghosttea-auto-reconnect-ok\\n'"
+    lifecycleProbe = .freshReconnect
+    lifecycleProbeResult = "Running explicit fresh reconnect…"
+    if !runSSHCommand() {
+      lifecycleProbe = .none
+      lifecycleProbeResult = "Failed · \(sshStatus)"
+    }
+  }
+
+  func runAutomaticBackgroundProbe() {
+    guard !isRunningSSH else { return }
+    guard reconnectModel.path.canAttemptConnection else {
+      lifecycleProbeResult = "Failed · start on a satisfied network path"
+      return
+    }
+    loadDisposableFixtureDefaults()
+    sshSession = .command
+    command = "printf 'READY\\n'; while :; do sleep 1; done"
+    backgroundCancellationMilliseconds = nil
+    lifecycleProbe = .backgroundAwaitingConnection
+    lifecycleProbeResult = "Connecting · host-key confirmation may be required"
+    if !runSSHCommand() {
+      lifecycleProbe = .none
+      lifecycleProbeResult = "Failed · \(sshStatus)"
+    }
   }
 
   func cancelSSHCommand() {
@@ -435,6 +523,12 @@ final class HarnessModel: ObservableObject {
   }
 
   func sceneDidEnterBackground() {
+    if lifecycleProbe == .backgroundAwaitingConnection {
+      lifecycleProbeResult = "Failed · backgrounded before SSH connected"
+      lifecycleProbe = .none
+    } else if lifecycleProbe == .backgroundAwaitingReturn {
+      lifecycleProbeResult = "Background observed · waiting for teardown"
+    }
     let effects = reconnectModel.update(.enteredBackground)
     applyReconnectEffects(effects, cancellationReason: .background)
     updateReconnectStateSummary()
@@ -444,6 +538,7 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.becameActive)
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
+    evaluateBackgroundLifecycleProbe()
   }
 
   private func requestSSHCancellation(_ reason: SSHCancellationReason) {
@@ -468,6 +563,97 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.pathChanged(path))
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
+  }
+
+  private func didEstablishConnectionForLifecycleProbe() {
+    switch lifecycleProbe {
+    case .routeAwaitingConnection:
+      lifecycleProbe = .routeAwaitingTransition
+      lifecycleProbeResult = "Connected · disable Wi-Fi; do not tap Cancel"
+    case .backgroundAwaitingConnection:
+      lifecycleProbe = .backgroundAwaitingReturn
+      lifecycleProbeResult = "Connected · background and reopen the app"
+    default:
+      break
+    }
+  }
+
+  private func recordLifecycleProbeCancellation(
+    reason: SSHCancellationReason,
+    milliseconds: Int64
+  ) {
+    switch lifecycleProbe {
+    case .routeAwaitingTransition:
+      guard reason == .networkChange else {
+        failLifecycleProbeIfActive("expected a network-route cancellation")
+        return
+      }
+      guard milliseconds < 1_000 else {
+        failLifecycleProbeIfActive("route teardown took \(milliseconds) ms")
+        return
+      }
+      guard !reconnectModel.path.interfaces.contains(.wifi),
+        reconnectModel.state == .reconnectAvailable
+          || reconnectModel.state == .waitingForNetwork
+      else {
+        failLifecycleProbeIfActive("route state did not offer or await reconnect")
+        return
+      }
+      lifecycleProbeResult =
+        "Passed · automatic route teardown \(milliseconds) ms · \(reconnectStateSummary)"
+      lifecycleProbe = .none
+    case .backgroundAwaitingReturn:
+      guard reason == .background else {
+        failLifecycleProbeIfActive("expected a background cancellation")
+        return
+      }
+      backgroundCancellationMilliseconds = milliseconds
+      lifecycleProbeResult = "Background teardown \(milliseconds) ms · reopen to finish"
+    default:
+      break
+    }
+  }
+
+  private func evaluateBackgroundLifecycleProbe() {
+    guard lifecycleProbe == .backgroundAwaitingReturn,
+      let milliseconds = backgroundCancellationMilliseconds,
+      !isRunningSSH,
+      reconnectModel.state == .reconnectAvailable
+    else { return }
+    guard milliseconds < 1_000 else {
+      failLifecycleProbeIfActive("background teardown took \(milliseconds) ms")
+      return
+    }
+    lifecycleProbeResult =
+      "Passed · background teardown \(milliseconds) ms · explicit reconnect available"
+    lifecycleProbe = .none
+  }
+
+  private func validateFreshReconnectProbe(
+    standardOutput: Data,
+    standardError: Data,
+    termination: TerminalExitStatus
+  ) throws {
+    guard lifecycleProbe == .freshReconnect else { return }
+    guard
+      standardOutput == Data("ghosttea-auto-reconnect-ok\n".utf8),
+      standardError.isEmpty,
+      termination == .exited(code: 0)
+    else {
+      throw HarnessError.sessionProbeMismatch("explicit fresh reconnect")
+    }
+  }
+
+  private func completeFreshReconnectProbeIfNeeded() {
+    guard lifecycleProbe == .freshReconnect else { return }
+    lifecycleProbeResult = "Passed · explicit fresh reconnect produced exact output"
+    lifecycleProbe = .none
+  }
+
+  private func failLifecycleProbeIfActive(_ reason: String) {
+    guard lifecycleProbe != .none else { return }
+    lifecycleProbeResult = "Failed · \(reason)"
+    lifecycleProbe = .none
   }
 
   private func applyReconnectEffects(

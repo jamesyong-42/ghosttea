@@ -130,6 +130,13 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   harness exposes the path and lifecycle states. Automatic Wi-Fi-to-cellular
   teardown, explicit fresh reconnect, background teardown, and foreground
   reconnect availability pass on the physical iPhone.
+- an automated physical-device launcher that discovers the connected iPhone,
+  fails fast when it is locked, opens only the disposable password fixture on
+  the current LAN address, runs package and dual-SDK gates, signs, installs,
+  launches with a non-secret host override, and guarantees fixture cleanup on
+  failure or interruption. Guided on-device probes automate command selection,
+  exact output validation, teardown timing, and pass/fail recording around the
+  two system gestures iOS cannot automate.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

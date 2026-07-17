@@ -52,6 +52,26 @@ struct ContentView: View {
           .disabled(model.isRunningMemory)
         }
 
+        Section("Automated lifecycle probes") {
+          Text(model.lifecycleProbeResult)
+            .font(.footnote)
+          Button("Start route-change probe") {
+            model.runAutomaticRouteChangeProbe()
+          }
+          .disabled(model.isRunningSSH)
+          Button("Run explicit fresh reconnect") {
+            model.runAutomaticFreshReconnectProbe()
+          }
+          .disabled(model.isRunningSSH)
+          Button("Start background probe") {
+            model.runAutomaticBackgroundProbe()
+          }
+          .disabled(model.isRunningSSH)
+          Text("Only switching Wi-Fi and backgrounding the app remain manual iOS gestures.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
         Section("SSH command probe") {
           Button("Load disposable fixture defaults") {
             model.loadDisposableFixtureDefaults()

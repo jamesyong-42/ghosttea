@@ -314,3 +314,20 @@ local physical-device automatic selected-route, background teardown, stale-task
 isolation, and explicit-reconnect state gates. Representative launch-server
 transitions remain open. The LAN fixture was stopped and removed immediately
 after the probes.
+
+The workflow was then promoted into `npm run test:ios:device`. The runner
+discovers a single paired physical iOS device and the Mac's Wi-Fi address,
+checks device lock state, runs all 21 Swift package tests, builds both iOS SDK
+destinations, signs and installs the physical build, passes only the non-secret
+fixture host into the launched process, and keeps the fixture alive only while
+the runner is attached. A launch attempt that encountered a re-locked phone
+proved cleanup on failure; the runner was then changed to postpone LAN exposure
+until after all builds and wait for a fresh unlock immediately before launch.
+
+The corrected end-to-end run launched on the iPhone 14 Pro. Its guided probes
+automatically selected disposable credentials and commands, enforced sub-second
+teardown, and recorded pass/fail. The user performed only the system gestures:
+switching Wi-Fi, restoring Wi-Fi, and backgrounding/reopening the app. Automatic
+route teardown passed, exact-output explicit fresh reconnect passed, and
+background teardown plus foreground reconnect availability passed. Returning
+to the runner stopped and removed the fixture.

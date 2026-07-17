@@ -24,7 +24,8 @@ const composeFile = join(fixtureRoot, "docker-compose.yml");
 const projectName = "ghosttea-ssh-fixture";
 const command = process.argv[2] ?? "test";
 const keepRunning = process.argv.includes("--keep");
-const passwordBindAddress = process.env.GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS ?? "127.0.0.1";
+const deviceFixture = command === "device-up";
+const passwordBindAddress = process.env.GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS ?? (deviceFixture ? "0.0.0.0" : "127.0.0.1");
 const publicKeyBindAddress = process.env.GHOSTTEA_SSH_PUBLIC_KEY_BIND_ADDRESS ?? "127.0.0.1";
 const keyboardMetadataBindAddress = process.env.GHOSTTEA_SSH_KEYBOARD_METADATA_BIND_ADDRESS ?? "127.0.0.1";
 const passwordScanHost = passwordBindAddress === "0.0.0.0" ? "127.0.0.1" : passwordBindAddress;
@@ -576,7 +577,7 @@ function swiftCandidate() {
   }
 }
 
-if (command === "up") up();
+if (command === "up" || command === "device-up") up();
 else if (command === "down") down();
 else if (command === "test") await test();
 else if (command === "candidate") candidate();
