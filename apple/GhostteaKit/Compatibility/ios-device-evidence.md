@@ -260,6 +260,34 @@ its remote shell with `SIGTERM`; the harness reported `signal TERM` rather than
 conflating the signal with exit zero.
 
 This closes the physical-device separate command-stream, nonzero exit-status,
-and remote-signal reporting checks. Physical shell input half-close and PTY
-resize remain separate gates. The LAN fixture was stopped and removed
-immediately after the probes.
+and remote-signal reporting checks. Those commands did not exercise shell input
+half-close or PTY resize. The LAN fixture was stopped and removed immediately
+after the probes.
+
+## 2026-07-16: PTY resize and input half-close
+
+The signed harness added two self-validating physical-device session modes. The
+PTY probe requested an `xterm-256color` shell at 132 columns by 41 rows, waited
+until the remote shell reported `INITIAL 41 132`, resized the live channel to
+140 columns by 50 rows, and required `RESIZED 50 140` plus exit zero. The first
+attempt established from the fixture that the PTY had resized correctly, but
+Debian's interactive `dash` did not run the probe's `WINCH` trap. The probe was
+corrected to poll `stty size`, avoiding shell-specific signal behavior while
+still validating the actual remote PTY dimensions. The iPhone then displayed:
+
+```text
+INITIAL 41 132
+RESIZED 50 140
+```
+
+The half-close probe opened a non-PTY `cat` command, wrote one fixed payload,
+sent SSH input EOF without closing the output side, drained the byte-exact
+echo, and required a clean exit zero. The iPhone displayed:
+
+```text
+ghosttea-half-close-device-ok
+```
+
+These results close the local physical-device PTY allocation, live resize,
+input half-close, post-EOF output drain, and clean channel-close gates. The LAN
+fixture was stopped and removed immediately after both successful probes.

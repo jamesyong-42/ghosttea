@@ -20,6 +20,14 @@ final class HarnessModel: ObservableObject {
     var id: Self { self }
   }
 
+  enum SSHProbeSession: String, CaseIterable, Identifiable {
+    case command = "Command"
+    case ptyResize = "PTY resize"
+    case halfClose = "Half-close"
+
+    var id: Self { self }
+  }
+
   struct PendingHostKey: Identifiable {
     let id = UUID()
     let challenge: SSHCandidateHostKeyChallenge
@@ -34,11 +42,12 @@ final class HarnessModel: ObservableObject {
   @Published var keychainResult = "Not run"
   @Published var memoryResults: [HarnessMemoryResult] = []
   @Published var memoryStatus = "Not run"
-  @Published var host = ""
-  @Published var port = "22"
-  @Published var username = ""
+  @Published var host = "10.0.0.103"
+  @Published var port = "22022"
+  @Published var username = "ghosttea"
   @Published var sshAuthentication = SSHProbeAuthentication.password
-  @Published var password = ""
+  @Published var sshSession = SSHProbeSession.command
+  @Published var password = "ghosttea-password"
   @Published var privateKey = ""
   @Published var privateKeyPassphrase = ""
   @Published var command = "printf 'ghosttea-device-ok\\n'; uname -a"
@@ -139,6 +148,7 @@ final class HarnessModel: ObservableObject {
     let requestedHost = host
     let requestedUsername = username
     let requestedAuthentication = sshAuthentication
+    let requestedSession = sshSession
     let requestedPassword = Data(password.utf8)
     let requestedPrivateKey = Data(privateKey.utf8)
     let requestedPassphrase = Data(privateKeyPassphrase.utf8)
@@ -207,6 +217,23 @@ final class HarnessModel: ObservableObject {
               }
             )
           }
+          let candidateSession: SSHCandidateSession
+          let initialColumns: Int
+          let initialRows: Int
+          switch requestedSession {
+          case .command:
+            candidateSession = .command(requestedCommand, allocatePTY: false)
+            initialColumns = 80
+            initialRows = 24
+          case .ptyResize:
+            candidateSession = .shell
+            initialColumns = 132
+            initialRows = 41
+          case .halfClose:
+            candidateSession = .command("cat", allocatePTY: false)
+            initialColumns = 80
+            initialRows = 24
+          }
           let knownHostsPath = try self.knownHostsPath()
           let configuration = try SSHCandidateConfiguration(
             host: requestedHost,
@@ -217,7 +244,9 @@ final class HarnessModel: ObservableObject {
               return await self.requestHostKeyDecision(challenge)
             },
             authentication: authentication,
-            session: .command(requestedCommand, allocatePTY: false),
+            session: candidateSession,
+            columns: initialColumns,
+            rows: initialRows,
             connectTimeoutMilliseconds: 15_000,
             handshakeTimeoutMilliseconds: 15_000
           )
@@ -236,8 +265,24 @@ final class HarnessModel: ObservableObject {
             } else {
               sshStatus = "Connected"
             }
+            let halfClosePayload = Data("ghosttea-half-close-device-ok\n".utf8)
+            switch requestedSession {
+            case .command:
+              break
+            case .ptyResize:
+              try await connection.write(
+                Data(
+                  "printf 'INITIAL '; stty size; while [ \"$(stty size)\" = '41 132' ]; do sleep 1; done; printf 'RESIZED '; stty size; exit 0\n"
+                    .utf8
+                )
+              )
+            case .halfClose:
+              try await connection.write(halfClosePayload)
+              try await connection.finishInput()
+            }
             var standardOutput = Data()
             var standardError = Data()
+            var sentResize = false
             if let candidate {
               while let chunk = try await candidate.readCommandOutput(maxBytes: 32_768) {
                 switch chunk {
@@ -254,6 +299,13 @@ final class HarnessModel: ObservableObject {
                     otherStreamBytes: standardOutput.count
                   )
                 }
+                if requestedSession == .ptyResize,
+                  !sentResize,
+                  String(decoding: standardOutput, as: UTF8.self).contains("INITIAL 41 132")
+                {
+                  try await connection.resize(columns: 140, rows: 50)
+                  sentResize = true
+                }
               }
             } else {
               while let chunk = try await connection.read(maxBytes: 32_768) {
@@ -261,6 +313,14 @@ final class HarnessModel: ObservableObject {
               }
             }
             let termination = try await connection.waitForExit()
+            try validateSSHSessionProbe(
+              requestedSession,
+              standardOutput: standardOutput,
+              standardError: standardError,
+              termination: termination,
+              sentResize: sentResize,
+              halfClosePayload: halfClosePayload
+            )
             sshOutput = String(decoding: standardOutput, as: UTF8.self)
             sshStandardError = String(decoding: standardError, as: UTF8.self)
             sshStatus = ["Completed", termination.description, negotiatedSummary]
@@ -299,6 +359,14 @@ final class HarnessModel: ObservableObject {
     case .signalTermination:
       command = "kill -TERM $$"
     }
+  }
+
+  func loadDisposableFixtureDefaults() {
+    host = "10.0.0.103"
+    port = "22022"
+    username = "ghosttea"
+    sshAuthentication = .password
+    password = "ghosttea-password"
   }
 
   func cancelSSHCommand() {
@@ -400,6 +468,39 @@ final class HarnessModel: ObservableObject {
     stream.append(bytes)
   }
 
+  private func validateSSHSessionProbe(
+    _ session: SSHProbeSession,
+    standardOutput: Data,
+    standardError: Data,
+    termination: TerminalExitStatus,
+    sentResize: Bool,
+    halfClosePayload: Data
+  ) throws {
+    switch session {
+    case .command:
+      return
+    case .ptyResize:
+      let output = String(decoding: standardOutput, as: UTF8.self)
+      guard
+        sentResize,
+        output.contains("INITIAL 41 132"),
+        output.contains("RESIZED 50 140"),
+        standardError.isEmpty,
+        termination == .exited(code: 0)
+      else {
+        throw HarnessError.sessionProbeMismatch("PTY resize")
+      }
+    case .halfClose:
+      guard
+        standardOutput == halfClosePayload,
+        standardError.isEmpty,
+        termination == .exited(code: 0)
+      else {
+        throw HarnessError.sessionProbeMismatch("input half-close")
+      }
+    }
+  }
+
   private func durationMilliseconds(_ duration: Duration) -> Int64 {
     let components = duration.components
     return components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
@@ -410,6 +511,7 @@ private enum HarnessError: Error, CustomStringConvertible {
   case keychainRemovalFailed
   case keychainRoundTripMismatch
   case outputLimitExceeded
+  case sessionProbeMismatch(String)
 
   var description: String {
     switch self {
@@ -419,6 +521,8 @@ private enum HarnessError: Error, CustomStringConvertible {
       return "Keychain credential round trip changed the secret"
     case .outputLimitExceeded:
       return "command output exceeded the 1 MiB harness limit"
+    case .sessionProbeMismatch(let probe):
+      return "\(probe) session probe did not produce its exact expected result"
     }
   }
 }

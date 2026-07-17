@@ -1797,7 +1797,8 @@ iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
 confirmation including changed-key replacement and strict reconnect, password
 and keyboard-interactive authentication, command execution, and output drain
 against disposable fixtures. It also preserves separate stdout/stderr, exit 37,
-and typed `SIGTERM`. The measurements and command output are recorded in
+typed `SIGTERM`, PTY allocation/resize, and byte-exact input half-close. The
+measurements and command output are recorded in
 `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
 promotion, resolver cancellation, automatic path-state/reconnect behavior,

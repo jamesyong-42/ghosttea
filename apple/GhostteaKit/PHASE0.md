@@ -119,6 +119,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a physical-device command-termination probe. The iPhone drains stdout and
   stderr separately, reports a nonzero remote exit as `exit 37`, and preserves
   `SIGTERM` as typed `signal TERM` rather than exit zero.
+- physical-device session probes that allocate a 41x132 PTY, resize the live
+  shell to 50x140, and separately send input EOF to `cat` before draining the
+  exact echoed payload and observing a clean exit.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

@@ -50,6 +50,9 @@ struct ContentView: View {
         }
 
         Section("SSH command probe") {
+          Button("Load disposable fixture defaults") {
+            model.loadDisposableFixtureDefaults()
+          }
           TextField("Host", text: $model.host)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -61,6 +64,12 @@ struct ContentView: View {
           Picker("Authentication", selection: $model.sshAuthentication) {
             ForEach(HarnessModel.SSHProbeAuthentication.allCases) { authentication in
               Text(authentication.rawValue).tag(authentication)
+            }
+          }
+          .pickerStyle(.segmented)
+          Picker("Session", selection: $model.sshSession) {
+            ForEach(HarnessModel.SSHProbeSession.allCases) { session in
+              Text(session.rawValue).tag(session)
             }
           }
           .pickerStyle(.segmented)
@@ -76,19 +85,21 @@ struct ContentView: View {
             .autocorrectionDisabled()
             SecureField("Private-key passphrase (optional)", text: $model.privateKeyPassphrase)
           }
-          TextField("Command", text: $model.command, axis: .vertical)
-            .lineLimit(2...5)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-          Menu("Load command probe") {
-            Button("Default output") {
-              model.loadSSHCommandPreset(.defaultOutput)
-            }
-            Button("stdout + stderr + exit 37") {
-              model.loadSSHCommandPreset(.exitStreams)
-            }
-            Button("Remote SIGTERM") {
-              model.loadSSHCommandPreset(.signalTermination)
+          if model.sshSession == .command {
+            TextField("Command", text: $model.command, axis: .vertical)
+              .lineLimit(2...5)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+            Menu("Load command probe") {
+              Button("Default output") {
+                model.loadSSHCommandPreset(.defaultOutput)
+              }
+              Button("stdout + stderr + exit 37") {
+                model.loadSSHCommandPreset(.exitStreams)
+              }
+              Button("Remote SIGTERM") {
+                model.loadSSHCommandPreset(.signalTermination)
+              }
             }
           }
           Text(model.sshStatus)
@@ -113,7 +124,7 @@ struct ContentView: View {
             }
           }
           HStack {
-            Button(model.isRunningSSH ? "Running…" : "Run SSH command") {
+            Button(model.isRunningSSH ? "Running…" : "Run SSH probe") {
               model.runSSHCommand()
             }
             .disabled(model.isRunningSSH)

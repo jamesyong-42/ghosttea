@@ -12,6 +12,8 @@ The harness provides:
   command probe with bounded output;
 - separate bounded stdout and stderr capture plus deterministic exit-37 and
   remote-signal command presets;
+- exact physical-device session probes for initial PTY allocation and resize,
+  plus input half-close followed by lossless output drain and clean exit;
 - an asynchronous keyboard-interactive challenge sheet that preserves protocol
   name, instruction, prompt ordering, and per-prompt echo policy, with challenge
   cancellation routed through the measured SSH task-cancellation path;
@@ -21,6 +23,9 @@ The harness provides:
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 
 The harness is diagnostic scaffolding, not the production terminal UI. It does not render TRF1 frames, store credentials, or attempt to keep SSH alive indefinitely in the background.
+Its Debug UI starts with this development Mac's disposable LAN fixture values
+and can reload them with one tap; replace the host when the trusted-network
+address changes. These values are test-only and must never be reused elsewhere.
 
 ## Reproducible unsigned build
 
