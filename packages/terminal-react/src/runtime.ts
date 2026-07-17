@@ -188,7 +188,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
       const handle = this.#handleBySessionId.get(detail.sessionId);
       const session = handle ? this.#sessionByHandle.get(handle) : undefined;
       if (!handle || !session) return;
-      const exited = { ...session, exited: true };
+      this.#cancelMetadataRefresh(handle);
+      const exited = {
+        ...session,
+        exited: true,
+        exitCode: detail.exitCode,
+        exitSignal: detail.exitSignal,
+        requestedTermination: detail.requestedTermination,
+        exitOutcome: detail.exitOutcome,
+      };
       this.#sessionByHandle.set(handle, exited);
       this.dispatchEvent(new CustomEvent("session-metadata", { detail: exited }));
       this.dispatchEvent(new CustomEvent("session-exited", { detail }));
@@ -242,19 +250,21 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   #scheduleMetadataRefresh(sessionHandle: string): void {
+    const scheduledSession = this.#sessionByHandle.get(sessionHandle);
+    if (!scheduledSession || scheduledSession.exited) return;
     if (this.#metadataTimers.has(sessionHandle)) return;
     const timer = window.setTimeout(() => {
       this.#metadataTimers.delete(sessionHandle);
       const session = this.#sessionByHandle.get(sessionHandle);
-      if (!session || !this.#control) return;
+      if (!session || session.exited || !this.#control) return;
       void this.#control
         .request({ type: "get-session", sessionId: session.id })
         .then((response) => {
           if (response.type !== "session") return;
           const previous = this.#sessionByHandle.get(sessionHandle);
+          if (!previous || previous.id !== response.session.id || previous.exited) return;
           this.#sessionByHandle.set(sessionHandle, response.session);
           if (
-            !previous ||
             previous.title !== response.session.title ||
             previous.cwd !== response.session.cwd ||
             previous.exited !== response.session.exited
@@ -262,9 +272,19 @@ export class GhostteaTerminalRuntime extends EventTarget {
             this.dispatchEvent(new CustomEvent("session-metadata", { detail: response.session }));
           }
         })
-        .catch((error) => console.warn("[terminal-runtime] session metadata refresh failed", error));
+        .catch((error) => {
+          const current = this.#sessionByHandle.get(sessionHandle);
+          if (!current || current.exited || this.#disposed) return;
+          console.warn("[terminal-runtime] session metadata refresh failed", error);
+        });
     }, 200);
     this.#metadataTimers.set(sessionHandle, timer);
+  }
+
+  #cancelMetadataRefresh(sessionHandle: string): void {
+    const timer = this.#metadataTimers.get(sessionHandle);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.#metadataTimers.delete(sessionHandle);
   }
 
   sessionMetadata(sessionHandle: string): SessionSummary | undefined {
@@ -616,9 +636,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#control?.notify({ type: "terminate", sessionId, source });
     const handle = this.#handleBySessionId.get(sessionId);
     if (!handle) return;
-    const timer = this.#metadataTimers.get(handle);
-    if (timer !== undefined) window.clearTimeout(timer);
-    this.#metadataTimers.delete(handle);
+    this.#cancelMetadataRefresh(handle);
     this.#mouseTrackingByHandle.delete(handle);
     this.#scrollbarByHandle.delete(handle);
     for (const [viewId, view] of this.#views) {

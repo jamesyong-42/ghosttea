@@ -19,6 +19,7 @@ class FakePort extends EventTarget {
   readonly messages: Array<Record<string, unknown>> = [];
   attachReadWrite = true;
   closed = false;
+  onmessage: ((event: MessageEvent<ArrayBuffer>) => void) | null = null;
 
   postMessage(message: Record<string, unknown>): void {
     this.messages.push(message);
@@ -106,7 +107,10 @@ function controlChanged(control: FakePort, controllerViewId: string, cols: numbe
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
   it("copies stable terminal-owned selection text through the platform clipboard", async () => {
@@ -228,6 +232,110 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
 
     runtime.terminate(session.id);
     expect(frames.messages.at(-1)).toEqual({ type: "subscribe", sessionHandles: [] });
+  });
+
+  it("cancels metadata refreshes and preserves complete exit metadata when a session exits", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const exitingSession = { ...session, handle: "7" };
+    runtime.registerSession(exitingSession);
+    const updates: SessionSummary[] = [];
+    runtime.addEventListener("session-metadata", (event) =>
+      updates.push((event as CustomEvent<SessionSummary>).detail),
+    );
+
+    const frame = new ArrayBuffer(16);
+    new DataView(frame).setBigUint64(8, BigInt(exitingSession.handle), true);
+    frames.onmessage?.(new MessageEvent("message", { data: frame }));
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "session-exited",
+          sessionId: exitingSession.id,
+          exitCode: null,
+          exitSignal: "SIGTERM",
+          requestedTermination: "user",
+          exitOutcome: "user-terminated",
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(control.messages.some((message) => message.type === "get-session")).toBe(false);
+    expect(updates.at(-1)).toMatchObject({
+      exited: true,
+      exitCode: null,
+      exitSignal: "SIGTERM",
+      requestedTermination: "user",
+      exitOutcome: "user-terminated",
+    });
+  });
+
+  it("suppresses an in-flight metadata failure after the session has exited", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const exitingSession = { ...session, handle: "8" };
+    runtime.registerSession(exitingSession);
+
+    const frame = new ArrayBuffer(16);
+    new DataView(frame).setBigUint64(8, BigInt(exitingSession.handle), true);
+    frames.onmessage?.(new MessageEvent("message", { data: frame }));
+    await vi.advanceTimersByTimeAsync(200);
+    const refresh = control.messages.find((message) => message.type === "get-session");
+    expect(refresh).toBeDefined();
+
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "session-exited",
+          sessionId: exitingSession.id,
+          exitCode: 0,
+          exitSignal: null,
+          requestedTermination: null,
+          exitOutcome: "completed",
+        },
+      }),
+    );
+    frames.onmessage?.(new MessageEvent("message", { data: frame }));
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: { requestId: refresh!.requestId, type: "error", message: "unknown session" },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(control.messages.filter((message) => message.type === "get-session")).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("propagates actual read-only attachment access and suppresses terminal input", async () => {
