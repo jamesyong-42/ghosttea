@@ -20,18 +20,18 @@ const skipBuild = process.argv.includes("--skip-build");
 const coreMode = process.argv.includes("--core");
 const frameMode = process.argv.includes("--frame");
 if (coreMode && frameMode) throw new Error("Choose only one runtime proof mode.");
-const marker = frameMode
-  ? "GHOSTTEA_TRF1_PASS"
-  : coreMode
-    ? "GHOSTTEA_CORE_PASS"
-    : "GHOSTTEA_FONT_PARITY_PASS";
+const marker = frameMode ? "GHOSTTEA_TRF1_PASS" : coreMode ? "GHOSTTEA_CORE_PASS" : "GHOSTTEA_FONT_PARITY_PASS";
 const automationVariable = frameMode
   ? "GHOSTTEA_TRF1_AUTOMATION"
   : coreMode
     ? "GHOSTTEA_CORE_AUTOMATION"
     : "GHOSTTEA_FONT_PARITY_AUTOMATION";
 const testFilter = frameMode ? "GhostteaFrameTests" : coreMode ? "GhostteaCoreTests" : "GhostteaFontProofTests";
-const checkName = frameMode ? "strict TRF1 decoder" : coreMode ? "production core ABI" : "bundled-font runtime parity";
+const checkName = frameMode
+  ? "TRF1 renderer foundation"
+  : coreMode
+    ? "production core ABI"
+    : "bundled-font runtime parity";
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {

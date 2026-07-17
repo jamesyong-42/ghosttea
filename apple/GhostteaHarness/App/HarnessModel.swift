@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 import GhostteaCredentials
 import GhostteaCore
 import GhostteaFontProof
@@ -255,8 +255,10 @@ final class HarnessModel: ObservableObject {
           runtime: runtime,
           configuration: .init(sessionHandle: 74, columns: 100, rows: 30)
         )
-        let fullUpdate = try await terminal.feed(Data("phase4-device ✓ 界\r\n".utf8), render: .full)
-        let incrementalUpdate = try await terminal.feed(Data("retained-state\r\n".utf8), render: .damage)
+        let fullUpdate = try await terminal.feed(
+          Data("phase4-device ✓ 界\r\n".utf8), render: .full)
+        let incrementalUpdate = try await terminal.feed(
+          Data("retained-state\r\n".utf8), render: .damage)
         guard let frame = fullUpdate.effects.first(where: { $0.kind == .frameReady })?.payload,
           let incremental = incrementalUpdate.effects.first(where: { $0.kind == .frameReady })?.payload
         else {
@@ -264,6 +266,7 @@ final class HarnessModel: ObservableObject {
         }
         let summary = try GhostteaTerminalFrameDecoder.inspect(frame)
         let retained = try GhostteaTerminalFrameDecoder.retain([frame, incremental, incremental])
+        let metal = try GhostteaMetalProof.run(frame: frame)
         guard summary.sessionHandle == 74,
           summary.columns == 100,
           summary.rows == 30,
@@ -279,11 +282,18 @@ final class HarnessModel: ObservableObject {
           retained.refreshRequestCount == 0,
           !retained.awaitingResync,
           retained.rows.contains(where: { $0.contains("phase4-device ✓ 界") }),
-          retained.rows.contains(where: { $0.contains("retained-state") })
+          retained.rows.contains(where: { $0.contains("retained-state") }),
+          !metal.deviceName.isEmpty,
+          metal.uploadedBytes > 0,
+          metal.cachedUploadBytes == 0,
+          metal.alphaGlyphCount > 0,
+          metal.residentAtlasBytes == 20 * 1024 * 1024
         else {
           throw HarnessError.frameDecoderMismatch
         }
-        frameDecoderResult = "Passed · strict TRF1 decoding and retained state"
+        let atlasMiB = metal.residentAtlasBytes / 1_048_576
+        frameDecoderResult =
+          "Passed · strict TRF1, retained state, Metal atlases (\(metal.deviceName), \(atlasMiB) MiB)"
         print("GHOSTTEA_TRF1_PASS")
         finishFrameDecoderAutomation(exitCode: 0)
       } catch {

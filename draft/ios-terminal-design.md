@@ -1009,8 +1009,12 @@ cursor and selection state
 frame/revision sequencing state
 ```
 
-The first vertical slice may use per-terminal atlases to reduce implementation
-risk. Before production, measure whether sharing atlases across terminals
+The first vertical slice uses per-terminal, 2,048-square alpha and color
+atlases, a fixed 20 MiB allocation per visible renderer. It uses deterministic
+shelf placement and resets an atlas only after preflighting that the complete
+visible working set fits from empty; an unrepresentable set fails without a
+partial upload. Before production, measure smaller tiered sizes, multi-page
+growth, and whether sharing atlases across terminals
 materially reduces memory and upload work. Shared atlases must namespace glyph
 IDs by native runtime so independent runtime configurations cannot collide.
 
@@ -2007,9 +2011,18 @@ boundaries, and applies monotonic row revisions. Full/incremental row arrays,
 glyph/style catalogs, cursor, scrollbar, and clipboard effects transition only
 after the complete frame validates; decode failures retain the last good state
 and enter resync. The harness applies a Rust-produced full frame, incremental
-frame, and duplicate stale frame on macOS and iPhone Simulator. Metal resources,
-atlases, render passes, scheduling, lifecycle, and screenshot conformance remain
-Phase 4 work.
+frame, and duplicate stale frame on macOS and iPhone Simulator.
+
+The third slice creates the Metal resource owner and bounded glyph atlases. A
+single runtime owns its `MTLDevice` and command queue; separate alpha and
+premultiplied-RGBA textures use deterministic one-pixel-gutter shelf placement.
+Synchronization preflights the entire visible working set, resets only when it
+will fit from empty, and rejects oversized or malformed pixel storage before a
+partial upload. Production-core glyphs upload once and hit the cache with zero
+bytes on the second synchronization. Five Metal tests pass on macOS, both iOS
+SDK destinations build, and the arm64 iPhone Simulator executes the real Metal
+texture path within the fixed 20 MiB atlas budget. Render pipelines, render
+passes, scheduling, lifecycle, and screenshot conformance remain Phase 4 work.
 
 Deliverables:
 

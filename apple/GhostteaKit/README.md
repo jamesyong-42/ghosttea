@@ -71,18 +71,27 @@ macOS and iOS. Add `--device` to the underlying runner for physical-device
 evidence.
 
 Phase 4's decoder-first `GhostteaTerminal` slice validates TRF1 completely
-before a future Metal renderer sees any size, count, text, or pixel data. The
+before Metal sees any size, count, text, or pixel data. The
 internal decoder preserves unknown section kinds for compatible extensions,
 uses bounded zero-copy frame slices, and decodes every section currently
 emitted by `ghosttea-core`. Its Apple runtime gate executes a production frame
 on macOS and an arm64 iPhone Simulator; pass `--device` to the underlying
 runner to include a signed physical iPhone.
 
-`GhostteaTerminal` also owns retained frame state before it owns GPU resources.
+`GhostteaTerminal` also owns retained frame state ahead of GPU resources.
 The state machine matches desktop full/incremental sequence classification,
 keeps glyph and style catalogs plus row revisions, rejects stale frames, and
 enters an explicit full-refresh state after gaps or malformed input. State
 replacement is atomic: Metal will never observe a partially decoded frame.
+
+The first Metal resource slice owns one device and command queue plus bounded
+2,048-square alpha (`r8Unorm`) and premultiplied-color (`rgba8Unorm`) glyph
+atlases. Deterministic shelf placement caches glyph IDs, performs no second
+upload for an unchanged visible set, and resets only when the complete visible
+working set fits an empty atlas. A set that cannot fit fails before texture
+mutation. The fixed resource footprint is 20 MiB; tests cover real production
+glyphs, placement, reset, exhaustion, and malformed pixel storage on macOS, and
+the automated iPhone Simulator harness executes the real texture upload path.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

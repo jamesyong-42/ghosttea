@@ -568,3 +568,27 @@ stale frame; the arm64 iPhone 17 Pro Simulator emits `GHOSTTEA_TRF1_PASS`, and
 the same harness compiles for the physical iOS SDK. The signed physical build
 was installed; its automated launch is a local unlock retry rather than an
 implementation gate.
+
+## 2026-07-17: bounded Metal glyph atlases
+
+The next Phase 4 slice created one Metal device/command-queue owner and
+separate 2,048-square `r8Unorm` alpha and `rgba8Unorm` premultiplied-color glyph
+atlases. Their fixed combined allocation is 20 MiB. Glyph IDs receive
+deterministic shelf locations with a one-pixel gutter. Synchronization
+preflights the complete visible working set, avoids uploads for cache hits,
+resets only when that set fits an empty atlas, and rejects invalid pixel storage
+or an unrepresentable set before partial texture mutation.
+
+Five focused Metal tests exercise real Rust-produced glyphs, texture formats,
+placement, zero-byte cached synchronization, reset, exhaustion, and malformed
+storage. The complete GhostteaKit suite passes 43 tests on macOS. The harness
+builds for arm64 iOS Simulator and physical-device SDK destinations. On the
+arm64 iPhone 17 Pro Simulator it created and uploaded the real textures,
+validated the 20 MiB budget and cache hit, emitted:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+and exited successfully. A physical-device rerun is useful evidence before
+release, but it is not a blocker for beginning the render-pipeline slice.

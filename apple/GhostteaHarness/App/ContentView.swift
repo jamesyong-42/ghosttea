@@ -54,16 +54,18 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
         }
 
-        Section("TRF1 decoder") {
+        Section("TRF1 renderer foundation") {
           Text(model.frameDecoderResult)
             .font(.footnote)
           Button(model.isRunningFrameDecoder ? "Running…" : "Run strict TRF1 fixture") {
             model.runFrameDecoderProof()
           }
           .disabled(model.isRunningFrameDecoder)
-          Text("Validates every frame section plus full, incremental, and stale retained-state transitions.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          Text(
+            "Validates every frame section, retained-state transitions, and bounded alpha/color Metal atlas uploads and cache hits."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
 
         Section("Memory matrix") {
