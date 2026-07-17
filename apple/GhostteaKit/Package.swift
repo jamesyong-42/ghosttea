@@ -69,7 +69,7 @@ let package = Package(
     .target(name: "GhostteaFrame"),
     .target(
       name: "GhostteaTerminal",
-      dependencies: ["GhostteaCore", "GhostteaFrame"],
+      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTransport"],
       linkerSettings: [
         .linkedFramework("Metal"),
         .linkedFramework("MetalKit", .when(platforms: [.iOS])),
@@ -107,7 +107,7 @@ let package = Package(
     ),
     .testTarget(
       name: "GhostteaFrameTests",
-      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTerminal"]
+      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTerminal", "GhostteaTransport"]
     ),
     .testTarget(
       name: "GhostteaSSHTests",

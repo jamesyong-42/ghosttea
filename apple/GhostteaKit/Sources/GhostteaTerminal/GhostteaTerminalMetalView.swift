@@ -170,6 +170,12 @@
       _ = try renderer()
     }
 
+    public func bindResizeCoordinator(_ coordinator: GhostteaResizeCoordinator) {
+      onGridSizeChange = { size in
+        Task { await coordinator.request(size) }
+      }
+    }
+
     public func suspendGPU() {
       guard !gpuSuspended else { return }
       gpuSuspended = true

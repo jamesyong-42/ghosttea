@@ -122,6 +122,13 @@ calculation, and emits a deduplicated `onGridSizeChange` callback on layout,
 safe-area, and drawable-size changes. The controller can route that callback to
 the production core and SSH PTY without putting transport I/O in the view.
 
+`GhostteaResizeCoordinator` owns that controller-side transaction. It
+coalesces layout bursts, resizes the PTY before the core model, advances the
+layout epoch, and publishes only a full frame for the newest requested size. A
+core failure attempts to roll the PTY back to the last committed grid. The
+Metal view can bind its deduplicated grid callback directly to this coordinator
+while frame application remains an explicit commit handler owned by the host.
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,

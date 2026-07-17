@@ -2071,6 +2071,18 @@ and landscape safe areas. The simulator harness observes 49-by-39 portrait and
 92-by-19 landscape callbacks. Controller-side resize serialization and a real
 device rotation gesture remain before this gate is fully production-integrated.
 
+The seventh slice adds `GhostteaResizeCoordinator`, an actor that owns the
+host-side resize transaction. It coalesces geometry bursts to the newest
+pending grid, sends SSH PTY resize before mutating the terminal model, advances
+the core layout epoch, requests a full TRF1 frame, and suppresses commits from
+sizes superseded while I/O was in flight. If core resize fails after PTY resize,
+it attempts to restore the last committed PTY dimensions and reports both the
+primary and rollback failures. The Metal view exposes a convenience binding;
+the controller's commit handler remains responsible for applying the returned
+frame. Tests use the production core and replay transport to prove ordering,
+full-frame dimensions, burst coalescing, stale-frame suppression, and rollback.
+Real SSH rotation and disconnect-during-resize remain integration gates.
+
 Deliverables:
 
 - strict Swift TRF1 decoder;

@@ -671,3 +671,19 @@ GHOSTTEA_TRF1_PASS
 
 A physical rotation gesture and controller-side ordering of core resize, PTY
 resize, and the resulting full render frame remain release evidence.
+
+## 2026-07-17: serialized core and PTY resize
+
+`GhostteaResizeCoordinator` now sequences the view's grid callback through the
+host-owned transport and production model. It sends PTY resize first, advances
+the core layout epoch second, requests a full frame, and publishes only if that
+size is still the newest request. Intermediate rotation sizes are overwritten
+while an operation is in flight. A core failure attempts PTY rollback to the
+last committed dimensions.
+
+Three tests prove a real replay PTY and production-core resize yields a full
+100-by-30 frame at layout epoch two, a 90/91/92-column burst executes only 90
+and 92 and publishes only 92, and a core failure records target and rollback
+PTY sizes. The complete GhostteaKit suite passes 49 tests on macOS. iOS SDK and
+simulator runtime validation use the same public package graph; real SSH
+rotation and disconnect-during-resize remain device integration evidence.

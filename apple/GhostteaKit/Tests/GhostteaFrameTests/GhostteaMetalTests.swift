@@ -1,10 +1,25 @@
 import Foundation
 import GhostteaCore
+import GhostteaTransport
 import Metal
 import Testing
 
 @testable import GhostteaFrame
 @testable import GhostteaTerminal
+
+private actor ResizeTestRecorder {
+  var events: [String] = []
+  var commits: [GhostteaResizeCommit] = []
+  var failures: [GhostteaResizeFailure] = []
+
+  func record(_ event: String) { events.append(event) }
+  func commit(_ value: GhostteaResizeCommit) { commits.append(value) }
+  func fail(_ value: GhostteaResizeFailure) { failures.append(value) }
+}
+
+private enum ResizeTestError: Error {
+  case failed
+}
 
 private func glyph(
   id: UInt32,
@@ -69,6 +84,91 @@ private func productionFrame() async throws -> Data {
       width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
       == GhostteaTerminalGridSize(columns: .max, rows: .max)
   )
+}
+
+@Test func resizeCoordinatorOrdersPTYBeforeCoreAndPublishesAFullFrame() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 130, layoutEpoch: 1, columns: 80, rows: 24)
+  )
+  let connection = ReplayTransport(bytes: Data()).makeConnection()
+  let recorder = ResizeTestRecorder()
+  let coordinator = GhostteaResizeCoordinator(
+    terminal: terminal,
+    connection: connection,
+    initialSize: .init(columns: 80, rows: 24),
+    onCommit: { await recorder.commit($0) },
+    onFailure: { await recorder.fail($0) }
+  )
+
+  await coordinator.request(.init(columns: 100, rows: 30))
+  await coordinator.waitUntilIdle()
+
+  let transport = await connection.snapshot()
+  let commits = await recorder.commits
+  #expect(transport.resizes == [try TerminalSize(columns: 100, rows: 30)])
+  #expect(commits.count == 1)
+  let commit = try #require(commits.first)
+  #expect(commit.layoutEpoch == 2)
+  let frameData = try #require(commit.update.effects.first { $0.kind == .frameReady }?.payload)
+  let frame = try decodeTRF1Frame(frameData)
+  #expect(frame.columns == 100)
+  #expect(frame.rows == 30)
+  #expect(frame.layoutEpoch == 2)
+}
+
+@Test func resizeCoordinatorCoalescesBurstsAndSuppressesSupersededFrames() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 131, columns: 80, rows: 24)
+  )
+  let recorder = ResizeTestRecorder()
+  let coordinator = GhostteaResizeCoordinator(
+    initialSize: .init(columns: 80, rows: 24),
+    resizeCore: { size, epoch in
+      await recorder.record("core:\(size.columns)x\(size.rows)")
+      return try await terminal.resize(
+        columns: size.columns, rows: size.rows, layoutEpoch: epoch, render: .full)
+    },
+    resizeTransport: { size in
+      await recorder.record("pty:\(size.columns)x\(size.rows)")
+      if size.columns == 90 {
+        try await Task.sleep(for: .milliseconds(40))
+      }
+    },
+    onCommit: { await recorder.commit($0) }
+  )
+
+  await coordinator.request(.init(columns: 90, rows: 25))
+  try await Task.sleep(for: .milliseconds(5))
+  await coordinator.request(.init(columns: 91, rows: 26))
+  await coordinator.request(.init(columns: 92, rows: 27))
+  await coordinator.waitUntilIdle()
+
+  #expect(await recorder.events == ["pty:90x25", "core:90x25", "pty:92x27", "core:92x27"])
+  let commits = await recorder.commits
+  #expect(commits.map(\.size) == [.init(columns: 92, rows: 27)])
+  #expect(commits.map(\.layoutEpoch) == [3])
+}
+
+@Test func resizeCoordinatorRollsBackPTYWhenCoreResizeFails() async {
+  let recorder = ResizeTestRecorder()
+  let coordinator = GhostteaResizeCoordinator(
+    initialSize: .init(columns: 80, rows: 24),
+    resizeCore: { _, _ in throw ResizeTestError.failed },
+    resizeTransport: { size in await recorder.record("pty:\(size.columns)x\(size.rows)") },
+    onCommit: { await recorder.commit($0) },
+    onFailure: { await recorder.fail($0) }
+  )
+
+  await coordinator.request(.init(columns: 100, rows: 30))
+  await coordinator.waitUntilIdle()
+
+  #expect(await recorder.events == ["pty:100x30", "pty:80x24"])
+  #expect(await recorder.commits.isEmpty)
+  #expect(await recorder.failures.count == 1)
 }
 
 @Test func metalProofUploadsAProductionFrameAndThenHitsTheCache() async throws {
