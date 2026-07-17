@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/ghostty-org/ghostty.git",
+    "commit": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+  },
+  "license": {
+    "id": "OFL-1.1",
+    "text": "src/font/res/OFL.txt",
+    "notices": "src/font/res/README.md"
+  },
+  "metrics": {
+    "fontSizePx": 13.0,
+    "cellWidthPx": 7.83,
+    "lineHeightPx": 19.0,
+    "baselinePx": 14.0,
+    "rasterScale": 2.0
+  },
+  "fonts": [
+    {
+      "role": "regular",
+      "path": "src/font/res/JetBrainsMonoNerdFont-Regular.ttf",
+      "sha256": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916"
+    },
+    {
+      "role": "bold",
+      "path": "src/font/res/JetBrainsMonoNerdFont-Bold.ttf",
+      "sha256": "ece02baa478a98f3b6ea0c276c1a9207c6bbdcbde04b8010542f2b0671432438"
+    },
+    {
+      "role": "italic",
+      "path": "src/font/res/JetBrainsMonoNerdFont-Italic.ttf",
+      "sha256": "7fab948d4bea3441d6dbff7f726b4fa1e27087e98286902b53ddf523be7a20fc"
+    },
+    {
+      "role": "bold-italic",
+      "path": "src/font/res/JetBrainsMonoNerdFont-BoldItalic.ttf",
+      "sha256": "a70e3862b5d186548b8cc0badc65016ac8040205cc9753f31329c4b51dd131e3"
+    },
+    {
+      "role": "fallback-emoji",
+      "path": "src/font/res/NotoColorEmoji.ttf",
+      "sha256": "bf2a8506b80614ba190a34c7b037af1269a7d614fe9f3b613cc15cdeec6f814b"
+    }
+  ],
+  "fallbackPolicy": {
+    "parity": "Use the listed fonts in order and render the primary font's missing glyph when coverage is absent.",
+    "nonParity": "A host may opt into system fallback for broader script coverage, but must label output as system-non-parity."
+  }
+}

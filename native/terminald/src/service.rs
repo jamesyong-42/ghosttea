@@ -286,11 +286,22 @@ pub struct TerminalServiceConfig {
 pub struct TerminalService {
     config: TerminalServiceConfig,
     mesh: Option<Box<dyn mesh::TerminalMesh>>,
+    text_engine: Option<TextEngine>,
 }
 
 impl TerminalService {
     pub fn new(config: TerminalServiceConfig) -> Self {
-        Self { config, mesh: None }
+        Self {
+            config,
+            mesh: None,
+            text_engine: None,
+        }
+    }
+
+    /// Use host-provided font bytes and metrics instead of system discovery.
+    pub fn with_text_engine(mut self, text_engine: TextEngine) -> Self {
+        self.text_engine = Some(text_engine);
+        self
     }
 
     /// Attach a terminal-scoped adapter around an already-running Truffle
@@ -304,6 +315,7 @@ impl TerminalService {
     }
 
     pub async fn run(self) -> Result<()> {
+        let configured_text_engine = self.text_engine;
         let TerminalServiceConfig {
             control_socket,
             frame_socket,
@@ -343,14 +355,19 @@ impl TerminalService {
                 }
             }
         });
-        let text_engine = Arc::new(Mutex::new(
-            TextEngine::discover().context("system font discovery failed")?,
-        ));
+        let text_engine = Arc::new(Mutex::new(match configured_text_engine {
+            Some(text_engine) => text_engine,
+            None => TextEngine::discover().context("system font discovery failed")?,
+        }));
 
-        println!(
-            "ghosttead ready ({})",
-            text_engine.lock().unwrap().primary_family()
-        );
+        {
+            let engine = text_engine.lock().unwrap();
+            println!(
+                "ghosttead ready ({}; {:?})",
+                engine.primary_family(),
+                engine.font_mode()
+            );
+        }
         let mesh_task = self.mesh.map(|mesh| {
             let mesh_registry = Arc::clone(&registry);
             tokio::spawn(async move {

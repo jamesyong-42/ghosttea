@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "fontMode": "bundled",
+  "primaryFamily": "JetBrainsMono Nerd Font",
+  "metrics": {
+    "fontSizePx": 13.0,
+    "cellWidthPx": 7.83,
+    "lineHeightPx": 19.0,
+    "baselinePx": 14.0
+  },
+  "rasterScale": 2.0,
+  "faces": [
+    {
+      "role": "regular",
+      "family": "JetBrainsMono Nerd Font",
+      "faceIndex": 0,
+      "sha256": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916"
+    },
+    {
+      "role": "bold",
+      "family": "JetBrainsMono Nerd Font",
+      "faceIndex": 0,
+      "sha256": "ece02baa478a98f3b6ea0c276c1a9207c6bbdcbde04b8010542f2b0671432438"
+    },
+    {
+      "role": "italic",
+      "family": "JetBrainsMono Nerd Font",
+      "faceIndex": 0,
+      "sha256": "7fab948d4bea3441d6dbff7f726b4fa1e27087e98286902b53ddf523be7a20fc"
+    },
+    {
+      "role": "bold-italic",
+      "family": "JetBrainsMono Nerd Font",
+      "faceIndex": 0,
+      "sha256": "a70e3862b5d186548b8cc0badc65016ac8040205cc9753f31329c4b51dd131e3"
+    },
+    {
+      "role": "fallback-0",
+      "family": "Noto Color Emoji",
+      "faceIndex": 0,
+      "sha256": "bf2a8506b80614ba190a34c7b037af1269a7d614fe9f3b613cc15cdeec6f814b"
+    }
+  ],
+  "cases": {
+    "ascii-ligatures": {
+      "glyphCount": 23,
+      "definitionCount": 21,
+      "sha256": "79a7b72d7024b817c671b92cfe8b0f42bfad984772fe53e8f633d4db86b1e55f"
+    },
+    "bold": {
+      "glyphCount": 12,
+      "definitionCount": 11,
+      "sha256": "da697ccd71d2a16827895c3de43edcd42be6e69afec017b7dc0fc66a3342f8d8"
+    },
+    "bold-italic": {
+      "glyphCount": 10,
+      "definitionCount": 8,
+      "sha256": "812e51ae0b2f312a0c5a86a3ce1432366709f55298cbc7a112dd1531a5137130"
+    },
+    "combining-wide-missing": {
+      "glyphCount": 2,
+      "definitionCount": 2,
+      "sha256": "857968032f9c4499ff9dc2aaf48fc223a48f889cf829113a7504464570d957c4"
+    },
+    "emoji-fallback": {
+      "glyphCount": 9,
+      "definitionCount": 9,
+      "sha256": "501c1446f75b67451bb428e62739e724590b086629ea8bc767c8f47f991f66da"
+    },
+    "italic": {
+      "glyphCount": 14,
+      "definitionCount": 9,
+      "sha256": "99863813f334d93f19f402a3589d27989325994d5b2dfda38d77f756fdff6f6c"
+    }
+  }
+}

@@ -1827,8 +1827,9 @@ measurements and command output are recorded in
 Representative-server transition execution, production authentication UI
 promotion, representative DNS verification, compact-tier device execution,
 renderer memory categories, the libssh2 security upgrade/revalidation, and
-bundled-font licensing remain open. The standard-tier active-transport memory
-gate is complete.
+final bundled-font license review remain open. The implementation font set and
+OFL-1.1 redistribution notices are now pinned; the standard-tier
+active-transport memory gate is complete.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one through both direct fixture and opaque resolver paths.
 The opaque case uses libssh2's in-memory API and derives the public key without
@@ -1906,6 +1907,16 @@ extraction produces no intentional TRF1 or protocol change.
 ### Phase 2: explicit font resources
 
 **Estimated effort:** 1-2 weeks
+
+**Started:** 2026-07-17. `ghosttea-text` now supports owned byte-backed font
+resources, explicit style faces and ordered fallbacks, validated cell metrics,
+and explicit raster scale. System discovery is labeled non-parity. The initial
+parity bundle is locked to four JetBrains Mono Nerd Font styles plus Noto Color
+Emoji from the pinned Ghostty source, with SHA-256 verification and OFL-1.1
+notices. The macOS normalized geometry/bitmap golden passes, and the same crate
+cross-compiles for `aarch64-apple-ios` and `aarch64-apple-ios-sim`. Running that
+fixture inside the simulator and a physical device remains before the exit
+gate. Final font-license review remains a release checklist item.
 
 Deliverables:
 

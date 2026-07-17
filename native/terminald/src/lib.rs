@@ -7,6 +7,9 @@ pub mod session;
 pub mod tunnel_protocol;
 
 pub use ghosttea_core::ViewAccess;
+pub use ghosttea_text::{
+    FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
+};
 pub use mesh::{
     RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize,
     RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, TerminalMesh,

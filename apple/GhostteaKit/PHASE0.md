@@ -220,3 +220,11 @@ serialized tunnel representation remains unchanged. Rust tests and strict
 Clippy, lint, package/consumer checks, daemon integration, the TRF1 golden, and
 the release benchmark all pass. Phase 2 may begin with explicit bundled font
 resources.
+
+Phase 2 started on 2026-07-17. The locked byte-backed bundle uses JetBrains Mono
+Nerd Font regular/bold/italic/bold-italic with Noto Color Emoji fallback,
+explicit metrics and raster scale, and normalized geometry/bitmap hashes. The
+text engine passes on macOS and cross-compiles for iOS device and arm64
+simulator. The remaining Phase 2 gate is to execute the same fixture in both
+Apple environments and compare it with the checked-in macOS golden. System-font
+discovery is retained only as an explicitly non-parity desktop mode.

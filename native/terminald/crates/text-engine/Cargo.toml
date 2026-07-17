@@ -9,10 +9,20 @@ repository.workspace = true
 description = "Native text shaping and rasterization for Ghosttea"
 readme = "README.md"
 
+[features]
+fixture = ["dep:serde", "dep:serde_json", "dep:sha2"]
+
 [dependencies]
 anyhow.workspace = true
 fontdb = "0.23.0"
 harfbuzz_rs = "2.0.1"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
 swash = "0.2.9"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+
+[[example]]
+name = "shaping_fixture"
+required-features = ["fixture"]

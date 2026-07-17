@@ -1,3 +1,26 @@
 # ghosttea-text
 
-Native font discovery, shaping, fallback, and glyph rasterization for Ghosttea.
+Native font loading, shaping, fallback, and glyph rasterization for Ghosttea.
+
+Parity mode uses `TextEngine::from_fonts` with owned font bytes, explicit
+`TextMetrics`, and an explicit raster scale. The configured fallback list is
+ordered and closed: if none of those fonts covers a cluster, the primary font's
+missing glyph is rendered. This makes shaping and bitmap results reproducible
+across hosts.
+
+`TextEngine::discover` remains available for desktop convenience. It scans
+system fonts and must be treated as `FontMode::System`, which is intentionally
+non-parity because installed fonts and fallback choices differ between devices.
+
+The Phase 2 parity bundle is locked in `native/fonts.lock.json`: JetBrains Mono
+Nerd Font regular/bold/italic/bold-italic plus Noto Color Emoji, all under
+OFL-1.1 notices inherited from the pinned Ghostty source. Run:
+
+```sh
+npm run sync:fonts
+npm run check:font-parity
+```
+
+The first command verifies hashes and stages generated assets under
+`native/build/ghosttea-fonts`. The second compares normalized shaping geometry
+and glyph bitmap hashes with the checked-in Phase 2 golden.

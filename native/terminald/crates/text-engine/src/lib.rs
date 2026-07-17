@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fontdb::{Database, Family, ID, Query, Stretch, Style, Weight};
+use fontdb::{Database, Family, ID, Query, Source as FontSource, Stretch, Style, Weight};
 use harfbuzz_rs::{Face, Font, UnicodeBuffer, shape};
 use swash::{
     FontRef,
@@ -14,11 +14,101 @@ use swash::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(feature = "fixture")]
+mod fixture;
+
+#[cfg(feature = "fixture")]
+pub use fixture::{
+    NormalizedFontFace, NormalizedGlyphDefinition, NormalizedGlyphInstance, NormalizedShapedRow,
+    NormalizedShapedRowDigest, ShapingFixture, ShapingFixtureCase,
+};
+
 pub const FONT_SIZE_PX: f32 = 13.0;
 pub const RASTER_SCALE: f32 = 2.0;
 pub const CELL_WIDTH_PX: f32 = 7.83;
 pub const LINE_HEIGHT_PX: f32 = 19.0;
 pub const BASELINE_PX: f32 = 14.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "fixture",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
+pub struct TextMetrics {
+    pub font_size_px: f32,
+    pub cell_width_px: f32,
+    pub line_height_px: f32,
+    pub baseline_px: f32,
+}
+
+impl Default for TextMetrics {
+    fn default() -> Self {
+        Self {
+            font_size_px: FONT_SIZE_PX,
+            cell_width_px: CELL_WIDTH_PX,
+            line_height_px: LINE_HEIGHT_PX,
+            baseline_px: BASELINE_PX,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FontMode {
+    Bundled,
+    System,
+}
+
+#[derive(Clone)]
+pub struct FontResource {
+    name: String,
+    bytes: Arc<Vec<u8>>,
+    face_index: usize,
+}
+
+impl FontResource {
+    pub fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self {
+            name: name.into(),
+            bytes: Arc::new(bytes),
+            face_index: 0,
+        }
+    }
+
+    pub fn with_face_index(mut self, face_index: usize) -> Self {
+        self.face_index = face_index;
+        self
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
+#[derive(Clone)]
+pub struct FontResources {
+    pub regular: FontResource,
+    pub bold: Option<FontResource>,
+    pub italic: Option<FontResource>,
+    pub bold_italic: Option<FontResource>,
+    pub fallbacks: Vec<FontResource>,
+}
+
+impl FontResources {
+    pub fn new(regular: FontResource) -> Self {
+        Self {
+            regular,
+            bold: None,
+            italic: None,
+            bold_italic: None,
+            fallbacks: Vec::new(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct FontStyle {
@@ -97,6 +187,7 @@ pub struct TextEngine {
     database: Database,
     primary_family: String,
     styled_faces: HashMap<FontStyle, ID>,
+    fallback_order: Option<Vec<ID>>,
     fallback_faces: HashMap<char, ID>,
     loaded_faces: HashMap<ID, LoadedFace>,
     next_face_id: u32,
@@ -104,6 +195,9 @@ pub struct TextEngine {
     glyphs: HashMap<u32, GlyphDefinition>,
     next_glyph_id: u32,
     scale_context: ScaleContext,
+    metrics: TextMetrics,
+    raster_scale: f32,
+    mode: FontMode,
 }
 
 const MAX_CACHED_GLYPHS: usize = 65_536;
@@ -192,6 +286,7 @@ impl TextEngine {
             database,
             primary_family,
             styled_faces,
+            fallback_order: None,
             fallback_faces: HashMap::new(),
             loaded_faces: HashMap::new(),
             next_face_id: 1,
@@ -199,11 +294,110 @@ impl TextEngine {
             glyphs: HashMap::new(),
             next_glyph_id: 1,
             scale_context: ScaleContext::new(),
+            metrics: TextMetrics::default(),
+            raster_scale: RASTER_SCALE,
+            mode: FontMode::System,
+        })
+    }
+
+    pub fn from_fonts(
+        fonts: FontResources,
+        metrics: TextMetrics,
+        raster_scale: f32,
+    ) -> Result<Self> {
+        validate_configuration(metrics, raster_scale)?;
+        let mut database = Database::new();
+        let regular = load_font_resource(&mut database, &fonts.regular)?;
+        let bold = fonts
+            .bold
+            .as_ref()
+            .map(|font| load_font_resource(&mut database, font))
+            .transpose()?
+            .unwrap_or(regular);
+        let italic = fonts
+            .italic
+            .as_ref()
+            .map(|font| load_font_resource(&mut database, font))
+            .transpose()?
+            .unwrap_or(regular);
+        let bold_italic = fonts
+            .bold_italic
+            .as_ref()
+            .map(|font| load_font_resource(&mut database, font))
+            .transpose()?
+            .unwrap_or_else(|| if bold != regular { bold } else { italic });
+        let fallback_order = fonts
+            .fallbacks
+            .iter()
+            .map(|font| load_font_resource(&mut database, font))
+            .collect::<Result<Vec<_>>>()?;
+        let primary_family = database
+            .face(regular)
+            .and_then(|face| face.families.first())
+            .map(|family| family.0.clone())
+            .with_context(|| {
+                format!(
+                    "bundled primary font {} has no family name",
+                    fonts.regular.name()
+                )
+            })?;
+        let styled_faces = HashMap::from([
+            (FontStyle::default(), regular),
+            (
+                FontStyle {
+                    bold: true,
+                    italic: false,
+                },
+                bold,
+            ),
+            (
+                FontStyle {
+                    bold: false,
+                    italic: true,
+                },
+                italic,
+            ),
+            (
+                FontStyle {
+                    bold: true,
+                    italic: true,
+                },
+                bold_italic,
+            ),
+        ]);
+
+        Ok(Self {
+            database,
+            primary_family,
+            styled_faces,
+            fallback_order: Some(fallback_order),
+            fallback_faces: HashMap::new(),
+            loaded_faces: HashMap::new(),
+            next_face_id: 1,
+            glyph_ids: HashMap::new(),
+            glyphs: HashMap::new(),
+            next_glyph_id: 1,
+            scale_context: ScaleContext::new(),
+            metrics,
+            raster_scale,
+            mode: FontMode::Bundled,
         })
     }
 
     pub fn primary_family(&self) -> &str {
         &self.primary_family
+    }
+
+    pub fn metrics(&self) -> TextMetrics {
+        self.metrics
+    }
+
+    pub fn raster_scale(&self) -> f32 {
+        self.raster_scale
+    }
+
+    pub fn font_mode(&self) -> FontMode {
+        self.mode
     }
 
     pub fn shape_row(&mut self, text: &str, style: FontStyle) -> Result<ShapedRow> {
@@ -295,8 +489,11 @@ impl TextEngine {
             }
         }
         let prefer_emoji = cluster.chars().any(is_emoji);
-        let mut ids: Vec<ID> = self.database.faces().map(|face| face.id).collect();
-        if prefer_emoji {
+        let mut ids = self
+            .fallback_order
+            .clone()
+            .unwrap_or_else(|| self.database.faces().map(|face| face.id).collect());
+        if self.fallback_order.is_none() && prefer_emoji {
             ids.sort_by_key(|id| {
                 let face = self.database.face(*id);
                 let emoji_named = face.is_some_and(|face| {
@@ -341,6 +538,8 @@ impl TextEngine {
         output: &mut Vec<GlyphInstance>,
         used_definitions: &mut HashSet<u32>,
     ) -> Result<()> {
+        let metrics = self.metrics;
+        let raster_scale = self.raster_scale;
         let first = graphemes.first().context("empty shaping run")?;
         let last = graphemes.last().context("empty shaping run")?;
         let byte_end = last.byte_start + last.text.len();
@@ -349,10 +548,13 @@ impl TextEngine {
         let face = Face::from_bytes(loaded.data.as_ref().as_ref(), loaded.index);
         let mut font = Font::new(face);
         font.set_scale(
-            (FONT_SIZE_PX * 64.0).round() as i32,
-            (FONT_SIZE_PX * 64.0).round() as i32,
+            (metrics.font_size_px * 64.0).round() as i32,
+            (metrics.font_size_px * 64.0).round() as i32,
         );
-        font.set_ppem(FONT_SIZE_PX.round() as u32, FONT_SIZE_PX.round() as u32);
+        font.set_ppem(
+            metrics.font_size_px.round() as u32,
+            metrics.font_size_px.round() as u32,
+        );
         let buffer = UnicodeBuffer::new()
             .add_str(run_text)
             .guess_segment_properties();
@@ -368,13 +570,13 @@ impl TextEngine {
             .iter()
             .map(|grapheme| grapheme.cell_span as u32)
             .sum::<u32>() as f32;
-        let target_width = target_cells * CELL_WIDTH_PX;
+        let target_width = target_cells * metrics.cell_width_px;
         let run_scale_x = if natural_width.abs() > f32::EPSILON {
             target_width / natural_width
         } else {
             1.0
         };
-        let mut pen_x = first.cell_start as f32 * CELL_WIDTH_PX;
+        let mut pen_x = first.cell_start as f32 * metrics.cell_width_px;
 
         let mut cluster_starts: Vec<u32> = infos.iter().map(|info| info.cluster).collect();
         cluster_starts.sort_unstable();
@@ -403,17 +605,17 @@ impl TextEngine {
             if let Some((glyph_id, definition)) = self.rasterize(&loaded, info.codepoint, style)? {
                 let x = pen_x
                     + position.x_offset as f32 / 64.0 * run_scale_x
-                    + definition.bearing_x as f32 / RASTER_SCALE * run_scale_x;
-                let y = BASELINE_PX
+                    + definition.bearing_x as f32 / raster_scale * run_scale_x;
+                let y = metrics.baseline_px
                     - position.y_offset as f32 / 64.0
-                    - definition.bearing_y as f32 / RASTER_SCALE;
+                    - definition.bearing_y as f32 / raster_scale;
                 output.push(GlyphInstance {
                     glyph_id,
                     style_id: style_id(style),
                     x,
                     y,
-                    width: definition.width as f32 / RASTER_SCALE * run_scale_x,
-                    height: definition.height as f32 / RASTER_SCALE,
+                    width: definition.width as f32 / raster_scale * run_scale_x,
+                    height: definition.height as f32 / raster_scale,
                     cell_start: cluster_cell_start,
                     cell_span: cluster_span,
                 });
@@ -461,7 +663,7 @@ impl TextEngine {
         let key = GlyphKey {
             face_id: face.id,
             glyph_index,
-            pixel_size_26_6: (FONT_SIZE_PX * RASTER_SCALE * 64.0).round() as u32,
+            pixel_size_26_6: (self.metrics.font_size_px * self.raster_scale * 64.0).round() as u32,
             render_flags: flags,
         };
         if let Some(id) = self.glyph_ids.get(&key).copied() {
@@ -483,7 +685,7 @@ impl TextEngine {
         let mut scaler = self
             .scale_context
             .builder(font)
-            .size(FONT_SIZE_PX * RASTER_SCALE)
+            .size(self.metrics.font_size_px * self.raster_scale)
             .hint(true)
             .build();
         let image = Render::new(&[
@@ -537,6 +739,39 @@ impl TextEngine {
     }
 }
 
+fn validate_configuration(metrics: TextMetrics, raster_scale: f32) -> Result<()> {
+    for (name, value) in [
+        ("font size", metrics.font_size_px),
+        ("cell width", metrics.cell_width_px),
+        ("line height", metrics.line_height_px),
+        ("baseline", metrics.baseline_px),
+        ("raster scale", raster_scale),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            bail!("text {name} must be finite and positive");
+        }
+    }
+    if metrics.baseline_px > metrics.line_height_px {
+        bail!("text baseline must not exceed line height");
+    }
+    Ok(())
+}
+
+fn load_font_resource(database: &mut Database, resource: &FontResource) -> Result<ID> {
+    if resource.bytes.is_empty() {
+        bail!("font resource {} is empty", resource.name());
+    }
+    let source: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::clone(&resource.bytes) as _;
+    let ids = database.load_font_source(FontSource::Binary(source));
+    ids.get(resource.face_index).copied().with_context(|| {
+        format!(
+            "font resource {} has no face at index {}",
+            resource.name(),
+            resource.face_index
+        )
+    })
+}
+
 fn is_ignorable(character: char) -> bool {
     character == '\u{200d}' || character == '\u{fe0f}' || character.is_control()
 }
@@ -552,6 +787,103 @@ fn style_id(style: FontStyle) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn system_monospace_resource() -> FontResource {
+        let mut database = Database::new();
+        database.load_system_fonts();
+        let face = database
+            .query(&Query {
+                families: &[Family::Monospace],
+                ..Query::default()
+            })
+            .or_else(|| {
+                database
+                    .faces()
+                    .find(|face| face.monospaced)
+                    .map(|face| face.id)
+            })
+            .expect("test host must provide a monospace font");
+        let (bytes, index) = database
+            .with_face_data(face, |bytes, index| (bytes.to_vec(), index))
+            .expect("test system font must be readable");
+        FontResource::new("test-monospace", bytes).with_face_index(index as usize)
+    }
+
+    #[test]
+    fn loads_font_bytes_with_explicit_metrics_and_raster_scale() {
+        let metrics = TextMetrics {
+            font_size_px: 14.0,
+            cell_width_px: 8.25,
+            line_height_px: 20.0,
+            baseline_px: 15.0,
+        };
+        let mut engine = TextEngine::from_fonts(
+            FontResources::new(system_monospace_resource()),
+            metrics,
+            3.0,
+        )
+        .unwrap();
+
+        assert_eq!(engine.font_mode(), FontMode::Bundled);
+        assert_eq!(engine.metrics(), metrics);
+        assert_eq!(engine.raster_scale(), 3.0);
+        let row = engine.shape_row("explicit", FontStyle::default()).unwrap();
+        assert!(!row.glyphs.is_empty());
+        assert!(row.definitions.iter().all(|glyph| !glyph.pixels.is_empty()));
+    }
+
+    #[test]
+    fn rejects_invalid_font_resources_and_metrics() {
+        assert!(
+            TextEngine::from_fonts(
+                FontResources::new(FontResource::new("empty", Vec::new())),
+                TextMetrics::default(),
+                RASTER_SCALE,
+            )
+            .is_err()
+        );
+        assert!(
+            TextEngine::from_fonts(
+                FontResources::new(system_monospace_resource()),
+                TextMetrics {
+                    cell_width_px: 0.0,
+                    ..TextMetrics::default()
+                },
+                RASTER_SCALE,
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "fixture")]
+    #[test]
+    fn normalized_fixture_is_repeatable_for_the_same_font_bytes() {
+        let font = system_monospace_resource();
+        let cases = [ShapingFixtureCase {
+            name: "mixed".into(),
+            text: "ffi e\u{301} 0123".into(),
+            bold: false,
+            italic: false,
+        }];
+        let mut first = TextEngine::from_fonts(
+            FontResources::new(font.clone()),
+            TextMetrics::default(),
+            RASTER_SCALE,
+        )
+        .unwrap();
+        let mut second = TextEngine::from_fonts(
+            FontResources::new(font),
+            TextMetrics::default(),
+            RASTER_SCALE,
+        )
+        .unwrap();
+
+        let first = first.shaping_fixture(&cases).unwrap();
+        let second = second.shaping_fixture(&cases).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.font_mode, "bundled");
+        assert_eq!(first.faces.len(), 1);
+    }
 
     #[test]
     fn shapes_ligatures_combining_marks_and_wide_text_without_cell_drift() {

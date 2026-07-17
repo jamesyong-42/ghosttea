@@ -306,6 +306,8 @@ fn is_private_service_environment(key: &str) -> bool {
             | "TERMINALD_CONTROL_SOCKET"
             | "GHOSTTEA_FRAME_SOCKET"
             | "TERMINALD_FRAME_SOCKET"
+            | "GHOSTTEA_FONT_DIR"
+            | "TERMINALD_FONT_DIR"
             | "TRUFFLE_TEST_AUTHKEY"
             | "TRUFFLE_SIDECAR_PATH"
     ) || key.starts_with("GHOSTTEA_TRUFFLE_")

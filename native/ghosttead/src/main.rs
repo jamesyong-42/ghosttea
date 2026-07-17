@@ -1,7 +1,10 @@
-use std::{env, sync::Arc};
+use std::{env, fs, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use ghosttea::{TerminalService, TerminalServiceConfig};
+use ghosttea::{
+    FontResource, FontResources, RASTER_SCALE, TerminalService, TerminalServiceConfig, TextEngine,
+    TextMetrics,
+};
 use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};
 use truffle_core::{Node, network::tailscale::TailscaleProvider};
 
@@ -10,11 +13,14 @@ const DEFAULT_APP_ID: &str = "ghosttea-terminal";
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    let service = TerminalService::new(TerminalServiceConfig {
+    let mut service = TerminalService::new(TerminalServiceConfig {
         control_socket: required_env("GHOSTTEA_CONTROL_SOCKET", "TERMINALD_CONTROL_SOCKET")?,
         frame_socket: required_env("GHOSTTEA_FRAME_SOCKET", "TERMINALD_FRAME_SOCKET")?,
         auth_token: required_env("GHOSTTEA_AUTH_TOKEN", "TERMINALD_AUTH_TOKEN")?,
     });
+    if let Some(text_engine) = configured_text_engine()? {
+        service = service.with_text_engine(text_engine);
+    }
     let Some(config) = TruffleHostConfig::from_env()? else {
         return service.run().await;
     };
@@ -49,6 +55,29 @@ async fn main() -> Result<()> {
         },
     )?;
     service.with_terminal_mesh(terminal_mesh).run().await
+}
+
+fn configured_text_engine() -> Result<Option<TextEngine>> {
+    let Some(directory) = nonempty_aliased_env("GHOSTTEA_FONT_DIR", "TERMINALD_FONT_DIR") else {
+        return Ok(None);
+    };
+    let directory = Path::new(&directory);
+    let resource = |name: &str| -> Result<FontResource> {
+        Ok(FontResource::new(
+            name,
+            fs::read(directory.join(name)).with_context(|| format!("read bundled font {name}"))?,
+        ))
+    };
+    let mut fonts = FontResources::new(resource("JetBrainsMonoNerdFont-Regular.ttf")?);
+    fonts.bold = Some(resource("JetBrainsMonoNerdFont-Bold.ttf")?);
+    fonts.italic = Some(resource("JetBrainsMonoNerdFont-Italic.ttf")?);
+    fonts.bold_italic = Some(resource("JetBrainsMonoNerdFont-BoldItalic.ttf")?);
+    fonts.fallbacks = vec![resource("NotoColorEmoji.ttf")?];
+    Ok(Some(TextEngine::from_fonts(
+        fonts,
+        TextMetrics::default(),
+        RASTER_SCALE,
+    )?))
 }
 
 struct TruffleHostConfig {
