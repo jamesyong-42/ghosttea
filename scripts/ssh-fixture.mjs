@@ -36,6 +36,7 @@ const ports = {
   blackhole: process.env.GHOSTTEA_SSH_BLACKHOLE_PORT ?? "22026",
   ecdsaAesGcm: process.env.GHOSTTEA_SSH_ECDSA_AESGCM_PORT ?? "22027",
   rsaSha2: process.env.GHOSTTEA_SSH_RSA_SHA2_PORT ?? "22028",
+  metadata: process.env.GHOSTTEA_SSH_KEYBOARD_METADATA_PORT ?? "22029",
 };
 const commandEnvironment = {
   ...process.env,
@@ -49,6 +50,7 @@ const commandEnvironment = {
   GHOSTTEA_SSH_BLACKHOLE_PORT: ports.blackhole,
   GHOSTTEA_SSH_ECDSA_AESGCM_PORT: ports.ecdsaAesGcm,
   GHOSTTEA_SSH_RSA_SHA2_PORT: ports.rsaSha2,
+  GHOSTTEA_SSH_KEYBOARD_METADATA_PORT: ports.metadata,
   DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
   CLANG_MODULE_CACHE_PATH: swiftModuleCache,
   SWIFTPM_MODULECACHE_OVERRIDE: swiftModuleCache,
@@ -129,8 +131,10 @@ function scanKnownHosts() {
     [ports.publicKey, publicKeyScanHost],
     [ports.ecdsaAesGcm, "127.0.0.1"],
     [ports.rsaSha2, "127.0.0.1"],
-  ].map(([port, host]) => {
-    const result = execute("ssh-keyscan", ["-T", "5", "-p", port, host]);
+    [ports.metadata, "127.0.0.1", "ed25519"],
+  ].map(([port, host, keyType]) => {
+    const keyTypeArguments = keyType ? ["-t", keyType] : [];
+    const result = execute("ssh-keyscan", ["-T", "5", ...keyTypeArguments, "-p", port, host]);
     if (result.status !== 0 || !result.stdout.trim()) {
       throw new Error(`Could not scan fixture host key at ${host}:${port}: ${result.stderr}`);
     }
@@ -279,12 +283,21 @@ function verifyPartialSuccessRequiresPublicKey() {
 function up() {
   ensureClientKey();
   run("docker", ["version"]);
-  compose(["up", "--build", "--detach"], { inherit: true });
-  waitUntilHealthy();
-  scanKnownHosts();
-  console.log(
-    `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}, ecdsa-aesgcm=${ports.ecdsaAesGcm}, rsa-sha2=${ports.rsaSha2}`,
-  );
+  try {
+    compose(["up", "--build", "--detach"], { inherit: true });
+    waitUntilHealthy();
+    scanKnownHosts();
+    console.log(
+      `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}, ecdsa-aesgcm=${ports.ecdsaAesGcm}, rsa-sha2=${ports.rsaSha2}, keyboard-metadata=${ports.metadata}`,
+    );
+  } catch (error) {
+    try {
+      down();
+    } catch (cleanupError) {
+      console.error(`SSH fixture cleanup after startup failure also failed: ${cleanupError}`);
+    }
+    throw error;
+  }
 }
 
 function down() {
@@ -297,6 +310,7 @@ async function test() {
   try {
     probe("password");
     probe("keyboard");
+    probe("metadata");
     verifyPartialSuccessRequiresPublicKey();
     probe("partial");
     verifyPublicKeyAndExitSemantics();
@@ -320,6 +334,7 @@ function candidate() {
       ["password", ports.password],
       ["publickey", ports.publicKey],
       ["keyboard", ports.keyboard],
+      ["keyboard-metadata", ports.metadata],
     ]) {
       const result = runCandidateMode(mode, port);
       if (result.status !== 0) {
@@ -375,6 +390,7 @@ function swiftCandidate() {
     for (const [mode, port, probePublicKey = publicKey, probePrivateKey = privateKey] of [
       ["password", ports.password],
       ["keyboard", ports.keyboard],
+      ["keyboard-metadata", ports.metadata],
       ["partial", ports.partial],
       ["publickey", ports.publicKey],
       ["publickey-resolver", ports.publicKey],
@@ -550,7 +566,7 @@ function swiftCandidate() {
       }
     }
     console.log(
-      "Swift nonblocking transport passed authentication including encrypted keys through direct and opaque-resolver paths, derived the public key from resolved private-key bytes, preserved PAM informational prompt text, enforced strict host-key controls, and passed PTY/resize, command termination, half-close, lossless flow control, cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
+      "Swift nonblocking transport passed authentication including encrypted keys through direct and opaque-resolver paths, derived the public key from resolved private-key bytes, preserved PAM and protocol keyboard-interactive metadata, enforced strict host-key controls, and passed PTY/resize, command termination, half-close, lossless flow control, cancellation stress, wrong-passphrase rejection, and wrong-key rejection.",
     );
   } finally {
     if (!keepRunning) down();

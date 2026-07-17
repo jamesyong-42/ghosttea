@@ -94,9 +94,12 @@ The live keyboard fixture exercises an informational zero-prompt round followed
 by distinct password and verification-code rounds, preserving their exact text
 and mixed `echo=false`/`echo=true` metadata. A PAM `PAM_TEXT_INFO` message is
 also preserved exactly where OpenSSH folds it into the hidden-password prompt.
-The fixture's empty protocol-level server name and instruction are asserted
-exactly; a server emitting nonempty values remains to be added. Its responder
-deliberately suspends before replying.
+The OpenSSH fixture's empty protocol-level server name and instruction are
+asserted exactly. A separate minimal Paramiko endpoint emits nonempty
+`Ghosttea metadata fixture` and `Supply both test factors.` values plus both
+mixed-echo prompts in one round. System OpenSSH, the raw C/libssh2 callback, and
+the Swift async challenge all preserve those values exactly. The cancellation
+fixture's responder deliberately suspends before replying.
 Cancelling while that responder is suspended wakes and joins the libssh2 worker
 in under one millisecond on the development Mac.
 TCP establishment now uses a nonblocking connector with an absolute deadline,
@@ -205,10 +208,10 @@ separately test the host-neutral demand and queue semantics.
 ## Live-fixture work required before selection
 
 1. Promote the diagnostic asynchronous challenge responder and opaque
-   private-key chooser into product UIKit, and add a nonempty protocol-level
-   name/instruction fixture. Opaque encrypted-key/passphrase resolution through
-   the in-memory key API now passes both the macOS fixture and a physical iPhone;
-   PAM informational text and mixed echo/no-echo prompts pass on macOS.
+   private-key chooser into product UIKit. Opaque encrypted-key/passphrase
+   resolution through the in-memory key API now passes both the macOS fixture
+   and a physical iPhone; PAM informational text, nonempty protocol
+   name/instruction metadata, and mixed echo/no-echo prompts pass on macOS.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.

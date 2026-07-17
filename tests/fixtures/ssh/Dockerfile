@@ -7,6 +7,7 @@ RUN apt-get update \
         libpam0g-dev \
         netcat-openbsd \
         openssh-server \
+        python3-paramiko \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pam_ghosttea_fixture.c /tmp/pam_ghosttea_fixture.c
@@ -30,11 +31,14 @@ COPY sshd_config.partial-success /etc/ssh/sshd_config.partial-success
 COPY sshd_config.public-key /etc/ssh/sshd_config.public-key
 COPY sshd_config.ecdsa-aesgcm /etc/ssh/sshd_config.ecdsa-aesgcm
 COPY sshd_config.rsa-sha2 /etc/ssh/sshd_config.rsa-sha2
+COPY paramiko_metadata_server.py /usr/local/bin/ghosttea-keyboard-metadata-server
 COPY entrypoint.sh /usr/local/bin/ghosttea-ssh-fixture
 
-RUN chmod 0755 /usr/local/bin/ghosttea-ssh-fixture
+RUN chmod 0755 \
+        /usr/local/bin/ghosttea-keyboard-metadata-server \
+        /usr/local/bin/ghosttea-ssh-fixture
 
-EXPOSE 22022 22023 22024 22025 22026 22027 22028
+EXPOSE 22022 22023 22024 22025 22026 22027 22028 22029
 
 HEALTHCHECK --interval=2s --timeout=1s --retries=15 \
   CMD nc -z 127.0.0.1 22022 \
@@ -43,6 +47,7 @@ HEALTHCHECK --interval=2s --timeout=1s --retries=15 \
       && nc -z 127.0.0.1 22025 \
       && nc -z 127.0.0.1 22026 \
       && nc -z 127.0.0.1 22027 \
-      && nc -z 127.0.0.1 22028
+      && nc -z 127.0.0.1 22028 \
+      && nc -z 127.0.0.1 22029
 
 ENTRYPOINT ["/usr/local/bin/ghosttea-ssh-fixture"]

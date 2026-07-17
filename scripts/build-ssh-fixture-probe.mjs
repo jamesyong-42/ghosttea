@@ -30,6 +30,8 @@ const result = spawnSync(
     "-mmacosx-version-min=14.0",
     "-I",
     join(artifact, "Headers"),
+    "-I",
+    join(artifact, "Headers", "LibSSH2Candidate"),
     source,
     join(artifact, "libghosttea-libssh2-candidate.a"),
     "-o",

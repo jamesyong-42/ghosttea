@@ -230,6 +230,11 @@ private func authentication(
       username: "ghosttea",
       responder: respondToFixtureChallenge
     )
+  case "keyboard-metadata":
+    return .keyboardInteractive(
+      username: "ghosttea",
+      responder: respondToMetadataFixtureChallenge
+    )
   case "keyboard-cancel", "keyboard-cancel-stress":
     return .keyboardInteractive(username: "ghosttea") { _ in
       try await Task.sleep(for: .seconds(60))
@@ -270,6 +275,23 @@ private func respondToFixtureChallenge(
   default:
     throw LiveProbeError.unexpectedChallenge(challenge)
   }
+}
+
+private func respondToMetadataFixtureChallenge(
+  _ challenge: SSHKeyboardInteractiveChallenge
+) async throws -> [String] {
+  guard
+    challenge.name == "Ghosttea metadata fixture",
+    challenge.instruction == "Supply both test factors.",
+    challenge.prompts
+      == [
+        SSHKeyboardInteractivePrompt(text: "Fixture password: ", echoesResponse: false),
+        SSHKeyboardInteractivePrompt(text: "Verification code: ", echoesResponse: true),
+      ]
+  else {
+    throw LiveProbeError.unexpectedChallenge(challenge)
+  }
+  return ["ghosttea-password", "123456"]
 }
 
 private func runProbe() async throws {
@@ -600,6 +622,18 @@ private func verifyAlgorithms(
   _ algorithms: SSHCandidateNegotiatedAlgorithms,
   mode: String
 ) throws {
+  if mode == "keyboard-metadata" {
+    guard
+      algorithms.hostKey == "ssh-ed25519",
+      !algorithms.keyExchange.isEmpty,
+      !algorithms.clientToServerCipher.isEmpty,
+      !algorithms.serverToClientCipher.isEmpty
+    else {
+      throw LiveProbeError.unexpectedAlgorithms(algorithms)
+    }
+    print("Swift negotiated keyboard-metadata fixture algorithms: \(algorithms)")
+    return
+  }
   if mode == "ecdsa-aesgcm" {
     guard
       algorithms.keyExchange == "curve25519-sha256",

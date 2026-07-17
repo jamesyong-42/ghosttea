@@ -1,7 +1,7 @@
 # OpenSSH compatibility fixtures
 
-This fixture runs six OpenSSH servers and one protocol blackhole in one local
-container:
+This fixture runs six OpenSSH servers, one minimal Paramiko metadata server,
+and one protocol blackhole in one local container:
 
 | Host port | Authentication policy                 | Purpose                                                               |
 | --------- | ------------------------------------- | --------------------------------------------------------------------- |
@@ -12,6 +12,7 @@ container:
 | `22026`   | no SSH banner                         | Deterministic handshake deadline and cancellation                     |
 | `22027`   | public key                            | ECDSA P-256 host key and AES-256-GCM negotiation                      |
 | `22028`   | public key                            | RSA-3072 host key with RSA/SHA-2-512 signatures                       |
+| `22029`   | keyboard-interactive                  | Nonempty protocol name/instruction and two mixed-echo prompts         |
 
 All ports bind to loopback by default. A physical-device password probe may
 opt in to a specific trusted LAN interface without exposing the other fixture
@@ -57,12 +58,14 @@ spike and `npm run fixture:ssh:down` when finished. Set
 `GHOSTTEA_SSH_PASSWORD_PORT`, `GHOSTTEA_SSH_KEYBOARD_PORT`,
 `GHOSTTEA_SSH_PARTIAL_PORT`, `GHOSTTEA_SSH_PUBLIC_KEY_PORT`, or
 `GHOSTTEA_SSH_BLACKHOLE_PORT`, `GHOSTTEA_SSH_ECDSA_AESGCM_PORT`, or
-`GHOSTTEA_SSH_RSA_SHA2_PORT` to avoid local port conflicts.
+`GHOSTTEA_SSH_RSA_SHA2_PORT`, or `GHOSTTEA_SSH_KEYBOARD_METADATA_PORT` to
+avoid local port conflicts.
 
 The automated matrix verifies:
 
 - password, public-key, and mixed echo/no-echo keyboard-interactive
   authentication;
+- exact nonempty keyboard-interactive protocol name and instruction metadata;
 - passphrase-encrypted Ed25519 authentication and incorrect-passphrase
   rejection;
 - rejection when the partial-success endpoint is used without its required
@@ -113,8 +116,10 @@ and libssh2's `INTEGRATED-AES-GCM` MAC report.
 The third locks Curve25519, RSA/SHA-2-512, ChaCha20-Poly1305, and HMAC-SHA2-256.
 Keyboard-interactive challenges cross an async Swift responder and assert exact
 prompt text plus echo policy across informational, password, and verification
-code rounds. A separate control cancels while that responder is suspended and
-requires the blocked native callback worker to unwind within one second.
+code rounds. The metadata endpoint separately asserts a nonempty protocol name,
+nonempty instruction, and two mixed-echo prompts in one round. A separate
+control cancels while that responder is suspended and requires the blocked
+native callback worker to unwind within one second.
 Three non-PTY command controls cover termination semantics: one asserts
 separate, byte-exact stdout/stderr and exit 37; another writes through `cat`,
 sends SSH input EOF, drains the exact output, and completes the channel close

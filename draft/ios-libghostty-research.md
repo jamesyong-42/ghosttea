@@ -211,7 +211,8 @@ its file mode, and passes strict reconnect controls. UIKit confirmation remains
 open.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
-fixture covers informational and multiple prompt rounds plus cancellation.
+fixture covers informational and multiple prompt rounds, exact nonempty
+protocol name/instruction metadata, and cancellation.
 The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS

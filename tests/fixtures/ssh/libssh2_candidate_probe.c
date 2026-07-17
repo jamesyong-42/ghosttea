@@ -20,7 +20,17 @@ struct keyboard_context {
     size_t answer_count;
     size_t next_answer;
     int prompt_count;
+    int metadata_expected;
+    int metadata_valid;
 };
+
+static int sized_equals(const char *value, int length, const char *expected) {
+    size_t expected_length = strlen(expected);
+    return value != NULL
+        && length >= 0
+        && (size_t)length == expected_length
+        && memcmp(value, expected, expected_length) == 0;
+}
 
 static void keyboard_callback(
     const char *name,
@@ -32,17 +42,35 @@ static void keyboard_callback(
     LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses,
     void **abstract
 ) {
-    (void)name;
-    (void)name_length;
-    (void)instruction;
-    (void)instruction_length;
-    (void)prompts;
-
     struct keyboard_context *context = abstract == NULL ? NULL : *abstract;
     if (context == NULL
         || prompt_count < 0
         || context->next_answer + (size_t)prompt_count > context->answer_count) {
         return;
+    }
+
+    if (context->metadata_expected) {
+        context->metadata_valid = sized_equals(
+            name,
+            name_length,
+            "Ghosttea metadata fixture"
+        ) && sized_equals(
+            instruction,
+            instruction_length,
+            "Supply both test factors."
+        ) && prompt_count == 2
+            && sized_equals(
+                (const char *)prompts[0].text,
+                (int)prompts[0].length,
+                "Fixture password: "
+            )
+            && prompts[0].echo == 0
+            && sized_equals(
+                (const char *)prompts[1].text,
+                (int)prompts[1].length,
+                "Verification code: "
+            )
+            && prompts[1].echo == 1;
     }
 
     context->prompt_count += prompt_count;
@@ -176,7 +204,7 @@ static int authenticate(
         );
     }
 
-    if (strcmp(mode, "keyboard") == 0) {
+    if (strcmp(mode, "keyboard") == 0 || strcmp(mode, "keyboard-metadata") == 0) {
         return libssh2_userauth_keyboard_interactive_ex(
             session,
             username,
@@ -304,6 +332,8 @@ int main(int argc, char **argv) {
         .answer_count = 2,
         .next_answer = 0,
         .prompt_count = 0,
+        .metadata_expected = strcmp(mode, "keyboard-metadata") == 0,
+        .metadata_valid = 1,
     };
     LIBSSH2_SESSION *session = libssh2_session_init_ex(NULL, NULL, NULL, &context);
     if (session == NULL) {
@@ -342,9 +372,15 @@ int main(int argc, char **argv) {
         }
         goto cleanup;
     }
-    if ((strcmp(mode, "keyboard") == 0 || strcmp(mode, "partial") == 0)
+    if ((strcmp(mode, "keyboard") == 0
+            || strcmp(mode, "keyboard-metadata") == 0
+            || strcmp(mode, "partial") == 0)
         && context.prompt_count != 2) {
         fprintf(stderr, "expected two keyboard-interactive prompts, got %d\n", context.prompt_count);
+        goto cleanup;
+    }
+    if (context.metadata_expected && !context.metadata_valid) {
+        fprintf(stderr, "keyboard-interactive protocol metadata did not match\n");
         goto cleanup;
     }
 

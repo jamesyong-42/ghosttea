@@ -34,8 +34,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 - an asynchronous keyboard-interactive challenge broker that preserves prompt
   text and echo policy, keeps the synchronous callback on a dedicated worker,
-  handles informational and multiple prompt rounds, and cancels a suspended
-  responder without leaking the worker.
+  handles informational and multiple prompt rounds, preserves nonempty
+  protocol name/instruction metadata, and cancels a suspended responder without
+  leaking the worker.
 - host-neutral input half-close and typed exit status, plus non-PTY SSH command
   support that preserves stdout, stderr, EOF, exit 37, and the complete channel
   close handshake. A `cat` fixture proves output remains readable after input

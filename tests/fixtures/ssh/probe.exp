@@ -7,7 +7,7 @@ set port [lindex $argv 2]
 set known_hosts [lindex $argv 3]
 set private_key [lindex $argv 4]
 
-if {$mode ni {password keyboard partial}} {
+if {$mode ni {password keyboard metadata partial}} {
   puts stderr "unsupported probe mode: $mode"
   exit 2
 }
@@ -24,7 +24,7 @@ set command [list ssh \
 
 if {$mode eq "password"} {
   lappend command -o PreferredAuthentications=password
-} elseif {$mode eq "keyboard"} {
+} elseif {$mode in {keyboard metadata}} {
   lappend command -o PreferredAuthentications=keyboard-interactive
 } else {
   lappend command -i $private_key -o PreferredAuthentications=publickey,keyboard-interactive
@@ -43,6 +43,22 @@ if {$mode eq "password"} {
     }
   }
 } else {
+  if {$mode eq "metadata"} {
+    expect {
+      -exact {Ghosttea metadata fixture} {}
+      timeout {
+        puts stderr "$mode probe did not receive its protocol name"
+        exit 1
+      }
+    }
+    expect {
+      -exact {Supply both test factors.} {}
+      timeout {
+        puts stderr "$mode probe did not receive its protocol instruction"
+        exit 1
+      }
+    }
+  }
   expect {
     -re {Fixture password: *$} {send -- "ghosttea-password\r"}
     timeout {

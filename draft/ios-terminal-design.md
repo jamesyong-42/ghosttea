@@ -1313,7 +1313,8 @@ delivery counters remain unchanged throughout the forced 750 ms pause, ruling
 out network or Swift-side prefetch before the exact drain.
 The async challenge responder preserves server prompt text and echo policy while
 the synchronous callback waits on a dedicated worker; informational and
-multiple prompt rounds plus cancellation pass. Passphrase-encrypted OpenSSH
+multiple prompt rounds, exact nonempty protocol name/instruction metadata, and
+cancellation pass. Passphrase-encrypted OpenSSH
 Ed25519 keys pass and incorrect passphrases are rejected.
 `GhostteaCredentials` stores opaque credential references in the device-only,
 non-synchronizing data-protection Keychain, and its save/load/delete round trip

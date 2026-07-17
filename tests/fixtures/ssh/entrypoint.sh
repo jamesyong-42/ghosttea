@@ -3,7 +3,7 @@ set -eu
 
 install -m 0600 -o ghosttea -g ghosttea /fixture/authorized_keys /home/ghosttea/.ssh/authorized_keys
 
-for name in password keyboard partial public_key; do
+for name in password keyboard partial public_key metadata; do
   ssh-keygen -q -t ed25519 -N '' -f "/run/ghosttea-sshd/host_${name}_ed25519_key"
 done
 ssh-keygen -q -t ecdsa -b 256 -N '' -f /run/ghosttea-sshd/host_ecdsa_aesgcm_ecdsa_key
@@ -22,4 +22,5 @@ ssh-keygen -q -t rsa -b 3072 -N '' -f /run/ghosttea-sshd/host_rsa_sha2_rsa_key
 nc -lk -p 22026 >/dev/null 2>&1 &
 /usr/sbin/sshd -f /etc/ssh/sshd_config.ecdsa-aesgcm
 /usr/sbin/sshd -f /etc/ssh/sshd_config.rsa-sha2
+/usr/local/bin/ghosttea-keyboard-metadata-server &
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config.public-key
