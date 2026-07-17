@@ -70,6 +70,7 @@ class MetadataServer(paramiko.ServerInterface):
 
 def serve_client(client, host_key):
     transport = paramiko.Transport(client)
+    transport.auth_timeout = 300
     transport.add_server_key(host_key)
     server = MetadataServer()
     try:

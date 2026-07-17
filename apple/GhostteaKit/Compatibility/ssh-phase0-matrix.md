@@ -37,8 +37,8 @@ handshake cancellation, two algorithm profiles, and the stalled-reader flood.
 | Authentication | Ed25519 public key                            | Required                  | Opaque in-memory resolver passes unencrypted/encrypted keys on macOS and an encrypted key on iPhone; no key paths  | Repeat resolver against launch-server sample             |
 | Authentication | ECDSA user key                                | Product-sample dependent  | OpenSSL backend present; host-key profile passes                                                                   | Decide from target-server/user-key sample                |
 | Authentication | Encrypted private-key loading                 | Required                  | Counted key/passphrase bytes pass the memory API; wrong passphrase rejects; opaque Keychain flow passes on iPhone  | Repeat resolver against launch-server sample             |
-| Authentication | Keyboard-interactive, one prompt              | Required for common 2FA   | Async responder preserves prompt text and echo                                                                     | Wire UIKit challenge policy                              |
-| Authentication | Keyboard-interactive, multiple prompts        | Required for common 2FA   | Zero-prompt, PAM info, mixed echo/no-echo, and exact nonempty protocol name/instruction pass                       | Wire UIKit challenge policy                              |
+| Authentication | Keyboard-interactive, one prompt              | Required for common 2FA   | Async responder preserves prompt text and echo; diagnostic challenge UI passes on iPhone                           | Promote challenge policy into product UI                 |
+| Authentication | Keyboard-interactive, multiple prompts        | Required for common 2FA   | Zero-prompt, PAM info, and exact metadata pass on macOS; two mixed-echo prompts pass through the iPhone UI         | Repeat against representative 2FA servers                |
 | Authentication | Partial success followed by second factor     | Required for common 2FA   | Explicit policy and async responder pass; key `-19`                                                                | Retain wrong-key regression; wire product policy         |
 | Host identity  | Known-hosts match, unknown host, changed host | Required                  | Strict reject, accept-once, atomic insert/replace, and strict reconnect pass; unknown accept-once passes on iPhone | Exercise changed-key and accept-and-store device UI      |
 | Host keys      | Ed25519 and ECDSA                             | Required                  | Ed25519 and ECDSA P-256 negotiated fixtures pass                                                                   | Repeat against launch server sample                      |
@@ -57,7 +57,8 @@ handshake cancellation, two algorithm profiles, and the stalled-reader flood.
 Do not promote the candidate `GhostteaSSH` package into a production transport
 until every required row is green or has a documented, tested companion
 implementation. In particular, a successful chained fixture does not waive the
-ambiguous partial-step return-state gate or the need for a real challenge UI.
+ambiguous partial-step return-state gate or the need to promote the proven
+diagnostic challenge flow into the product UI.
 
 The flood fixture must issue network/channel demand only when the terminal
 actor has capacity and verify that memory remains bounded while the server

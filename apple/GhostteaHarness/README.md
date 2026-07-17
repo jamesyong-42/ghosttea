@@ -8,8 +8,10 @@ The harness provides:
 - a real data-protection Keychain save/load/delete smoke test using random
   non-user data;
 - deterministic one-, four-, and eight-session physical-footprint measurements before and after scrollback compression;
-- a password- or in-memory private-key-authenticated SSH command probe with
-  bounded output;
+- a password-, in-memory private-key-, or keyboard-interactive-authenticated SSH
+  command probe with bounded output;
+- an asynchronous keyboard-interactive challenge sheet that preserves protocol
+  name, instruction, prompt ordering, and per-prompt echo policy;
 - explicit cancellation with measured unwind latency for physical-device
   adverse-network checks;
 - negotiated host-key and cipher reporting;
@@ -51,5 +53,6 @@ session survives the transition.
 Password, pasted private-key, and passphrase fields are cleared before each
 attempt. The probe stores their bytes only under random opaque IDs in the
 device-only, non-synchronizing Keychain, resolves them during authentication,
-and deletes every item before reading command output. Use only disposable
-fixture keys in this diagnostic app.
+and deletes every item before reading command output. Keyboard-interactive
+answers live only in the challenge sheet and responder call. Use only
+disposable fixture credentials in this diagnostic app.

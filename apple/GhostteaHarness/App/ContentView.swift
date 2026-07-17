@@ -66,7 +66,7 @@ struct ContentView: View {
           .pickerStyle(.segmented)
           if model.sshAuthentication == .password {
             SecureField("Password", text: $model.password)
-          } else {
+          } else if model.sshAuthentication == .privateKey {
             TextField(
               "Paste disposable OpenSSH private key", text: $model.privateKey, axis: .vertical
             )
@@ -104,17 +104,105 @@ struct ContentView: View {
         }
       }
       .navigationTitle("Ghosttea Phase 0")
-      .sheet(item: $model.pendingHostKey) { pending in
-        HostKeyDecisionView(challenge: pending.challenge) { decision in
-          model.resolveHostKey(decision)
-        }
-        .interactiveDismissDisabled()
+      .sheet(isPresented: sshInteractionPresented) {
+        SSHInteractionView()
+          .environmentObject(model)
+          .interactiveDismissDisabled()
       }
     }
   }
 
   private func formatBytes(_ bytes: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+  }
+
+  private var sshInteractionPresented: Binding<Bool> {
+    Binding(
+      get: { model.isPresentingSSHInteraction },
+      set: { _ in }
+    )
+  }
+}
+
+private struct SSHInteractionView: View {
+  @EnvironmentObject private var model: HarnessModel
+
+  var body: some View {
+    if let pending = model.pendingHostKey {
+      HostKeyDecisionView(challenge: pending.challenge) { decision in
+        model.resolveHostKey(decision)
+      }
+    } else if let pending = model.pendingKeyboardChallenge {
+      KeyboardChallengeView(challenge: pending.challenge) { result in
+        switch result {
+        case .success(let responses):
+          model.resolveKeyboardChallenge(responses)
+        case .failure:
+          model.cancelKeyboardChallenge()
+        }
+      }
+    } else {
+      ProgressView("Continuing authentication…")
+    }
+  }
+}
+
+private struct KeyboardChallengeView: View {
+  let challenge: SSHKeyboardInteractiveChallenge
+  let resolve: (Result<[String], Error>) -> Void
+
+  @State private var responses: [String]
+
+  init(
+    challenge: SSHKeyboardInteractiveChallenge,
+    resolve: @escaping (Result<[String], Error>) -> Void
+  ) {
+    self.challenge = challenge
+    self.resolve = resolve
+    _responses = State(initialValue: Array(repeating: "", count: challenge.prompts.count))
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        if !challenge.name.isEmpty || !challenge.instruction.isEmpty {
+          Section {
+            if !challenge.name.isEmpty {
+              Text(challenge.name)
+                .font(.headline)
+            }
+            if !challenge.instruction.isEmpty {
+              Text(challenge.instruction)
+            }
+          }
+        }
+        Section(challenge.prompts.isEmpty ? "Server message" : "Responses") {
+          if challenge.prompts.isEmpty {
+            Text("The server did not request a response.")
+              .foregroundStyle(.secondary)
+          }
+          ForEach(Array(challenge.prompts.enumerated()), id: \.offset) { index, prompt in
+            if prompt.echoesResponse {
+              TextField(prompt.text, text: $responses[index])
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            } else {
+              SecureField(prompt.text, text: $responses[index])
+            }
+          }
+        }
+        Section {
+          Button(challenge.prompts.isEmpty ? "Continue" : "Submit") {
+            resolve(.success(responses))
+          }
+          Button("Cancel", role: .destructive) {
+            resolve(.failure(CancellationError()))
+          }
+        }
+      }
+      .navigationTitle("Authentication Challenge")
+      .navigationBarTitleDisplayMode(.inline)
+    }
   }
 }
 

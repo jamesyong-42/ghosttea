@@ -208,10 +208,11 @@ separately test the host-neutral demand and queue semantics.
 ## Live-fixture work required before selection
 
 1. Promote the diagnostic asynchronous challenge responder and opaque
-   private-key chooser into product UIKit. Opaque encrypted-key/passphrase
-   resolution through the in-memory key API now passes both the macOS fixture
-   and a physical iPhone; PAM informational text, nonempty protocol
-   name/instruction metadata, and mixed echo/no-echo prompts pass on macOS.
+   private-key chooser into the product connection UI. Opaque
+   encrypted-key/passphrase resolution through the in-memory key API now
+   passes both the macOS fixture and a physical iPhone. PAM informational text
+   passes on macOS; nonempty protocol name/instruction metadata and mixed
+   echo/no-echo prompts pass through the diagnostic UI on a physical iPhone.
 2. Connect the tested unknown/changed host-key responder to UIKit. Strict
    rejection, explicit accept-once decisions, atomic insertion/replacement,
    permission preservation, and strict reconnects already pass.

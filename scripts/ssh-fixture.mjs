@@ -26,8 +26,10 @@ const command = process.argv[2] ?? "test";
 const keepRunning = process.argv.includes("--keep");
 const passwordBindAddress = process.env.GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS ?? "127.0.0.1";
 const publicKeyBindAddress = process.env.GHOSTTEA_SSH_PUBLIC_KEY_BIND_ADDRESS ?? "127.0.0.1";
+const keyboardMetadataBindAddress = process.env.GHOSTTEA_SSH_KEYBOARD_METADATA_BIND_ADDRESS ?? "127.0.0.1";
 const passwordScanHost = passwordBindAddress === "0.0.0.0" ? "127.0.0.1" : passwordBindAddress;
 const publicKeyScanHost = publicKeyBindAddress === "0.0.0.0" ? "127.0.0.1" : publicKeyBindAddress;
+const keyboardMetadataScanHost = keyboardMetadataBindAddress === "0.0.0.0" ? "127.0.0.1" : keyboardMetadataBindAddress;
 const ports = {
   password: process.env.GHOSTTEA_SSH_PASSWORD_PORT ?? "22022",
   keyboard: process.env.GHOSTTEA_SSH_KEYBOARD_PORT ?? "22023",
@@ -43,6 +45,7 @@ const commandEnvironment = {
   GHOSTTEA_SSH_FIXTURE_PUBLIC_KEY: authorizedKeys,
   GHOSTTEA_SSH_PASSWORD_BIND_ADDRESS: passwordBindAddress,
   GHOSTTEA_SSH_PUBLIC_KEY_BIND_ADDRESS: publicKeyBindAddress,
+  GHOSTTEA_SSH_KEYBOARD_METADATA_BIND_ADDRESS: keyboardMetadataBindAddress,
   GHOSTTEA_SSH_PASSWORD_PORT: ports.password,
   GHOSTTEA_SSH_KEYBOARD_PORT: ports.keyboard,
   GHOSTTEA_SSH_PARTIAL_PORT: ports.partial,
@@ -131,7 +134,7 @@ function scanKnownHosts() {
     [ports.publicKey, publicKeyScanHost],
     [ports.ecdsaAesGcm, "127.0.0.1"],
     [ports.rsaSha2, "127.0.0.1"],
-    [ports.metadata, "127.0.0.1", "ed25519"],
+    [ports.metadata, keyboardMetadataScanHost, "ed25519"],
   ].map(([port, host, keyType]) => {
     const keyTypeArguments = keyType ? ["-t", keyType] : [];
     const result = execute("ssh-keyscan", ["-T", "5", ...keyTypeArguments, "-p", port, host]);

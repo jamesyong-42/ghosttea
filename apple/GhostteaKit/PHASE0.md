@@ -104,6 +104,12 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   Restoring Wi-Fi and connecting to a fresh fixture produced the expected
   command output. This proves teardown and fresh connection, not survival of
   the original ordinary SSH session.
+- a physical-device keyboard-interactive probe through a continuous
+  host-key/authentication sheet. The iPhone preserved nonempty protocol name
+  and instruction, prompt order, and mixed echo policy, submitted two factors,
+  authenticated, and drained the expected command output. A competing-sheet
+  presentation race found by the first device attempt is covered by keeping one
+  interaction presentation alive across both stages.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -140,7 +146,7 @@ UIKit, transport state, and the rest of the application.
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
-   remaining credential work is product UI integration, representative-server
+   remaining credential work is production UI promotion, representative-server
    sampling, resolver and reconnect orchestration, automatic network-path state,
    device-footprint instrumentation, and representative low-end-device
    execution. The public-key partial step remains locked as `-19`, so only an

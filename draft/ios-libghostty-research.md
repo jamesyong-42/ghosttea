@@ -212,7 +212,10 @@ open.
 An asynchronous challenge responder now preserves prompt text and echo policy
 without running the synchronous libssh2 callback on a Swift executor; the live
 fixture covers informational and multiple prompt rounds, exact nonempty
-protocol name/instruction metadata, and cancellation.
+protocol name/instruction metadata, and cancellation. A diagnostic challenge
+sheet passes the two-prompt mixed-echo metadata fixture on a physical iPhone;
+one continuous presentation bridges host-key confirmation and authentication
+without losing a challenge during sheet dismissal.
 The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
@@ -221,7 +224,7 @@ non-synchronizing Keychain storage now passes a real iPhone save/load/delete
 cycle. Opaque password and encrypted private-key/passphrase resolution also
 pass the disposable SSH fixture on that device, with credential deletion before
 command output is read and no private-key file. Remaining gates include product
-UIKit integration, representative-server sampling, automatic path-state and
+UI promotion, representative-server sampling, automatic path-state and
 reconnect orchestration, and complete physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 

@@ -9,6 +9,7 @@ final class HarnessModel: ObservableObject {
   enum SSHProbeAuthentication: String, CaseIterable, Identifiable {
     case password = "Password"
     case privateKey = "Private key"
+    case keyboardInteractive = "Keyboard"
 
     var id: Self { self }
   }
@@ -16,6 +17,11 @@ final class HarnessModel: ObservableObject {
   struct PendingHostKey: Identifiable {
     let id = UUID()
     let challenge: SSHCandidateHostKeyChallenge
+  }
+
+  struct PendingKeyboardChallenge: Identifiable {
+    let id = UUID()
+    let challenge: SSHKeyboardInteractiveChallenge
   }
 
   @Published var vtResult = "Not run"
@@ -33,13 +39,20 @@ final class HarnessModel: ObservableObject {
   @Published var sshStatus = "Not connected"
   @Published var sshOutput = ""
   @Published var pendingHostKey: PendingHostKey?
+  @Published var pendingKeyboardChallenge: PendingKeyboardChallenge?
+  @Published private var isBridgingSSHInteraction = false
   @Published var isRunningMemory = false
   @Published var isRunningKeychain = false
   @Published var isRunningSSH = false
 
   private var hostKeyContinuation: CheckedContinuation<SSHCandidateHostKeyDecision, Never>?
+  private var keyboardChallengeContinuation: CheckedContinuation<[String], Error>?
   private var sshTask: Task<Void, Never>?
   private var sshCancellationRequestedAt: ContinuousClock.Instant?
+
+  var isPresentingSSHInteraction: Bool {
+    pendingHostKey != nil || pendingKeyboardChallenge != nil || isBridgingSSHInteraction
+  }
 
   var deviceSummary: String {
     let device = UIDevice.current
@@ -129,6 +142,7 @@ final class HarnessModel: ObservableObject {
     isRunningSSH = true
     sshStatus = "Connecting…"
     sshOutput = ""
+    isBridgingSSHInteraction = false
 
     sshCancellationRequestedAt = nil
     sshTask = Task {
@@ -175,6 +189,15 @@ final class HarnessModel: ObservableObject {
             if let passphraseCredential {
               try await credentialStore.store(requestedPassphrase, for: passphraseCredential)
             }
+          case .keyboardInteractive:
+            credentials = []
+            authentication = .keyboardInteractive(
+              username: requestedUsername,
+              responder: { [weak self] challenge in
+                guard let self else { throw CancellationError() }
+                return try await self.requestKeyboardChallengeResponse(challenge)
+              }
+            )
           }
           let knownHostsPath = try self.knownHostsPath()
           let configuration = try SSHCandidateConfiguration(
@@ -192,6 +215,7 @@ final class HarnessModel: ObservableObject {
           )
           let transport = SSHCandidateTransport(configuration: configuration)
           let connection = try await transport.connect()
+          finishSSHInteraction()
           do {
             try await removeCredentials(credentials, from: credentialStore)
             var negotiatedSummary: String?
@@ -232,6 +256,7 @@ final class HarnessModel: ObservableObject {
           sshStatus = "Failed: \(error)"
         }
       }
+      finishSSHInteraction()
       isRunningSSH = false
       sshCancellationRequestedAt = nil
       sshTask = nil
@@ -243,6 +268,7 @@ final class HarnessModel: ObservableObject {
     sshCancellationRequestedAt = .now
     sshStatus = "Cancelling…"
     resolveHostKey(.reject)
+    cancelKeyboardChallenge()
     sshTask?.cancel()
   }
 
@@ -250,7 +276,24 @@ final class HarnessModel: ObservableObject {
     let continuation = hostKeyContinuation
     hostKeyContinuation = nil
     pendingHostKey = nil
+    isBridgingSSHInteraction = decision != .reject
     continuation?.resume(returning: decision)
+  }
+
+  func resolveKeyboardChallenge(_ responses: [String]) {
+    let continuation = keyboardChallengeContinuation
+    keyboardChallengeContinuation = nil
+    pendingKeyboardChallenge = nil
+    isBridgingSSHInteraction = true
+    continuation?.resume(returning: responses)
+  }
+
+  func cancelKeyboardChallenge() {
+    let continuation = keyboardChallengeContinuation
+    keyboardChallengeContinuation = nil
+    pendingKeyboardChallenge = nil
+    isBridgingSSHInteraction = false
+    continuation?.resume(throwing: CancellationError())
   }
 
   private func requestHostKeyDecision(
@@ -261,8 +304,26 @@ final class HarnessModel: ObservableObject {
     }
     return await withCheckedContinuation { continuation in
       hostKeyContinuation = continuation
+      isBridgingSSHInteraction = false
       pendingHostKey = PendingHostKey(challenge: challenge)
     }
+  }
+
+  private func requestKeyboardChallengeResponse(
+    _ challenge: SSHKeyboardInteractiveChallenge
+  ) async throws -> [String] {
+    if let continuation = keyboardChallengeContinuation {
+      continuation.resume(throwing: CancellationError())
+    }
+    return try await withCheckedThrowingContinuation { continuation in
+      keyboardChallengeContinuation = continuation
+      isBridgingSSHInteraction = false
+      pendingKeyboardChallenge = PendingKeyboardChallenge(challenge: challenge)
+    }
+  }
+
+  private func finishSSHInteraction() {
+    isBridgingSSHInteraction = false
   }
 
   private func knownHostsPath() throws -> String {

@@ -70,8 +70,8 @@ Linux 361f033ac616 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 G
 
 This satisfies the physical-device password-authentication and basic command
 transport baseline. It does not replace representative launch-server coverage,
-keyboard-interactive or public-key credential UI, adverse-network transitions,
-or the stalled-reader flow-control fixture already covered on macOS.
+product credential UI, adverse-network transitions, or the stalled-reader
+flow-control fixture already covered on macOS.
 
 ## 2026-07-16: data-protection Keychain
 
@@ -178,3 +178,34 @@ This satisfies the local physical-device route-loss cancellation and explicit
 fresh-reconnect baseline. Automatic path monitoring, retry policy, UI state,
 and representative launch-server behavior remain product gates. The second
 fixture was stopped and removed immediately after the probe.
+
+## 2026-07-16: keyboard-interactive challenge UI
+
+The signed harness added a keyboard-interactive authentication mode backed by
+the asynchronous `GhostteaSSH` responder. Only the test-only protocol-metadata
+endpoint was temporarily exposed on the trusted LAN. Its fresh Ed25519
+fingerprint was scanned independently on the Mac and supplied for the
+accept-once decision.
+
+The first physical attempt exposed a real presentation race: dismissing the
+host-key sheet while presenting a separate authentication sheet left the
+native callback waiting until the fixture rejected the exchange. The harness
+was corrected to keep one continuous SSH-interaction sheet alive across the
+host-key and authentication stages. The fixture's human-response allowance was
+also made explicit, without adding a client-side authentication timeout.
+
+The rebuilt harness then presented the metadata fixture's protocol name and
+instruction, maintained prompt order, used a secure field for the no-echo
+password prompt, and a visible field for the echo-on verification-code prompt.
+Submitting `ghosttea-password` and `123456` authenticated successfully,
+executed the configured non-PTY command, and drained:
+
+```text
+ghosttea-metadata-command-ok
+```
+
+This closes the diagnostic physical-device keyboard-interactive UI gate for a
+two-prompt, mixed-echo challenge with nonempty name and instruction. Product UI
+promotion, representative 2FA servers, challenge cancellation on device, and
+the explicit public-key-plus-second-factor product policy remain open. The LAN
+fixture was stopped and removed immediately after the successful probe.

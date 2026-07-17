@@ -1327,7 +1327,9 @@ without configured public-key bytes or a path. Unencrypted and encrypted
 fixtures pass, a wrong passphrase is rejected, and no private-key file exists.
 The encrypted private-key/passphrase path also passes on a physical iPhone
 through opaque device-only Keychain items, with both items deleted before
-command output is read. Product UIKit challenge integration,
+command output is read. A continuous diagnostic host-key/authentication sheet
+also passes the exact two-prompt, mixed-echo metadata fixture on a physical
+iPhone. Product authentication UI promotion,
 representative-server sampling, automatic path-state/reconnect orchestration,
 and complete device evidence remain open. Physical Wi-Fi route-loss
 cancellation completes in 23 ms and a fresh connection succeeds after Wi-Fi
@@ -1789,11 +1791,12 @@ nonblocking TCP connector and separate SSH handshake deadline are implemented;
 the local banner-blackhole fixture proves handshake timeout and cancellation.
 The signed VT proof and raw one/four/eight-session footprint matrix pass on an
 iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
-confirmation, password authentication, command execution, and output drain
-against the disposable OpenSSH fixture. The measurements and command output are
-recorded in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
-Representative-server transition execution, product UIKit authentication
-integration, resolver cancellation, automatic path-state/reconnect behavior,
+confirmation, password and keyboard-interactive authentication, command
+execution, and output drain against disposable fixtures. The measurements and
+command output are recorded in
+`apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
+Representative-server transition execution, production authentication UI
+promotion, resolver cancellation, automatic path-state/reconnect behavior,
 device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.

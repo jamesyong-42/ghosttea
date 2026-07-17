@@ -28,6 +28,13 @@ The private-key device probe may instead expose only its endpoint:
 GHOSTTEA_SSH_PUBLIC_KEY_BIND_ADDRESS=192.168.1.20 npm run fixture:ssh:up
 ```
 
+The keyboard-interactive UI probe may expose only the protocol-metadata
+endpoint:
+
+```sh
+GHOSTTEA_SSH_KEYBOARD_METADATA_BIND_ADDRESS=192.168.1.20 npm run fixture:ssh:up
+```
+
 Replace `192.168.1.20` with the Mac's address on the trusted test network.
 
 Shut the fixture down immediately after the device probe with
