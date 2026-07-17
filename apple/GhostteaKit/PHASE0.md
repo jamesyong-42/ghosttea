@@ -229,3 +229,18 @@ iPhone simulator, and on the physical iPhone 14 Pro. All three produce the same
 fixture as the checked-in desktop golden. System-font discovery is retained
 only as an explicitly non-parity desktop mode. Final font-license review remains
 a release checklist item, as agreed, rather than a Phase 2 implementation gate.
+
+Phase 3 completed on 2026-07-17. `ghosttea-ffi` exposes a versioned C ABI with
+opaque runtime and terminal handles, copied font inputs, one aligned owned arena
+per ordered update, explicit destruction, thread-local diagnostics, and
+terminal/runtime poison rules after contained panics. The ABI includes feed,
+refresh, resize, color, scroll, keyboard, mouse, focus, paste, selection, and
+accessibility operations. `GhostteaCore` wraps it with strong Swift ownership
+and actor-serialized terminal mutation while reusing the Phase 2 font bundle.
+Exact direct-Rust/FFI fixtures, malformed-input and poison tests, 100-iteration
+Rust and Swift ownership loops, strict Clippy, C header compilation, and macOS
+AddressSanitizer all pass. The generated XCFramework contains macOS arm64, iOS
+arm64, and iOS Simulator arm64 slices with version, toolchain, header, and
+library-digest metadata. macOS and arm64 iPhone Simulator Swift runtime parity
+pass; physical-device execution is recorded separately in the compatibility
+evidence.

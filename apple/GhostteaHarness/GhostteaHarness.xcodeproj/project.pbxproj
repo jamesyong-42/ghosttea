@@ -15,6 +15,7 @@
 		100000000000000000000006 /* GhostteaSSH in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* GhostteaSSH */; };
 		100000000000000000000007 /* GhostteaCredentials in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000003 /* GhostteaCredentials */; };
 		100000000000000000000008 /* GhostteaFontProof in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000004 /* GhostteaFontProof */; };
+		100000000000000000000009 /* GhostteaCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000005 /* GhostteaCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +33,7 @@
 			files = (
 				100000000000000000000007 /* GhostteaCredentials in Frameworks */,
 				100000000000000000000008 /* GhostteaFontProof in Frameworks */,
+				100000000000000000000009 /* GhostteaCore in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -88,6 +90,7 @@
 				A00000000000000000000002 /* GhostteaSSH */,
 				A00000000000000000000003 /* GhostteaCredentials */,
 				A00000000000000000000004 /* GhostteaFontProof */,
+				A00000000000000000000005 /* GhostteaCore */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -293,6 +296,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaFontProof;
+		};
+		A00000000000000000000005 /* GhostteaCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -9,6 +9,7 @@ const artifacts = [
   join(root, "apple/GhostteaKit/Artifacts/ghosttea-libssh2-candidate.xcframework"),
 ];
 const fontFixtureArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-font-fixture.xcframework");
+const coreArtifact = join(root, "apple/GhostteaKit/Artifacts/GhostteaCoreFFI.xcframework");
 const combinedArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-apple-native.xcframework");
 const buildRoot = join(root, "native/build/ios-harness");
 const moduleCache = join(buildRoot, "module-cache");
@@ -36,6 +37,15 @@ if (fontFixture.error) throw fontFixture.error;
 if (fontFixture.status !== 0) throw new Error(fontFixture.stdout + fontFixture.stderr);
 process.stdout.write(fontFixture.stdout);
 if (!existsSync(fontFixtureArtifact)) throw new Error(`Missing ${fontFixtureArtifact}.`);
+const core = spawnSync(process.execPath, [join(root, "scripts/build-ghosttea-core-apple.mjs")], {
+  cwd: root,
+  env: environment,
+  encoding: "utf8",
+});
+if (core.error) throw core.error;
+if (core.status !== 0) throw new Error(core.stdout + core.stderr);
+process.stdout.write(core.stdout);
+if (!existsSync(coreArtifact)) throw new Error(`Missing ${coreArtifact}.`);
 const compose = spawnSync(process.execPath, [join(root, "scripts/compose-ghosttea-apple-native.mjs")], {
   cwd: root,
   env: environment,

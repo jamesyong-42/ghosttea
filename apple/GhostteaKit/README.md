@@ -2,13 +2,13 @@
 
 This directory is the Apple-side Phase 0 integration package for the iOS terminal project described in [`draft/ios-terminal-design.md`](../../draft/ios-terminal-design.md).
 
-It currently proves that Swift can link the pinned upstream `libghostty-vt`
-XCFramework and exercise terminal creation, VT input, resize, state queries,
-and key encoding. It also contains the host-neutral, demand-driven
+It proves the pinned upstream `libghostty-vt`, shared Rust text engine, and
+production `ghosttea-core` model on Apple targets. `GhostteaCore` is the safe
+Swift boundary over the versioned `ghosttea-ffi` C ABI and its ordered effect
+arena. The package also contains the host-neutral, demand-driven
 `GhostteaTransport` contract and a pinned libssh2/OpenSSL nonblocking candidate.
-The raw Ghostty and libssh2 APIs are explicitly not application contracts. The
-planned stable terminal boundary is `GhostteaCoreFFI.xcframework`, backed by
-the shared Ghosttea model and ordered effect stream.
+The raw Ghostty, Rust, and libssh2 APIs are explicitly not application
+contracts.
 
 `GhostteaCredentials` defines the first persistent-secret boundary. It stores
 opaque credential references in Apple's device-only, non-synchronizing
@@ -28,9 +28,12 @@ npm run build:ghostty-vt:apple
 npm run bootstrap:ssh:apple
 npm run build:ssh:apple
 npm run build:font-parity:apple
+npm run build:ghosttea-core:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
 npm run test:font-parity:apple-runtime
+npm run test:ghosttea-core:ffi
+npm run test:ghosttea-core:apple-runtime
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
@@ -40,11 +43,11 @@ npm run bench:ghostty-vt:apple:matrix
 The Ghostty build uses a repository-pinned Zig archive and Ghostty commit. The
 SSH candidate build uses pinned OpenSSL and libssh2 commits. Both produce and
 validate macOS, iOS device, and iOS simulator slices. Before SwiftPM resolves
-the package, `compose-ghosttea-apple-native.mjs` combines the VT, SSH, and Rust
-font-fixture libraries into one generated XCFramework with separate `GhosttyVt`,
-`LibSSH2Candidate`, and `GhostteaFontFixtureNative` Clang modules. This avoids
-Xcode's flattened-header collision when an application links multiple static
-binary targets. The test script runs
+the package, `compose-ghosttea-apple-native.mjs` combines the VT, SSH, Rust
+font-fixture, and production core libraries into one generated XCFramework with
+separate `GhosttyVt`, `LibSSH2Candidate`, `GhostteaFontFixtureNative`, and
+`GhostteaCoreNative` Clang modules. This avoids Xcode's flattened-header
+collision when an application links multiple static binary targets. The test script runs
 the Swift proofs on macOS and cross-compiles the relevant targets for the arm64
 iOS simulator and device SDKs.
 
@@ -54,6 +57,17 @@ The runtime script compares its normalized geometry and glyph bitmap hashes with
 the desktop golden on macOS and an iPhone simulator. Pass `--device` directly to
 `scripts/test-font-parity-apple-runtime.mjs` to include a connected, unlocked,
 signed physical iPhone run.
+
+`GhostteaCore` loads those same package resources and owns runtime and terminal
+handles through Swift reference types and a terminal actor. Each update owns a
+single aligned native arena whose descriptors retain the core's exact effect
+order; callers may copy payloads or borrow them for the duration of a closure.
+`npm run test:ghosttea-core:ffi` checks the public header, malformed arguments,
+panic poisoning, exact direct-Rust parity, repeated ownership lifecycles, strict
+Clippy, and an AddressSanitizer build. The Apple runtime runner checks the same
+reply, logical snapshot, accessibility text, and TRF1 frame through Swift on
+macOS and iOS. Add `--device` to the underlying runner for physical-device
+evidence.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

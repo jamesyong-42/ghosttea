@@ -4,6 +4,7 @@ members = [
   "native/ghosttead",
   "native/terminald",
   "native/terminald/crates/ghosttea-core",
+  "native/terminald/crates/ghosttea-ffi",
   "native/terminald/crates/font-fixture-ffi",
   "native/terminald/crates/ghostty-adapter",
   "native/terminald/crates/ghostty-vt-sys",

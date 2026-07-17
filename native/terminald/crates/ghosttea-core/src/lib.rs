@@ -13,7 +13,7 @@ pub use effects::{ClipboardRequest, TerminalEffect, TerminalMetadata, TerminalUp
 pub use frame::{FrameCursor, TextSnapshot, encode_text_snapshot};
 pub use input_order::InputOrderState;
 pub use logical::{
-    LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
+    AccessibilityRow, LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
     LogicalTerminalPatch, LogicalTerminalSnapshot, RowReplacement,
 };
 pub use model::{RenderRequest, TerminalModel, TerminalModelOptions, TerminalRuntime};

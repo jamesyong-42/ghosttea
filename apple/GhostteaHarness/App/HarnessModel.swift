@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import GhostteaCredentials
+import GhostteaCore
 import GhostteaFontProof
 import GhostteaSSH
 import GhostteaTransport
@@ -57,6 +58,7 @@ final class HarnessModel: ObservableObject {
 
   @Published var vtResult = "Not run"
   @Published var fontParityResult = "Not run"
+  @Published var coreResult = "Not run"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
@@ -84,6 +86,7 @@ final class HarnessModel: ObservableObject {
   @Published private var isBridgingSSHInteraction = false
   @Published var isRunningMemory = false
   @Published var isRunningFontParity = false
+  @Published var isRunningCore = false
   @Published var isRunningWholeAppMemory = false
   @Published var isRunningActiveSSHMemory = false
   @Published var isRunningKeychain = false
@@ -124,6 +127,10 @@ final class HarnessModel: ObservableObject {
     Task { [weak self] in
       await Task.yield()
       self?.runFontParityProof()
+    }
+    Task { [weak self] in
+      await Task.yield()
+      self?.runCoreProof()
     }
   }
 
@@ -175,6 +182,55 @@ final class HarnessModel: ObservableObject {
 
   private func finishFontParityAutomation(exitCode: Int32) {
     guard ProcessInfo.processInfo.environment["GHOSTTEA_FONT_PARITY_AUTOMATION"] == "1" else {
+      return
+    }
+    fflush(nil)
+    Darwin.exit(exitCode)
+  }
+
+  func runCoreProof() {
+    guard !isRunningCore else { return }
+    isRunningCore = true
+    coreResult = "Running production C ABI fixture…"
+    Task {
+      do {
+        let runtime = try GhostteaRuntime()
+        let terminal = try GhostteaTerminal(
+          runtime: runtime,
+          configuration: .init(sessionHandle: 42)
+        )
+        let update = try await terminal.feed(
+          Data("phase3-device\r\n\u{1B}]0;core-title\u{07}\u{1B}[6n".utf8),
+          render: .full
+        )
+        let kinds = update.effects.map(\.kind)
+        guard update.effects.map(\.sequence) == Array(0..<UInt32(update.effects.count)),
+          kinds.first == .writeToTransport,
+          kinds.contains(.frameReady),
+          kinds.contains(.logicalSnapshotJSON),
+          !(await terminal.isPoisoned),
+          !runtime.isPoisoned
+        else {
+          throw HarnessError.coreParityMismatch
+        }
+        let accessibility = try await terminal.accessibilityRows(start: 0, count: 2)
+        guard String(decoding: accessibility, as: UTF8.self).contains("phase3-device") else {
+          throw HarnessError.coreParityMismatch
+        }
+        coreResult = "Passed · ordered production ABI effects and TRF1"
+        print("GHOSTTEA_CORE_PASS")
+        finishCoreAutomation(exitCode: 0)
+      } catch {
+        coreResult = "Failed: \(error)"
+        print("GHOSTTEA_CORE_ERROR \(error)")
+        finishCoreAutomation(exitCode: 2)
+      }
+      isRunningCore = false
+    }
+  }
+
+  private func finishCoreAutomation(exitCode: Int32) {
+    guard ProcessInfo.processInfo.environment["GHOSTTEA_CORE_AUTOMATION"] == "1" else {
       return
     }
     fflush(nil)
@@ -961,6 +1017,7 @@ final class HarnessModel: ObservableObject {
 }
 
 private enum HarnessError: Error, CustomStringConvertible {
+  case coreParityMismatch
   case keychainRemovalFailed
   case keychainRoundTripMismatch
   case outputLimitExceeded
@@ -968,6 +1025,8 @@ private enum HarnessError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
+    case .coreParityMismatch:
+      return "production core fixture did not preserve ordered effects and state"
     case .keychainRemovalFailed:
       return "credential remained after Keychain removal"
     case .keychainRoundTripMismatch:

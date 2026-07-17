@@ -8,9 +8,9 @@ use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine
 use ghosttea_vt::{GhosttyTerminalCore, TerminalSnapshot};
 
 use crate::{
-    ClipboardRequest, FrameCursor, LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow,
-    LogicalScrollbar, LogicalTerminalSnapshot, TerminalEffect, TerminalMetadata, TerminalUpdate,
-    TextSnapshot, encode_text_snapshot,
+    AccessibilityRow, ClipboardRequest, FrameCursor, LogicalCell, LogicalCellStyle, LogicalCursor,
+    LogicalRow, LogicalScrollbar, LogicalTerminalSnapshot, TerminalEffect, TerminalMetadata,
+    TerminalUpdate, TextSnapshot, encode_text_snapshot,
 };
 
 #[derive(Clone)]
@@ -184,6 +184,29 @@ impl TerminalModel {
         select_all: bool,
     ) -> Result<String> {
         Ok(self.terminal.selection_text(start, end, select_all)?)
+    }
+
+    pub fn accessibility_rows(
+        &self,
+        start_row: u16,
+        row_count: u16,
+    ) -> Result<Vec<AccessibilityRow>> {
+        let snapshot = self
+            .latest_logical
+            .as_ref()
+            .context("terminal has no logical snapshot; request a rendered refresh first")?;
+        let start = usize::from(start_row).min(snapshot.rows.len());
+        let end = start
+            .saturating_add(usize::from(row_count))
+            .min(snapshot.rows.len());
+        Ok(snapshot.rows[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, row)| AccessibilityRow {
+                row: u16::try_from(start + offset).expect("logical row index fits u16"),
+                text: row.text.clone(),
+            })
+            .collect())
     }
 
     pub fn encode_paste(&mut self, text: &str) -> Result<Vec<u8>> {

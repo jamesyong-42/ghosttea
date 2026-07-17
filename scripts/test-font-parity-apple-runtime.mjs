@@ -17,6 +17,11 @@ const project = join(root, "apple/GhostteaHarness/GhostteaHarness.xcodeproj");
 const runOnDevice = process.argv.includes("--device");
 const deviceOnly = process.argv.includes("--device-only");
 const skipBuild = process.argv.includes("--skip-build");
+const coreMode = process.argv.includes("--core");
+const marker = coreMode ? "GHOSTTEA_CORE_PASS" : "GHOSTTEA_FONT_PARITY_PASS";
+const automationVariable = coreMode ? "GHOSTTEA_CORE_AUTOMATION" : "GHOSTTEA_FONT_PARITY_AUTOMATION";
+const testFilter = coreMode ? "GhostteaCoreTests" : "GhostteaFontProofTests";
+const checkName = coreMode ? "production core ABI" : "bundled-font runtime parity";
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -32,11 +37,15 @@ function execute(program, args, options = {}) {
   return result;
 }
 
-function jsonOutput(program, args) {
+function jsonOutput(program, args, options = {}) {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ghosttea-font-runtime-"));
   const output = join(temporaryDirectory, "output.json");
   try {
-    execute(program, [...args, "--json-output", output, "--quiet"]);
+    const result = execute(program, [...args, "--json-output", output, "--quiet"], {
+      allowFailure: options.allowFailure,
+      capture: options.allowFailure,
+    });
+    if (result.status !== 0) return undefined;
     return JSON.parse(readFileSync(output, "utf8"));
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -45,10 +54,10 @@ function jsonOutput(program, args) {
 
 function requirePass(result, platform) {
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  if (result.status !== 0 || !output.includes("GHOSTTEA_FONT_PARITY_PASS")) {
-    throw new Error(`${platform} font parity runtime failed:\n${output}`);
+  if (result.status !== 0 || !output.includes(marker)) {
+    throw new Error(`${platform} ${checkName} failed:\n${output}`);
   }
-  console.log(`${platform} bundled-font runtime parity passed.`);
+  console.log(`${platform} ${checkName} passed.`);
 }
 
 function runMacOS() {
@@ -59,9 +68,9 @@ function runMacOS() {
     "--package-path",
     join(root, "apple/GhostteaKit"),
     "--filter",
-    "GhostteaFontProofTests",
+    testFilter,
   ]);
-  console.log("macOS bundled-font runtime parity passed.");
+  console.log(`macOS ${checkName} passed.`);
 }
 
 function runSimulator() {
@@ -83,7 +92,7 @@ function runSimulator() {
     {
       capture: true,
       allowFailure: true,
-      environment: { SIMCTL_CHILD_GHOSTTEA_FONT_PARITY_AUTOMATION: "1" },
+      environment: { [`SIMCTL_CHILD_${automationVariable}`]: "1" },
     },
   );
   requirePass(result, `${simulator.name} simulator`);
@@ -106,16 +115,42 @@ function connectedDevice() {
     (device) =>
       device.hardwareProperties?.platform === "iOS" &&
       device.hardwareProperties?.reality === "physical" &&
-      device.connectionProperties?.pairingState === "paired" &&
-      device.connectionProperties?.tunnelState === "connected",
+      device.connectionProperties?.pairingState === "paired",
   );
   if (devices.length !== 1) throw new Error(`Expected one connected iPhone, found ${devices.length}.`);
   return devices[0];
 }
 
-function runDevice() {
+function deviceIsUnlocked(device) {
+  const response = jsonOutput(
+    "xcrun",
+    ["devicectl", "device", "info", "lockState", "--device", device.identifier],
+    { allowFailure: true },
+  );
+  // CoreDevice can briefly release its tunnel/resource while the phone is
+  // locking or unlocking. Treat that as unavailable and retry until the same
+  // deadline instead of failing a deterministic device gate.
+  return response ? !response.result.passcodeRequired : false;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+async function waitForUnlockedDevice(device) {
+  if (deviceIsUnlocked(device)) return;
+  console.log(`Unlock ${device.hardwareProperties.marketingName}; launch will continue automatically…`);
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    await delay(1_000);
+    if (deviceIsUnlocked(device)) return;
+  }
+  throw new Error(`Timed out waiting for ${device.hardwareProperties.marketingName} to be unlocked.`);
+}
+
+async function runDevice() {
   const device = connectedDevice();
-  const derivedData = join(root, "native/build/ios-harness/signed-font-parity");
+  const derivedData = join(root, "native/build/ios-harness/signed-runtime-check");
   execute("xcodebuild", [
     "-project",
     project,
@@ -133,8 +168,7 @@ function runDevice() {
     "CODE_SIGN_STYLE=Automatic",
     "build",
   ]);
-  const lock = jsonOutput("xcrun", ["devicectl", "device", "info", "lockState", "--device", device.identifier]).result;
-  if (lock.passcodeRequired) throw new Error(`Unlock ${device.hardwareProperties.marketingName}.`);
+  await waitForUnlockedDevice(device);
   const app = join(derivedData, "Build/Products/Debug-iphoneos/GhostteaHarness.app");
   execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
   const result = execute(
@@ -151,7 +185,7 @@ function runDevice() {
       "--timeout",
       "30",
       "--environment-variables",
-      JSON.stringify({ GHOSTTEA_FONT_PARITY_AUTOMATION: "1" }),
+      JSON.stringify({ [automationVariable]: "1" }),
       bundleIdentifier,
     ],
     { capture: true, allowFailure: true },
@@ -164,4 +198,4 @@ if (!deviceOnly) {
   runMacOS();
   runSimulator();
 }
-if (runOnDevice || deviceOnly) runDevice();
+if (runOnDevice || deviceOnly) await runDevice();

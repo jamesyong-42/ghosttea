@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaFontFixtureNative
+import GhostteaFonts
 
 public enum GhostteaFontProofError: Error, CustomStringConvertible {
   case missingResource(String)
@@ -28,30 +29,9 @@ public struct GhostteaFontProofResult: Sendable {
 }
 
 public enum GhostteaFontProof {
-  private static let fonts = [
-    "JetBrainsMonoNerdFont-Regular",
-    "JetBrainsMonoNerdFont-Bold",
-    "JetBrainsMonoNerdFont-Italic",
-    "JetBrainsMonoNerdFont-BoldItalic",
-    "NotoColorEmoji",
-  ]
-
   public static func run() throws -> GhostteaFontProofResult {
-    let fontData = try fonts.map { name in
-      guard
-        let url = Bundle.module.url(
-          forResource: name, withExtension: "ttf", subdirectory: "Fonts")
-          ?? Bundle.module.url(forResource: name, withExtension: "ttf")
-      else {
-        throw GhostteaFontProofError.missingResource("Fonts/\(name).ttf")
-      }
-      return try Data(contentsOf: url, options: .mappedIfSafe)
-    }
-    guard let goldenURL = Bundle.module.url(forResource: "font-parity", withExtension: "json")
-    else {
-      throw GhostteaFontProofError.missingResource("font-parity.json")
-    }
-    let golden = try Data(contentsOf: goldenURL)
+    let fontData = try GhostteaBundledFonts.load().map(\.data)
+    let golden = try GhostteaBundledFonts.parityGolden()
     let actual = try generate(fontData)
     let passed = try jsonObject(actual).isEqual(jsonObject(golden))
     guard let actualJSON = String(data: actual, encoding: .utf8) else {

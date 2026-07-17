@@ -42,6 +42,18 @@ struct ContentView: View {
           .foregroundStyle(.secondary)
         }
 
+        Section("Ghosttea production core") {
+          Text(model.coreResult)
+            .font(.footnote)
+          Button(model.isRunningCore ? "Running…" : "Run production core fixture") {
+            model.runCoreProof()
+          }
+          .disabled(model.isRunningCore)
+          Text("Exercises the versioned C ABI, ordered effects, TRF1 arena ownership, and accessibility rows.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
         Section("Memory matrix") {
           Text(model.memoryStatus)
             .font(.footnote)

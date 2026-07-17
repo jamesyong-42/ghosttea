@@ -10,6 +10,7 @@ let package = Package(
   ],
   products: [
     .library(name: "GhostteaCredentials", targets: ["GhostteaCredentials"]),
+    .library(name: "GhostteaCore", targets: ["GhostteaCore"]),
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
@@ -37,8 +38,27 @@ let package = Package(
     ),
     .target(
       name: "GhostteaFontProof",
-      dependencies: ["GhostteaAppleNative"],
-      resources: [.process("Resources")],
+      dependencies: ["GhostteaAppleNative", "GhostteaFonts"],
+      exclude: ["Resources"],
+      linkerSettings: [
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("CoreText"),
+        .linkedLibrary("c++"),
+      ]
+    ),
+    .target(
+      name: "GhostteaFonts",
+      path: "Sources/GhostteaFontProof/Resources",
+      resources: [
+        .process("Fonts"),
+        .copy("FONT-NOTICES.md"),
+        .copy("OFL-1.1.txt"),
+        .copy("font-parity.json"),
+      ]
+    ),
+    .target(
+      name: "GhostteaCore",
+      dependencies: ["GhostteaAppleNative", "GhostteaFonts"],
       linkerSettings: [
         .linkedFramework("CoreGraphics"),
         .linkedFramework("CoreText"),
@@ -69,6 +89,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaFontProofTests",
       dependencies: ["GhostteaFontProof"]
+    ),
+    .testTarget(
+      name: "GhostteaCoreTests",
+      dependencies: ["GhostteaCore"]
     ),
     .testTarget(
       name: "GhostteaSSHTests",

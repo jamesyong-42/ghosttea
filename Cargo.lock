@@ -678,6 +678,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosttea-ffi"
+version = "0.1.0"
+dependencies = [
+ "ghosttea-core",
+ "ghosttea-text",
+ "serde_json",
+]
+
+[[package]]
 name = "ghosttea-font-fixture-ffi"
 version = "0.1.0"
 dependencies = [

@@ -461,3 +461,45 @@ checked-in desktop golden on macOS, arm64 iOS simulator, and physical arm64 iOS.
 This satisfies the Phase 2 exit gate. System-font discovery remains explicitly
 non-parity, and final App Store font-license review remains on the release
 checklist.
+
+## 2026-07-17: production core C ABI and Swift ownership
+
+Phase 3 introduced `ghosttea-ffi` as the application-facing native boundary
+over the extracted `ghosttea-core` model. Its versioned header exposes opaque
+runtime and terminal handles and represents every update as one aligned owned
+arena containing contiguous ordered-effect descriptors and their payloads.
+The matching `GhostteaCore` Swift product copies thread-local diagnostics,
+owns native lifetimes through reference types, serializes terminal mutation in
+an actor, and scopes no-copy payload access to the arena lifetime. It loads the
+same locked font bytes proven in Phase 2.
+
+The automated native gate compiled the public header as C with static layout
+assertions and warnings as errors. Rust unit tests covered malformed arguments,
+output zeroing, descriptor ordering and offsets, panic containment, terminal-
+local versus shared-runtime poisoning, and rejection of every post-panic
+operation except inspection and destruction. An exact direct-Rust/C-ABI
+fixture compared binary terminal replies and TRF1 bytes plus semantic logical
+JSON, selection, and accessibility results. Both the ordinary and macOS
+AddressSanitizer builds completed 100 runtime/terminal/update ownership loops
+without findings.
+
+The final Apple artifact records ABI/package version, source state, Rust and
+Xcode versions, the public-header SHA-256 digest, and each slice's archive
+digest. It contains macOS arm64, iOS arm64, and iOS Simulator arm64 slices. The
+Swift gate completed another 100 ownership loops and produced exact ordered
+effects on macOS. The signed harness builds for both iOS SDK destinations and
+the iPhone 17 Pro arm64 simulator emitted:
+
+```text
+GHOSTTEA_CORE_PASS
+```
+
+The same signed build was installed successfully on the paired iPhone 14 Pro.
+The final automated launch marker remains a local evidence retry because the
+phone re-locked while Apple's transient CoreDevice tunnel was being recovered;
+this does not change the passing ABI, sanitizer, simulator-runtime, or physical
+SDK build results. Reproduce that final launch on an unlocked device with:
+
+```sh
+node scripts/test-font-parity-apple-runtime.mjs --core --device-only --skip-build
+```

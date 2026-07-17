@@ -1,0 +1,17 @@
+[package]
+name = "ghosttea-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+ghosttea-core = { path = "../ghosttea-core" }
+ghosttea-text = { path = "../text-engine" }
+serde_json.workspace = true

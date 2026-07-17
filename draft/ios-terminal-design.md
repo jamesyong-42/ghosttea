@@ -1940,6 +1940,25 @@ results across supported Apple targets.
 
 **Estimated effort:** 1-2 weeks
 
+**Completed:** 2026-07-17. `ghosttea-ffi` is the versioned production boundary
+over `ghosttea-core`. It returns ordered descriptors plus binary/JSON payloads
+in one alignment-safe owned arena, copies borrowed font data at runtime
+creation, contains panics, and permanently poisons the affected terminal or
+shared runtime scope. Its operation surface includes model mutation, encoded
+input, selection extraction, and accessibility rows. `GhostteaCore` provides
+strong Swift lifetime ownership, immediate diagnostic copying, terminal-actor
+serialization, and scoped no-copy payload access while sharing the Phase 2
+font resources. The generated Apple artifact has macOS arm64, iOS arm64, and
+iOS Simulator arm64 slices with ABI/toolchain/digest metadata.
+
+The exact direct-Rust versus C-ABI fixture passes for replies, logical
+snapshots, and TRF1 frames. C layout/malformed-argument tests, panic/poison
+tests, strict Clippy, 100-iteration Rust and Swift ownership loops, and a macOS
+AddressSanitizer run pass. Swift runtime parity passes on macOS and arm64 iPhone
+Simulator; physical-device proof is retained in the Apple compatibility
+evidence. Phase 4 may begin without exposing the upstream Ghostty or Rust ABI
+to application code.
+
 Deliverables:
 
 - create `ghosttea-ffi` and generated or hand-maintained header;

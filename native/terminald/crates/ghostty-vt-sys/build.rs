@@ -44,6 +44,12 @@ fn main() {
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
     let target = env::var("TARGET").expect("Cargo target triple");
+    if let Some(prefix) = env::var_os("GHOSTTY_VT_PREFIX") {
+        let prefix = PathBuf::from(prefix);
+        validate_local_override(&prefix);
+        link(&prefix, &out);
+        return;
+    }
     let manifest: ArtifactManifest = serde_json::from_str(include_str!("artifacts.json"))
         .expect("valid Ghostty artifact manifest");
     assert_eq!(
@@ -68,10 +74,6 @@ fn main() {
 }
 
 fn resolve_prefix(manifest_dir: &Path, out: &Path, artifact: &TargetArtifact) -> PathBuf {
-    if let Some(prefix) = env::var_os("GHOSTTY_VT_PREFIX") {
-        return PathBuf::from(prefix);
-    }
-
     if let Some(bundle) = env::var_os("GHOSTTEA_GHOSTTY_VT_BUNDLE") {
         return extract_bundle(&PathBuf::from(bundle), out, artifact);
     }
@@ -103,6 +105,17 @@ fn resolve_prefix(manifest_dir: &Path, out: &Path, artifact: &TargetArtifact) ->
         .unwrap_or_else(|error| panic!("failed to read Ghostty VT bundle from {url}: {error}"));
     fs::write(&bundle, contents).expect("write downloaded Ghostty VT bundle");
     extract_bundle(&bundle, out, artifact)
+}
+
+fn validate_local_override(prefix: &Path) {
+    let library = prefix.join("lib/libghostty-vt.a");
+    let header = prefix.join("include/ghostty/vt.h");
+    assert!(
+        library.is_file() && header.is_file(),
+        "GHOSTTY_VT_PREFIX must contain lib/libghostty-vt.a and include/ghostty/vt.h"
+    );
+    println!("cargo:rerun-if-changed={}", library.display());
+    println!("cargo:rerun-if-changed={}", header.display());
 }
 
 fn extract_bundle(bundle: &Path, out: &Path, artifact: &TargetArtifact) -> PathBuf {

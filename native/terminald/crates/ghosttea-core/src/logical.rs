@@ -83,3 +83,10 @@ pub struct LogicalCursor {
     pub style: u8,
     pub blinking: bool,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessibilityRow {
+    pub row: u16,
+    pub text: String,
+}
