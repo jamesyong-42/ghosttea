@@ -1863,9 +1863,11 @@ Optional parallel spike:
 the ordered `TerminalUpdate`/`TerminalEffect` contract, Ghostty model, logical
 snapshots, shaping/render cache, counters, and TRF1 producer. Desktop `Session`
 is now a PTY adapter that executes returned effects after releasing the model
-lock. The unchanged tunnel protocol, complete Rust workspace, daemon smoke test,
-pre-extraction TRF1 golden, and terminal benchmark pass. The next slice moves
-remaining reusable remote-replica rendering and input/view ordering policy.
+lock. Multi-view authority, per-attachment input deduplication, and global
+human/automation input ordering are also core-owned state machines; PTY queueing
+remains host policy. The unchanged tunnel protocol, complete Rust workspace,
+daemon smoke test, pre-extraction TRF1 golden, and terminal benchmark pass. The
+next slice moves the remaining reusable remote-replica renderer.
 
 The embedding refactor has landed and passed its package and integration checks.
 `native/terminald/fixtures/phase1/ansi-baseline.json` now freezes the

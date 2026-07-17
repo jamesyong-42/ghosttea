@@ -213,5 +213,7 @@ definitions; add shaped-frame parity after the bundled font decision.
 
 Phase 1 started on 2026-07-17: `ghosttea-core` now owns the ordered effect batch,
 Ghostty model, logical snapshots, shaping/render cache, counters, and TRF1
-producer. Desktop `Session` executes effects as the PTY host, while the existing
-serialized tunnel representation remains unchanged.
+producer, plus view authority, input deduplication, and human/automation input
+ordering. Desktop `Session` executes effects and queues authorized operations as
+the PTY host, while the existing serialized tunnel representation remains
+unchanged.

@@ -1,3 +1,5 @@
+//! Multi-view attachment, control, resize, and input-deduplication policy.
+
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
@@ -34,12 +36,22 @@ pub struct ControlChanged {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PreparedResize {
-    pub(crate) resize_sequence: u64,
-    pub(crate) cols: u16,
-    pub(crate) rows: u16,
-    pub(crate) layout_epoch: u64,
-    pub(crate) size_changed: bool,
+pub struct PreparedResize {
+    resize_sequence: u64,
+    cols: u16,
+    rows: u16,
+    layout_epoch: u64,
+    size_changed: bool,
+}
+
+impl PreparedResize {
+    pub fn layout_epoch(self) -> u64 {
+        self.layout_epoch
+    }
+
+    pub fn size_changed(self) -> bool {
+        self.size_changed
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +179,7 @@ impl ViewAuthority {
         Ok(prepared.size_changed)
     }
 
-    pub(crate) fn prepare_resize(
+    pub fn prepare_resize(
         &self,
         view_id: &str,
         client_id: &str,
@@ -202,7 +214,7 @@ impl ViewAuthority {
         }))
     }
 
-    pub(crate) fn commit_resize(&mut self, view_id: &str, prepared: PreparedResize) {
+    pub fn commit_resize(&mut self, view_id: &str, prepared: PreparedResize) {
         let view = self
             .views
             .get_mut(view_id)

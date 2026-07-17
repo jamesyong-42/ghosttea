@@ -12,16 +12,15 @@ use std::{
 
 use anyhow::{Context, Result};
 use ghosttea_core::{
-    ClipboardRequest, LogicalTerminalSnapshot, RenderRequest, TerminalEffect, TerminalModel,
-    TerminalModelOptions, TerminalRuntime, TerminalUpdate,
+    ClipboardRequest, ControlChanged, ControllerState, InputOrderState, LogicalTerminalSnapshot,
+    RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
+    TerminalUpdate, ViewAccess, ViewAuthority,
 };
 use ghosttea_text::TextEngine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
-
-use crate::authority::{ControlChanged, ControllerState, ViewAccess, ViewAuthority};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -224,12 +223,6 @@ enum InputOperation {
     Focus(bool),
     Interrupt,
     Automation(AutomationInputOperation),
-}
-
-#[derive(Default)]
-struct InputOrderState {
-    human_input_epoch: u64,
-    input_sequence: u64,
 }
 
 struct PtyProcess {
@@ -704,11 +697,11 @@ impl Session {
         else {
             return Ok(false);
         };
-        if prepared.size_changed {
-            self.apply_resize(cols, rows, prepared.layout_epoch, previous_size)?;
+        if prepared.size_changed() {
+            self.apply_resize(cols, rows, prepared.layout_epoch(), previous_size)?;
         }
         authority.commit_resize(view_id, prepared);
-        Ok(prepared.size_changed)
+        Ok(prepared.size_changed())
     }
 
     pub fn control_state(&self) -> (Option<ControllerState>, u16, u16, u64) {
@@ -769,14 +762,15 @@ impl Session {
             .try_send(operation)
             .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))?;
         if counts_as_human_input {
-            order.human_input_epoch = order.human_input_epoch.saturating_add(1);
+            order.record_input(true);
+        } else {
+            order.record_input(false);
         }
-        order.input_sequence = order.input_sequence.saturating_add(1);
         Ok(())
     }
 
     pub fn automation_state(&self) -> u64 {
-        self.input_order.lock().unwrap().human_input_epoch
+        self.input_order.lock().unwrap().human_input_epoch()
     }
 
     pub fn automation_input(
@@ -785,21 +779,21 @@ impl Session {
         operation: AutomationInputOperation,
     ) -> Result<AutomationInputResult> {
         let mut order = self.input_order.lock().unwrap();
-        if order.human_input_epoch != expected_human_input_epoch {
+        if !order.accepts_automation(expected_human_input_epoch) {
             return Ok(AutomationInputResult {
                 accepted: false,
-                human_input_epoch: order.human_input_epoch,
+                human_input_epoch: order.human_input_epoch(),
                 input_sequence: None,
             });
         }
         self.input_tx
             .try_send(InputOperation::Automation(operation))
             .map_err(|error| anyhow::anyhow!("terminal input queue unavailable: {error}"))?;
-        order.input_sequence = order.input_sequence.saturating_add(1);
+        let input_sequence = order.record_input(false);
         Ok(AutomationInputResult {
             accepted: true,
-            human_input_epoch: order.human_input_epoch,
-            input_sequence: Some(order.input_sequence),
+            human_input_epoch: order.human_input_epoch(),
+            input_sequence: Some(input_sequence),
         })
     }
 
@@ -1145,7 +1139,7 @@ impl Session {
         {
             let mut order = self.input_order.lock().unwrap();
             if self.input_tx.try_send(InputOperation::Interrupt).is_ok() {
-                order.input_sequence = order.input_sequence.saturating_add(1);
+                order.record_input(false);
             } else {
                 let _ = self.process.write(b"\x03");
             }

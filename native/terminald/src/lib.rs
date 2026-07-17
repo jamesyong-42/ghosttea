@@ -1,13 +1,12 @@
 //! Reusable, transport-neutral Ghosttea terminal service.
 
-pub mod authority;
 pub mod mesh;
 pub mod replica;
 mod service;
 pub mod session;
 pub mod tunnel_protocol;
 
-pub use authority::ViewAccess;
+pub use ghosttea_core::ViewAccess;
 pub use mesh::{
     RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize,
     RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, TerminalMesh,
