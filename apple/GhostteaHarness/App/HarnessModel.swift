@@ -61,6 +61,7 @@ final class HarnessModel: ObservableObject {
   @Published var fontParityResult = "Not run"
   @Published var coreResult = "Not run"
   @Published var frameDecoderResult = "Not run"
+  @Published var framePreview: Data?
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
@@ -263,13 +264,24 @@ final class HarnessModel: ObservableObject {
           Data("retained-state\r\n".utf8), render: .damage)
         guard
           let frame = fullUpdate.effects.first(where: { $0.kind == .frameReady })?.payload,
-          let incremental = incrementalUpdate.effects.first(where: { $0.kind == .frameReady })?.payload
+          let incremental = incrementalUpdate.effects.first(where: { $0.kind == .frameReady })?
+            .payload
         else {
           throw HarnessError.frameDecoderMismatch
         }
         let summary = try GhostteaTerminalFrameDecoder.inspect(frame)
         let retained = try GhostteaTerminalFrameDecoder.retain([frame, incremental, incremental])
         let metal = try GhostteaMetalProof.run(frame: frame)
+        let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+        let surfaceAcceptedFull = try surface.apply(frame: frame)
+        let surfaceAcceptedIncremental = try surface.apply(frame: incremental)
+        let surfaceAcceptedStale = try surface.apply(frame: incremental)
+        try surface.prepareGPUResources()
+        let surfaceResidentBeforeSuspend = surface.diagnostics.residentAtlasBytes
+        surface.suspendGPU()
+        let surfaceResidentWhileSuspended = surface.diagnostics.residentAtlasBytes
+        surface.resumeGPU()
+        try surface.prepareGPUResources()
         guard summary.sessionHandle == 74,
           summary.columns == 100,
           summary.rows == 30,
@@ -298,11 +310,24 @@ final class HarnessModel: ObservableObject {
           metal.alphaGlyphVertexCount > 0,
           metal.colorGlyphVertexCount > 0,
           metal.nonBackgroundPixelCount > 0,
-          metal.pixelHash != 0
+          metal.pixelHash != 0,
+          surfaceAcceptedFull,
+          surfaceAcceptedIncremental,
+          !surfaceAcceptedStale,
+          surface.diagnostics.acceptedFrames == 2,
+          surface.diagnostics.staleFrames == 1,
+          surfaceResidentBeforeSuspend == 20 * 1024 * 1024,
+          surfaceResidentWhileSuspended == 0,
+          surface.diagnostics.resourceEvictions == 1,
+          surface.diagnostics.resourceRebuilds == 2,
+          surface.diagnostics.residentAtlasBytes == 20 * 1024 * 1024,
+          surface.isPaused,
+          surface.enableSetNeedsDisplay
         else {
           throw HarnessError.frameDecoderMismatch
         }
         let atlasMiB = metal.residentAtlasBytes / 1_048_576
+        framePreview = frame
         frameDecoderResult =
           "Passed · TRF1 offscreen Metal render (\(metal.deviceName), \(atlasMiB) MiB atlases)"
         print("GHOSTTEA_TRF1_PASS")

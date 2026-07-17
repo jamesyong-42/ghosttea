@@ -70,7 +70,11 @@ let package = Package(
     .target(
       name: "GhostteaTerminal",
       dependencies: ["GhostteaCore", "GhostteaFrame"],
-      linkerSettings: [.linkedFramework("Metal")]
+      linkerSettings: [
+        .linkedFramework("Metal"),
+        .linkedFramework("MetalKit", .when(platforms: [.iOS])),
+        .linkedFramework("UIKit", .when(platforms: [.iOS])),
+      ]
     ),
     .target(name: "GhostteaTransport"),
     .target(

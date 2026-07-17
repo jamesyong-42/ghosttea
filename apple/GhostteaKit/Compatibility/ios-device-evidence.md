@@ -618,3 +618,31 @@ GHOSTTEA_TRF1_PASS
 and exited successfully. This is renderer bring-up rather than screenshot
 conformance: runtime shader compilation, offscreen readback, drawable
 presentation, lifecycle scheduling, and cross-device pixel goldens remain.
+
+## 2026-07-17: event-driven iOS Metal surface
+
+`GhostteaTerminalMetalView` now presents retained frames through a public
+`MTKView` surface with continuous drawing disabled. Accepted frames,
+drawable-size changes, selection/focus changes, and host-driven cursor blink
+visibility request individual draws; duplicate stale frames do not. The view
+surfaces a full-refresh callback for gaps and malformed frames. Drawable
+command buffers are submitted without a main-run-loop completion wait, while
+the offscreen pixel proof retains its synchronous completion boundary.
+
+The surface observes app background and memory-warning notifications. It
+evicts reconstructible pipelines and both atlases while retaining logical rows,
+styles, glyph definitions, and sequencing state. Resume recreates those GPU
+resources lazily, so no terminal replay is required. The iPhone Simulator
+harness automatically applied full, incremental, and stale frames and proved
+two accepted frames, one stale frame, and a resource transition of 20 MiB to
+zero to 20 MiB with one eviction and two builds. Both iOS SDK destinations
+compile, and the arm64 iPhone 17 Pro Simulator again emitted:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+The harness also contains a SwiftUI-hosted live Metal preview for manual visual
+inspection. Safe-area-to-terminal resize negotiation, real scene detach/attach
+gestures, multi-window ownership, and screenshot conformance are subsequent
+Phase 4 gates.

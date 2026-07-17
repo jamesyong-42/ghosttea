@@ -99,6 +99,13 @@ struct GhostteaMetalRenderResult: Equatable, Sendable {
   let residentBytes: Int
 }
 
+struct GhostteaMetalDrawResult: Equatable, Sendable {
+  let rectangleVertexCount: Int
+  let alphaGlyphVertexCount: Int
+  let colorGlyphVertexCount: Int
+  let atlasUpload: GhostteaMetalUploadResult
+}
+
 private struct GhostteaResolvedMetalStyle {
   let foreground: GhostteaMetalColor
   let background: GhostteaMetalColor?
@@ -177,7 +184,54 @@ final class GhostteaMetalRenderer {
     focused: Bool = true,
     cursorBlinkVisible: Bool = true
   ) throws -> GhostteaMetalRenderResult {
-    guard width > 0, height > 0, scale.isFinite, scale > 0 else {
+    let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .rgba8Unorm,
+      width: width,
+      height: height,
+      mipmapped: false
+    )
+    textureDescriptor.storageMode = .shared
+    textureDescriptor.usage = [.renderTarget]
+    guard let target = runtime.device.makeTexture(descriptor: textureDescriptor) else {
+      throw GhostteaMetalError.renderTargetUnavailable
+    }
+    target.label = "Ghosttea offscreen terminal target"
+    let draw = try render(
+      state: state,
+      target: target,
+      scale: scale,
+      theme: theme,
+      selection: selection,
+      focused: focused,
+      cursorBlinkVisible: cursorBlinkVisible
+    )
+    let pixels = readPixels(texture: target, width: width, height: height)
+    return GhostteaMetalRenderResult(
+      width: width,
+      height: height,
+      rectangleVertexCount: draw.rectangleVertexCount,
+      alphaGlyphVertexCount: draw.alphaGlyphVertexCount,
+      colorGlyphVertexCount: draw.colorGlyphVertexCount,
+      nonBackgroundPixelCount: countNonBackgroundPixels(pixels, background: theme.background),
+      pixelHash: fnv1a64(pixels),
+      atlasUpload: draw.atlasUpload,
+      residentBytes: atlases.residentBytes + pixels.count
+    )
+  }
+
+  func render(
+    state: RetainedTRF1State,
+    target: any MTLTexture,
+    scale: Float = 1,
+    theme: GhostteaMetalTheme = GhostteaMetalTheme(),
+    selection: GhostteaMetalSelection? = nil,
+    focused: Bool = true,
+    cursorBlinkVisible: Bool = true,
+    presenting drawable: (any MTLDrawable)? = nil
+  ) throws -> GhostteaMetalDrawResult {
+    let width = target.width
+    let height = target.height
+    guard width > 0, height > 0, target.pixelFormat == .rgba8Unorm, scale.isFinite, scale > 0 else {
       throw GhostteaMetalError.invalidViewport
     }
     let visibleDefinitions = try visibleGlyphDefinitions(state)
@@ -192,31 +246,13 @@ final class GhostteaMetalRenderer {
       focused: focused,
       cursorBlinkVisible: cursorBlinkVisible
     )
-    let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-      pixelFormat: .rgba8Unorm,
-      width: width,
-      height: height,
-      mipmapped: false
-    )
-    textureDescriptor.storageMode = .shared
-    textureDescriptor.usage = [.renderTarget]
-    guard let target = runtime.device.makeTexture(descriptor: textureDescriptor) else {
-      throw GhostteaMetalError.renderTargetUnavailable
-    }
-    target.label = "Ghosttea offscreen terminal target"
-    try encode(mesh: mesh, target: target, theme: theme)
-    let pixels = readPixels(texture: target, width: width, height: height)
-    return GhostteaMetalRenderResult(
-      width: width,
-      height: height,
+    try encode(mesh: mesh, target: target, theme: theme, presenting: drawable)
+    return GhostteaMetalDrawResult(
       rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count + mesh.decorations.count
         + mesh.cursor.count) / 6,
       alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
       colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
-      nonBackgroundPixelCount: countNonBackgroundPixels(pixels, background: theme.background),
-      pixelHash: fnv1a64(pixels),
-      atlasUpload: atlasUpload,
-      residentBytes: atlases.residentBytes + pixels.count
+      atlasUpload: atlasUpload
     )
   }
 
@@ -373,9 +409,12 @@ final class GhostteaMetalRenderer {
     return mesh
   }
 
-  private func encode(mesh: GhostteaMetalMesh, target: any MTLTexture, theme: GhostteaMetalTheme)
-    throws
-  {
+  private func encode(
+    mesh: GhostteaMetalMesh,
+    target: any MTLTexture,
+    theme: GhostteaMetalTheme,
+    presenting drawable: (any MTLDrawable)?
+  ) throws {
     guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
       throw GhostteaMetalError.commandQueueUnavailable
     }
@@ -417,6 +456,11 @@ final class GhostteaMetalRenderer {
       stride: 6)
     try draw(mesh.cursor, label: "cursor", pipeline: rectanglePipeline, encoder: encoder, stride: 6)
     encoder.endEncoding()
+    if let drawable {
+      commandBuffer.present(drawable)
+      commandBuffer.commit()
+      return
+    }
     commandBuffer.commit()
     commandBuffer.waitUntilCompleted()
     guard commandBuffer.status == .completed else {

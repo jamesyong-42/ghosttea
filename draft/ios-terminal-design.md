@@ -2040,6 +2040,22 @@ move shaders into a precompiled library and replace readback with drawable
 presentation; scheduling, lifecycle, and cross-platform screenshot goldens
 remain Phase 4 work.
 
+The fifth slice adds the first public iOS presentation surface.
+`GhostteaTerminalMetalView` subclasses `MTKView` with continuous drawing paused
+and `enableSetNeedsDisplay` enabled. Accepted terminal frames, drawable-size
+changes, view-owned selection/focus changes, and host-driven cursor blink state
+request one draw; stale frames do not. Gaps or malformed input preserve the
+last good state and invoke a full-refresh callback. Drawable command buffers
+are presented without waiting on the main run loop, while the offscreen proof
+continues to wait before reading pixels. Background notifications and memory
+warnings discard pipelines and the 20 MiB atlas set but retain logical rows and
+catalogs; foreground or explicit resume lazily reconstructs resources from
+that retained state without another terminal frame. The simulator harness
+proves frame classification and a 20 MiB to zero to 20 MiB suspend/resume
+transition, and embeds the surface as a visible SwiftUI preview. Terminal-size
+negotiation from safe-area geometry, cursor timing, multi-scene ownership,
+precompiled shaders, and screenshot goldens remain.
+
 Deliverables:
 
 - strict Swift TRF1 decoder;

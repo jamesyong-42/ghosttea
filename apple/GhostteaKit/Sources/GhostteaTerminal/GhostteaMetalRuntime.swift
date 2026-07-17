@@ -120,15 +120,6 @@ final class GhostteaMetalRuntime {
     self.commandQueue = commandQueue
     commandQueue.label = "Ghosttea terminal command queue"
   }
-
-  func submitResourceBarrier() throws {
-    guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-      throw GhostteaMetalError.commandQueueUnavailable
-    }
-    commandBuffer.label = "Ghosttea atlas upload barrier"
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-  }
 }
 
 final class GhostteaMetalGlyphAtlas {
@@ -275,7 +266,6 @@ final class GhostteaMetalAtlasSet {
     for definition in colorDefinitions.sorted(by: { $0.id < $1.id }) {
       try color.upload(definition)
     }
-    try runtime.submitResourceBarrier()
     return GhostteaMetalUploadResult(
       uploadedBytes: alpha.uploadedBytes + color.uploadedBytes - before,
       alphaGlyphCount: alpha.glyphCount,

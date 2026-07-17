@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaSSH
+import GhostteaTerminal
 import SwiftUI
 
 struct ContentView: View {
@@ -66,6 +67,12 @@ struct ContentView: View {
           )
           .font(.caption)
           .foregroundStyle(.secondary)
+          if let frame = model.framePreview {
+            GhostteaTerminalPreview(frame: frame)
+              .frame(height: 160)
+              .clipShape(RoundedRectangle(cornerRadius: 8))
+              .accessibilityLabel("Rendered Ghosttea terminal preview")
+          }
         }
 
         Section("Memory matrix") {
@@ -333,6 +340,40 @@ struct ContentView: View {
       get: { model.isPresentingSSHInteraction },
       set: { _ in }
     )
+  }
+}
+
+private struct GhostteaTerminalPreview: UIViewRepresentable {
+  let frame: Data
+
+  final class Coordinator {
+    var appliedFrame: Data?
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator()
+  }
+
+  func makeUIView(context: Context) -> GhostteaTerminalMetalView {
+    do {
+      return try GhostteaTerminalMetalView(terminalFrame: .zero)
+    } catch {
+      preconditionFailure("Metal terminal preview unavailable: \(error)")
+    }
+  }
+
+  func updateUIView(_ view: GhostteaTerminalMetalView, context: Context) {
+    guard context.coordinator.appliedFrame != frame else { return }
+    do {
+      try view.apply(frame: frame)
+      context.coordinator.appliedFrame = frame
+    } catch {
+      assertionFailure("Metal terminal preview rejected its frame: \(error)")
+    }
+  }
+
+  static func dismantleUIView(_ view: GhostteaTerminalMetalView, coordinator: Coordinator) {
+    view.suspendGPU()
   }
 }
 

@@ -103,6 +103,17 @@ color emoji exercise every pipeline on macOS and iPhone Simulator. Runtime MSL
 compilation and offscreen readback are deliberate bring-up mechanisms; a
 precompiled library, drawable presentation, and screenshot goldens remain.
 
+On iOS, `GhostteaTerminalMetalView` is the first public presentation surface.
+It is an event-driven `MTKView`: continuous drawing is paused, accepted frames,
+drawable-size changes, selection/focus changes, and host-driven cursor blink
+transitions request individual draws. Full/incremental/stale classification
+stays inside the view's retained state, with a callback when the core must send
+a full refresh. Drawable submission does not wait on the main run loop. App
+backgrounding and memory warnings discard the reconstructible renderer and its
+20 MiB atlases while keeping logical terminal state; foreground drawing lazily
+rebuilds those resources. The harness embeds the surface as a visible preview
+after its renderer fixture runs.
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,
