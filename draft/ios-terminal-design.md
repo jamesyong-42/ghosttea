@@ -1997,8 +1997,19 @@ inspection facade. Its macOS tests decode real TRF1 bytes returned through the
 Phase 3 Swift wrapper, malformed fixtures mirror the desktop decoder suite, and
 the same harness emits `GHOSTTEA_TRF1_PASS` in an arm64 iPhone Simulator. Both
 iOS SDK destinations compile, and the signed iPhone 14 Pro runtime emits the
-same pass marker. Metal state, retained rows, atlases, render
-passes, scheduling, lifecycle, and screenshot conformance remain Phase 4 work.
+same pass marker.
+
+The second slice adds atomic retained renderer state matching the desktop
+worker's sequence classifier. It ignores stale frames, requests a full refresh
+for gaps, non-full session changes, and missing initial snapshots, accepts full
+recovery across layout/session epochs, clears catalogs at session or resync
+boundaries, and applies monotonic row revisions. Full/incremental row arrays,
+glyph/style catalogs, cursor, scrollbar, and clipboard effects transition only
+after the complete frame validates; decode failures retain the last good state
+and enter resync. The harness applies a Rust-produced full frame, incremental
+frame, and duplicate stale frame on macOS and iPhone Simulator. Metal resources,
+atlases, render passes, scheduling, lifecycle, and screenshot conformance remain
+Phase 4 work.
 
 Deliverables:
 

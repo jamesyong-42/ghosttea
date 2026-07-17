@@ -102,7 +102,7 @@ let package = Package(
     ),
     .testTarget(
       name: "GhostteaFrameTests",
-      dependencies: ["GhostteaCore", "GhostteaFrame"]
+      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTerminal"]
     ),
     .testTarget(
       name: "GhostteaSSHTests",

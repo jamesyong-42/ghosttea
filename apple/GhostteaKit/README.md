@@ -78,6 +78,12 @@ emitted by `ghosttea-core`. Its Apple runtime gate executes a production frame
 on macOS and an arm64 iPhone Simulator; pass `--device` to the underlying
 runner to include a signed physical iPhone.
 
+`GhostteaTerminal` also owns retained frame state before it owns GPU resources.
+The state machine matches desktop full/incremental sequence classification,
+keeps glyph and style catalogs plus row revisions, rejects stale frames, and
+enters an explicit full-refresh state after gaps or malformed input. State
+replacement is atomic: Metal will never observe a partially decoded frame.
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,

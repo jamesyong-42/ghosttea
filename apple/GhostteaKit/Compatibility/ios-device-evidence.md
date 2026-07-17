@@ -546,3 +546,25 @@ and exited with status zero. The decoder gate is automated with:
 ```sh
 npm run test:ghosttea-frame:apple-runtime
 ```
+
+## 2026-07-17: retained TRF1 renderer state
+
+The next Phase 4 slice moved the desktop worker's sequencing rules into an
+atomic Swift retained-state transition. It stores the latest accepted session,
+layout, sequence, terminal revision, dimensions, rows, per-row revisions and
+glyph/style placements, glyph/style catalogs, cursor, and scrollbar. Stale
+frames are ignored. A gap, missing initial full snapshot, non-full session
+replacement, or any decode/semantic failure preserves the last good state and
+requires a full refresh. A valid full frame completes recovery and resets the
+catalogs at session/resync boundaries.
+
+Five additional Swift tests use production Rust frames to cover full followed
+by incremental state, duplicate stale rejection, sequence-gap recovery, refusal
+of incremental frames while awaiting resync, atomic malformed-row failure,
+older row-revision suppression, missing initial snapshots, and full session-
+epoch replacement with catalog reset. The complete ten-test frame suite passes
+on macOS. The harness applies a full frame, an incremental frame, and a repeated
+stale frame; the arm64 iPhone 17 Pro Simulator emits `GHOSTTEA_TRF1_PASS`, and
+the same harness compiles for the physical iOS SDK. The signed physical build
+was installed; its automated launch is a local unlock retry rather than an
+implementation gate.

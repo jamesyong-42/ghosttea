@@ -61,7 +61,7 @@ struct ContentView: View {
             model.runFrameDecoderProof()
           }
           .disabled(model.isRunningFrameDecoder)
-          Text("Validates every currently emitted frame section before renderer allocation.")
+          Text("Validates every frame section plus full, incremental, and stale retained-state transitions.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }

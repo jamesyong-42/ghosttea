@@ -255,11 +255,15 @@ final class HarnessModel: ObservableObject {
           runtime: runtime,
           configuration: .init(sessionHandle: 74, columns: 100, rows: 30)
         )
-        let update = try await terminal.feed(Data("phase4-device ✓ 界\r\n".utf8), render: .full)
-        guard let frame = update.effects.first(where: { $0.kind == .frameReady })?.payload else {
+        let fullUpdate = try await terminal.feed(Data("phase4-device ✓ 界\r\n".utf8), render: .full)
+        let incrementalUpdate = try await terminal.feed(Data("retained-state\r\n".utf8), render: .damage)
+        guard let frame = fullUpdate.effects.first(where: { $0.kind == .frameReady })?.payload,
+          let incremental = incrementalUpdate.effects.first(where: { $0.kind == .frameReady })?.payload
+        else {
           throw HarnessError.frameDecoderMismatch
         }
         let summary = try GhostteaTerminalFrameDecoder.inspect(frame)
+        let retained = try GhostteaTerminalFrameDecoder.retain([frame, incremental, incremental])
         guard summary.sessionHandle == 74,
           summary.columns == 100,
           summary.rows == 30,
@@ -269,11 +273,17 @@ final class HarnessModel: ObservableObject {
           summary.rowReplacementCount == 30,
           summary.accessibilityRows.contains(where: { $0.contains("phase4-device ✓ 界") }),
           summary.cursorRow == 1,
-          summary.scrollbarLength == 30
+          summary.scrollbarLength == 30,
+          retained.appliedFrameCount == 2,
+          retained.staleFrameCount == 1,
+          retained.refreshRequestCount == 0,
+          !retained.awaitingResync,
+          retained.rows.contains(where: { $0.contains("phase4-device ✓ 界") }),
+          retained.rows.contains(where: { $0.contains("retained-state") })
         else {
           throw HarnessError.frameDecoderMismatch
         }
-        frameDecoderResult = "Passed · strict TRF1 sections are renderer-ready"
+        frameDecoderResult = "Passed · strict TRF1 decoding and retained state"
         print("GHOSTTEA_TRF1_PASS")
         finishFrameDecoderAutomation(exitCode: 0)
       } catch {

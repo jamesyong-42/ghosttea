@@ -2,6 +2,7 @@ import Foundation
 import GhostteaCore
 import Testing
 @testable import GhostteaFrame
+@testable import GhostteaTerminal
 
 private func writeUInt16(_ value: UInt16, to data: inout Data, at offset: Int) {
   data[offset] = UInt8(truncatingIfNeeded: value)
@@ -18,6 +19,39 @@ private func writeUInt64(_ value: UInt64, to data: inout Data, at offset: Int) {
   for byte in 0..<8 {
     data[offset + byte] = UInt8(truncatingIfNeeded: value >> UInt64(byte * 8))
   }
+}
+
+private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
+  UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+}
+
+private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+  UInt32(data[offset])
+    | UInt32(data[offset + 1]) << 8
+    | UInt32(data[offset + 2]) << 16
+    | UInt32(data[offset + 3]) << 24
+}
+
+private func readUInt64(_ data: Data, at offset: Int) -> UInt64 {
+  var value: UInt64 = 0
+  for byte in 0..<8 {
+    value |= UInt64(data[offset + byte]) << UInt64(byte * 8)
+  }
+  return value
+}
+
+private func sectionPayloadOffset(_ data: Data, kind: TRF1SectionKind) -> Int? {
+  for index in 0..<Int(readUInt16(data, at: 60)) {
+    let base = TRF1.frameHeaderBytes + index * TRF1.sectionHeaderBytes
+    if readUInt16(data, at: base) == kind.rawValue {
+      return Int(readUInt32(data, at: base + 4))
+    }
+  }
+  return nil
+}
+
+private func framePayload(_ update: GhostteaUpdate) throws -> Data {
+  try #require(update.effects.first { $0.kind == .frameReady }?.payload)
 }
 
 private func accessibilityFixture(_ text: String = "hello") -> Data {
@@ -168,4 +202,150 @@ private func accessibilityFixture(_ text: String = "hello") -> Data {
       TRF1Section(kind: .scrollbarState, flags: 0, itemCount: 1, bytes: scrollbar)
     )
   }
+}
+
+@Test func retainedStateAppliesFullAndIncrementalFramesAndRejectsStaleFrames() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 91, sessionEpoch: 3, layoutEpoch: 7, columns: 80, rows: 12)
+  )
+  let full = try framePayload(
+    await terminal.feed(Data("first\r\n".utf8), render: .full)
+  )
+  let incremental = try framePayload(
+    await terminal.feed(Data("second ✓\r\n".utf8), render: .damage)
+  )
+
+  var state = RetainedTRF1State()
+  guard case .applied(let fullSnapshot, let changedRows, let completedResync, _) = try state.apply(full) else {
+    Issue.record("initial full frame was not applied")
+    return
+  }
+  #expect(fullSnapshot)
+  #expect(changedRows.count == 12)
+  #expect(!completedResync)
+  #expect(state.rows[0].text.contains("first"))
+  #expect(!state.glyphDefinitions.isEmpty)
+  #expect(!state.styleDefinitions.isEmpty)
+
+  guard case .applied(let nextWasFull, let nextChangedRows, _, _) = try state.apply(incremental) else {
+    Issue.record("next incremental frame was not applied")
+    return
+  }
+  #expect(!nextWasFull)
+  #expect(!nextChangedRows.isEmpty)
+  #expect(state.rows[1].text.contains("second ✓"))
+  #expect(state.sequence == readUInt64(incremental, at: 40))
+  #expect(try state.apply(incremental) == .stale)
+}
+
+@Test func retainedStateRequestsAndCompletesFullResynchronization() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 92, sessionEpoch: 1, layoutEpoch: 1, columns: 80, rows: 10)
+  )
+  let full = try framePayload(await terminal.feed(Data("baseline\r\n".utf8), render: .full))
+  let incremental = try framePayload(await terminal.feed(Data("delta\r\n".utf8), render: .damage))
+  var gapped = incremental
+  writeUInt64(readUInt64(incremental, at: 40) + 2, to: &gapped, at: 40)
+
+  var state = RetainedTRF1State()
+  _ = try state.apply(full)
+  let acceptedSequence = state.sequence
+  #expect(try state.apply(gapped) == .needsFullRefresh)
+  #expect(state.awaitingResync)
+  #expect(state.sequence == acceptedSequence)
+  #expect(try state.apply(incremental) == .needsFullRefresh)
+
+  let recovery = try framePayload(await terminal.refresh(.full))
+  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery) else {
+    Issue.record("full recovery frame was not applied")
+    return
+  }
+  #expect(fullSnapshot)
+  #expect(completedResync)
+  #expect(!state.awaitingResync)
+  #expect(state.sequence == readUInt64(recovery, at: 40))
+  #expect(!state.glyphDefinitions.isEmpty)
+}
+
+@Test func retainedStateIsAtomicOnMalformedRowsAndSkipsOlderRowRevisions() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 93, columns: 80, rows: 8)
+  )
+  let full = try framePayload(await terminal.feed(Data("stable\r\n".utf8), render: .full))
+  let incremental = try framePayload(await terminal.feed(Data("newer\r\n".utf8), render: .damage))
+  let payloadOffset = try #require(sectionPayloadOffset(incremental, kind: .rowReplacements))
+
+  var state = RetainedTRF1State()
+  _ = try state.apply(full)
+  let baselineRows = state.rows
+  let baselineGlyphs = state.glyphDefinitions
+  let baselineSequence = state.sequence
+
+  var invalidRow = incremental
+  writeUInt16(UInt16.max, to: &invalidRow, at: payloadOffset + 2)
+  #expect(throws: TRF1DecodingError.self) {
+    try state.apply(invalidRow)
+  }
+  #expect(state.rows == baselineRows)
+  #expect(state.glyphDefinitions == baselineGlyphs)
+  #expect(state.sequence == baselineSequence)
+  #expect(state.awaitingResync)
+
+  var recovered = RetainedTRF1State()
+  _ = try recovered.apply(full)
+  var olderRevision = incremental
+  writeUInt64(0, to: &olderRevision, at: payloadOffset + 4)
+  _ = try recovered.apply(olderRevision)
+  #expect(recovered.rows[1].text.isEmpty)
+  #expect(recovered.sequence == readUInt64(incremental, at: 40))
+}
+
+@Test func retainedStateRequiresAnInitialFullSnapshot() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 94)
+  )
+  _ = try framePayload(await terminal.feed(Data("initial".utf8), render: .damage))
+  let incremental = try framePayload(await terminal.feed(Data(" incremental".utf8), render: .damage))
+  var state = RetainedTRF1State()
+  #expect(try state.apply(incremental) == .needsFullRefresh)
+  #expect(state.awaitingResync)
+  #expect(state.sessionHandle == 0)
+}
+
+@Test func retainedStateAcceptsFullSessionEpochReplacementAndResetsCatalogs() async throws {
+  let runtime = try GhostteaRuntime()
+  let firstTerminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 95, sessionEpoch: 1, columns: 80, rows: 6)
+  )
+  let replacementTerminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 95, sessionEpoch: 2, columns: 80, rows: 6)
+  )
+  let first = try framePayload(await firstTerminal.feed(Data("abcdefgh\r\n".utf8), render: .full))
+  let replacement = try framePayload(await replacementTerminal.feed(Data("x\r\n".utf8), render: .full))
+  let decodedReplacement = try decodeTRF1Frame(replacement)
+  let replacementGlyphs = try decodeTRF1GlyphDefinitions(
+    #require(decodedReplacement.sections.first { $0.kind == .glyphDefinitions })
+  )
+
+  var state = RetainedTRF1State()
+  _ = try state.apply(first)
+  #expect(state.glyphDefinitions.count > replacementGlyphs.count)
+  guard case .applied(let full, _, _, _) = try state.apply(replacement) else {
+    Issue.record("replacement session full frame was not applied")
+    return
+  }
+  #expect(full)
+  #expect(state.sessionEpoch == 2)
+  #expect(Set(state.glyphDefinitions.keys) == Set(replacementGlyphs.map(\.id)))
+  #expect(state.rows[0].text == "x")
 }
