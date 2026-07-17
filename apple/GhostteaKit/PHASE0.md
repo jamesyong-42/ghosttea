@@ -210,3 +210,7 @@ The embedding prerequisite is satisfied. Phase 1 may now begin with the ordered
 `TerminalEffect` contract and must keep the checked-in TRF1 baseline identical
 before any Apple FFI code is added. The current golden deliberately omits glyph
 definitions; add shaped-frame parity after the bundled font decision.
+
+Phase 1 started on 2026-07-17: `ghosttea-core` now owns the ordered effect batch
+and logical snapshot types, while `terminald` retains its existing serialized
+tunnel representation through re-exports.

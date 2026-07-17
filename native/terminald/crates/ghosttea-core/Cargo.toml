@@ -1,0 +1,13 @@
+[package]
+name = "ghosttea-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Platform-neutral terminal model contracts for Ghosttea"
+
+[dependencies]
+serde.workspace = true
+smallvec.workspace = true

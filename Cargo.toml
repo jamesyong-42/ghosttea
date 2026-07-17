@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "native/ghosttead",
   "native/terminald",
+  "native/terminald/crates/ghosttea-core",
   "native/terminald/crates/ghostty-adapter",
   "native/terminald/crates/ghostty-vt-sys",
   "native/terminald/crates/text-engine",
@@ -24,6 +25,7 @@ bytes = "1.10"
 dotenvy = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+smallvec = "1.15"
 subtle = "2"
 tempfile = "3.20"
 tokio = { version = "1.45", features = ["full"] }
