@@ -107,9 +107,12 @@ TCP establishment now uses a nonblocking connector with an absolute deadline,
 cancellation handler. The SSH handshake has a separate deadline. A deterministic
 fixture accepts TCP but never sends an SSH banner: its 250 ms handshake deadline
 fired in approximately 307 ms, and cancellation unwound in approximately 77 ms.
-The system resolver call is still synchronous; a stalled `getaddrinfo` cannot be
-interrupted until it returns, so resolver replacement or Network.framework
-integration remains a production hardening decision.
+Hostname lookup now uses the asynchronous Apple DNS-SD API under that same
+absolute connection deadline. The connector polls the resolver at most every
+100 ms, so cancellation and timeout no longer wait for a synchronous
+`getaddrinfo`; numeric IPv4 and IPv6 literals retain a non-resolving fast path.
+The package suite opens a loopback socket through `localhost`, and the full SSH
+fixture authenticates through that hostname path. Both iOS SDK builds pass.
 The same process also completes 32 consecutive stalled-handshake cancellations
 and 16 consecutive suspended keyboard-interactive cancellations, with every
 cycle bounded below one second. This exercises repeated session destruction and
@@ -224,14 +227,14 @@ separately test the host-neutral demand and queue semantics.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.
-4. Add a resolver cancellation strategy and product reconnect orchestration. PTY
-   allocation, resize, shell I/O,
+4. Repeat the implemented resolver and reconnect orchestration against the
+   representative server/network sample. PTY allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,
-   deterministic handshake timeout/cancellation, and repeated auth/handshake
+   DNS/connect/handshake deadlines and cancellation, and repeated auth/handshake
    cancellation stress already pass. Physical challenge-sheet cancellation,
-   Wi-Fi route-loss cancellation, and explicit fresh reconnect pass; automatic
-   path monitoring, background
-   suspension, retry state, and representative-server transitions remain.
+   automatic Wi-Fi-to-cellular teardown, explicit fresh reconnect, background
+   suspension, and foreground reconnect availability pass; representative-server
+   transitions remain.
 5. Add whole-app physical-footprint instrumentation on device. The candidate
    already exposes raw socket, delivered/written byte, socket-wait, and SSH
    receive-window counters; the macOS flood proves no socket or Swift-side

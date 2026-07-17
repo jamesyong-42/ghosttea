@@ -221,16 +221,18 @@ unwinds the suspended responder and native callback worker in 162 ms on the
 same device.
 The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
-the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
-lookup remains non-interruptible until it returns. Device-only,
+the 250 ms handshake deadline and cancellation paths. Hostname lookup now uses
+Apple DNS-SD under the same absolute connect deadline with 100 ms cancellation
+polling. Package and live `localhost` fixtures pass, and both iOS SDKs build.
+Device-only,
 non-synchronizing Keychain storage now passes a real iPhone save/load/delete
 cycle. Opaque password and encrypted private-key/passphrase resolution also
 pass the disposable SSH fixture on that device, with credential deletion before
 command output is read and no private-key file. The iPhone also preserves
 separate command streams, exit 37, typed `SIGTERM`, PTY allocation/resize, and
 byte-exact input half-close. Remaining gates include product UI promotion,
-representative-server sampling, automatic path-state and
-reconnect orchestration, and complete physical-device evidence, as
+representative-server sampling, on-device/representative DNS verification, and
+complete minimum-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 The local physical-device route-loss baseline now passes: disabling Wi-Fi

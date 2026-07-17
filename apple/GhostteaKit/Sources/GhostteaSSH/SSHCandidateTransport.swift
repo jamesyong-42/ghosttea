@@ -11,7 +11,7 @@ public struct SSHCandidateTransport: TerminalTransport {
   }
 
   public func connect() async throws -> any TerminalConnection {
-    let socket = try await SSHDriver.connectSocket(
+    let socket = try await SSHSocketConnector.connect(
       host: configuration.host,
       port: configuration.port,
       timeoutMilliseconds: configuration.connectTimeoutMilliseconds
@@ -818,9 +818,59 @@ private final class SSHConnector: @unchecked Sendable {
   }
 }
 
+enum SSHSocketConnector {
+  private static let connectQueue = DispatchQueue(
+    label: "com.project100.ghosttea.ssh.socket",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
+
+  static func connect(
+    host: String,
+    port: Int,
+    timeoutMilliseconds: Int
+  ) async throws -> Int32 {
+    guard let connector = SSHConnector() else {
+      throw SSHCandidateError.connectorAllocationFailed
+    }
+    let result = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        connectQueue.async {
+          continuation.resume(
+            returning: connector.connect(
+              host: host,
+              port: port,
+              timeoutMilliseconds: timeoutMilliseconds
+            )
+          )
+        }
+      }
+    } onCancel: {
+      connector.cancel()
+    }
+    if result.status >= 0 {
+      if Task.isCancelled {
+        ghosttea_ssh_socket_close(result.status)
+        throw CancellationError()
+      }
+      return result.status
+    }
+    if result.status == GHOSTTEA_SSH_CONNECT_CANCELLED || Task.isCancelled {
+      throw CancellationError()
+    }
+    if result.status == GHOSTTEA_SSH_CONNECT_TIMEOUT {
+      throw SSHCandidateError.operationTimedOut(
+        operation: "TCP connect",
+        milliseconds: timeoutMilliseconds
+      )
+    }
+    throw SSHCandidateError.socketConnect(result.message)
+  }
+}
+
 private final class SSHDriver: @unchecked Sendable {
   private static let socketQueue = DispatchQueue(
-    label: "com.project100.ghosttea.ssh.socket",
+    label: "com.project100.ghosttea.ssh.wait",
     qos: .userInitiated,
     attributes: .concurrent
   )
@@ -854,48 +904,6 @@ private final class SSHDriver: @unchecked Sendable {
 
   deinit {
     destroy()
-  }
-
-  static func connectSocket(
-    host: String,
-    port: Int,
-    timeoutMilliseconds: Int
-  ) async throws -> Int32 {
-    guard let connector = SSHConnector() else {
-      throw SSHCandidateError.connectorAllocationFailed
-    }
-    let result = await withTaskCancellationHandler {
-      await withCheckedContinuation { continuation in
-        socketQueue.async {
-          continuation.resume(
-            returning: connector.connect(
-              host: host,
-              port: port,
-              timeoutMilliseconds: timeoutMilliseconds
-            )
-          )
-        }
-      }
-    } onCancel: {
-      connector.cancel()
-    }
-    if result.status >= 0 {
-      if Task.isCancelled {
-        ghosttea_ssh_socket_close(result.status)
-        throw CancellationError()
-      }
-      return result.status
-    }
-    if result.status == GHOSTTEA_SSH_CONNECT_CANCELLED || Task.isCancelled {
-      throw CancellationError()
-    }
-    if result.status == GHOSTTEA_SSH_CONNECT_TIMEOUT {
-      throw SSHCandidateError.operationTimedOut(
-        operation: "TCP connect",
-        milliseconds: timeoutMilliseconds
-      )
-    }
-    throw SSHCandidateError.socketConnect(result.message)
   }
 
   func run(

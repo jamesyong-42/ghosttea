@@ -46,6 +46,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a cancellable nonblocking TCP connector and independent SSH handshake
   deadline, with pre-cancel and deterministic no-banner timeout/cancellation
   controls.
+- an asynchronous Apple DNS-SD hostname resolver sharing the TCP deadline and
+  100 ms cancellation polling, with a numeric-address fast path, package-level
+  loopback coverage, a full SSH `localhost` fixture, and successful iOS device
+  and simulator SDK builds.
 - repeated cleanup stress covering 32 stalled-handshake cancellations and 16
   suspended keyboard-interactive cancellations in one process.
 - a second strict-known-host negotiation profile using ECDSA P-256 and
@@ -174,9 +178,10 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is production UI promotion, representative-server
-   sampling, resolver replacement, representative-server verification of the
-   implemented path/reconnect orchestration, device-footprint instrumentation,
-   and representative low-end-device execution. The public-key partial step
+   sampling, on-device/representative DNS verification, representative-server
+   verification of the implemented path/reconnect orchestration,
+   device-footprint instrumentation, and representative low-end-device
+   execution. The public-key partial step
    remains locked as `-19`, so only an
    explicitly configured chained policy may proceed to keyboard-interactive.
 3. The initial raw VT physical-footprint measurement is complete. Measure the

@@ -1343,9 +1343,11 @@ physical iPhone persists an unknown key, warns before replacing a changed key,
 and reconnects without another prompt. TCP establishment now uses a
 cancellable nonblocking connector and the SSH handshake has a separate deadline;
 a peer that accepts TCP without sending a banner proves deterministic handshake
-timeout and cancellation. The synchronous system resolver remains
-non-interruptible until it returns. The adapter records negotiated methods; the
-current fixture locks Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
+timeout and cancellation. Hostnames resolve through Apple DNS-SD under the same
+absolute connect deadline with 100 ms cancellation polling; package and live
+`localhost` fixtures pass, and both iOS SDKs build. The adapter records
+negotiated methods; the current fixture locks Curve25519, Ed25519,
+ChaCha20-Poly1305, and HMAC-SHA2-256.
 A second forced profile locks ECDSA P-256 and bidirectional AES-256-GCM under
 strict known-host verification. A third locks an RSA-3072 host key to
 RSA/SHA-2-512 rather than deprecated `ssh-rsa`. No stack-specific type may
@@ -1805,8 +1807,7 @@ typed `SIGTERM`, PTY allocation/resize, and byte-exact input half-close. The
 measurements and command output are recorded in
 `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
-promotion, resolver cancellation, automatic path-state/reconnect behavior,
-device-footprint
+promotion, on-device/representative DNS verification, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject

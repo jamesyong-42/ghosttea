@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GhostteaCredentials
 import GhostteaTransport
@@ -278,7 +279,7 @@ import Testing
 
 @Test func connectionObservesCancellationBeforeSocketWork() async throws {
   let configuration = try SSHCandidateConfiguration(
-    host: "127.0.0.1",
+    host: "never-resolve.ghosttea.invalid.",
     port: 9,
     knownHostsPath: "/tmp/known_hosts",
     authentication: .password(username: "user", password: "secret")
@@ -298,6 +299,68 @@ import Testing
   case .failure(let error):
     #expect(error is CancellationError)
   }
+}
+
+@Test func connectorResolvesHostnameBeforeOpeningSocket() async throws {
+  let listener = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+  #expect(listener >= 0)
+  guard listener >= 0 else { return }
+  defer { Darwin.close(listener) }
+
+  var address = sockaddr_in()
+  address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+  address.sin_family = sa_family_t(AF_INET)
+  address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+  let addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+  let bindStatus = withUnsafePointer(to: &address) { pointer in
+    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      Darwin.bind(listener, $0, addressLength)
+    }
+  }
+  #expect(bindStatus == 0)
+  guard bindStatus == 0 else { return }
+  #expect(Darwin.listen(listener, 1) == 0)
+
+  var boundAddress = sockaddr_in()
+  var boundAddressLength = addressLength
+  let nameStatus = withUnsafeMutablePointer(to: &boundAddress) { pointer in
+    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      Darwin.getsockname(listener, $0, &boundAddressLength)
+    }
+  }
+  #expect(nameStatus == 0)
+  guard nameStatus == 0 else { return }
+
+  let connected = try await SSHSocketConnector.connect(
+    host: "localhost",
+    port: Int(UInt16(bigEndian: boundAddress.sin_port)),
+    timeoutMilliseconds: 1_000
+  )
+  #expect(connected >= 0)
+  Darwin.close(connected)
+}
+
+@Test func connectorCancelsPendingHostnameResolution() async throws {
+  let hostname = "ghosttea-\(UUID().uuidString.lowercased()).local."
+  let connection = Task {
+    try await SSHSocketConnector.connect(
+      host: hostname,
+      port: 9,
+      timeoutMilliseconds: 10_000
+    )
+  }
+  try await Task.sleep(for: .milliseconds(20))
+  let cancelledAt = ContinuousClock.now
+  connection.cancel()
+
+  switch await connection.result {
+  case .success(let socket):
+    Darwin.close(socket)
+    Issue.record("a cancelled DNS lookup opened a socket")
+  case .failure(let error):
+    #expect(error is CancellationError)
+  }
+  #expect(ContinuousClock.now - cancelledAt < .seconds(1))
 }
 
 extension TerminalSize {

@@ -521,7 +521,8 @@ function swiftCandidate() {
       ["host-key-unknown", unknownKnownHosts],
       ["host-key-changed", changedKnownHosts],
     ]) {
-      const hostKeyDecision = execute(liveProbe, [mode, "127.0.0.1", ports.password, hostFile, publicKey, privateKey], {
+      const probeHost = mode === "host-key-unknown" ? "localhost" : "127.0.0.1";
+      const hostKeyDecision = execute(liveProbe, [mode, probeHost, ports.password, hostFile, publicKey, privateKey], {
         timeout: 30_000,
       });
       if (hostKeyDecision.status !== 0) {

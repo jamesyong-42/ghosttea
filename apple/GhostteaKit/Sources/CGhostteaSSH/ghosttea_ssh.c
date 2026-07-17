@@ -1,9 +1,11 @@
 #include "ghosttea_ssh.h"
 
 #include <errno.h>
+#include <dns_sd.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <poll.h>
 #include <stdio.h>
@@ -44,6 +46,20 @@ struct ghosttea_ssh_connector {
     pthread_mutex_t mutex;
     int socket_fd;
     int cancelled;
+};
+
+#define GHOSTTEA_SSH_MAX_RESOLVED_ADDRESSES 32
+
+struct ghosttea_ssh_resolved_address {
+    struct sockaddr_storage storage;
+    socklen_t length;
+};
+
+struct ghosttea_ssh_resolver_result {
+    struct ghosttea_ssh_resolved_address addresses[GHOSTTEA_SSH_MAX_RESOLVED_ADDRESSES];
+    size_t count;
+    int batch_complete;
+    DNSServiceErrorType error;
 };
 
 static pthread_once_t libssh2_initialization_once = PTHREAD_ONCE_INIT;
@@ -147,6 +163,178 @@ static void connector_clear_socket(ghosttea_ssh_connector_t *connector) {
     pthread_mutex_unlock(&connector->mutex);
 }
 
+static int append_resolved_address(
+    struct ghosttea_ssh_resolver_result *result,
+    const struct sockaddr *address,
+    uint16_t port
+) {
+    if (result->count >= GHOSTTEA_SSH_MAX_RESOLVED_ADDRESSES) {
+        return 0;
+    }
+    socklen_t length;
+    if (address->sa_family == AF_INET) {
+        length = sizeof(struct sockaddr_in);
+    } else if (address->sa_family == AF_INET6) {
+        length = sizeof(struct sockaddr_in6);
+    } else {
+        return 0;
+    }
+    for (size_t index = 0; index < result->count; index++) {
+        if (result->addresses[index].length == length
+            && memcmp(&result->addresses[index].storage, address, length) == 0) {
+            return 0;
+        }
+    }
+    struct ghosttea_ssh_resolved_address *resolved = &result->addresses[result->count++];
+    memset(resolved, 0, sizeof(*resolved));
+    memcpy(&resolved->storage, address, length);
+    resolved->length = length;
+    if (address->sa_family == AF_INET) {
+        ((struct sockaddr_in *)&resolved->storage)->sin_port = port;
+    } else {
+        ((struct sockaddr_in6 *)&resolved->storage)->sin6_port = port;
+    }
+    return 1;
+}
+
+static void resolved_address_callback(
+    DNSServiceRef service,
+    DNSServiceFlags flags,
+    uint32_t interface_index,
+    DNSServiceErrorType error,
+    const char *hostname,
+    const struct sockaddr *address,
+    uint32_t ttl,
+    void *context
+) {
+    (void)service;
+    (void)interface_index;
+    (void)hostname;
+    (void)ttl;
+    struct ghosttea_ssh_resolver_result *result = context;
+    if (error != kDNSServiceErr_NoError) {
+        result->error = error;
+    } else if ((flags & kDNSServiceFlagsAdd) != 0 && address != NULL) {
+        append_resolved_address(result, address, 0);
+    }
+    if ((flags & kDNSServiceFlagsMoreComing) == 0) {
+        result->batch_complete = 1;
+    }
+}
+
+static int resolve_numeric_address(
+    const char *host,
+    uint16_t port,
+    struct ghosttea_ssh_resolver_result *result
+) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST;
+    struct addrinfo *addresses = NULL;
+    int status = getaddrinfo(host, NULL, &hints, &addresses);
+    if (status != 0) {
+        return 0;
+    }
+    for (const struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
+        append_resolved_address(result, address->ai_addr, port);
+    }
+    freeaddrinfo(addresses);
+    result->batch_complete = 1;
+    return result->count > 0;
+}
+
+static int resolve_host(
+    ghosttea_ssh_connector_t *connector,
+    const char *host,
+    uint16_t port,
+    int64_t deadline,
+    struct ghosttea_ssh_resolver_result *result,
+    char *error_buffer,
+    size_t error_buffer_length
+) {
+    memset(result, 0, sizeof(*result));
+    result->error = kDNSServiceErr_NoError;
+    if (resolve_numeric_address(host, port, result) != 0) {
+        return 0;
+    }
+    if (connector_is_cancelled(connector) != 0) {
+        return GHOSTTEA_SSH_CONNECT_CANCELLED;
+    }
+    DNSServiceRef resolver = NULL;
+    DNSServiceErrorType start_status = DNSServiceGetAddrInfo(
+        &resolver,
+        0,
+        0,
+        kDNSServiceProtocol_IPv4 | kDNSServiceProtocol_IPv6,
+        host,
+        resolved_address_callback,
+        result
+    );
+    if (start_status != kDNSServiceErr_NoError || resolver == NULL) {
+        snprintf(error_buffer, error_buffer_length, "DNS lookup failed (%d)", start_status);
+        return -1;
+    }
+    int resolver_socket = DNSServiceRefSockFD(resolver);
+    if (resolver_socket < 0) {
+        DNSServiceRefDeallocate(resolver);
+        write_error(error_buffer, error_buffer_length, "DNS resolver did not provide a socket");
+        return -1;
+    }
+    while (result->batch_complete == 0) {
+        if (connector_is_cancelled(connector) != 0) {
+            DNSServiceRefDeallocate(resolver);
+            return GHOSTTEA_SSH_CONNECT_CANCELLED;
+        }
+        int64_t now = monotonic_milliseconds();
+        if (now < 0 || now >= deadline) {
+            DNSServiceRefDeallocate(resolver);
+            write_error(error_buffer, error_buffer_length, "TCP connection timed out during DNS lookup");
+            return GHOSTTEA_SSH_CONNECT_TIMEOUT;
+        }
+        int remaining = (int)(deadline - now);
+        int poll_timeout = remaining < 100 ? remaining : 100;
+        struct pollfd descriptor = {
+            .fd = resolver_socket,
+            .events = POLLIN,
+            .revents = 0,
+        };
+        int poll_status = poll(&descriptor, 1, poll_timeout);
+        if (poll_status < 0 && errno == EINTR) {
+            continue;
+        }
+        if (poll_status < 0) {
+            DNSServiceRefDeallocate(resolver);
+            write_error(error_buffer, error_buffer_length, strerror(errno));
+            return -1;
+        }
+        if (poll_status == 0) {
+            continue;
+        }
+        DNSServiceErrorType process_status = DNSServiceProcessResult(resolver);
+        if (process_status != kDNSServiceErr_NoError) {
+            DNSServiceRefDeallocate(resolver);
+            snprintf(error_buffer, error_buffer_length, "DNS lookup failed (%d)", process_status);
+            return -1;
+        }
+    }
+    DNSServiceRefDeallocate(resolver);
+    if (result->count == 0) {
+        snprintf(error_buffer, error_buffer_length, "DNS lookup failed (%d)", result->error);
+        return -1;
+    }
+    for (size_t index = 0; index < result->count; index++) {
+        struct sockaddr *address = (struct sockaddr *)&result->addresses[index].storage;
+        if (address->sa_family == AF_INET) {
+            ((struct sockaddr_in *)address)->sin_port = port;
+        } else {
+            ((struct sockaddr_in6 *)address)->sin6_port = port;
+        }
+    }
+    return 0;
+}
+
 int ghosttea_ssh_connector_run(
     ghosttea_ssh_connector_t *connector,
     const char *host,
@@ -165,35 +353,33 @@ int ghosttea_ssh_connector_run(
         return -1;
     }
     int64_t deadline = start + timeout_milliseconds;
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    struct addrinfo *addresses = NULL;
-    int lookup_status = getaddrinfo(host, port, &hints, &addresses);
-    if (lookup_status != 0) {
-        write_error(error_buffer, error_buffer_length, gai_strerror(lookup_status));
+    char *port_end = NULL;
+    long parsed_port = strtol(port, &port_end, 10);
+    if (port_end == port || *port_end != '\0' || parsed_port < 1 || parsed_port > UINT16_MAX) {
+        write_error(error_buffer, error_buffer_length, "invalid TCP port");
         return -1;
     }
-    int64_t after_lookup = monotonic_milliseconds();
-    if (after_lookup < 0) {
-        freeaddrinfo(addresses);
-        write_error(error_buffer, error_buffer_length, strerror(errno));
-        return -1;
-    }
-    if (after_lookup >= deadline) {
-        freeaddrinfo(addresses);
-        write_error(error_buffer, error_buffer_length, "TCP connection timed out during DNS lookup");
-        return GHOSTTEA_SSH_CONNECT_TIMEOUT;
+    struct ghosttea_ssh_resolver_result resolver_result;
+    int resolve_status = resolve_host(
+        connector,
+        host,
+        htons((uint16_t)parsed_port),
+        deadline,
+        &resolver_result,
+        error_buffer,
+        error_buffer_length
+    );
+    if (resolve_status != 0) {
+        return resolve_status;
     }
 
-    for (const struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
+    for (size_t address_index = 0; address_index < resolver_result.count; address_index++) {
+        struct ghosttea_ssh_resolved_address *address = &resolver_result.addresses[address_index];
         if (connector_is_cancelled(connector) != 0) {
-            freeaddrinfo(addresses);
             return GHOSTTEA_SSH_CONNECT_CANCELLED;
         }
-        int socket_fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        struct sockaddr *socket_address = (struct sockaddr *)&address->storage;
+        int socket_fd = socket(socket_address->sa_family, SOCK_STREAM, 0);
         if (socket_fd < 0) {
             continue;
         }
@@ -204,14 +390,12 @@ int ghosttea_ssh_connector_run(
         }
         if (connector_set_socket(connector, socket_fd) != 0) {
             close(socket_fd);
-            freeaddrinfo(addresses);
             return GHOSTTEA_SSH_CONNECT_CANCELLED;
         }
 
-        int connect_status = connect(socket_fd, address->ai_addr, address->ai_addrlen);
+        int connect_status = connect(socket_fd, socket_address, address->length);
         if (connect_status == 0) {
             connector_clear_socket(connector);
-            freeaddrinfo(addresses);
             return socket_fd;
         }
         if (errno != EINPROGRESS) {
@@ -224,14 +408,12 @@ int ghosttea_ssh_connector_run(
             if (connector_is_cancelled(connector) != 0) {
                 connector_clear_socket(connector);
                 close(socket_fd);
-                freeaddrinfo(addresses);
                 return GHOSTTEA_SSH_CONNECT_CANCELLED;
             }
             int64_t now = monotonic_milliseconds();
             if (now < 0 || now >= deadline) {
                 connector_clear_socket(connector);
                 close(socket_fd);
-                freeaddrinfo(addresses);
                 write_error(error_buffer, error_buffer_length, "TCP connection timed out");
                 return GHOSTTEA_SSH_CONNECT_TIMEOUT;
             }
@@ -257,7 +439,6 @@ int ghosttea_ssh_connector_run(
             if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) == 0
                 && socket_error == 0) {
                 connector_clear_socket(connector);
-                freeaddrinfo(addresses);
                 return socket_fd;
             }
             if (socket_error != 0) {
@@ -268,7 +449,6 @@ int ghosttea_ssh_connector_run(
         connector_clear_socket(connector);
         close(socket_fd);
     }
-    freeaddrinfo(addresses);
     if (connector_is_cancelled(connector) != 0) {
         return GHOSTTEA_SSH_CONNECT_CANCELLED;
     }
