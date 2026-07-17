@@ -93,8 +93,10 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a diagnostic iOS harness selector for password or pasted disposable OpenSSH
   private keys with an optional passphrase. It clears all secret fields before
   work begins, uses opaque device-only Keychain items, and deletes them before
-  reading command output. Device and simulator SDK builds pass; the private-key
-  path still needs a physical-device run.
+  reading command output. Device and simulator SDK builds pass. A physical
+  iPhone authenticated to the disposable fixture with its encrypted Ed25519
+  key and passphrase through this path, executed the bounded command, and
+  drained the expected output without a private-key file.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -131,13 +133,12 @@ UIKit, transport state, and the rest of the application.
    PTY/resize, typed exit status/signal, auth/connect/handshake/read cancellation,
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
-   remaining credential work is physical-device private-key execution and
-   product UI integration,
-   representative-server sampling, adverse-network transitions,
+   remaining credential work is product UI integration, representative-server
+   sampling, adverse-network transitions,
    resolver and reconnect orchestration, device-footprint instrumentation, and
-   physical-device execution. The public-key partial step remains locked as
-   `-19`, so only an
-   explicitly configured chained policy may proceed to keyboard-interactive.
+   representative low-end-device execution. The public-key partial step remains
+   locked as `-19`, so only an explicitly configured chained policy may proceed
+   to keyboard-interactive.
 3. The initial raw VT physical-footprint measurement is complete. Measure the
    complete terminal stack for one foreground and several background fixtures
    on the oldest supported device class. Record terminal state, scrollback,

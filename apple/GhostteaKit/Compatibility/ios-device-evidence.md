@@ -117,3 +117,31 @@ Linux 9e1f3e1ac677 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 G
 Because credential removal occurs before the harness begins reading command
 output, this successful result also proves that immediate post-authentication
 deletion succeeded. The disposable LAN fixture was shut down afterward.
+
+## 2026-07-16: encrypted private-key resolution
+
+The signed harness was rebuilt with its private-key diagnostic path and
+connected over Wi-Fi to the disposable OpenSSH public-key fixture. Only the
+public-key endpoint was temporarily bound to the development Mac's trusted LAN
+interface. The generated encrypted Ed25519 fixture key was transferred through
+Universal Clipboard and was not a user credential.
+
+Before connecting, the harness cleared the editable private-key and passphrase
+fields and stored their bytes as separate device-only, non-synchronizing
+Keychain items under random opaque IDs. `GhostteaSSH` resolved both items only
+when authentication began, passed the counted private-key bytes to libssh2's
+in-memory API, and let its OpenSSL backend derive the public key. No private-key
+path or temporary key file was created. The harness deleted both Keychain items
+immediately after `connect()` returned and before reading command output.
+
+The physical iPhone authenticated with the encrypted key and passphrase,
+executed the default command, observed a clean exit, and drained:
+
+```text
+ghosttea-device-ok
+Linux ea1647e1f80f 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 GNU/Linux
+```
+
+This closes the physical-device opaque private-key/passphrase resolver gate.
+The LAN fixture was stopped and removed immediately after the probe, and the
+disposable key was cleared from the Mac clipboard.
