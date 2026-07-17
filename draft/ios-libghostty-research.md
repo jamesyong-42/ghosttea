@@ -226,7 +226,8 @@ lookup remains non-interruptible until it returns. Device-only,
 non-synchronizing Keychain storage now passes a real iPhone save/load/delete
 cycle. Opaque password and encrypted private-key/passphrase resolution also
 pass the disposable SSH fixture on that device, with credential deletion before
-command output is read and no private-key file. Remaining gates include product
+command output is read and no private-key file. The iPhone also preserves
+separate command streams, exit 37, and typed `SIGTERM`. Remaining gates include product
 UI promotion, representative-server sampling, automatic path-state and
 reconnect orchestration, and complete physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.

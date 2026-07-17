@@ -116,6 +116,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   accepted unknown key, detects a freshly generated changed key at the same
   address, presents the changed-key warning before replacement, and reconnects
   to the replacement strictly without another prompt.
+- a physical-device command-termination probe. The iPhone drains stdout and
+  stderr separately, reports a nonzero remote exit as `exit 37`, and preserves
+  `SIGTERM` as typed `signal TERM` rather than exit zero.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

@@ -6,6 +6,12 @@ import UIKit
 
 @MainActor
 final class HarnessModel: ObservableObject {
+  enum SSHCommandPreset {
+    case defaultOutput
+    case exitStreams
+    case signalTermination
+  }
+
   enum SSHProbeAuthentication: String, CaseIterable, Identifiable {
     case password = "Password"
     case privateKey = "Private key"
@@ -38,6 +44,7 @@ final class HarnessModel: ObservableObject {
   @Published var command = "printf 'ghosttea-device-ok\\n'; uname -a"
   @Published var sshStatus = "Not connected"
   @Published var sshOutput = ""
+  @Published var sshStandardError = ""
   @Published var pendingHostKey: PendingHostKey?
   @Published var pendingKeyboardChallenge: PendingKeyboardChallenge?
   @Published private var isBridgingSSHInteraction = false
@@ -142,6 +149,7 @@ final class HarnessModel: ObservableObject {
     isRunningSSH = true
     sshStatus = "Connecting…"
     sshOutput = ""
+    sshStandardError = ""
     isBridgingSSHInteraction = false
 
     sshCancellationRequestedAt = nil
@@ -219,7 +227,8 @@ final class HarnessModel: ObservableObject {
           do {
             try await removeCredentials(credentials, from: credentialStore)
             var negotiatedSummary: String?
-            if let candidate = connection as? SSHCandidateConnection {
+            let candidate = connection as? SSHCandidateConnection
+            if let candidate {
               let summary =
                 "\(candidate.negotiatedAlgorithms.hostKey) · \(candidate.negotiatedAlgorithms.serverToClientCipher)"
               negotiatedSummary = summary
@@ -227,15 +236,33 @@ final class HarnessModel: ObservableObject {
             } else {
               sshStatus = "Connected"
             }
-            var received = Data()
-            while let chunk = try await connection.read(maxBytes: 32_768) {
-              guard received.count + chunk.count <= 1_048_576 else {
-                throw HarnessError.outputLimitExceeded
+            var standardOutput = Data()
+            var standardError = Data()
+            if let candidate {
+              while let chunk = try await candidate.readCommandOutput(maxBytes: 32_768) {
+                switch chunk {
+                case .standardOutput(let bytes):
+                  try appendSSHOutput(
+                    bytes,
+                    to: &standardOutput,
+                    otherStreamBytes: standardError.count
+                  )
+                case .standardError(let bytes):
+                  try appendSSHOutput(
+                    bytes,
+                    to: &standardError,
+                    otherStreamBytes: standardOutput.count
+                  )
+                }
               }
-              received.append(chunk)
+            } else {
+              while let chunk = try await connection.read(maxBytes: 32_768) {
+                try appendSSHOutput(chunk, to: &standardOutput, otherStreamBytes: 0)
+              }
             }
             let termination = try await connection.waitForExit()
-            sshOutput = String(decoding: received, as: UTF8.self)
+            sshOutput = String(decoding: standardOutput, as: UTF8.self)
+            sshStandardError = String(decoding: standardError, as: UTF8.self)
             sshStatus = ["Completed", termination.description, negotiatedSummary]
               .compactMap { $0 }
               .joined(separator: " · ")
@@ -260,6 +287,17 @@ final class HarnessModel: ObservableObject {
       isRunningSSH = false
       sshCancellationRequestedAt = nil
       sshTask = nil
+    }
+  }
+
+  func loadSSHCommandPreset(_ preset: SSHCommandPreset) {
+    switch preset {
+    case .defaultOutput:
+      command = "printf 'ghosttea-device-ok\\n'; uname -a"
+    case .exitStreams:
+      command = "printf 'fixture-stdout\\n'; printf 'fixture-stderr\\n' >&2; exit 37"
+    case .signalTermination:
+      command = "kill -TERM $$"
     }
   }
 
@@ -349,6 +387,17 @@ final class HarnessModel: ObservableObject {
     for credential in credentials {
       try await store.remove(credential)
     }
+  }
+
+  private func appendSSHOutput(
+    _ bytes: Data,
+    to stream: inout Data,
+    otherStreamBytes: Int
+  ) throws {
+    guard stream.count + otherStreamBytes + bytes.count <= 1_048_576 else {
+      throw HarnessError.outputLimitExceeded
+    }
+    stream.append(bytes)
   }
 
   private func durationMilliseconds(_ duration: Duration) -> Int64 {

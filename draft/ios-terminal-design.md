@@ -1796,8 +1796,9 @@ The signed VT proof and raw one/four/eight-session footprint matrix pass on an
 iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
 confirmation including changed-key replacement and strict reconnect, password
 and keyboard-interactive authentication, command execution, and output drain
-against disposable fixtures. The measurements and command output are recorded
-in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
+against disposable fixtures. It also preserves separate stdout/stderr, exit 37,
+and typed `SIGTERM`. The measurements and command output are recorded in
+`apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
 promotion, resolver cancellation, automatic path-state/reconnect behavior,
 device-footprint

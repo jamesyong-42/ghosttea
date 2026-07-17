@@ -244,3 +244,22 @@ changed-key warning/replacement, and strict-reconnect UI gate. Representative
 launch-server host-key behavior and promotion into the production connection
 UI remain open. Both disposable LAN fixtures were stopped and removed
 immediately after their respective probes.
+
+## 2026-07-16: command streams and typed termination
+
+The harness command drain was corrected to consume
+`SSHCandidateConnection.readCommandOutput`, preserving stdout and stderr as
+distinct bounded streams instead of reading only the generic terminal stream.
+The signed iPhone build then ran two deterministic commands through the
+disposable password endpoint.
+
+The first command emitted one line on each stream and exited with status 37.
+The harness displayed `fixture-stdout` as stdout, `fixture-stderr` in its
+separate stderr section, and reported `exit 37`. The second command terminated
+its remote shell with `SIGTERM`; the harness reported `signal TERM` rather than
+conflating the signal with exit zero.
+
+This closes the physical-device separate command-stream, nonzero exit-status,
+and remote-signal reporting checks. Physical shell input half-close and PTY
+resize remain separate gates. The LAN fixture was stopped and removed
+immediately after the probes.

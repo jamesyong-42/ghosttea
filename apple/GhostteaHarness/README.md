@@ -10,6 +10,8 @@ The harness provides:
 - deterministic one-, four-, and eight-session physical-footprint measurements before and after scrollback compression;
 - a password-, in-memory private-key-, or keyboard-interactive-authenticated SSH
   command probe with bounded output;
+- separate bounded stdout and stderr capture plus deterministic exit-37 and
+  remote-signal command presets;
 - an asynchronous keyboard-interactive challenge sheet that preserves protocol
   name, instruction, prompt ordering, and per-prompt echo policy, with challenge
   cancellation routed through the measured SSH task-cancellation path;

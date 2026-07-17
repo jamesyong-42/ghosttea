@@ -80,6 +80,17 @@ struct ContentView: View {
             .lineLimit(2...5)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
+          Menu("Load command probe") {
+            Button("Default output") {
+              model.loadSSHCommandPreset(.defaultOutput)
+            }
+            Button("stdout + stderr + exit 37") {
+              model.loadSSHCommandPreset(.exitStreams)
+            }
+            Button("Remote SIGTERM") {
+              model.loadSSHCommandPreset(.signalTermination)
+            }
+          }
           Text(model.sshStatus)
             .font(.footnote)
           if !model.sshOutput.isEmpty {
@@ -87,6 +98,18 @@ struct ContentView: View {
               Text(model.sshOutput)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
+            }
+          }
+          if !model.sshStandardError.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("stderr")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              ScrollView(.horizontal) {
+                Text(model.sshStandardError)
+                  .font(.system(.caption, design: .monospaced))
+                  .textSelection(.enabled)
+              }
             }
           }
           HStack {
