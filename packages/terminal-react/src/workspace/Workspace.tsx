@@ -35,6 +35,19 @@ import { sessionsToClaim } from "./session-scope.js";
 
 const DEFAULT_STORAGE_KEY = "ghosttea:workspace:v1";
 
+export function workspaceOwnsHotkey(
+  active: boolean,
+  root: Pick<HTMLElement, "contains"> | null,
+  target: EventTarget | null,
+  activeElement: Element | null,
+): boolean {
+  if (!active || !root) return false;
+  return (
+    (target instanceof Node && root.contains(target)) ||
+    (activeElement instanceof Node && root.contains(activeElement))
+  );
+}
+
 export interface GhostteaWorkspacePlatform {
   defaultShell: string;
   readClipboard: () => string;
@@ -260,6 +273,7 @@ export function GhostteaWorkspace({
   const [focused, setFocused] = useState(document.hasFocus());
   const [remotePaletteOpen, setRemotePaletteOpen] = useState(false);
   const creatingSplitRef = useRef(false);
+  const workspaceRef = useRef<HTMLElement>(null);
   const layoutRef = useRef<PaneNode | undefined>(undefined);
   const activePaneIdRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
@@ -342,7 +356,7 @@ export function GhostteaWorkspace({
   const activatePane = useCallback((paneId: string): void => {
     setActivePaneId(paneId);
     window.requestAnimationFrame(() => {
-      const target = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]")).find(
+      const target = Array.from(workspaceRef.current?.querySelectorAll<HTMLElement>("[data-pane-id]") ?? []).find(
         (element) => element.dataset.paneId === paneId,
       );
       target?.querySelector<HTMLTextAreaElement>(".terminal-input")?.focus({ preventScroll: true });
@@ -425,7 +439,7 @@ export function GhostteaWorkspace({
   const focusDirection = useCallback(
     (direction: "left" | "right" | "up" | "down"): void => {
       if (zoomedPaneId) return;
-      const elements = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]"));
+      const elements = Array.from(workspaceRef.current?.querySelectorAll<HTMLElement>("[data-pane-id]") ?? []);
       const current = elements.find((element) => element.dataset.paneId === activePaneId);
       if (!current) return;
       const source = current.getBoundingClientRect();
@@ -499,6 +513,7 @@ export function GhostteaWorkspace({
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (!workspaceOwnsHotkey(active, workspaceRef.current, event.target, document.activeElement)) return;
       const action = ghosttyHotkey(event);
       if (remotePaletteOpen) {
         if (action?.type === "remote-sessions") {
@@ -547,6 +562,7 @@ export function GhostteaWorkspace({
   }, [
     activePane?.session.cwd,
     activePaneId,
+    active,
     closeActivePane,
     enableRemoteSessions,
     focusDirection,
@@ -562,7 +578,7 @@ export function GhostteaWorkspace({
   );
 
   return (
-    <main className={`ghostty-window${active && focused ? " is-focused" : ""}`}>
+    <main ref={workspaceRef} className={`ghostty-window${active && focused ? " is-focused" : ""}`}>
       {showTitlebar ? (
         <header className="ghostty-titlebar" aria-label={title}>
           <span className="ghostty-title">{title}</span>
