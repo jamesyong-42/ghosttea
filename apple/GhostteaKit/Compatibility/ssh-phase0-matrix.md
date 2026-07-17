@@ -7,11 +7,11 @@ scope must explicitly accept the gap.
 
 ## Candidate screening
 
-| Candidate                      | Password / key | Keyboard-interactive   | Chained public-key + MFA                                                  | Apple build                    | Phase 0 disposition                                                                  |
-| ------------------------------ | -------------- | ---------------------- | ------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
-| SwiftNIO SSH 0.14.1 directly   | Yes            | No client auth offer   | No exposed flow                                                           | Native Swift                   | Rejected for the current v1 requirements unless missing protocol work is funded      |
-| Citadel 0.12.1                 | Yes            | No public auth method  | No public auth method                                                     | Native Swift                   | Rejected; its higher-level API does not close the SwiftNIO SSH gap                   |
-| libssh2 1.11.1 + OpenSSL 3.5.7 | Adapter pass   | Two-round adapter pass | Passes with explicit sequencing; partial key step returns ambiguous `-19` | Three-slice XCFramework proven | Security-blocked; upgrade past affected 1.11.1 and rerun every gate before selection |
+| Candidate                      | Password / key | Keyboard-interactive   | Chained public-key + MFA                                                  | Apple build                    | Phase 0 disposition                                                                |
+| ------------------------------ | -------------- | ---------------------- | ------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| SwiftNIO SSH 0.14.1 directly   | Yes            | No client auth offer   | No exposed flow                                                           | Native Swift                   | Rejected for the current v1 requirements unless missing protocol work is funded    |
+| Citadel 0.12.1                 | Yes            | No public auth method  | No public auth method                                                     | Native Swift                   | Rejected; its higher-level API does not close the SwiftNIO SSH gap                 |
+| libssh2 1.11.1 + OpenSSL 3.5.7 | Adapter pass   | Two-round adapter pass | Passes with explicit sequencing; partial key step returns ambiguous `-19` | Three-slice XCFramework proven | Selected for development; fixed libssh2 and full revalidation required for release |
 
 The libssh2 finding is narrower than an unconditional “supports MFA.” It passes
 the pinned two-round keyboard-interactive and
@@ -21,11 +21,12 @@ explicit partial-success result; invoking the required second method then
 succeeds. A wrong-key control remains rejected. The production adapter must
 avoid treating every `-19` as permission to downgrade to another method.
 
-The current pin is also not shippable. The 2026-07-17 dependency review found
+The current pin is not shippable. The 2026-07-17 dependency review found
 new pre-authentication vulnerabilities affecting libssh2 through 1.11.1, while
 1.11.1 remains the latest tagged upstream release. The production-readiness
 check fails closed until a fixed immutable pin contains the recorded upstream
-fixes and all compatibility/device gates have been rerun.
+fixes and all compatibility/device gates have been rerun. Phase 0 nevertheless
+has enough evidence to select this adapter architecture for implementation.
 
 The pinned OpenSSH fixture now proves the required password, public-key,
 two-prompt keyboard-interactive, and `publickey,keyboard-interactive` reference
@@ -61,9 +62,10 @@ handshake cancellation, two algorithm profiles, and the stalled-reader flood.
 
 ## Decision rule
 
-Do not promote the candidate `GhostteaSSH` package into a production transport
-until every required row is green or has a documented, tested companion
-implementation and `npm run check:ssh:production` passes. In particular, a
+The candidate `GhostteaSSH` package may now be used for development. Do not
+include it in a production release until every required row is green or has a
+documented, tested companion implementation and
+`npm run check:ssh:production` passes. In particular, a
 successful chained fixture does not waive the
 ambiguous partial-step return-state gate or the need to promote the proven
 diagnostic challenge flow into the product UI.

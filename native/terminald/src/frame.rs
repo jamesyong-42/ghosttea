@@ -505,4 +505,95 @@ mod tests {
         let offset = u32::from_le_bytes(frame[164..168].try_into().unwrap()) as usize;
         assert_eq!(&frame[offset + 4..], b"copied");
     }
+
+    fn phase1_baseline_frame(
+        input: &[u8],
+        chunk_sizes: &[usize],
+    ) -> (ghosttea_vt::TerminalSnapshot, Vec<u8>) {
+        let mut terminal = ghosttea_vt::GhosttyTerminalCore::new(24, 5, 4096).unwrap();
+        terminal
+            .set_colors([1, 2, 3], [4, 5, 6], [7, 8, 9])
+            .unwrap();
+        let mut offset = 0;
+        let mut chunk = 0;
+        while offset < input.len() {
+            let size = chunk_sizes[chunk % chunk_sizes.len()];
+            let end = offset.saturating_add(size).min(input.len());
+            terminal.feed(&input[offset..end]);
+            offset = end;
+            chunk += 1;
+        }
+        let snapshot = terminal.snapshot().unwrap();
+        let shaped_rows = vec![ShapedRow::default(); snapshot.rows.len()];
+        let updated_rows: Vec<u16> = (0..snapshot.rows.len() as u16).collect();
+        let cursor = FrameCursor {
+            x: snapshot.cursor.x,
+            y: snapshot.cursor.y,
+            visible: snapshot.cursor.visible,
+            style: snapshot.cursor.style,
+            blinking: snapshot.cursor.blinking,
+        };
+        let frame = encode_text_snapshot(TextSnapshot {
+            session_handle: 0x0102_0304_0506_0708,
+            session_epoch: 11,
+            layout_epoch: 12,
+            sequence: 13,
+            revision: 14,
+            cols: snapshot.cols,
+            rows: &snapshot.rows,
+            shaped_rows: &shaped_rows,
+            cells: &snapshot.cells,
+            updated_rows: &updated_rows,
+            full_snapshot: true,
+            mouse_tracking: snapshot.mouse_tracking,
+            scrollbar: &snapshot.scrollbar,
+            new_glyph_definitions: &[],
+            clipboard: snapshot.clipboard.as_deref(),
+            cursor: &cursor,
+        })
+        .unwrap();
+        (snapshot, frame)
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0, "fixture hex must contain byte pairs");
+        (0..value.len())
+            .step_by(2)
+            .map(|offset| u8::from_str_radix(&value[offset..offset + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn phase1_desktop_baseline_is_invariant_to_input_chunking() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/phase1/ansi-baseline.json")).unwrap();
+        let input = decode_hex(fixture["inputHex"].as_str().unwrap());
+        let expected_frame = decode_hex(fixture["expectedFrameHex"].as_str().unwrap());
+        let expected_reply = decode_hex(fixture["expectedReplyHex"].as_str().unwrap());
+        let expected_rows: Vec<&str> = fixture["expectedRows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row.as_str().unwrap())
+            .collect();
+        let (whole_snapshot, whole_frame) = phase1_baseline_frame(&input, &[usize::MAX]);
+        for chunk_sizes in [&[1][..], &[2, 5, 13][..], &[7, 3, 1, 19][..]] {
+            let (snapshot, frame) = phase1_baseline_frame(&input, chunk_sizes);
+            assert_eq!(snapshot.rows, whole_snapshot.rows);
+            assert_eq!(snapshot.pty_response, whole_snapshot.pty_response);
+            assert_eq!(frame, whole_frame);
+        }
+        assert_eq!(whole_snapshot.rows, expected_rows);
+        assert_eq!(whole_snapshot.pty_response, expected_reply);
+        assert_eq!(whole_frame, expected_frame);
+        assert_eq!(
+            whole_snapshot.title.as_deref(),
+            fixture["expectedTitle"].as_str()
+        );
+        assert!(whole_snapshot.mouse_tracking);
+        assert_eq!(
+            whole_snapshot.clipboard.as_deref(),
+            fixture["expectedClipboard"].as_str().map(str::as_bytes)
+        );
+    }
 }

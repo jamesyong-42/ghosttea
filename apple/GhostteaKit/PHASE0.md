@@ -17,6 +17,12 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - XCFramework architecture/header/symbol validation and a Swift lifecycle and
   keyboard-interactive import probe;
 - SSH candidate decision, capability matrix, and flow-control gate.
+- a Phase 0 development decision to proceed with the host-owned libssh2 adapter;
+  dependency security approval remains a separate fail-closed release gate.
+- the Electron embedding refactor and its package/integration gates are landed;
+  a pre-extraction desktop golden now proves byte-identical logical TRF1 output
+  and terminal replies under whole-buffer, byte-at-a-time, and irregular input
+  chunking.
 - a pinned OpenSSH reference fixture covering password, public key,
   two-prompt keyboard-interactive, chained partial success, exit streams/status,
   PTY resize, and a stalled-reader output flood.
@@ -193,12 +199,14 @@ UIKit, transport state, and the rest of the application.
    are complete. Repeat the compact-tier policy on a low-memory supported
    device, then add decoded-image, shaping/cache, TRF1, and GPU-atlas categories
    as those components enter the iOS application.
-4. Resolve the SSH security hold, then decide the implementation. The pinned
-   libssh2 1.11.1 candidate passes capability gates but is affected by newly
-   disclosed pre-authentication vulnerabilities. Upgrade to a fixed immutable
-   release/commit, rerun every Apple/fixture/device gate, and make
-   `check:ssh:production` pass before selection.
+4. Before release, replace the compatibility pin with a fixed immutable
+   libssh2 release/commit, rerun every Apple/fixture/device gate, and make
+   `check:ssh:production` pass. This does not block Phase 1 development.
 5. Decide the v1 connection scope and bundled-font licensing.
-6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.
 
-Phase 1 must not reorganize `session.rs`, `service.rs`, `replica.rs`, or their package boundaries until the embedding refactor has landed. The first Phase 1 change should introduce the ordered `TerminalEffect` contract and prove identical TRF1 bytes under varied input chunking before any Apple FFI code is added.
+## Phase 1 handoff
+
+The embedding prerequisite is satisfied. Phase 1 may now begin with the ordered
+`TerminalEffect` contract and must keep the checked-in TRF1 baseline identical
+before any Apple FFI code is added. The current golden deliberately omits glyph
+definitions; add shaped-frame parity after the bundled font decision.

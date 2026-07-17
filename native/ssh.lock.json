@@ -16,7 +16,7 @@
     "minimumIosVersion": "17.0"
   },
   "candidateStatus": {
-    "purpose": "Phase 0 compile and compatibility probe; not a production dependency",
+    "purpose": "Phase 0 development implementation and compatibility artifact; production release requires explicit security approval",
     "productionApproved": false,
     "knownGap": "A successful public-key partial step is reported as LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED (-19); explicit second-method sequencing works but must be policy-safe"
   },

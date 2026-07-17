@@ -1,8 +1,8 @@
 # Phase 0 SSH candidate decision
 
-**Status:** libssh2 passes the Phase 0 capability and device fixtures, but the
-pinned 1.11.1 release is security-blocked and must not ship. No SSH stack is
-selected for production yet.
+**Status:** Phase 0 selects the libssh2 adapter as the implementation path for
+development. The pinned 1.11.1 release is a compatibility artifact and must be
+upgraded before production release.
 
 **Recorded:** 2026-07-17
 
@@ -15,14 +15,15 @@ multi-prompt keyboard-interactive callback and a caller-driven nonblocking API,
 and this repository now proves it can be packaged and imported on the supported
 Apple targets.
 
-libssh2 is not yet the production choice. On 2026-07-17 the dependency review
+This is a development architecture decision, not production dependency
+approval. On 2026-07-17 the dependency review
 found that the latest tagged release remains 1.11.1 while newly disclosed
 pre-authentication vulnerabilities affect releases through 1.11.1. Upstream
 fixes exist on the development branch, but no fixed release is tagged. The
 checked-in `check:ssh:production` gate therefore fails closed until a fixed pin
 incorporates the recorded commits and the Apple, fixture, package, and physical-
-device gates are rerun. The unpatched artifact remains a Phase 0 compatibility
-probe only.
+device gates are rerun. This release gate does not block Phase 1 implementation
+against the current compatibility artifact.
 
 Separately, against the pinned OpenSSH
 `publickey,keyboard-interactive` endpoint, the correct public key returns
@@ -230,13 +231,14 @@ channel read without a `read(maxBytes:)` request; its stalled-reader fixture
 remains bounded and lossless. `ReplayTransport` and `OrderedTerminalWriter`
 separately test the host-neutral demand and queue semantics.
 
-## Work required before selection
+## Work required before production release
 
 1. Upgrade to a fixed, immutable upstream libssh2 release or an explicitly
    reviewed commit that contains every fix recorded in `native/ssh.lock.json`.
    Do not ship the current 1.11.1 artifact. Rerun the three-slice Apple build,
    package suite, both live SSH fixtures, and physical-device harness before
-   changing `productionApproved`.
+   changing `productionApproved`. Development and parity work may continue
+   while this release gate remains red.
 
 2. Promote the diagnostic asynchronous challenge responder and opaque
    private-key chooser into the product connection UI. Opaque

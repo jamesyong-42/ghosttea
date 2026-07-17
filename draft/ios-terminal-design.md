@@ -1300,11 +1300,13 @@ Phase 0 screening found that SwiftNIO SSH 0.14.1 and Citadel 0.12.1 do not
 expose keyboard-interactive client authentication. A pinned libssh2 1.11.1 and
 OpenSSL 3.5.7 candidate now builds and imports for all required Apple slices,
 including the multi-prompt keyboard-interactive API. It is not selected for
-production. A 2026-07-17 review found newly disclosed pre-authentication
+production release, but Phase 0 selects its host-owned adapter architecture for
+development. A 2026-07-17 review found newly disclosed pre-authentication
 vulnerabilities affecting libssh2 through 1.11.1 while that version remains the
-latest tag. The current artifact is therefore security-blocked; a fixed
+latest tag. The current artifact is therefore release-blocked; a fixed
 immutable pin must incorporate the recorded upstream fixes and rerun every
-compatibility/device gate before selection. Its opaque C shim and serialized
+compatibility/device gate before production approval. This does not block
+parity implementation. Its opaque C shim and serialized
 nonblocking Swift adapter pass
 password, Ed25519 public key, two-round keyboard-interactive, and public key
 followed by keyboard-interactive. The accepted partial key step returns `-19`
@@ -1857,10 +1859,12 @@ Optional parallel spike:
 
 **Estimated effort:** 2-3 weeks
 
-Phase 1 begins only after the in-flight embedding refactor lands, passes its
-package and integration checks, and establishes a baseline commit. Do not
-interleave the two reorganizations in `session.rs`, `service.rs`, `replica.rs`,
-or the renderer packages.
+The embedding refactor has landed and passed its package and integration checks.
+`native/terminald/fixtures/phase1/ansi-baseline.json` now freezes the
+pre-extraction terminal reply, logical state, and exact TRF1 bytes across
+whole-buffer, byte-at-a-time, and irregular input chunking. Its glyph sections
+are intentionally empty until Phase 2 selects a bundled parity font. The Phase
+1 prerequisite is satisfied; keep this golden unchanged through extraction.
 
 Deliverables:
 
@@ -1871,7 +1875,7 @@ Deliverables:
 - make rendering demand-driven;
 - adapt desktop `Session` to own the model;
 - preserve current socket protocols and renderer path;
-- add byte-identical desktop TRF1 regression fixtures;
+- retain and extend the byte-identical desktop TRF1 regression fixtures;
 - retain automation ordering and view-authority behavior.
 
 Exit gate:

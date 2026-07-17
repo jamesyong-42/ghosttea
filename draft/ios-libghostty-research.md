@@ -191,7 +191,9 @@ disclosed pre-authentication vulnerabilities affect libssh2 through 1.11.1,
 which remains the latest tagged release. OpenSSL was raised to the fixed 3.5.7
 security floor and the Apple/package/live fixtures were rerun, but production
 selection remains blocked until a fixed immutable libssh2 pin incorporates the
-recorded upstream fixes and every device gate is repeated.
+recorded upstream fixes and every device gate is repeated. Phase 0 still
+selects the adapter architecture for development; the security finding is a
+release gate rather than an implementation blocker.
 
 This does not yet select libssh2. The pinned live fixture now runs through a
 serialized nonblocking Swift adapter and passes password, Ed25519 public key,
@@ -281,8 +283,11 @@ A third command killed by `SIGTERM` is reported distinctly as
 5. Spike the SSH authentication and algorithm matrix.
 6. Add whole-app footprint instrumentation, then repeat the instrumented
    demand-driven stalled-output fixture on a low-end physical device.
-7. Only then extract the shared Ghosttea terminal model.
-8. Begin the extraction after the current Electron embedding refactor lands.
+7. Extract the shared Ghosttea terminal model. The pre-extraction logical TRF1
+   golden is now recorded and invariant to whole, single-byte, and irregular
+   input chunking.
+8. The Electron embedding refactor prerequisite is complete; keep its package
+   boundaries and the checked-in TRF1 golden stable during extraction.
 
 The standard-tier whole-process gate now passes on an iPhone 14 Pro: eight
 loaded VT sessions peak at 44.6 MB, one active plus seven compressed background
