@@ -3,6 +3,7 @@ import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "re
 import type { SessionSummary, TerminalKeyEvent, TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { useGhostteaRuntime } from "./context.js";
 import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
+import { ghosttyTerminalBinding } from "./terminal-bindings.js";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
 import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
 import { usesLocalSelection } from "./selection-input.js";
@@ -13,6 +14,8 @@ export interface TerminalSurfaceProps {
   session: SessionSummary;
   theme: TerminalTheme;
   active?: boolean;
+  /** Host platform used for Ghostty-compatible application keybindings. */
+  platform?: string;
   /** Whether the surface is currently visible enough to spend GPU work painting it. */
   visible?: boolean;
   controlsResize?: boolean;
@@ -59,6 +62,7 @@ function TerminalSurfaceSession({
   session,
   theme,
   active = true,
+  platform,
   visible = true,
   controlsResize = active,
   onActivate,
@@ -129,7 +133,13 @@ function TerminalSurfaceSession({
   useEffect(() => {
     if (!onMenuAction) return;
     return onMenuAction((action) => {
-      if (!active || document.activeElement !== inputRef.current) return;
+      const focused = document.activeElement;
+      const editingAnotherControl =
+        focused !== inputRef.current &&
+        (focused instanceof HTMLInputElement ||
+          focused instanceof HTMLTextAreaElement ||
+          (focused instanceof HTMLElement && focused.isContentEditable));
+      if (!active || editingAnotherControl) return;
       if (action === "copy" && selectionRef.current) {
         void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
       } else if (action === "paste") {
@@ -261,6 +271,22 @@ function TerminalSurfaceSession({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
+    const binding = ghosttyTerminalBinding(event.nativeEvent, platform);
+    if (binding && interactive && (binding.type !== "paste" || readClipboard)) {
+      selectionAnchorRef.current = null;
+      selectionRef.current = null;
+      selectionAllRef.current = false;
+      terminalRuntime.setSelection(session.handle, null);
+      if (binding.type === "paste") {
+        const text = readClipboard?.() ?? "";
+        if (text) terminalRuntime.paste(session.id, viewId, text);
+      } else {
+        terminalRuntime.sendText(session.id, viewId, binding.text);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.metaKey) {
       if (event.key.toLowerCase() === "c" && selectionRef.current) {
         void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);

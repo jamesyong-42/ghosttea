@@ -19,8 +19,12 @@ function key(overrides: Partial<GhostteaKeyInput> = {}): GhostteaKeyInput {
 describe("Ghosttea Electron edit commands", () => {
   it("routes the macOS Command edit shortcuts", () => {
     expect(ghostteaEditCommand(key(), "darwin")).toBe("copy");
-    expect(ghostteaEditCommand(key({ key: "V" }), "darwin")).toBe("paste");
     expect(ghostteaEditCommand(key({ key: "a" }), "darwin")).toBe("select-all");
+  });
+
+  it("leaves paste on the renderer input path", () => {
+    expect(ghostteaEditCommand(key({ key: "V" }), "darwin")).toBeNull();
+    expect(ghostteaEditCommand(key({ key: "v", meta: false, control: true, shift: true }), "win32")).toBeNull();
   });
 
   it("does not steal Ctrl+C from a terminal", () => {
@@ -30,7 +34,6 @@ describe("Ghosttea Electron edit commands", () => {
 
   it("uses Ctrl+Shift edit shortcuts outside macOS", () => {
     expect(ghostteaEditCommand(key({ meta: false, control: true, shift: true }), "linux")).toBe("copy");
-    expect(ghostteaEditCommand(key({ key: "v", meta: false, control: true, shift: true }), "win32")).toBe("paste");
   });
 
   it("ignores modified, repeated, and key-up events", () => {
@@ -49,8 +52,12 @@ describe("Ghosttea Electron edit commands", () => {
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(onCommand).toHaveBeenCalledWith("copy");
 
-    uninstall();
     webContents.emit("before-input-event", { preventDefault }, key({ key: "v" }));
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledOnce();
+
+    uninstall();
+    webContents.emit("before-input-event", { preventDefault }, key({ key: "a" }));
     expect(onCommand).toHaveBeenCalledOnce();
   });
 });

@@ -13,9 +13,9 @@ export interface GhostteaKeyInput {
 }
 
 /**
- * Resolve application edit shortcuts without stealing Ctrl+C from a PTY.
- * macOS uses the conventional Command shortcuts. Other platforms use the
- * terminal convention of Ctrl+Shift so plain Ctrl+C remains an interrupt.
+ * Resolve edit shortcuts that must bypass Chromium's DOM editing path.
+ * Paste is deliberately not claimed: the focused terminal textarea needs the
+ * renderer keydown/paste event so it can send clipboard text to the PTY.
  */
 export function ghostteaEditCommand(input: GhostteaKeyInput, platform: NodeJS.Platform): GhostteaEditCommand | null {
   if (input.type !== "keyDown" || input.isAutoRepeat || input.alt) return null;
@@ -27,8 +27,6 @@ export function ghostteaEditCommand(input: GhostteaKeyInput, platform: NodeJS.Pl
   switch (input.key.toLowerCase()) {
     case "c":
       return "copy";
-    case "v":
-      return "paste";
     case "a":
       return "select-all";
     default:
@@ -37,8 +35,9 @@ export function ghostteaEditCommand(input: GhostteaKeyInput, platform: NodeJS.Pl
 }
 
 /**
- * Claim terminal edit accelerators before Electron's DOM edit roles and route
- * them to the host's renderer command channel. Returns an uninstall function.
+ * Claim terminal copy/select-all accelerators before Electron's DOM edit roles
+ * and route them to the host's renderer command channel. Paste remains on the
+ * normal renderer input path. Returns an uninstall function.
  */
 export function installGhostteaEditShortcuts(
   webContents: WebContents,

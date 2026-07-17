@@ -6,6 +6,7 @@ export function App() {
   const [active, setActive] = useState(document.visibilityState !== "hidden");
   const platform = useMemo(
     () => ({
+      platform: window.desktop.platform,
       defaultShell: window.desktop.defaultShell,
       readClipboard: window.desktop.readClipboard,
       showContextMenu: window.desktop.showContextMenu,

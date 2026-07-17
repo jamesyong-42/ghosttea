@@ -48,6 +48,7 @@ export function workspaceOwnsHotkey(
 }
 
 export interface GhostteaWorkspacePlatform {
+  platform?: string;
   defaultShell: string;
   readClipboard: () => string;
   showContextMenu: (canCopy: boolean) => void;
@@ -190,6 +191,7 @@ function SplitView({
           session={node.session}
           theme={TERMINAL_THEMES.midnight}
           active={active}
+          {...(platform.platform ? { platform: platform.platform } : {})}
           visible={workspaceActive}
           controlsResize
           onActivate={() => onActivate(node.id)}
