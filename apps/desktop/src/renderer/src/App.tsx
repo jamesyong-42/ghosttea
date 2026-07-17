@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { GhostteaWorkspace } from "@vibecook/ghosttea-react/workspace";
+import { handleDomEditCommand } from "./dom-edit-commands";
 
 export function App() {
   const [active, setActive] = useState(document.visibilityState !== "hidden");
@@ -23,6 +24,16 @@ export function App() {
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
+
+  useEffect(
+    () =>
+      window.desktop.onMenuAction((action) => {
+        if (action === "copy" || action === "paste" || action === "select-all") {
+          handleDomEditCommand(action, window.desktop);
+        }
+      }),
+    [],
+  );
 
   return (
     <GhostteaWorkspace

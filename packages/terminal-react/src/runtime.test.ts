@@ -90,6 +90,40 @@ function controlChanged(control: FakePort, controllerViewId: string, cols: numbe
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
+  it("resolves worker selection text and writes it through the platform clipboard", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const writeClipboard = vi.fn();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: new FakePort() as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const selection = { anchor: { column: 1, row: 2 }, focus: { column: 4, row: 2 } };
+
+    const copied = runtime.copySelection(session.handle, selection);
+    const request = worker.messages.find(
+      (message): message is { type: "selection-text"; requestId: number } =>
+        typeof message === "object" && message !== null && (message as { type?: string }).type === "selection-text",
+    );
+    expect(request).toMatchObject({ type: "selection-text", sessionHandle: session.handle, selection });
+
+    worker.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "selection-text", requestId: request?.requestId, text: "copied from terminal" },
+      }),
+    );
+
+    await expect(copied).resolves.toBe("copied from terminal");
+    expect(writeClipboard).toHaveBeenCalledOnce();
+    expect(writeClipboard).toHaveBeenCalledWith("copied from terminal");
+  });
+
   it("publishes scrollbar state and sends absolute scroll positions through the attached view", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();

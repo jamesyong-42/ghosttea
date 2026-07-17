@@ -5,6 +5,7 @@ import { useGhostteaRuntime } from "./context.js";
 import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
 import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
+import { usesLocalSelection } from "./selection-input.js";
 
 export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
 
@@ -96,7 +97,7 @@ function TerminalSurfaceSession({
   useEffect(() => {
     if (!onMenuAction) return;
     return onMenuAction((action) => {
-      if (!active) return;
+      if (!active || document.activeElement !== inputRef.current) return;
       if (action === "copy" && selectionRef.current) {
         void terminalRuntime.copySelection(session.handle, selectionRef.current);
       } else if (action === "paste") {
@@ -322,11 +323,12 @@ function TerminalSurfaceSession({
   const onPointerDown = (event: PointerEvent<HTMLTextAreaElement>): void => {
     onActivate?.();
     event.currentTarget.focus({ preventScroll: true });
-    const mouseTracking = terminalRuntime.isMouseTracking(session.handle) && !event.shiftKey;
-    if (event.button === 2 && !mouseTracking) return;
+    const mouseTracking = terminalRuntime.isMouseTracking(session.handle);
+    const localSelection = usesLocalSelection(mouseTracking, event.shiftKey);
+    if (event.button === 2 && localSelection) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
-    if (mouseTracking) {
+    if (!localSelection) {
       pointerModeRef.current = "mouse";
       selectionAnchorRef.current = null;
       selectionRef.current = null;

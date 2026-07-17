@@ -6,6 +6,12 @@ export {
   type SessionExitedEvent,
 } from "./automation.js";
 export { GhostteaElectronBridge, type GhostteaElectronBridgeOptions } from "./bridge.js";
+export {
+  ghostteaEditCommand,
+  installGhostteaEditShortcuts,
+  type GhostteaEditCommand,
+  type GhostteaKeyInput,
+} from "./edit-commands.js";
 export { forwardGhostteaRendererPorts } from "./preload.js";
 export { TerminalSupervisor, type GhostteaBinary, type TerminalSupervisorOptions } from "./supervisor.js";
 export type { RendererPortBootstrapMessage, TerminalDaemonConnection } from "./types.js";

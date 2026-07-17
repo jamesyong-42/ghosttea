@@ -3,7 +3,11 @@ import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
-import { GhostteaElectronBackend, type GhostteaElectronBackendOptions } from "@vibecook/ghosttea-electron/main";
+import {
+  GhostteaElectronBackend,
+  installGhostteaEditShortcuts,
+  type GhostteaElectronBackendOptions,
+} from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { DesktopTabRegistry } from "./tab-registry";
 
@@ -283,6 +287,12 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[terminal-runtime] preload failed at ${preloadPath}: ${error.stack ?? error.message}`);
   });
+  // Terminal selections live in the render worker rather than the DOM, so
+  // Electron's native edit role cannot copy them. Route the shortcut through
+  // the same renderer command path as the terminal context menu.
+  installGhostteaEditShortcuts(window.webContents, (command) =>
+    window.webContents.send("terminal-menu-action", command),
+  );
 
   if (!app.isPackaged) {
     window.webContents.on("console-message", (details) => {
