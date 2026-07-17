@@ -4,15 +4,21 @@ import { GhostteaTerminalRuntime } from "./runtime";
 
 class FakeWorker extends EventTarget {
   readonly messages: unknown[] = [];
+  terminated = false;
 
   postMessage(message: unknown): void {
     this.messages.push(message);
+  }
+
+  terminate(): void {
+    this.terminated = true;
   }
 }
 
 class FakePort extends EventTarget {
   readonly messages: Array<Record<string, unknown>> = [];
   attachReadWrite = true;
+  closed = false;
 
   postMessage(message: Record<string, unknown>): void {
     this.messages.push(message);
@@ -52,7 +58,9 @@ class FakePort extends EventTarget {
   }
 
   start(): void {}
-  close(): void {}
+  close(): void {
+    this.closed = true;
+  }
 }
 
 function canvas(): HTMLCanvasElement {
@@ -246,6 +254,37 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
 
     expect(updates.at(-1)?.readWrite).toBe(false);
     expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+  });
+
+  it("disposes mounted views, ports, timers, and the render worker exactly once", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await Promise.resolve();
+
+    runtime.dispose();
+    runtime.dispose();
+    await Promise.resolve();
+
+    expect(control.messages.filter((message) => message.type === "detach-session")).toHaveLength(1);
+    expect(control.closed).toBe(true);
+    expect(frames.closed).toBe(true);
+    expect(worker.terminated).toBe(true);
+    await expect(runtime.connect()).rejects.toThrow("disposed");
   });
 
   it("detaches an obsolete view without unmounting its replacement worker surface", async () => {

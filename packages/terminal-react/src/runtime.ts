@@ -91,6 +91,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #sessionByHandle = new Map<string, SessionSummary>();
   readonly #handleBySessionId = new Map<string, string>();
   readonly #mountedCanvases = new WeakMap<HTMLCanvasElement, MountedCanvas>();
+  readonly #mountedEntries = new Set<MountedCanvas>();
   readonly #mountGenerationByHandle = new Map<string, number>();
   readonly #mouseTrackingByHandle = new Map<string, boolean>();
   readonly #scrollbarByHandle = new Map<string, TerminalScrollbarState>();
@@ -99,6 +100,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   #rendererBackend = "starting";
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
+  #disposed = false;
 
   constructor(options: GhostteaTerminalRuntimeOptions) {
     super();
@@ -155,6 +157,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   #postWorker(message: RendererToWorkerMessage, transfer: Transferable[] = []): void {
+    if (this.#disposed) return;
     this.#worker.postMessage(message, transfer);
   }
 
@@ -163,12 +166,18 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   connect(): Promise<void> {
+    if (this.#disposed) return Promise.reject(new Error("Terminal runtime is disposed"));
     this.#ready ??= this.#connect();
     return this.#ready;
   }
 
   async #connect(): Promise<void> {
     const ports = await this.#ports;
+    if (this.#disposed) {
+      ports.control.close();
+      ports.frames.close();
+      throw new Error("Terminal runtime was disposed before its ports arrived");
+    }
     console.info("[terminal-runtime] received control and frame ports");
     this.#control = new ControlClient(ports.control);
     this.#control.addEventListener("session-exited", (event) => {
@@ -331,6 +340,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   mount(sessionId: string, sessionHandle: string, viewId: string, canvas: HTMLCanvasElement): TerminalMount {
+    if (this.#disposed) throw new Error("Cannot mount a disposed terminal runtime");
     const mounted = this.#mountedCanvases.get(canvas);
     if (mounted) {
       if (mounted.sessionHandle !== sessionHandle) {
@@ -358,6 +368,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       disposeTimer: undefined,
     };
     this.#mountedCanvases.set(canvas, entry);
+    this.#mountedEntries.add(entry);
     const view: ViewRuntimeState = {
       sessionId,
       sessionHandle,
@@ -418,6 +429,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
           this.#views.delete(mounted.viewId);
           this.#focusByView.delete(mounted.viewId);
           this.#mountedCanvases.delete(mounted.canvas);
+          this.#mountedEntries.delete(mounted);
         }, 0);
       },
     };
@@ -627,6 +639,45 @@ export class GhostteaTerminalRuntime extends EventTarget {
     view.desiredRows = rows;
     if (view.attachmentEpoch === undefined || view.controlEpoch === undefined) return;
     this.#sendResize(viewId, view, cols, rows);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const [viewId, view] of this.#views) {
+      view.pendingInput.length = 0;
+      this.#control?.notify({ type: "detach-session", sessionId: view.sessionId, viewId });
+    }
+    for (const mounted of this.#mountedEntries) {
+      if (mounted.disposeTimer !== undefined) window.clearTimeout(mounted.disposeTimer);
+      this.#mountedCanvases.delete(mounted.canvas);
+    }
+    this.#mountedEntries.clear();
+    for (const timer of this.#metadataTimers.values()) window.clearTimeout(timer);
+    this.#metadataTimers.clear();
+    this.#resync.dispose();
+    this.#views.clear();
+    this.#focusByView.clear();
+    this.#mountGenerationByHandle.clear();
+    this.#mouseTrackingByHandle.clear();
+    this.#scrollbarByHandle.clear();
+    this.#sessionByHandle.clear();
+    this.#handleBySessionId.clear();
+    if (this.#frames) {
+      this.#frames.onmessage = null;
+      this.#frames.close();
+      this.#frames = undefined;
+    }
+    this.#control?.dispose();
+    this.#control = undefined;
+    this.#worker.terminate();
+    void this.#ports.then(
+      (ports) => {
+        ports.control.close();
+        ports.frames.close();
+      },
+      () => undefined,
+    );
   }
 
   #sendResize(viewId: string, view: ViewRuntimeState, cols: number, rows: number): void {

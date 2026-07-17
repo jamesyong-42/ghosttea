@@ -13,3 +13,5 @@ export const terminalRuntime = createGhostteaTerminalRuntime({
     reload: () => window.location.reload(),
   },
 });
+
+window.addEventListener("beforeunload", () => terminalRuntime.dispose(), { once: true });
