@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -89,6 +92,15 @@ struct RemoteHostConnection {
     control: tokio::sync::Mutex<ProtocolStream>,
     incoming: tokio::sync::Mutex<()>,
     host_instance_id: String,
+    healthy: AtomicBool,
+}
+
+fn connection_is_reusable(
+    cached_host_instance_id: &str,
+    healthy: bool,
+    advertised_host_instance_id: &str,
+) -> bool {
+    healthy && cached_host_instance_id == advertised_host_instance_id
 }
 
 impl MeshRuntime {
@@ -139,6 +151,18 @@ impl MeshRuntime {
     }
 
     pub async fn list_sessions(&self, device_id: &str) -> Result<Vec<SharedSessionSummary>> {
+        match self.list_sessions_once(device_id).await {
+            Ok(sessions) => Ok(sessions),
+            Err(first_error) => {
+                self.invalidate_connection(device_id, None).await;
+                self.list_sessions_once(device_id).await.with_context(|| {
+                    format!("remote session listing failed after reconnect: {first_error:#}")
+                })
+            }
+        }
+    }
+
+    async fn list_sessions_once(&self, device_id: &str) -> Result<Vec<SharedSessionSummary>> {
         let remote = self.remote_connection(device_id).await?;
         let mut control = remote.control.lock().await;
         let request_id = Uuid::new_v4().to_string();
@@ -227,6 +251,27 @@ impl MeshRuntime {
     }
 
     pub async fn attach_view(&self, session_id: &str, view_id: &str) -> Result<u64> {
+        let device_id = self
+            .replicas
+            .read()
+            .await
+            .get(session_id)
+            .map(|remote| remote.device_id.clone())
+            .context("unknown remote session")?;
+        match self.attach_view_once(session_id, view_id).await {
+            Ok(epoch) => Ok(epoch),
+            Err(first_error) => {
+                self.invalidate_connection(&device_id, None).await;
+                self.attach_view_once(session_id, view_id)
+                    .await
+                    .with_context(|| {
+                        format!("remote view attach failed after reconnect: {first_error:#}")
+                    })
+            }
+        }
+    }
+
+    async fn attach_view_once(&self, session_id: &str, view_id: &str) -> Result<u64> {
         let key = (session_id.to_owned(), view_id.to_owned());
         if let Some(view) = self.views.lock().await.get(&key) {
             return Ok(view.attachment_epoch);
@@ -307,9 +352,15 @@ impl MeshRuntime {
             attachment_epoch,
             read_write,
         });
+        let local_view_key = key.clone();
         self.views.lock().await.insert(key, Arc::clone(&view));
         let replica = Arc::clone(&remote.replica);
         let local_session_id = session_id.to_owned();
+        let remote_device_id = remote.device_id.clone();
+        let remote_view = Arc::clone(&view);
+        let remote_host = Arc::clone(&host);
+        let views = Arc::clone(&self.views);
+        let connections = Arc::clone(&self.connections);
         let remote_control_tx = self.control_tx.clone();
         tokio::spawn(async move {
             loop {
@@ -356,6 +407,24 @@ impl MeshRuntime {
                         break;
                     }
                 }
+            }
+            let mut current_views = views.lock().await;
+            if current_views
+                .get(&local_view_key)
+                .is_some_and(|current| Arc::ptr_eq(current, &remote_view))
+            {
+                current_views.remove(&local_view_key);
+            }
+            drop(current_views);
+
+            remote_host.healthy.store(false, Ordering::Release);
+            remote_host.connection.close();
+            let mut current_connections = connections.lock().await;
+            if current_connections
+                .get(&remote_device_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &remote_host))
+            {
+                current_connections.remove(&remote_device_id);
             }
         });
         Ok(attachment_epoch)
@@ -550,7 +619,11 @@ impl MeshRuntime {
         let ready = self.ready().await?;
         let advertisement = validated_advertisement(&ready, device_id).await?;
         if let Some(connection) = connections.get(device_id) {
-            if connection.host_instance_id == advertisement.host_instance_id {
+            if connection_is_reusable(
+                &connection.host_instance_id,
+                connection.healthy.load(Ordering::Acquire),
+                &advertisement.host_instance_id,
+            ) {
                 return Ok(Arc::clone(connection));
             }
             connection.connection.close();
@@ -610,9 +683,25 @@ impl MeshRuntime {
             control: tokio::sync::Mutex::new(control),
             incoming: tokio::sync::Mutex::new(()),
             host_instance_id: advertisement.host_instance_id,
+            healthy: AtomicBool::new(true),
         });
         connections.insert(device_id.to_owned(), Arc::clone(&remote));
         Ok(remote)
+    }
+
+    async fn invalidate_connection(
+        &self,
+        device_id: &str,
+        expected: Option<&Arc<RemoteHostConnection>>,
+    ) {
+        let mut connections = self.connections.lock().await;
+        let should_remove = connections
+            .get(device_id)
+            .is_some_and(|current| expected.is_none_or(|expected| Arc::ptr_eq(current, expected)));
+        if should_remove && let Some(connection) = connections.remove(device_id) {
+            connection.healthy.store(false, Ordering::Release);
+            connection.connection.close();
+        }
     }
 
     async fn ready(&self) -> Result<MeshReady> {
@@ -1517,6 +1606,13 @@ mod tests {
             ..TruffleTerminalConfig::default()
         };
         assert!(zero_port.validate().is_err());
+    }
+
+    #[test]
+    fn connection_cache_requires_health_and_the_current_host_generation() {
+        assert!(connection_is_reusable("host-a", true, "host-a"));
+        assert!(!connection_is_reusable("host-a", false, "host-a"));
+        assert!(!connection_is_reusable("host-a", true, "host-b"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
