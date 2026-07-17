@@ -23,6 +23,33 @@ export interface TerminalSurfaceProps {
   onMenuAction?: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
 
+export function viewportSelection(
+  selection: { anchor: CellPoint; focus: CellPoint } | null,
+  scrollbar: TerminalScrollbarState,
+  cols: number,
+  rows: number,
+): { anchor: CellPoint; focus: CellPoint } | null {
+  if (!selection) return null;
+  const forward =
+    selection.anchor.row < selection.focus.row ||
+    (selection.anchor.row === selection.focus.row && selection.anchor.column <= selection.focus.column);
+  const start = forward ? selection.anchor : selection.focus;
+  const end = forward ? selection.focus : selection.anchor;
+  const viewportStart = scrollbar.offset;
+  const viewportEnd = viewportStart + rows - 1;
+  if (end.row < viewportStart || start.row > viewportEnd) return null;
+  return {
+    anchor: {
+      column: start.row < viewportStart ? 0 : start.column,
+      row: Math.max(0, start.row - viewportStart),
+    },
+    focus: {
+      column: end.row > viewportEnd ? Math.max(0, cols - 1) : end.column,
+      row: Math.min(rows - 1, end.row - viewportStart),
+    },
+  };
+}
+
 export function TerminalSurface(props: TerminalSurfaceProps) {
   const { session } = props;
   return <TerminalSurfaceSession key={`${session.id}:${session.handle}`} {...props} />;
@@ -48,6 +75,7 @@ function TerminalSurfaceSession({
   const [inputFocused, setInputFocused] = useState(false);
   const selectionAnchorRef = useRef<CellPoint | null>(null);
   const selectionRef = useRef<{ anchor: CellPoint; focus: CellPoint } | null>(null);
+  const selectionAllRef = useRef(false);
   const pointerModeRef = useRef<"mouse" | "selection" | null>(null);
   const wheelDeltaRef = useRef(0);
   const pendingScrollRowsRef = useRef(0);
@@ -55,6 +83,8 @@ function TerminalSurfaceSession({
   const pendingScrollToRef = useRef<number | null>(null);
   const scrollToFrameRef = useRef<number | null>(null);
   const scrollbarHideTimerRef = useRef<number | null>(null);
+  const selectionAutoScrollTimerRef = useRef<number | null>(null);
+  const selectionAutoScrollEdgeRef = useRef<{ direction: -1 | 1; column: number } | null>(null);
   const scrollbarDragRef = useRef<{
     pointerId: number;
     startY: number;
@@ -72,6 +102,7 @@ function TerminalSurfaceSession({
         length: session.rows,
       },
   );
+  const scrollbarRef = useRef(scrollbar);
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
 
   const releaseForwardedKeys = useCallback((): void => {
@@ -99,14 +130,16 @@ function TerminalSurfaceSession({
     return onMenuAction((action) => {
       if (!active || document.activeElement !== inputRef.current) return;
       if (action === "copy" && selectionRef.current) {
-        void terminalRuntime.copySelection(session.handle, selectionRef.current);
+        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
       } else if (action === "paste") {
         const text = readClipboard?.() ?? "";
         if (text) terminalRuntime.paste(session.id, viewId, text);
       } else if (action === "select-all") {
         const { cols, rows } = gridRef.current;
-        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
-        terminalRuntime.setSelection(session.handle, selectionRef.current);
+        const total = Math.max(rows, scrollbarRef.current.total);
+        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
+        selectionAllRef.current = true;
+        terminalRuntime.setSelection(session.handle, viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows));
       } else if (action === "clear-screen") {
         terminalRuntime.sendText(session.id, viewId, "\u000c");
       }
@@ -148,7 +181,25 @@ function TerminalSurfaceSession({
   useEffect(() => {
     const onScrollbar = (event: Event): void => {
       const detail = (event as CustomEvent<{ sessionHandle: string; scrollbar: TerminalScrollbarState }>).detail;
-      if (detail.sessionHandle === session.handle) setScrollbar(detail.scrollbar);
+      if (detail.sessionHandle !== session.handle) return;
+      scrollbarRef.current = detail.scrollbar;
+      setScrollbar(detail.scrollbar);
+      const { cols, rows } = gridRef.current;
+      const edge = selectionAutoScrollEdgeRef.current;
+      const anchor = selectionAnchorRef.current;
+      if (edge && anchor && pointerModeRef.current === "selection") {
+        selectionRef.current = {
+          anchor,
+          focus: {
+            column: edge.column,
+            row: detail.scrollbar.offset + (edge.direction < 0 ? 0 : rows - 1),
+          },
+        };
+      }
+      terminalRuntime.setSelection(
+        session.handle,
+        viewportSelection(selectionRef.current, detail.scrollbar, cols, rows),
+      );
     };
     terminalRuntime.addEventListener("scrollbar-state", onScrollbar);
     return () => terminalRuntime.removeEventListener("scrollbar-state", onScrollbar);
@@ -159,6 +210,7 @@ function TerminalSurfaceSession({
       if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
       if (scrollToFrameRef.current !== null) window.cancelAnimationFrame(scrollToFrameRef.current);
       if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+      if (selectionAutoScrollTimerRef.current !== null) window.clearInterval(selectionAutoScrollTimerRef.current);
     },
     [],
   );
@@ -206,15 +258,17 @@ function TerminalSurfaceSession({
     if (event.nativeEvent.isComposing) return;
     if (event.metaKey) {
       if (event.key.toLowerCase() === "c" && selectionRef.current) {
-        void terminalRuntime.copySelection(session.handle, selectionRef.current);
+        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
         event.preventDefault();
       } else if (event.key.toLowerCase() === "k") {
         terminalRuntime.sendText(session.id, viewId, "\u000c");
         event.preventDefault();
       } else if (event.key.toLowerCase() === "a") {
         const { cols, rows } = gridRef.current;
-        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: rows - 1 } };
-        terminalRuntime.setSelection(session.handle, selectionRef.current);
+        const total = Math.max(rows, scrollbarRef.current.total);
+        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
+        selectionAllRef.current = true;
+        terminalRuntime.setSelection(session.handle, viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows));
         event.preventDefault();
       } else if (event.key === "Enter" || (event.ctrlKey && event.key.toLowerCase() === "f")) {
         onToggleFullscreen?.();
@@ -224,6 +278,7 @@ function TerminalSurfaceSession({
     }
     selectionAnchorRef.current = null;
     selectionRef.current = null;
+    selectionAllRef.current = false;
     terminalRuntime.setSelection(session.handle, null);
     if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "c") {
       terminalRuntime.interrupt(session.id, viewId);
@@ -259,7 +314,9 @@ function TerminalSurfaceSession({
     const { cols, rows } = gridRef.current;
     return {
       column: Math.max(0, Math.min(cols - 1, Math.floor((event.clientX - bounds.left - ORIGIN_X) / CELL_WIDTH))),
-      row: Math.max(0, Math.min(rows - 1, Math.floor((event.clientY - bounds.top - ORIGIN_Y) / LINE_HEIGHT))),
+      row:
+        scrollbarRef.current.offset +
+        Math.max(0, Math.min(rows - 1, Math.floor((event.clientY - bounds.top - ORIGIN_Y) / LINE_HEIGHT))),
     };
   };
 
@@ -320,6 +377,27 @@ function TerminalSurfaceSession({
     });
   };
 
+  const stopSelectionAutoScroll = (): void => {
+    selectionAutoScrollEdgeRef.current = null;
+    if (selectionAutoScrollTimerRef.current !== null) {
+      window.clearInterval(selectionAutoScrollTimerRef.current);
+      selectionAutoScrollTimerRef.current = null;
+    }
+  };
+
+  const updateSelectionAutoScroll = (direction: -1 | 0 | 1, column: number): void => {
+    if (direction === 0) {
+      stopSelectionAutoScroll();
+      return;
+    }
+    selectionAutoScrollEdgeRef.current = { direction, column };
+    if (selectionAutoScrollTimerRef.current !== null) return;
+    selectionAutoScrollTimerRef.current = window.setInterval(() => {
+      const edge = selectionAutoScrollEdgeRef.current;
+      if (edge) queueScrollRows(edge.direction);
+    }, 40);
+  };
+
   const onPointerDown = (event: PointerEvent<HTMLTextAreaElement>): void => {
     onActivate?.();
     event.currentTarget.focus({ preventScroll: true });
@@ -332,6 +410,7 @@ function TerminalSurfaceSession({
       pointerModeRef.current = "mouse";
       selectionAnchorRef.current = null;
       selectionRef.current = null;
+      selectionAllRef.current = false;
       terminalRuntime.setSelection(session.handle, null);
       sendMouse(event, "press", mouseButton(event.button));
       return;
@@ -340,7 +419,12 @@ function TerminalSurfaceSession({
     const point = pointFromPointer(event);
     selectionAnchorRef.current = point;
     selectionRef.current = { anchor: point, focus: point };
-    terminalRuntime.setSelection(session.handle, selectionRef.current);
+    selectionAllRef.current = false;
+    const { cols, rows } = gridRef.current;
+    terminalRuntime.setSelection(
+      session.handle,
+      viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+    );
   };
 
   const onPointerMove = (event: PointerEvent<HTMLTextAreaElement>): void => {
@@ -352,20 +436,29 @@ function TerminalSurfaceSession({
     }
     const anchor = selectionAnchorRef.current;
     if (!anchor || pointerModeRef.current !== "selection") return;
-    selectionRef.current = { anchor, focus: pointFromPointer(event) };
-    terminalRuntime.setSelection(session.handle, selectionRef.current);
+    const point = pointFromPointer(event);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    updateSelectionAutoScroll(event.clientY < bounds.top ? -1 : event.clientY > bounds.bottom ? 1 : 0, point.column);
+    selectionRef.current = { anchor, focus: point };
+    const { cols, rows } = gridRef.current;
+    terminalRuntime.setSelection(
+      session.handle,
+      viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+    );
   };
 
   const onPointerUp = (event: PointerEvent<HTMLTextAreaElement>): void => {
+    stopSelectionAutoScroll();
     if (pointerModeRef.current === "mouse") {
       sendMouse(event, "release", mouseButton(event.button));
     } else if (pointerModeRef.current === "selection" && selectionRef.current) {
       const { anchor, focus } = selectionRef.current;
       if (anchor.row === focus.row && anchor.column === focus.column) {
         selectionRef.current = null;
+        selectionAllRef.current = false;
         terminalRuntime.setSelection(session.handle, null);
       } else {
-        void terminalRuntime.copySelection(session.handle, selectionRef.current);
+        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
       }
     }
     pointerModeRef.current = null;

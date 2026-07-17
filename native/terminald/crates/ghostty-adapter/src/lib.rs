@@ -75,6 +75,16 @@ unsafe extern "C" {
     fn eg_terminal_scrollbar(terminal: *mut RawTerminal, scrollbar: *mut RawScrollbar) -> bool;
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_alternate_scroll(terminal: *mut RawTerminal) -> bool;
+    fn eg_terminal_selection_text(
+        terminal: *mut RawTerminal,
+        start_column: u16,
+        start_row: u32,
+        end_column: u16,
+        end_row: u32,
+        select_all: bool,
+        out: *mut u8,
+        cap: usize,
+    ) -> usize;
     fn eg_terminal_snapshot(
         terminal: *mut RawTerminal,
         meta: *mut RawSnapshotMeta,
@@ -226,6 +236,47 @@ impl GhosttyTerminalCore {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         unsafe { eg_terminal_write(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) };
+    }
+
+    pub fn selection_text(
+        &mut self,
+        start: (u16, u32),
+        end: (u16, u32),
+        select_all: bool,
+    ) -> Result<String, GhosttyError> {
+        let required = unsafe {
+            eg_terminal_selection_text(
+                self.raw.as_ptr(),
+                start.0,
+                start.1,
+                end.0,
+                end.1,
+                select_all,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if required == usize::MAX {
+            return Err(GhosttyError(-1));
+        }
+        let mut output = vec![0_u8; required];
+        let written = unsafe {
+            eg_terminal_selection_text(
+                self.raw.as_ptr(),
+                start.0,
+                start.1,
+                end.0,
+                end.1,
+                select_all,
+                output.as_mut_ptr(),
+                output.len(),
+            )
+        };
+        if written == usize::MAX || written > output.len() {
+            return Err(GhosttyError(-1));
+        }
+        output.truncate(written);
+        String::from_utf8(output).map_err(|_| GhosttyError(-1))
     }
 
     pub fn encode_paste(&mut self, text: &str) -> Result<Vec<u8>, GhosttyError> {
@@ -804,6 +855,21 @@ mod tests {
         let restored = terminal.snapshot().unwrap();
         assert_eq!(restored.rows, bottom.rows);
         assert_eq!(restored.scrollbar, bottom.scrollbar);
+    }
+
+    #[test]
+    fn formats_screen_absolute_and_select_all_ranges() {
+        let mut terminal = GhosttyTerminalCore::new(12, 2, 100).unwrap();
+        terminal.feed(b"first\r\nsecond\r\nthird");
+        let scrollbar = terminal.snapshot().unwrap().scrollbar;
+        assert_eq!(
+            terminal.selection_text((0, 1), (5, 1), false).unwrap(),
+            "second"
+        );
+        let all = terminal.selection_text((0, 0), (0, 0), true).unwrap();
+        assert!(all.contains("first"));
+        assert!(all.contains("third"));
+        assert!(scrollbar.total >= 3);
     }
 
     #[test]

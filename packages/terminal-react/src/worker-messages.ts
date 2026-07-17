@@ -12,13 +12,11 @@ export type RendererToWorkerMessage =
   | { type: "selection"; sessionHandle: string; selection: CellSelection | null }
   | { type: "visibility"; sessionHandle: string; visible: boolean }
   | { type: "focus"; sessionHandle: string; focused: boolean }
-  | { type: "cursor-activity"; sessionHandle: string }
-  | { type: "selection-text"; requestId: number; sessionHandle: string; selection: CellSelection };
+  | { type: "cursor-activity"; sessionHandle: string };
 
 export type WorkerToRendererMessage =
   | { type: "renderer-status"; backend: string; textEngine?: string; recovered?: boolean }
   | { type: "clipboard-write"; text: string }
-  | { type: "selection-text"; requestId: number; text: string }
   | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }

@@ -40,7 +40,6 @@ export type TerminalMount = {
   resize: (width: number, height: number, dpr: number) => void;
   dispose: () => void;
 };
-type SelectionRequest = { resolve: (text: string) => void; timeout: number };
 
 interface MountedCanvas {
   canvas: HTMLCanvasElement;
@@ -96,8 +95,6 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #scrollbarByHandle = new Map<string, TerminalScrollbarState>();
   readonly #focusByView = new Map<string, boolean>();
   readonly #views = new Map<string, ViewRuntimeState>();
-  readonly #selectionRequests = new Map<number, SelectionRequest>();
-  #nextSelectionRequest = 1;
   #rendererBackend = "starting";
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
@@ -133,12 +130,6 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.dispatchEvent(new CustomEvent("renderer-status", { detail: data }));
       } else if (data.type === "clipboard-write") {
         this.#platform.writeClipboard(data.text);
-      } else if (data.type === "selection-text") {
-        const request = this.#selectionRequests.get(data.requestId);
-        if (!request) return;
-        this.#selectionRequests.delete(data.requestId);
-        window.clearTimeout(request.timeout);
-        request.resolve(data.text);
       } else if (data.type === "scrollbar-state") {
         this.#scrollbarByHandle.set(data.sessionHandle, data.scrollbar);
         this.dispatchEvent(
@@ -565,19 +556,29 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
   }
 
-  copySelection(sessionHandle: string, selection: CellSelection): Promise<string> {
-    const requestId = this.#nextSelectionRequest++;
-    return new Promise<string>((resolve) => {
-      const timeout = window.setTimeout(() => {
-        this.#selectionRequests.delete(requestId);
-        resolve("");
-      }, 5_000);
-      this.#selectionRequests.set(requestId, { resolve, timeout });
-      this.#postWorker({ type: "selection-text", requestId, sessionHandle, selection });
-    }).then((text) => {
-      if (text) this.#platform.writeClipboard(text);
-      return text;
+  async copySelection(
+    sessionId: string,
+    viewId: string,
+    selection: CellSelection,
+    selectAll = false,
+  ): Promise<string> {
+    await this.connect();
+    const view = this.#views.get(viewId);
+    if (!view || view.sessionId !== sessionId || view.attachmentEpoch === undefined) return "";
+    const response = await this.#control!.request({
+      type: "selection-text",
+      sessionId,
+      viewId,
+      attachmentEpoch: view.attachmentEpoch,
+      startColumn: selection.anchor.column,
+      startRow: selection.anchor.row,
+      endColumn: selection.focus.column,
+      endRow: selection.focus.row,
+      selectAll,
     });
+    if (response.type !== "selection-text") throw new Error("terminald returned an unexpected selection response");
+    if (response.text) this.#platform.writeClipboard(response.text);
+    return response.text;
   }
 
   interrupt(sessionId: string, viewId: string): void {

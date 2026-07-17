@@ -72,6 +72,14 @@ void eg_terminal_scroll_to(EgTerminal* terminal, size_t row);
 bool eg_terminal_scrollbar(EgTerminal* terminal, EgScrollbar* scrollbar);
 bool eg_terminal_mouse_tracking(EgTerminal* terminal);
 bool eg_terminal_alternate_scroll(EgTerminal* terminal);
+size_t eg_terminal_selection_text(EgTerminal* terminal,
+                                  uint16_t start_column,
+                                  uint32_t start_row,
+                                  uint16_t end_column,
+                                  uint32_t end_row,
+                                  bool select_all,
+                                  uint8_t* out,
+                                  size_t cap);
 int eg_terminal_snapshot(EgTerminal* terminal,
                          EgSnapshotMeta* meta,
                          EgRowFn row_fn,

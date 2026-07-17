@@ -814,6 +814,21 @@ impl Session {
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
     }
+
+    pub fn selection_text(
+        &self,
+        start_column: u16,
+        start_row: u32,
+        end_column: u16,
+        end_row: u32,
+        select_all: bool,
+    ) -> Result<String> {
+        self.terminal
+            .lock()
+            .unwrap()
+            .selection_text((start_column, start_row), (end_column, end_row), select_all)
+            .context("format terminal selection")
+    }
     pub fn session_epoch(&self) -> u64 {
         self.session_epoch
     }

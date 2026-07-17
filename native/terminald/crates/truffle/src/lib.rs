@@ -22,8 +22,8 @@ use uuid::Uuid;
 
 use ghosttea::{
     RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica, RemoteResize,
-    RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
-    ViewAccess,
+    RemoteSelection, RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary,
+    TerminalMesh, ViewAccess,
     tunnel_protocol::{
         ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
@@ -564,6 +564,45 @@ impl MeshRuntime {
                 MAX_CONTROL_MESSAGE_BYTES,
             )
             .await
+    }
+
+    pub async fn selection_text(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        request: RemoteSelection,
+    ) -> Result<String> {
+        let view = self
+            .remote_view(session_id, view_id, request.attachment_epoch)
+            .await?;
+        let request_id = Uuid::new_v4().to_string();
+        let mut control = view.session_control.lock().await;
+        control
+            .write_message(
+                &SessionControlMessage::SelectionText {
+                    request_id: request_id.clone(),
+                    view_id: view_id.to_owned(),
+                    attachment_epoch: request.attachment_epoch,
+                    start_column: request.start_column,
+                    start_row: request.start_row,
+                    end_column: request.end_column,
+                    end_row: request.end_row,
+                    select_all: request.select_all,
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await?;
+        match control
+            .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await?
+            .context("remote terminal closed before returning selection text")?
+        {
+            SessionControlMessage::SelectionTextResult {
+                request_id: response_id,
+                text,
+            } if response_id == request_id => Ok(text),
+            _ => bail!("remote terminal returned an invalid selection response"),
+        }
     }
 
     pub async fn refresh(&self, session_id: &str) -> Result<()> {
@@ -1316,6 +1355,30 @@ async fn session_control_loop(
                 .await?;
             }
             SessionControlMessage::StateAck { .. } => {}
+            SessionControlMessage::SelectionText {
+                request_id,
+                view_id,
+                attachment_epoch: epoch,
+                start_column,
+                start_row,
+                end_column,
+                end_row,
+                select_all,
+            } if view_id == attached_view_id && epoch == attachment_epoch => {
+                let text = session.selection_text(
+                    start_column,
+                    start_row,
+                    end_column,
+                    end_row,
+                    select_all,
+                )?;
+                control
+                    .write_message(
+                        &SessionControlMessage::SelectionTextResult { request_id, text },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
             SessionControlMessage::Detach {
                 view_id,
                 attachment_epoch: epoch,
@@ -1652,6 +1715,15 @@ impl RemoteTerminalRuntime for MeshRuntime {
 
     async fn resize(&self, session_id: &str, view_id: &str, request: RemoteResize) -> Result<()> {
         MeshRuntime::resize(self, session_id, view_id, request).await
+    }
+
+    async fn selection_text(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        request: RemoteSelection,
+    ) -> Result<String> {
+        MeshRuntime::selection_text(self, session_id, view_id, request).await
     }
 
     async fn refresh(&self, session_id: &str) -> Result<()> {

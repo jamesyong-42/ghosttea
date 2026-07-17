@@ -254,6 +254,48 @@ bool eg_terminal_alternate_scroll(EgTerminal* state) {
   return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && alternate_scroll;
 }
 
+size_t eg_terminal_selection_text(EgTerminal* state,
+                                  uint16_t start_column,
+                                  uint32_t start_row,
+                                  uint16_t end_column,
+                                  uint32_t end_row,
+                                  bool select_all,
+                                  uint8_t* out,
+                                  size_t cap) {
+  if (state == NULL) return SIZE_MAX;
+  GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+  GhosttyResult result;
+  if (select_all) {
+    result = ghostty_terminal_select_all(state->terminal, &selection);
+  } else {
+    GhosttyPoint start = {
+        .tag = GHOSTTY_POINT_TAG_SCREEN,
+        .value.coordinate = {.x = start_column, .y = start_row},
+    };
+    GhosttyPoint end = {
+        .tag = GHOSTTY_POINT_TAG_SCREEN,
+        .value.coordinate = {.x = end_column, .y = end_row},
+    };
+    result = ghostty_terminal_grid_ref(state->terminal, start, &selection.start);
+    if (result == GHOSTTY_SUCCESS)
+      result = ghostty_terminal_grid_ref(state->terminal, end, &selection.end);
+  }
+  if (result == GHOSTTY_NO_VALUE) return 0;
+  if (result != GHOSTTY_SUCCESS) return SIZE_MAX;
+
+  GhosttyTerminalSelectionFormatOptions options =
+      GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+  options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  options.unwrap = true;
+  options.trim = true;
+  options.selection = &selection;
+  size_t written = 0;
+  result = ghostty_terminal_selection_format_buf(
+      state->terminal, options, out, cap, &written);
+  if (result == GHOSTTY_SUCCESS || result == GHOSTTY_OUT_OF_SPACE) return written;
+  return SIZE_MAX;
+}
+
 static void eg_cell_style(GhosttyRenderStateRowCells cells, EgCellStyle* compact) {
   GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
   memset(compact, 0, sizeof(*compact));

@@ -29,7 +29,6 @@ import {
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
-import { selectionText } from "./selection-text.js";
 
 interface Snapshot {
   rows: string[];
@@ -391,12 +390,6 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
     } else if (message.type === "cursor-activity") {
       scheduleCursorBlink(message.sessionHandle, true);
       markDirty(message.sessionHandle);
-    } else if (message.type === "selection-text") {
-      postToRenderer({
-        type: "selection-text",
-        requestId: message.requestId,
-        text: selectionText(snapshot(message.sessionHandle).rows, message.selection),
-      });
     }
   } catch (error) {
     console.error("[terminal-renderer] rejected worker message", error);

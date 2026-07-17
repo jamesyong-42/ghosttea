@@ -1,7 +1,7 @@
 import { isValidElement } from "react";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 import { describe, expect, it } from "vitest";
-import { TerminalSurface } from "./TerminalSurface";
+import { TerminalSurface, viewportSelection } from "./TerminalSurface";
 import { DEFAULT_THEME } from "./renderers/types";
 
 function session(id: string, handle: string): SessionSummary {
@@ -33,5 +33,16 @@ describe("TerminalSurface session ownership", () => {
     expect(isValidElement(second)).toBe(true);
     expect(first.key).toBe("first:11");
     expect(second.key).toBe("second:22");
+  });
+});
+
+describe("viewportSelection", () => {
+  it("keeps absolute selections attached to their scrollback rows", () => {
+    const selection = { anchor: { column: 3, row: 40 }, focus: { column: 8, row: 60 } };
+    expect(viewportSelection(selection, { total: 100, offset: 50, length: 10 }, 80, 10)).toEqual({
+      anchor: { column: 0, row: 0 },
+      focus: { column: 79, row: 9 },
+    });
+    expect(viewportSelection(selection, { total: 100, offset: 70, length: 10 }, 80, 10)).toBeNull();
   });
 });

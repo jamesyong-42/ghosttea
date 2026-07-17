@@ -155,6 +155,16 @@ enum Command {
         background: [u8; 3],
         cursor: [u8; 3],
     },
+    SelectionText {
+        session_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        start_column: u64,
+        start_row: u64,
+        end_column: u64,
+        end_row: u64,
+        select_all: bool,
+    },
     Interrupt {
         session_id: String,
         view_id: String,
@@ -237,6 +247,9 @@ enum ResponseBody {
         human_input_epoch: u64,
         input_sequence: Option<u64>,
         reason: Option<&'static str>,
+    },
+    SelectionText {
+        text: String,
     },
     Ok,
     Error {
@@ -459,7 +472,7 @@ async fn handle_command(
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
                     protocol_major: 1,
-                    protocol_minor: 3,
+                    protocol_minor: 4,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
@@ -919,6 +932,50 @@ async fn handle_command(
                 }
                 Ok(ResponseBody::Ok)
             }
+            Command::SelectionText {
+                session_id,
+                view_id,
+                attachment_epoch,
+                start_column,
+                start_row,
+                end_column,
+                end_row,
+                select_all,
+            } => {
+                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
+                let start_column =
+                    checked_dimension(start_column, "startColumn", 0, MAX_TERMINAL_COLS)?;
+                let end_column = checked_dimension(end_column, "endColumn", 0, MAX_TERMINAL_COLS)?;
+                let start_row = u32::try_from(start_row).context("startRow is out of range")?;
+                let end_row = u32::try_from(end_row).context("endRow is out of range")?;
+                let text = if let Some(session) = registry.read().unwrap().get(&session_id).cloned()
+                {
+                    session.selection_text(
+                        start_column,
+                        start_row,
+                        end_column,
+                        end_row,
+                        select_all,
+                    )?
+                } else {
+                    context
+                        .mesh_runtime
+                        .selection_text(
+                            &session_id,
+                            &view_id,
+                            mesh::RemoteSelection {
+                                attachment_epoch,
+                                start_column,
+                                start_row,
+                                end_column,
+                                end_row,
+                                select_all,
+                            },
+                        )
+                        .await?
+                };
+                Ok(ResponseBody::SelectionText { text })
+            }
             Command::Interrupt {
                 session_id,
                 view_id,
@@ -1162,12 +1219,35 @@ mod protocol_tests {
     }
 
     #[test]
+    fn deserializes_absolute_terminal_selection_requests() {
+        let envelope: Envelope = serde_json::from_value(json!({
+            "requestId": 14,
+            "type": "selection-text",
+            "sessionId": "session",
+            "viewId": "view",
+            "attachmentEpoch": 3,
+            "startColumn": 1,
+            "startRow": 120,
+            "endColumn": 8,
+            "endRow": 124,
+            "selectAll": false
+        }))
+        .unwrap();
+        match envelope.command {
+            Command::SelectionText {
+                start_row, end_row, ..
+            } => assert_eq!((start_row, end_row), (120, 124)),
+            _ => panic!("expected selection-text command"),
+        }
+    }
+
+    #[test]
     fn serializes_typed_responses() {
         let value = serde_json::to_value(ResponseEnvelope {
             request_id: 7,
             body: ResponseBody::Hello {
                 protocol_major: 1,
-                protocol_minor: 3,
+                protocol_minor: 4,
                 server_build: "test".to_owned(),
             },
         })

@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 3;
+export const PROTOCOL_MINOR = 4;
 
 export type SessionEnvironment =
   { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
@@ -83,6 +83,18 @@ export type ClientCommand =
       background: [number, number, number];
       cursor: [number, number, number];
     }
+  | {
+      requestId: number;
+      type: "selection-text";
+      sessionId: string;
+      viewId: string;
+      attachmentEpoch: number;
+      startColumn: number;
+      startRow: number;
+      endColumn: number;
+      endRow: number;
+      selectAll: boolean;
+    }
   | (ViewInputIdentity & { requestId: number; type: "interrupt"; sessionId: string })
   | { requestId: number; type: "get-automation-state"; sessionId: string }
   | {
@@ -157,6 +169,7 @@ export type ServerEvent =
       layoutEpoch: number;
     }
   | { requestId: number; type: "automation-state"; sessionId: string; humanInputEpoch: number }
+  | { requestId: number; type: "selection-text"; text: string }
   | {
       requestId: number;
       type: "automation-input-result";
@@ -336,6 +349,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       );
     case "automation-state":
       return typeof candidate.sessionId === "string" && Number.isSafeInteger(candidate.humanInputEpoch);
+    case "selection-text":
+      return typeof candidate.text === "string";
     case "automation-input-result":
       return (
         typeof candidate.sessionId === "string" &&

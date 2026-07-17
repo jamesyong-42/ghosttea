@@ -39,6 +39,15 @@ pub struct RemoteResize {
     pub rows: u16,
 }
 
+pub struct RemoteSelection {
+    pub attachment_epoch: u64,
+    pub start_column: u16,
+    pub start_row: u32,
+    pub end_column: u16,
+    pub end_row: u32,
+    pub select_all: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteHostSummary {
@@ -85,6 +94,12 @@ pub trait RemoteTerminalRuntime: Send + Sync {
         rows: u16,
     ) -> Result<RemoteControlClaim>;
     async fn resize(&self, session_id: &str, view_id: &str, request: RemoteResize) -> Result<()>;
+    async fn selection_text(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        request: RemoteSelection,
+    ) -> Result<String>;
     async fn refresh(&self, session_id: &str) -> Result<()>;
     async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64);
     async fn close_session(&self, session_id: &str) -> bool;
@@ -171,6 +186,15 @@ impl RemoteTerminalRuntime for NoRemoteRuntime {
         _view_id: &str,
         _request: RemoteResize,
     ) -> Result<()> {
+        unavailable()
+    }
+
+    async fn selection_text(
+        &self,
+        _session_id: &str,
+        _view_id: &str,
+        _request: RemoteSelection,
+    ) -> Result<String> {
         unavailable()
     }
 

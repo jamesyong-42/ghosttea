@@ -39,6 +39,12 @@ class FakePort extends EventTarget {
           },
         }),
       );
+    } else if (message.type === "selection-text") {
+      this.dispatchEvent(
+        new MessageEvent("message", {
+          data: { requestId, type: "selection-text", text: "copied from terminal" },
+        }),
+      );
     }
   }
 
@@ -90,7 +96,7 @@ function controlChanged(control: FakePort, controllerViewId: string, cols: numbe
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
-  it("resolves worker selection text and writes it through the platform clipboard", async () => {
+  it("copies stable terminal-owned selection text through the platform clipboard", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();
     const writeClipboard = vi.fn();
@@ -104,22 +110,13 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       },
       workerFactory: () => worker as unknown as Worker,
     });
-    const selection = { anchor: { column: 1, row: 2 }, focus: { column: 4, row: 2 } };
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await Promise.resolve();
+    const selection = { anchor: { column: 1, row: 42 }, focus: { column: 4, row: 45 } };
 
-    const copied = runtime.copySelection(session.handle, selection);
-    const request = worker.messages.find(
-      (message): message is { type: "selection-text"; requestId: number } =>
-        typeof message === "object" && message !== null && (message as { type?: string }).type === "selection-text",
-    );
-    expect(request).toMatchObject({ type: "selection-text", sessionHandle: session.handle, selection });
-
-    worker.dispatchEvent(
-      new MessageEvent("message", {
-        data: { type: "selection-text", requestId: request?.requestId, text: "copied from terminal" },
-      }),
-    );
-
-    await expect(copied).resolves.toBe("copied from terminal");
+    await expect(runtime.copySelection(session.id, "view-1", selection)).resolves.toBe("copied from terminal");
     expect(writeClipboard).toHaveBeenCalledOnce();
     expect(writeClipboard).toHaveBeenCalledWith("copied from terminal");
   });

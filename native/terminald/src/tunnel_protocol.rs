@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::session::{KeyInput, MouseInput};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 2;
+pub const PROTOCOL_MINOR: u16 = 3;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -224,6 +224,20 @@ pub enum SessionControlMessage {
         terminal_revision: u64,
     },
     RequestSnapshot,
+    SelectionText {
+        request_id: String,
+        view_id: String,
+        attachment_epoch: u64,
+        start_column: u16,
+        start_row: u32,
+        end_column: u16,
+        end_row: u32,
+        select_all: bool,
+    },
+    SelectionTextResult {
+        request_id: String,
+        text: String,
+    },
     Detach {
         view_id: String,
         attachment_epoch: u64,

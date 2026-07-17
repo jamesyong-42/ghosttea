@@ -10,7 +10,7 @@ pub mod tunnel_protocol;
 
 pub use authority::ViewAccess;
 pub use mesh::{
-    RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize,
+    RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize, RemoteSelection,
     RemoteTerminalRuntime, TerminalMesh,
 };
 pub use replica::RemoteReplica;
