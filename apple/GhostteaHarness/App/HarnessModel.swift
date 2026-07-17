@@ -38,6 +38,8 @@ final class HarnessModel: ObservableObject {
   @Published var isRunningSSH = false
 
   private var hostKeyContinuation: CheckedContinuation<SSHCandidateHostKeyDecision, Never>?
+  private var sshTask: Task<Void, Never>?
+  private var sshCancellationRequestedAt: ContinuousClock.Instant?
 
   var deviceSummary: String {
     let device = UIDevice.current
@@ -128,7 +130,8 @@ final class HarnessModel: ObservableObject {
     sshStatus = "Connecting…"
     sshOutput = ""
 
-    Task {
+    sshCancellationRequestedAt = nil
+    sshTask = Task {
       do {
         let credentialStore = try KeychainSSHCredentialStore()
         let connectionID = UUID()
@@ -222,10 +225,25 @@ final class HarnessModel: ObservableObject {
           throw error
         }
       } catch {
-        sshStatus = "Failed: \(error)"
+        if let requestedAt = sshCancellationRequestedAt {
+          let duration = requestedAt.duration(to: .now)
+          sshStatus = "Cancelled in \(durationMilliseconds(duration)) ms"
+        } else {
+          sshStatus = "Failed: \(error)"
+        }
       }
       isRunningSSH = false
+      sshCancellationRequestedAt = nil
+      sshTask = nil
     }
+  }
+
+  func cancelSSHCommand() {
+    guard isRunningSSH, sshCancellationRequestedAt == nil else { return }
+    sshCancellationRequestedAt = .now
+    sshStatus = "Cancelling…"
+    resolveHostKey(.reject)
+    sshTask?.cancel()
   }
 
   func resolveHostKey(_ decision: SSHCandidateHostKeyDecision) {
@@ -270,6 +288,11 @@ final class HarnessModel: ObservableObject {
     for credential in credentials {
       try await store.remove(credential)
     }
+  }
+
+  private func durationMilliseconds(_ duration: Duration) -> Int64 {
+    let components = duration.components
+    return components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
   }
 }
 

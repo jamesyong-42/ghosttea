@@ -89,10 +89,18 @@ struct ContentView: View {
                 .textSelection(.enabled)
             }
           }
-          Button(model.isRunningSSH ? "Running…" : "Run SSH command") {
-            model.runSSHCommand()
+          HStack {
+            Button(model.isRunningSSH ? "Running…" : "Run SSH command") {
+              model.runSSHCommand()
+            }
+            .disabled(model.isRunningSSH)
+            if model.isRunningSSH {
+              Spacer()
+              Button("Cancel", role: .destructive) {
+                model.cancelSSHCommand()
+              }
+            }
           }
-          .disabled(model.isRunningSSH)
         }
       }
       .navigationTitle("Ghosttea Phase 0")

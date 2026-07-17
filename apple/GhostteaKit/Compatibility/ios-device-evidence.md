@@ -145,3 +145,36 @@ Linux ea1647e1f80f 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 G
 This closes the physical-device opaque private-key/passphrase resolver gate.
 The LAN fixture was stopped and removed immediately after the probe, and the
 disposable key was cleared from the Mac clipboard.
+
+## 2026-07-16: route-loss cancellation and fresh reconnect
+
+The harness ran a command that emitted a readiness marker and one heartbeat per
+second through the disposable password fixture. After the connection was
+established, Wi-Fi was disabled from Control Center, moving the phone away from
+the fixture's LAN-only route. The user then explicitly cancelled the command.
+
+The retained Swift task propagated cancellation into `GhostteaSSH`, whose
+socket-wait cancellation handler called `shutdown(SHUT_RDWR)` before unwinding
+the serialized session. The harness reported:
+
+```text
+Cancelled in 23 ms
+```
+
+This is below the one-second Phase 0 cancellation gate. It proves prompt
+physical-device teardown when the active route disappears; it does not claim
+that an ordinary SSH session survives a network transition.
+
+The original fixture was removed. After Wi-Fi was restored, a fresh fixture
+with a separately verified host key was started and accepted once. A new
+connection authenticated through the opaque password resolver and drained:
+
+```text
+ghosttea-reconnect-ok
+Linux 3caa85b42359 6.12.54-linuxkit #1 SMP Tue Nov 4 21:21:47 UTC 2025 aarch64 GNU/Linux
+```
+
+This satisfies the local physical-device route-loss cancellation and explicit
+fresh-reconnect baseline. Automatic path monitoring, retry policy, UI state,
+and representative launch-server behavior remain product gates. The second
+fixture was stopped and removed immediately after the probe.

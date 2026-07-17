@@ -28,8 +28,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a live Swift adapter fixture that passes the authentication matrix, rejects
   unknown and changed host keys, verifies a 41x132 PTY and 50x140 resize, drains
   a deliberately stalled 32 MiB stream byte-for-byte at about 10 MB process
-  RSS, and observes blocked-read task cancellation in under 50 ms on the
-  development Mac. It locks the negotiated fixture profile to Curve25519,
+  RSS, and observes blocked-read task cancellation in under 1 ms with
+  cancellation-triggered socket shutdown on the development Mac. It locks the
+  negotiated fixture profile to Curve25519,
   Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 - an asynchronous keyboard-interactive challenge broker that preserves prompt
   text and echo policy, keeps the synchronous callback on a dedicated worker,
@@ -97,6 +98,11 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   iPhone authenticated to the disposable fixture with its encrypted Ed25519
   key and passphrase through this path, executed the bounded command, and
   drained the expected output without a private-key file.
+- a physical-device route-loss probe. After Wi-Fi was disabled during an active
+  command, explicit cancellation shut down the SSH socket and unwound in 23 ms.
+  Restoring Wi-Fi and connecting to a fresh fixture produced the expected
+  command output. This proves teardown and fresh connection, not survival of
+  the original ordinary SSH session.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,
@@ -123,10 +129,10 @@ UIKit, transport state, and the rest of the application.
 ## Remaining gates
 
 1. Run the harness against representative launch servers and record negotiated
-   algorithms plus Wi-Fi/cellular transition behavior. The signed
+   algorithms plus product path-transition behavior. The signed
    physical-device VT, raw scrollback-memory, host-key confirmation, password
-   authentication, and command-output baseline is complete against the local
-   fixture.
+   and private-key authentication, command-output, route-loss cancellation,
+   and fresh-reconnect baselines are complete against the local fixture.
 2. Finish the nonblocking SSH candidate matrix. The Swift adapter now passes
    authentication including encrypted private keys, the asynchronous prompt
    broker, strict unknown/changed-host rejection, two modern algorithm profiles,
@@ -134,11 +140,10 @@ UIKit, transport state, and the rest of the application.
    and the stalled-reader flood. The Keychain storage policy and package
    boundary plus password and private-key/passphrase resolvers are implemented;
    remaining credential work is product UI integration, representative-server
-   sampling, adverse-network transitions,
-   resolver and reconnect orchestration, device-footprint instrumentation, and
-   representative low-end-device execution. The public-key partial step remains
-   locked as `-19`, so only an explicitly configured chained policy may proceed
-   to keyboard-interactive.
+   sampling, resolver and reconnect orchestration, automatic network-path state,
+   device-footprint instrumentation, and representative low-end-device
+   execution. The public-key partial step remains locked as `-19`, so only an
+   explicitly configured chained policy may proceed to keyboard-interactive.
 3. The initial raw VT physical-footprint measurement is complete. Measure the
    complete terminal stack for one foreground and several background fixtures
    on the oldest supported device class. Record terminal state, scrollback,

@@ -76,8 +76,9 @@ partial-step behavior and rejects a wrong-key control. The PTY and flood results
 also run through the nonblocking Swift adapter. It allocates a 41x132 PTY,
 resizes it to 50x140, stops reading for 750 ms during a 32 MiB stream, and then
 drains exactly 33,554,432 bytes. The stalled process measured 10,043,392 bytes
-maximum RSS on the development Mac, below the 64 MiB gate. A blocked channel
-read observed Swift task cancellation in approximately 45 ms. Strict
+maximum RSS on the development Mac, below the 64 MiB gate. With
+cancellation-triggered socket shutdown, a blocked channel read observed Swift
+task cancellation in under 1 ms. Strict
 known-host matching succeeds, while empty and changed-key files are rejected.
 Every fixture connection also locks the negotiated methods as
 `curve25519-sha256`, `ssh-ed25519`,
@@ -109,7 +110,11 @@ integration remains a production hardening decision.
 The same process also completes 32 consecutive stalled-handshake cancellations
 and 16 consecutive suspended keyboard-interactive cancellations, with every
 cycle bounded below one second. This exercises repeated session destruction and
-callback-worker cleanup; adverse network transitions remain a device gate.
+callback-worker cleanup. On a physical iPhone, disabling Wi-Fi during an active
+LAN command and explicitly cancelling shuts down the socket and unwinds in 23
+ms. After Wi-Fi restoration, a fresh connection to a new fixture completes a
+bounded command. Automatic path-state and reconnect orchestration remain
+product work.
 The host-neutral transport now includes input half-close and a typed termination
 result that distinguishes `.exited(code:)` from `.signaled(name:)`.
 A non-PTY command fixture receives byte-exact, separate `fixture-stdout\n` and
@@ -210,12 +215,13 @@ separately test the host-neutral demand and queue semantics.
 3. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.
-4. Add a resolver cancellation strategy and reconnect orchestration. PTY
+4. Add a resolver cancellation strategy and product reconnect orchestration. PTY
    allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,
    deterministic handshake timeout/cancellation, and repeated auth/handshake
-   cancellation stress already pass; the nonblocking TCP connector still needs
-   adverse-network and physical-device evidence.
+   cancellation stress already pass. Physical Wi-Fi route-loss cancellation and
+   explicit fresh reconnect pass; automatic path monitoring, background
+   suspension, retry state, and representative-server transitions remain.
 5. Add whole-app physical-footprint instrumentation on device. The candidate
    already exposes raw socket, delivered/written byte, socket-wait, and SSH
    receive-window counters; the macOS flood proves no socket or Swift-side

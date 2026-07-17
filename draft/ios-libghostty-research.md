@@ -195,7 +195,8 @@ result; only the explicitly chained configuration proceeds to the subsequent
 keyboard-interactive call. A wrong-key control remains rejected. The adapter
 also rejects unknown and changed host keys, verifies PTY allocation and resize,
 drains a 32 MiB stalled stream byte-for-byte at about 10 MB RSS, and cancels a
-blocked read in about 45 ms. Negotiated-method instrumentation locks the
+blocked read in under 1 ms with cancellation-triggered socket shutdown.
+Negotiated-method instrumentation locks the
 fixture profile to Curve25519, Ed25519, ChaCha20-Poly1305, and HMAC-SHA2-256.
 Candidate-only metrics now record raw encrypted socket, delivered, and written
 bytes, socket waits, and libssh2 receive-window state. The socket-receive and
@@ -219,9 +220,15 @@ non-synchronizing Keychain storage now passes a real iPhone save/load/delete
 cycle. Opaque password and encrypted private-key/passphrase resolution also
 pass the disposable SSH fixture on that device, with credential deletion before
 command output is read and no private-key file. Remaining gates include product
-UIKit integration, representative-server sampling, adverse-network transitions,
-and complete physical-device evidence, as
+UIKit integration, representative-server sampling, automatic path-state and
+reconnect orchestration, and complete physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
+
+The local physical-device route-loss baseline now passes: disabling Wi-Fi
+during an active LAN command and explicitly cancelling unwinds the SSH socket in
+23 ms. After Wi-Fi is restored, a fresh connection to a new fixture completes
+the expected command. This proves bounded teardown and reconnection, not
+survival of the original ordinary SSH session.
 
 Repeated cleanup stress now passes 32 stalled-handshake cancellations and 16
 suspended keyboard-interactive cancellations in one process, each bounded below

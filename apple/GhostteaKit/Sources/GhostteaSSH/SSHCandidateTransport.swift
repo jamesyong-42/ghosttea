@@ -959,12 +959,19 @@ private final class SSHDriver: @unchecked Sendable {
     stateLock.withLock {
       _socketWaitCalls &+= 1
     }
-    let status = await withCheckedContinuation { continuation in
-      Self.socketQueue.async { [self] in
-        continuation.resume(
-          returning: ghosttea_ssh_session_wait(requiredHandle, 100)
-        )
+    let status = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        Self.socketQueue.async { [self] in
+          continuation.resume(
+            returning: ghosttea_ssh_session_wait(requiredHandle, 100)
+          )
+        }
       }
+    } onCancel: {
+      // Cancellation invalidates the ordered SSH session. Shut down the socket
+      // to wake poll immediately instead of waiting for its next interval, and
+      // make route-loss teardown independent of platform readiness behavior.
+      requestShutdown()
     }
     try Task.checkCancellation()
     if status < 0 {

@@ -1327,8 +1327,10 @@ fixtures pass, a wrong passphrase is rejected, and no private-key file exists.
 The encrypted private-key/passphrase path also passes on a physical iPhone
 through opaque device-only Keychain items, with both items deleted before
 command output is read. Product UIKit challenge integration,
-representative-server sampling, adverse-network transitions, and complete
-device evidence remain open. Strict
+representative-server sampling, automatic path-state/reconnect orchestration,
+and complete device evidence remain open. Physical Wi-Fi route-loss
+cancellation completes in 23 ms and a fresh connection succeeds after Wi-Fi
+restoration. Strict
 host-key rejection and an async accept-once boundary for unknown/changed keys
 pass with host, port, algorithm, SHA-256 fingerprint, and mismatch reason.
 Accept-and-store uses a
@@ -1789,9 +1791,9 @@ iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
 confirmation, password authentication, command execution, and output drain
 against the disposable OpenSSH fixture. The measurements and command output are
 recorded in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
-Representative-server and network-transition execution, product UIKit
-authentication integration, and
-resolver/adverse-network cancellation coverage, device-footprint
+Representative-server transition execution, product UIKit authentication
+integration, resolver cancellation, automatic path-state/reconnect behavior,
+device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
