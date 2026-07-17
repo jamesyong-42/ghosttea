@@ -200,6 +200,7 @@ pub struct Session {
     created_at_ms: u64,
     process: PtyProcess,
     model: Mutex<TerminalModel>,
+    model_operation: Mutex<()>,
     exited: AtomicBool,
     frames: broadcast::Sender<Vec<u8>>,
     persistence: Persistence,
@@ -427,6 +428,7 @@ impl Session {
                 pid,
             },
             model: Mutex::new(model),
+            model_operation: Mutex::new(()),
             exited: AtomicBool::new(false),
             frames,
             persistence,
@@ -507,6 +509,7 @@ impl Session {
                     } else {
                         RenderRequest::None
                     };
+                    let _operation = session.model_operation.lock().unwrap();
                     let update = session.model.lock().unwrap().feed(&batch, render);
                     match update {
                         Ok(update) => session.execute_update(update),
@@ -538,6 +541,7 @@ impl Session {
                     summary.exit_outcome = Some(exit.exit_outcome);
                 }
                 if session.has_active_views() {
+                    let _operation = session.model_operation.lock().unwrap();
                     match session.model.lock().unwrap().refresh(RenderRequest::Damage) {
                         Ok(update) => session.execute_update(update),
                         Err(error) => eprintln!(
@@ -603,6 +607,7 @@ impl Session {
         end_row: u32,
         select_all: bool,
     ) -> Result<String> {
+        let _operation = self.model_operation.lock().unwrap();
         self.model
             .lock()
             .unwrap()
@@ -641,6 +646,7 @@ impl Session {
             let mut authority = self.authority.lock().unwrap();
             authority.attach(view_id, client_id, access)?
         };
+        let _operation = self.model_operation.lock().unwrap();
         let update = self.model.lock().unwrap().refresh(RenderRequest::Full)?;
         self.execute_update(update);
         Ok(attachment_epoch)
@@ -735,6 +741,7 @@ impl Session {
     }
 
     pub fn refresh(&self) -> Result<()> {
+        let _operation = self.model_operation.lock().unwrap();
         let update = self.model.lock().unwrap().refresh(RenderRequest::Full)?;
         self.execute_update(update);
         Ok(())
@@ -941,6 +948,7 @@ impl Session {
     }
 
     fn execute_input(&self, operation: InputOperation) -> Result<()> {
+        let _operation = self.model_operation.lock().unwrap();
         match operation {
             InputOperation::Text(text) => self.process.write(text.as_bytes()),
             InputOperation::Paste(text) => {
@@ -1093,6 +1101,7 @@ impl Session {
         layout_epoch: u64,
         previous_size: (u16, u16),
     ) -> Result<()> {
+        let _operation = self.model_operation.lock().unwrap();
         self.process.resize(cols, rows)?;
         let update =
             match self
@@ -1117,6 +1126,7 @@ impl Session {
         background: [u8; 3],
         cursor: [u8; 3],
     ) -> Result<()> {
+        let _operation = self.model_operation.lock().unwrap();
         let update = self.model.lock().unwrap().set_colors(
             foreground,
             background,
@@ -1141,6 +1151,7 @@ impl Session {
             if self.input_tx.try_send(InputOperation::Interrupt).is_ok() {
                 order.record_input(false);
             } else {
+                let _operation = self.model_operation.lock().unwrap();
                 let _ = self.process.write(b"\x03");
             }
         }

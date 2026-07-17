@@ -15,6 +15,27 @@ pub struct LogicalTerminalSnapshot {
     pub cwd: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogicalTerminalPatch {
+    pub session_epoch: u64,
+    pub layout_epoch: u64,
+    pub patch_sequence: u64,
+    pub terminal_revision: u64,
+    pub row_replacements: Vec<RowReplacement>,
+    pub cursor: Option<LogicalCursor>,
+    pub mouse_tracking: Option<bool>,
+    pub scrollbar: Option<LogicalScrollbar>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RowReplacement {
+    pub row_index: u16,
+    pub row_revision: u64,
+    pub row: LogicalRow,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogicalScrollbar {

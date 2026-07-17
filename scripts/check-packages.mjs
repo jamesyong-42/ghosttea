@@ -44,7 +44,8 @@ try {
       "--workspace",
       workspace,
     ]);
-    const [packed] = JSON.parse(output);
+    const packResult = JSON.parse(output);
+    const packed = Array.isArray(packResult) ? packResult[0] : packResult.name ? packResult : packResult[workspace];
     if (!packed || packed.name !== workspace) throw new Error(`npm packed the wrong workspace for ${workspace}`);
     const paths = new Set(packed.files.map((file) => file.path));
     for (const required of ["LICENSE", "README.md", "dist/index.js", "dist/index.d.ts", "package.json"]) {

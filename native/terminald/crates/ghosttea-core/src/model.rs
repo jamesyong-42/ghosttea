@@ -32,6 +32,10 @@ impl TerminalRuntime {
     pub fn discover() -> Result<Self> {
         Ok(Self::new(TextEngine::discover()?))
     }
+
+    pub(crate) fn text_engine(&self) -> &Arc<Mutex<TextEngine>> {
+        &self.text_engine
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

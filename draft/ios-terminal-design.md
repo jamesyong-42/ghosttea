@@ -1859,22 +1859,30 @@ Optional parallel spike:
 
 **Estimated effort:** 2-3 weeks
 
-**Started:** 2026-07-17. The new dependency-clean `ghosttea-core` crate owns
-the ordered `TerminalUpdate`/`TerminalEffect` contract, Ghostty model, logical
-snapshots, shaping/render cache, counters, and TRF1 producer. Desktop `Session`
-is now a PTY adapter that executes returned effects after releasing the model
-lock. Multi-view authority, per-attachment input deduplication, and global
-human/automation input ordering are also core-owned state machines; PTY queueing
-remains host policy. The unchanged tunnel protocol, complete Rust workspace,
-daemon smoke test, pre-extraction TRF1 golden, and terminal benchmark pass. The
-next slice moves the remaining reusable remote-replica renderer.
+**Completed:** 2026-07-17. The dependency-clean `ghosttea-core` crate owns the
+ordered `TerminalUpdate`/`TerminalEffect` contract, Ghostty model, logical
+snapshots and patches, local and replica shaping/render caches, counters, and
+TRF1 producers. Desktop `Session` is now a PTY adapter that executes returned
+effects after releasing the model lock. Multi-view authority, per-attachment
+input deduplication, and global human/automation input ordering are also
+core-owned state machines; PTY queueing, process lifecycle, summary projection,
+and frame broadcast remain host policy. A host operation gate serializes each
+model mutation, its ordered effect execution, and encoded user input without
+holding the model lock during PTY or broadcast work.
+
+The final gate passed the complete Rust workspace and strict Clippy, JavaScript
+lint, npm and Cargo package/consumer fixtures, daemon integration smoke test,
+pre-extraction TRF1 golden, and the release terminal benchmark. At 0.25 workload
+scale the benchmark produced two frames per rendering case, zero sequence gaps,
+and a 0.122 ms control-RPC p99. No socket protocol or intentional TRF1 change was
+introduced. Phase 2 may begin.
 
 The embedding refactor has landed and passed its package and integration checks.
 `native/terminald/fixtures/phase1/ansi-baseline.json` now freezes the
 pre-extraction terminal reply, logical state, and exact TRF1 bytes across
 whole-buffer, byte-at-a-time, and irregular input chunking. Its glyph sections
 are intentionally empty until Phase 2 selects a bundled parity font. The Phase
-1 prerequisite is satisfied; keep this golden unchanged through extraction.
+1 prerequisite is satisfied; keep this golden as a permanent regression gate.
 
 Deliverables:
 

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 pub use ghosttea_core::{
     LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
-    LogicalTerminalSnapshot,
+    LogicalTerminalPatch, LogicalTerminalSnapshot, RowReplacement,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -282,27 +282,6 @@ pub enum StateMessage {
         rows: u16,
         layout_epoch: u64,
     },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LogicalTerminalPatch {
-    pub session_epoch: u64,
-    pub layout_epoch: u64,
-    pub patch_sequence: u64,
-    pub terminal_revision: u64,
-    pub row_replacements: Vec<RowReplacement>,
-    pub cursor: Option<LogicalCursor>,
-    pub mouse_tracking: Option<bool>,
-    pub scrollbar: Option<LogicalScrollbar>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RowReplacement {
-    pub row_index: u16,
-    pub row_revision: u64,
-    pub row: LogicalRow,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

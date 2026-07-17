@@ -206,14 +206,17 @@ UIKit, transport state, and the rest of the application.
 
 ## Phase 1 handoff
 
-The embedding prerequisite is satisfied. Phase 1 may now begin with the ordered
-`TerminalEffect` contract and must keep the checked-in TRF1 baseline identical
-before any Apple FFI code is added. The current golden deliberately omits glyph
-definitions; add shaped-frame parity after the bundled font decision.
+The embedding prerequisite is satisfied and Phase 1 preserved the checked-in
+TRF1 baseline while introducing the ordered `TerminalEffect` contract. The
+current golden deliberately omits glyph definitions; add shaped-frame parity
+after the bundled font decision.
 
-Phase 1 started on 2026-07-17: `ghosttea-core` now owns the ordered effect batch,
-Ghostty model, logical snapshots, shaping/render cache, counters, and TRF1
-producer, plus view authority, input deduplication, and human/automation input
-ordering. Desktop `Session` executes effects and queues authorized operations as
-the PTY host, while the existing serialized tunnel representation remains
-unchanged.
+Phase 1 completed on 2026-07-17: `ghosttea-core` now owns the ordered effect
+batch, Ghostty model, logical snapshots and patches, local and replica
+shaping/render caches, counters, TRF1 producers, view authority, input
+deduplication, and human/automation input ordering. Desktop `Session` executes
+effects and queues authorized operations as the PTY host, while the existing
+serialized tunnel representation remains unchanged. Rust tests and strict
+Clippy, lint, package/consumer checks, daemon integration, the TRF1 golden, and
+the release benchmark all pass. Phase 2 may begin with explicit bundled font
+resources.
