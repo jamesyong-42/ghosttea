@@ -1324,9 +1324,11 @@ opaque key/passphrase IDs only during authentication and passes counted key
 bytes to libssh2's in-memory API. The OpenSSL backend derives the public key
 without configured public-key bytes or a path. Unencrypted and encrypted
 fixtures pass, a wrong passphrase is rejected, and no private-key file exists.
-Physical-device
-private-key and UIKit challenge integration, representative-server sampling,
-adverse-network transitions, and complete device evidence remain open. Strict
+The encrypted private-key/passphrase path also passes on a physical iPhone
+through opaque device-only Keychain items, with both items deleted before
+command output is read. Product UIKit challenge integration,
+representative-server sampling, adverse-network transitions, and complete
+device evidence remain open. Strict
 host-key rejection and an async accept-once boundary for unknown/changed keys
 pass with host, port, algorithm, SHA-256 fingerprint, and mismatch reason.
 Accept-and-store uses a
@@ -1787,20 +1789,22 @@ iPhone 14 Pro running iOS 26.5. The same device passes explicit host-key
 confirmation, password authentication, command execution, and output drain
 against the disposable OpenSSH fixture. The measurements and command output are
 recorded in `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
-Representative-server and network-transition execution, UIKit authentication
-integration, and
+Representative-server and network-transition execution, product UIKit
+authentication integration, and
 resolver/adverse-network cancellation coverage, device-footprint
 instrumentation, bundled-font licensing, and device-tier memory gates remain
 open.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one through both direct fixture and opaque resolver paths.
 The opaque case uses libssh2's in-memory API and derives the public key without
-configured public-key bytes or a path. Keychain-backed device execution remains
-open. libssh2 is a candidate, not the selected SSH path.
+configured public-key bytes or a path. The same encrypted-key/passphrase path
+passes with device-only Keychain items on a physical iPhone, and deletes them
+before command output is read. libssh2 is a candidate, not the selected SSH
+path.
 The diagnostic harness now accepts a pasted disposable private key and optional
 passphrase through opaque Keychain IDs, clears its fields before connecting,
 and builds for device and simulator SDKs. Its physical-device private-key run
-and the production credential UI remain open.
+passes; the production credential UI remains open.
 
 Exit gate:
 

@@ -214,9 +214,13 @@ fixture covers informational and multiple prompt rounds plus cancellation.
 The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS
-lookup remains non-interruptible until it returns. Remaining gates include
-UIKit/Keychain policy, representative-server sampling, adverse-network
-transitions, and physical-device evidence, as
+lookup remains non-interruptible until it returns. Device-only,
+non-synchronizing Keychain storage now passes a real iPhone save/load/delete
+cycle. Opaque password and encrypted private-key/passphrase resolution also
+pass the disposable SSH fixture on that device, with credential deletion before
+command output is read and no private-key file. Remaining gates include product
+UIKit integration, representative-server sampling, adverse-network transitions,
+and complete physical-device evidence, as
 documented in `apple/GhostteaKit/Compatibility/ssh-candidate-decision.md`.
 
 Repeated cleanup stress now passes 32 stalled-handshake cancellations and 16
@@ -224,9 +228,9 @@ suspended keyboard-interactive cancellations in one process, each bounded below
 one second.
 
 Generated passphrase-encrypted OpenSSH Ed25519 keys now authenticate through
-the adapter, while an incorrect-passphrase control is rejected. This proves the
-candidate decryption path; production Keychain loading and passphrase lifetime
-remain open.
+the adapter, while an incorrect-passphrase control is rejected. The physical
+iPhone proof exercises production-shaped Keychain loading and immediate
+post-authentication deletion; final product credential UI remains open.
 
 A second forced negotiation profile now passes with an ECDSA P-256 host key,
 bidirectional AES-256-GCM, strict known-host verification, and a shell session.
