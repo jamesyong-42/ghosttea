@@ -225,6 +225,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.#postWorker({ type: "frame", packet: data }, [data]);
     };
     this.#frames.start();
+    this.#syncFrameSubscriptions();
     const hello = await this.#control.request({
       type: "hello",
       protocolMajor: PROTOCOL_MAJOR,
@@ -269,6 +270,11 @@ export class GhostteaTerminalRuntime extends EventTarget {
   registerSession(session: SessionSummary): void {
     this.#sessionByHandle.set(session.handle, session);
     this.#handleBySessionId.set(session.id, session.handle);
+    this.#syncFrameSubscriptions();
+  }
+
+  #syncFrameSubscriptions(): void {
+    this.#frames?.postMessage({ type: "subscribe", sessionHandles: [...this.#sessionByHandle.keys()] });
   }
 
   async createSession(options: CreateSessionOptions): Promise<SessionSummary> {
@@ -599,6 +605,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     this.#sessionByHandle.delete(handle);
     this.#handleBySessionId.delete(sessionId);
+    this.#syncFrameSubscriptions();
     this.#resync.cancel(handle);
     this.#postWorker({ type: "drop-session", sessionHandle: handle });
   }

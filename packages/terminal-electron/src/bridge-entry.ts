@@ -5,6 +5,7 @@ const parentPort = process.parentPort;
 
 const MAX_CONTROL_BYTES = 1024 * 1024;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const MAX_FRAME_SUBSCRIPTION_BYTES = 1024 * 1024;
 
 function packet(bytes: Uint8Array): Buffer {
   const output = Buffer.allocUnsafe(4 + bytes.byteLength);
@@ -130,6 +131,16 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
       const encoded = Buffer.from(JSON.stringify(command));
       if (encoded.byteLength > MAX_CONTROL_BYTES) throw new Error("control packet exceeds quota");
       controlSocket.write(packet(encoded));
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      controlPort.postMessage({ requestId: 0, type: "bridge-error", message: error.message });
+    }
+  });
+  framePort.on("message", ({ data: subscription }) => {
+    try {
+      const encoded = Buffer.from(JSON.stringify(subscription));
+      if (encoded.byteLength > MAX_FRAME_SUBSCRIPTION_BYTES) throw new Error("frame subscription exceeds quota");
+      frameSocket.write(packet(encoded));
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
       controlPort.postMessage({ requestId: 0, type: "bridge-error", message: error.message });

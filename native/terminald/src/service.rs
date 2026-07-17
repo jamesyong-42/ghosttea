@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex, RwLock},
 };
@@ -25,6 +25,8 @@ use crate::{
 
 const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FRAME_SUBSCRIPTION_BYTES: usize = 1024 * 1024;
+const MAX_FRAME_SUBSCRIPTIONS: usize = 4096;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
 
@@ -34,6 +36,12 @@ struct Envelope {
     request_id: u64,
     #[serde(flatten)]
     command: Command,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameSubscription {
+    session_handles: Vec<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1034,20 +1042,39 @@ async fn serve_frames(
             if authenticate(&mut socket, &token).await.is_err() {
                 return;
             }
+            let (mut reader, mut writer) = socket.into_split();
+            let mut subscriptions = HashSet::<u64>::new();
             loop {
-                match rx.recv().await {
-                    Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
-                        if write_packet(&mut socket, &frame).await.is_err() {
+                tokio::select! {
+                    packet = read_packet(&mut reader, MAX_FRAME_SUBSCRIPTION_BYTES) => {
+                        let Ok(packet) = packet else { break; };
+                        let Ok(subscription) = serde_json::from_slice::<FrameSubscription>(&packet) else { break; };
+                        if subscription.session_handles.len() > MAX_FRAME_SUBSCRIPTIONS {
                             break;
                         }
+                        subscriptions = subscription.session_handles.into_iter().collect();
                     }
-                    Ok(_) => break,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => break,
+                    frame = rx.recv() => match frame {
+                        Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
+                            let Some(handle) = frame_session_handle(&frame) else { continue; };
+                            if subscriptions.contains(&handle)
+                                && write_packet(&mut writer, &frame).await.is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(_) => break,
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
                 }
             }
         });
     }
+}
+
+fn frame_session_handle(frame: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(frame.get(8..16)?.try_into().ok()?))
 }
 
 #[cfg(test)]
@@ -1117,6 +1144,21 @@ mod protocol_tests {
                 _ => panic!("expected send-key command"),
             }
         }
+    }
+
+    #[test]
+    fn frame_subscriptions_and_frame_handles_are_typed() {
+        let subscription: FrameSubscription = serde_json::from_value(json!({
+            "type": "subscribe",
+            "sessionHandles": [7, 11]
+        }))
+        .unwrap();
+        assert_eq!(subscription.session_handles, vec![7, 11]);
+
+        let mut frame = vec![0_u8; 16];
+        frame[8..16].copy_from_slice(&11_u64.to_le_bytes());
+        assert_eq!(frame_session_handle(&frame), Some(11));
+        assert_eq!(frame_session_handle(&frame[..15]), None);
     }
 
     #[test]

@@ -195,6 +195,31 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(control.messages.some((message) => message.type === "detach-session")).toBe(false);
   });
 
+  it("subscribes the frame bridge only to sessions registered in this runtime", async () => {
+    vi.stubGlobal("window", globalThis);
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: new FakePort() as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+
+    expect(frames.messages).toEqual([
+      { type: "subscribe", sessionHandles: [] },
+      { type: "subscribe", sessionHandles: [session.handle] },
+    ]);
+
+    runtime.terminate(session.id);
+    expect(frames.messages.at(-1)).toEqual({ type: "subscribe", sessionHandles: [] });
+  });
+
   it("detaches an obsolete view without unmounting its replacement worker surface", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();
