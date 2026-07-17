@@ -82,10 +82,13 @@ class FakeSocket extends EventEmitter {
               exitSignal: null,
               requestedTermination: null,
               exitOutcome: null,
+              ownerId: null,
             },
           }),
         ),
       );
+    } else if (command.type === "close-session-owner") {
+      queueMicrotask(() => this.emit("data", packet({ requestId, type: "ok" })));
     } else if (command.type === "terminate") {
       queueMicrotask(() => {
         if (command.sessionId === "missing") {
@@ -130,6 +133,16 @@ describe("GhostteaAutomationClient", () => {
   beforeEach(() => {
     commands.splice(0);
     socketBehavior = "normal";
+  });
+
+  it("closes an application session owner atomically", async () => {
+    const client = new GhostteaAutomationClient({
+      controlSocket: "control.sock",
+      frameSocket: "unused",
+      authToken: "secret",
+    });
+    await client.closeSessionOwner("tab-a");
+    expect(commands.at(-1)).toMatchObject({ type: "close-session-owner", ownerId: "tab-a" });
   });
 
   it("sends atomic automation input without attaching a view or claiming layout control", async () => {

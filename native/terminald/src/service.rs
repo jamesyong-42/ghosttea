@@ -69,6 +69,7 @@ enum Command {
         remote_session_id: String,
         cols: u64,
         rows: u64,
+        owner_id: Option<String>,
     },
     GetSession {
         session_id: String,
@@ -184,6 +185,9 @@ enum Command {
         #[serde(default)]
         source: TerminationSource,
     },
+    CloseSessionOwner {
+        owner_id: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -267,6 +271,7 @@ struct ControlContext {
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
+    closed_owners: Arc<tokio::sync::Mutex<HashSet<String>>>,
 }
 
 /// Local IPC endpoints and bearer token owned by the embedding application.
@@ -363,6 +368,7 @@ impl TerminalService {
                 event_tx,
                 text_engine,
                 mesh_runtime,
+                closed_owners: Arc::default(),
             },
         );
         let frame_task = serve_frames(frames, auth_token, frame_tx);
@@ -473,12 +479,21 @@ async fn handle_command(
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
                     protocol_major: 1,
-                    protocol_minor: 4,
+                    protocol_minor: 5,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
             Command::CreateSession { options } => {
                 validate_grid(options.cols, options.rows)?;
+                validate_owner(options.owner_id.as_deref())?;
+                let owner_lifecycle = context.closed_owners.lock().await;
+                if options
+                    .owner_id
+                    .as_ref()
+                    .is_some_and(|owner| owner_lifecycle.contains(owner))
+                {
+                    bail!("session owner is already closed");
+                }
                 let registry_on_exit = Arc::clone(registry);
                 let events_on_exit = event_tx.clone();
                 let on_exit: ExitCallback = Arc::new(move |session_id, exit, persistence| {
@@ -534,6 +549,7 @@ async fn handle_command(
                 {
                     registry.write().unwrap().remove(&summary.id);
                 }
+                drop(owner_lifecycle);
                 Ok(ResponseBody::SessionCreated { session: summary })
             }
             Command::ListSessions => {
@@ -563,9 +579,18 @@ async fn handle_command(
                 remote_session_id,
                 cols,
                 rows,
+                owner_id,
             } => {
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
+                validate_owner(owner_id.as_deref())?;
+                let owner_lifecycle = context.closed_owners.lock().await;
+                if owner_id
+                    .as_ref()
+                    .is_some_and(|owner| owner_lifecycle.contains(owner))
+                {
+                    bail!("session owner is already closed");
+                }
                 let session = context
                     .mesh_runtime
                     .open_session(
@@ -573,10 +598,12 @@ async fn handle_command(
                         &remote_session_id,
                         cols,
                         rows,
+                        owner_id,
                         context.frame_tx.clone(),
                         Arc::clone(&context.text_engine),
                     )
                     .await?;
+                drop(owner_lifecycle);
                 Ok(ResponseBody::SessionCreated { session })
             }
             Command::GetSession { session_id } => {
@@ -1057,6 +1084,32 @@ async fn handle_command(
                 }
                 Ok(ResponseBody::Ok)
             }
+            Command::CloseSessionOwner { owner_id } => {
+                validate_owner(Some(&owner_id))?;
+                let mut owner_lifecycle = context.closed_owners.lock().await;
+                owner_lifecycle.insert(owner_id.clone());
+                let local_sessions = registry
+                    .read()
+                    .unwrap()
+                    .values()
+                    .filter(|session| {
+                        session.summary().owner_id.as_deref() == Some(owner_id.as_str())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for session in local_sessions {
+                    session.terminate(TerminationSource::User)?;
+                    registry.write().unwrap().remove(&session.id());
+                }
+                let remote_sessions = context.mesh_runtime.summaries().await;
+                for session in remote_sessions {
+                    if session.owner_id.as_deref() == Some(owner_id.as_str()) {
+                        context.mesh_runtime.close_session(&session.id).await;
+                    }
+                }
+                drop(owner_lifecycle);
+                Ok(ResponseBody::Ok)
+            }
             Command::Unknown => bail!("unknown command"),
         }
     }
@@ -1075,6 +1128,13 @@ fn validate_grid(cols: u16, rows: u16) -> Result<()> {
     }
     if !(1..=MAX_TERMINAL_ROWS).contains(&rows) {
         bail!("rows must be between 1 and {MAX_TERMINAL_ROWS}");
+    }
+    Ok(())
+}
+
+fn validate_owner(owner_id: Option<&str>) -> Result<()> {
+    if owner_id.is_some_and(|owner| owner.is_empty() || owner.len() > 256) {
+        bail!("ownerId must contain between 1 and 256 bytes");
     }
     Ok(())
 }
@@ -1264,7 +1324,7 @@ mod protocol_tests {
             request_id: 7,
             body: ResponseBody::Hello {
                 protocol_major: 1,
-                protocol_minor: 4,
+                protocol_minor: 5,
                 server_build: "test".to_owned(),
             },
         })
@@ -1296,6 +1356,20 @@ mod protocol_tests {
                 assert!(submit);
             }
             _ => panic!("expected automation input command"),
+        }
+    }
+
+    #[test]
+    fn deserializes_transactional_session_owner_closure() {
+        let envelope: Envelope = serde_json::from_value(json!({
+            "requestId": 22,
+            "type": "close-session-owner",
+            "ownerId": "tab-a",
+        }))
+        .unwrap();
+        match envelope.command {
+            Command::CloseSessionOwner { owner_id } => assert_eq!(owner_id, "tab-a"),
+            _ => panic!("expected close-session-owner command"),
         }
     }
 

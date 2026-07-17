@@ -125,6 +125,7 @@ pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
     pub persistence: Persistence,
+    pub owner_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -196,6 +197,7 @@ pub struct SessionSummary {
     pub exit_signal: Option<String>,
     pub requested_termination: Option<TerminationSource>,
     pub exit_outcome: Option<ExitOutcome>,
+    pub owner_id: Option<String>,
 }
 
 pub struct Session {
@@ -401,6 +403,7 @@ impl Session {
             cols,
             rows,
             persistence,
+            owner_id,
         } = options;
         let pair = native_pty_system().openpty(PtySize {
             rows,
@@ -451,6 +454,7 @@ impl Session {
                 exit_signal: None,
                 requested_termination: None,
                 exit_outcome: None,
+                owner_id,
             }),
             handle,
             session_epoch,

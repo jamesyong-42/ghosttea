@@ -86,6 +86,7 @@ const session = {
   exitSignal: null,
   requestedTermination: null,
   exitOutcome: null,
+  ownerId: null,
 } as const;
 
 function controlChanged(control: FakePort, controllerViewId: string, cols: number, rows: number): void {

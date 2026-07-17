@@ -22,6 +22,7 @@ function session(id: string, handle: string): SessionSummary {
     exitSignal: null,
     requestedTermination: null,
     exitOutcome: null,
+    ownerId: null,
   };
 }
 

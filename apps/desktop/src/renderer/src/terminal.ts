@@ -3,6 +3,7 @@ import { createGhostteaTerminalRuntime, waitForGhostteaRendererPorts } from "@vi
 export const terminalRuntime = createGhostteaTerminalRuntime({
   ports: waitForGhostteaRendererPorts(),
   clientBuild: "ghosttea-desktop",
+  sessionOwnerId: window.desktop.tabId,
   platform: {
     writeClipboard: (text) => window.desktop.writeClipboard(text),
     forceCanvasFallback: () => sessionStorage.getItem("ghosttea:force-canvas-fallback") === "1",

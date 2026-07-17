@@ -76,6 +76,7 @@ pub trait RemoteTerminalRuntime: Send + Sync {
         remote_session_id: &str,
         cols: u16,
         rows: u16,
+        owner_id: Option<String>,
         frames: broadcast::Sender<Vec<u8>>,
         text_engine: Arc<Mutex<TextEngine>>,
     ) -> Result<SessionSummary>;
@@ -145,6 +146,7 @@ impl RemoteTerminalRuntime for NoRemoteRuntime {
         _remote_session_id: &str,
         _cols: u16,
         _rows: u16,
+        _owner_id: Option<String>,
         _frames: broadcast::Sender<Vec<u8>>,
         _text_engine: Arc<Mutex<TextEngine>>,
     ) -> Result<SessionSummary> {

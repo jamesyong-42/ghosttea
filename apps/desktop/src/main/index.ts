@@ -200,14 +200,19 @@ function focusRelativeTab(window: BrowserWindow, offset: -1 | 1): void {
   focusTab(group[(index + offset + group.length) % group.length]?.window);
 }
 
-function terminateClosedTabSessions(sessionIds: ReadonlySet<string>): void {
-  if (quitting || !backend || sessionIds.size === 0) return;
+function terminateClosedTabSessions(ownerId: string, sessionIds: ReadonlySet<string>): void {
+  if (quitting || !backend) return;
   const client = backend.automation;
-  for (const sessionId of sessionIds) {
-    void client.terminate(sessionId, "user").catch((error) => {
-      console.warn(`[terminal-runtime] failed to terminate closed-tab session ${sessionId}`, error);
-    });
-  }
+  void client.closeSessionOwner(ownerId).catch((ownerError) => {
+    console.warn(`[terminal-runtime] failed to close tab session owner ${ownerId}`, ownerError);
+    // Compatibility fallback for an externally managed older daemon. This is
+    // observational only; current daemons close the owner transactionally.
+    for (const sessionId of sessionIds) {
+      void client.terminate(sessionId, "user").catch((error) => {
+        console.warn(`[terminal-runtime] failed to terminate closed-tab session ${sessionId}`, error);
+      });
+    }
+  });
 }
 
 interface CreateWindowOptions {
@@ -282,7 +287,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     const closed = tabs.delete(window);
     if (lastFocusedWindow === window) lastFocusedWindow = undefined;
     if (!closed) return;
-    terminateClosedTabSessions(closed.sessionIds);
+    terminateClosedTabSessions(closed.id, closed.sessionIds);
   });
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[terminal-runtime] preload failed at ${preloadPath}: ${error.stack ?? error.message}`);

@@ -28,6 +28,7 @@ const session = (id: string): SessionSummary => ({
   exitSignal: null,
   requestedTermination: null,
   exitOutcome: null,
+  ownerId: null,
 });
 
 describe("pane layout", () => {

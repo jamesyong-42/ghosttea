@@ -202,6 +202,7 @@ impl MeshRuntime {
         remote_session_id: &str,
         cols: u16,
         rows: u16,
+        owner_id: Option<String>,
         frames: broadcast::Sender<Vec<u8>>,
         text_engine: Arc<std::sync::Mutex<TextEngine>>,
     ) -> Result<SessionSummary> {
@@ -219,6 +220,7 @@ impl MeshRuntime {
             remote.cwd_label.clone(),
             cols,
             rows,
+            owner_id,
             frames,
             text_engine,
         );
@@ -1663,6 +1665,7 @@ impl RemoteTerminalRuntime for MeshRuntime {
         remote_session_id: &str,
         cols: u16,
         rows: u16,
+        owner_id: Option<String>,
         frames: broadcast::Sender<Vec<u8>>,
         text_engine: Arc<std::sync::Mutex<TextEngine>>,
     ) -> Result<SessionSummary> {
@@ -1672,6 +1675,7 @@ impl RemoteTerminalRuntime for MeshRuntime {
             remote_session_id,
             cols,
             rows,
+            owner_id,
             frames,
             text_engine,
         )

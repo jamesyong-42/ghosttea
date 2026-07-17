@@ -34,6 +34,7 @@ export interface GhostteaTerminalRuntimeOptions {
   platform: GhostteaRendererPlatform;
   workerFactory?: () => Worker;
   clientBuild?: string;
+  sessionOwnerId?: string;
 }
 
 export type TerminalMount = {
@@ -85,6 +86,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #ports: Promise<GhostteaRendererPorts>;
   readonly #platform: GhostteaRendererPlatform;
   readonly #clientBuild: string;
+  readonly #sessionOwnerId: string | undefined;
   #control: ControlClient | undefined;
   #frames: MessagePort | undefined;
   #ready: Promise<void> | undefined;
@@ -110,6 +112,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#ports = Promise.resolve(options.ports);
     this.#platform = options.platform;
     this.#clientBuild = options.clientBuild ?? "ghosttea-react";
+    this.#sessionOwnerId = options.sessionOwnerId;
     this.#resync = new FrameResyncController((sessionHandle) => this.#refreshSession(sessionHandle), {
       onExhausted: (sessionHandle, error) => {
         console.error(`[terminal-runtime] frame resynchronization exhausted for ${sessionHandle}`, error);
@@ -280,7 +283,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   async createSession(options: CreateSessionOptions): Promise<SessionSummary> {
     await this.connect();
-    const response = await this.#control!.request({ type: "create-session", options });
+    const response = await this.#control!.request({
+      type: "create-session",
+      options: { ...options, ...(this.#sessionOwnerId ? { ownerId: this.#sessionOwnerId } : {}) },
+    });
     if (response.type !== "session-created") throw new Error("terminald returned an unexpected response");
     this.registerSession(response.session);
     console.info(`[terminal-runtime] created session ${response.session.id}`);
@@ -325,6 +331,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       remoteSessionId,
       cols,
       rows,
+      ...(this.#sessionOwnerId ? { ownerId: this.#sessionOwnerId } : {}),
     });
     if (response.type !== "session-created") throw new Error("terminald could not open the remote session");
     this.registerSession(response.session);

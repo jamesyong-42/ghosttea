@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 4;
+export const PROTOCOL_MINOR = 5;
 
 export type SessionEnvironment =
   { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
@@ -28,6 +28,8 @@ export interface CreateSessionOptions {
   cols: number;
   rows: number;
   persistence: "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
+  /** Application-defined lifecycle owner, such as an Electron tab ID. */
+  ownerId?: string;
 }
 
 export type ClientCommand =
@@ -43,6 +45,7 @@ export type ClientCommand =
       remoteSessionId: string;
       cols: number;
       rows: number;
+      ownerId?: string;
     }
   | { requestId: number; type: "get-session"; sessionId: string }
   | { requestId: number; type: "refresh-session"; sessionId: string }
@@ -104,7 +107,8 @@ export type ClientCommand =
       expectedHumanInputEpoch: number;
       operation: AutomationInputOperation;
     }
-  | { requestId: number; type: "terminate"; sessionId: string; source?: TerminationSource };
+  | { requestId: number; type: "terminate"; sessionId: string; source?: TerminationSource }
+  | { requestId: number; type: "close-session-owner"; ownerId: string };
 
 export interface SessionSummary {
   id: string;
@@ -123,6 +127,7 @@ export interface SessionSummary {
   exitSignal: string | null;
   requestedTermination: TerminationSource | null;
   exitOutcome: ExitOutcome | null;
+  ownerId: string | null;
 }
 
 export interface ViewInputIdentity {
@@ -289,7 +294,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       (summary.exitCode === null || Number.isSafeInteger(summary.exitCode)) &&
       (summary.exitSignal === null || typeof summary.exitSignal === "string") &&
       validTerminationSource(summary.requestedTermination) &&
-      (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome))
+      (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome)) &&
+      (summary.ownerId === null || typeof summary.ownerId === "string")
     );
   };
   const validSharedSession = (session: unknown): boolean => {

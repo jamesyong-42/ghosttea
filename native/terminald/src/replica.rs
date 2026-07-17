@@ -49,6 +49,7 @@ impl RemoteReplica {
         cwd: Option<String>,
         cols: u16,
         rows: u16,
+        owner_id: Option<String>,
         frames: broadcast::Sender<Vec<u8>>,
         text_engine: Arc<Mutex<TextEngine>>,
     ) -> Arc<Self> {
@@ -73,6 +74,7 @@ impl RemoteReplica {
                 exit_signal: None,
                 requested_termination: None,
                 exit_outcome: None,
+                owner_id,
             }),
             sequence: AtomicU64::new(0),
             state: Mutex::new(ReplicaState::default()),
@@ -314,7 +316,7 @@ mod tests {
     fn logical_snapshot_is_shaped_into_a_local_full_frame() {
         let (frames, mut receiver) = broadcast::channel(2);
         let engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
-        let replica = RemoteReplica::new("remote".into(), None, 20, 1, frames, engine);
+        let replica = RemoteReplica::new("remote".into(), None, 20, 1, None, frames, engine);
         replica
             .publish(LogicalTerminalSnapshot {
                 session_epoch: 7,
@@ -357,7 +359,7 @@ mod tests {
     fn logical_patch_updates_only_changed_rows_in_the_local_frame() {
         let (frames, mut receiver) = broadcast::channel(2);
         let engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
-        let replica = RemoteReplica::new("remote".into(), None, 20, 1, frames, engine);
+        let replica = RemoteReplica::new("remote".into(), None, 20, 1, None, frames, engine);
         replica
             .publish(LogicalTerminalSnapshot {
                 session_epoch: 7,

@@ -278,6 +278,11 @@ export class GhostteaAutomationClient extends EventEmitter {
     if (event.type !== "ok") throw new Error("ghosttead rejected session termination");
   }
 
+  async closeSessionOwner(ownerId: string): Promise<void> {
+    const event = await this.request({ type: "close-session-owner", ownerId });
+    if (event.type !== "ok") throw new Error("ghosttead rejected session owner closure");
+  }
+
   async request(command: CommandPayload): Promise<ServerEvent> {
     await this.connect();
     return this.#requestConnected(command);
