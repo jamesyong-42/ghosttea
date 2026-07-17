@@ -1,5 +1,7 @@
 import Foundation
+import Darwin
 import GhostteaCredentials
+import GhostteaFontProof
 import GhostteaSSH
 import GhostteaTransport
 import UIKit
@@ -54,6 +56,7 @@ final class HarnessModel: ObservableObject {
   }
 
   @Published var vtResult = "Not run"
+  @Published var fontParityResult = "Not run"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
@@ -80,6 +83,7 @@ final class HarnessModel: ObservableObject {
   @Published var pendingKeyboardChallenge: PendingKeyboardChallenge?
   @Published private var isBridgingSSHInteraction = false
   @Published var isRunningMemory = false
+  @Published var isRunningFontParity = false
   @Published var isRunningWholeAppMemory = false
   @Published var isRunningActiveSSHMemory = false
   @Published var isRunningKeychain = false
@@ -117,6 +121,10 @@ final class HarnessModel: ObservableObject {
         self?.runWholeAppMemoryGate()
       }
     }
+    Task { [weak self] in
+      await Task.yield()
+      self?.runFontParityProof()
+    }
   }
 
   deinit {
@@ -139,6 +147,38 @@ final class HarnessModel: ObservableObject {
     } catch {
       vtResult = "Failed: \(error)"
     }
+  }
+
+  func runFontParityProof() {
+    guard !isRunningFontParity else { return }
+    isRunningFontParity = true
+    fontParityResult = "Running bundled-font parity fixture…"
+    Task {
+      do {
+        let result = try await Task.detached(priority: .userInitiated) {
+          try GhostteaFontProof.run()
+        }.value
+        fontParityResult =
+          result.passed
+          ? "Passed · runtime output matches desktop golden"
+          : "Failed · runtime output differs from desktop golden"
+        print(result.passed ? "GHOSTTEA_FONT_PARITY_PASS" : "GHOSTTEA_FONT_PARITY_FAIL")
+        finishFontParityAutomation(exitCode: result.passed ? 0 : 1)
+      } catch {
+        fontParityResult = "Failed: \(error)"
+        print("GHOSTTEA_FONT_PARITY_ERROR \(error)")
+        finishFontParityAutomation(exitCode: 2)
+      }
+      isRunningFontParity = false
+    }
+  }
+
+  private func finishFontParityAutomation(exitCode: Int32) {
+    guard ProcessInfo.processInfo.environment["GHOSTTEA_FONT_PARITY_AUTOMATION"] == "1" else {
+      return
+    }
+    fflush(nil)
+    Darwin.exit(exitCode)
   }
 
   func runKeychainProof() {

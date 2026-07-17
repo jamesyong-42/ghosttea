@@ -6,6 +6,7 @@ const root = resolve(import.meta.dirname, "..");
 const artifacts = join(root, "apple/GhostteaKit/Artifacts");
 const ghosttyArtifact = join(artifacts, "ghostty-vt.xcframework");
 const sshArtifact = join(artifacts, "ghosttea-libssh2-candidate.xcframework");
+const fontFixtureArtifact = join(artifacts, "ghosttea-font-fixture.xcframework");
 const output = join(artifacts, "ghosttea-apple-native.xcframework");
 const work = join(root, "native/build/ghosttea-apple-native");
 const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
@@ -50,7 +51,7 @@ function headersPath(artifact, slice) {
 if (process.platform !== "darwin" || process.arch !== "arm64") {
   throw new Error("Composing the Apple native artifact requires Apple Silicon macOS.");
 }
-for (const artifact of [ghosttyArtifact, sshArtifact]) {
+for (const artifact of [ghosttyArtifact, sshArtifact, fontFixtureArtifact]) {
   if (!existsSync(join(artifact, "Info.plist"))) {
     throw new Error(`Missing ${artifact}. Build the VT and SSH Apple artifacts first.`);
   }
@@ -58,6 +59,7 @@ for (const artifact of [ghosttyArtifact, sshArtifact]) {
 
 const ghosttyInfo = readXCFramework(ghosttyArtifact);
 const sshInfo = readXCFramework(sshArtifact);
+const fontFixtureInfo = readXCFramework(fontFixtureArtifact);
 rmSync(work, { recursive: true, force: true });
 rmSync(output, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
@@ -72,15 +74,18 @@ const libraries = [];
 for (const platform of platforms) {
   const ghosttySlice = sliceFor(ghosttyInfo, platform.platform, platform.variant);
   const sshSlice = sliceFor(sshInfo, platform.platform, platform.variant);
+  const fontFixtureSlice = sliceFor(fontFixtureInfo, platform.platform, platform.variant);
   const directory = join(work, platform.name);
   const headers = join(directory, "Headers");
   const ghosttyHeaders = headersPath(ghosttyArtifact, ghosttySlice);
   const sshHeaders = headersPath(sshArtifact, sshSlice);
+  const fontFixtureHeaders = headersPath(fontFixtureArtifact, fontFixtureSlice);
   mkdirSync(headers, { recursive: true });
   cpSync(join(ghosttyHeaders, "ghostty"), join(headers, "ghostty"), { recursive: true });
   for (const header of ["libssh2.h", "libssh2_publickey.h", "libssh2_sftp.h"]) {
     cpSync(join(sshHeaders, header), join(headers, header));
   }
+  cpSync(join(fontFixtureHeaders, "ghosttea_font_fixture.h"), join(headers, "ghosttea_font_fixture.h"));
   writeFileSync(
     join(headers, "module.modulemap"),
     [
@@ -92,6 +97,10 @@ for (const platform of platforms) {
       '  header "libssh2.h"',
       '  header "libssh2_publickey.h"',
       '  header "libssh2_sftp.h"',
+      "  export *",
+      "}",
+      "module GhostteaFontFixtureNative {",
+      '  header "ghosttea_font_fixture.h"',
       "  export *",
       "}",
       "",
@@ -107,7 +116,15 @@ for (const platform of platforms) {
   }
 
   const library = join(directory, "libghosttea-apple-native.a");
-  run("xcrun", ["libtool", "-static", "-o", library, ghosttyLibrary, libraryPath(sshArtifact, sshSlice)]);
+  run("xcrun", [
+    "libtool",
+    "-static",
+    "-o",
+    library,
+    ghosttyLibrary,
+    libraryPath(sshArtifact, sshSlice),
+    libraryPath(fontFixtureArtifact, fontFixtureSlice),
+  ]);
   libraries.push({ library, headers });
 }
 

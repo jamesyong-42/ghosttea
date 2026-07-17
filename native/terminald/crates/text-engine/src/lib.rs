@@ -20,7 +20,7 @@ mod fixture;
 #[cfg(feature = "fixture")]
 pub use fixture::{
     NormalizedFontFace, NormalizedGlyphDefinition, NormalizedGlyphInstance, NormalizedShapedRow,
-    NormalizedShapedRowDigest, ShapingFixture, ShapingFixtureCase,
+    NormalizedShapedRowDigest, ShapingFixture, ShapingFixtureCase, phase2_fixture_cases,
 };
 
 pub const FONT_SIZE_PX: f32 = 13.0;

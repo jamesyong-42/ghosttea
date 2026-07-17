@@ -28,6 +28,20 @@ struct ContentView: View {
           }
         }
 
+        Section("Bundled font parity") {
+          Text(model.fontParityResult)
+            .font(.footnote)
+          Button(model.isRunningFontParity ? "Running…" : "Run font parity fixture") {
+            model.runFontParityProof()
+          }
+          .disabled(model.isRunningFontParity)
+          Text(
+            "Runs the Rust shaping and rasterization engine against the five locked fonts, then compares its normalized output with the desktop golden."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+
         Section("Memory matrix") {
           Text(model.memoryStatus)
             .font(.footnote)

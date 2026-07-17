@@ -9,6 +9,7 @@ const environment = {
   ...process.env,
   DEVELOPER_DIR: developerDirectory,
   CLANG_MODULE_CACHE_PATH: join(root, "native/build/ios-harness/device-module-cache"),
+  SWIFTPM_MODULECACHE_OVERRIDE: join(root, "native/build/ios-harness/device-module-cache"),
 };
 const fixtureScript = join(root, "scripts/ssh-fixture.mjs");
 const project = join(root, "apple/GhostteaHarness/GhostteaHarness.xcodeproj");
@@ -168,7 +169,7 @@ async function main() {
   const host = fixtureHost();
 
   try {
-    execute("xcrun", ["swift", "test", "--package-path", join(root, "apple/GhostteaKit")]);
+    execute("xcrun", ["swift", "test", "--disable-sandbox", "--package-path", join(root, "apple/GhostteaKit")]);
     execute("npm", ["run", "test:ios:harness"]);
     execute("xcodebuild", [
       "-project",

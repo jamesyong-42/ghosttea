@@ -27,8 +27,10 @@ npm run bootstrap:ghostty-vt:apple
 npm run build:ghostty-vt:apple
 npm run bootstrap:ssh:apple
 npm run build:ssh:apple
+npm run build:font-parity:apple
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
+npm run test:font-parity:apple-runtime
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
@@ -38,12 +40,20 @@ npm run bench:ghostty-vt:apple:matrix
 The Ghostty build uses a repository-pinned Zig archive and Ghostty commit. The
 SSH candidate build uses pinned OpenSSL and libssh2 commits. Both produce and
 validate macOS, iOS device, and iOS simulator slices. Before SwiftPM resolves
-the package, `compose-ghosttea-apple-native.mjs` combines both native libraries
-into one generated XCFramework with separate `GhosttyVt` and
-`LibSSH2Candidate` Clang modules. This avoids Xcode's flattened-header collision
-when an application links multiple static binary targets. The test script runs
+the package, `compose-ghosttea-apple-native.mjs` combines the VT, SSH, and Rust
+font-fixture libraries into one generated XCFramework with separate `GhosttyVt`,
+`LibSSH2Candidate`, and `GhostteaFontFixtureNative` Clang modules. This avoids
+Xcode's flattened-header collision when an application links multiple static
+binary targets. The test script runs
 the Swift proofs on macOS and cross-compiles the relevant targets for the arm64
 iOS simulator and device SDKs.
+
+`GhostteaFontProof` loads the five SHA-256-locked font resources from its Swift
+package bundle and runs the Rust shaping/rasterization fixture through the C ABI.
+The runtime script compares its normalized geometry and glyph bitmap hashes with
+the desktop golden on macOS and an iPhone simulator. Pass `--device` directly to
+`scripts/test-font-parity-apple-runtime.mjs` to include a connected, unlocked,
+signed physical iPhone run.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

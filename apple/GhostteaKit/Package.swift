@@ -10,6 +10,7 @@ let package = Package(
   ],
   products: [
     .library(name: "GhostteaCredentials", targets: ["GhostteaCredentials"]),
+    .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
@@ -34,6 +35,16 @@ let package = Package(
       name: "GhostteaCredentials",
       linkerSettings: [.linkedFramework("Security")]
     ),
+    .target(
+      name: "GhostteaFontProof",
+      dependencies: ["GhostteaAppleNative"],
+      resources: [.process("Resources")],
+      linkerSettings: [
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("CoreText"),
+        .linkedLibrary("c++"),
+      ]
+    ),
     .target(name: "GhostteaTransport"),
     .target(
       name: "GhostteaSSHProbe",
@@ -54,6 +65,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaCredentialsTests",
       dependencies: ["GhostteaCredentials"]
+    ),
+    .testTarget(
+      name: "GhostteaFontProofTests",
+      dependencies: ["GhostteaFontProof"]
     ),
     .testTarget(
       name: "GhostteaSSHTests",

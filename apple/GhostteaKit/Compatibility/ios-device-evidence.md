@@ -423,3 +423,41 @@ backpressure reaches the transport boundary rather than filling an unbounded
 Swift stream. Resuming demand drained the fixture output byte-for-byte while the
 whole process remained far below the standard-tier soft limit. The runner then
 removed the fixture.
+
+## 2026-07-17: bundled-font shaping and raster parity
+
+Phase 2 added a stateless C probe around the shared Rust `ghosttea-text` engine
+and composed it into the unified Apple native XCFramework. `GhostteaFontProof`
+loads the package's SHA-256-verified JetBrains Mono Nerd Font regular, bold,
+italic, and bold-italic faces plus Noto Color Emoji fallback. It generates the
+same normalized fixture used by desktop, covering ligatures, styled text,
+combining marks, wide/missing glyph behavior, emoji fallback, geometry, and
+glyph bitmap hashes.
+
+The automated runner first passed the fixture through the XCFramework on macOS
+and an arm64 iPhone simulator. It then signed and installed the same harness on
+the connected iPhone 14 Pro running iOS 26.5. The app launched with a test-only
+automation flag, ran the fixture through bundled Swift package resources and
+the Rust C ABI, emitted:
+
+```text
+GHOSTTEA_FONT_PARITY_PASS
+```
+
+and exited without manual result interpretation. The runner reported:
+
+```text
+iPhone 14 Pro bundled-font runtime parity passed.
+```
+
+Reproduce all Apple runtime gates with an unlocked connected device by running:
+
+```sh
+node scripts/test-font-parity-apple-runtime.mjs --device
+```
+
+The exact normalized shaping geometry and raster bitmap digests now match the
+checked-in desktop golden on macOS, arm64 iOS simulator, and physical arm64 iOS.
+This satisfies the Phase 2 exit gate. System-font discovery remains explicitly
+non-parity, and final App Store font-license review remains on the release
+checklist.

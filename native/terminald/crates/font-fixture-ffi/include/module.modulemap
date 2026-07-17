@@ -1,0 +1,4 @@
+module GhostteaFontFixtureNative {
+  header "ghosttea_font_fixture.h"
+  export *
+}

@@ -8,12 +8,14 @@ const artifacts = [
   join(root, "apple/GhostteaKit/Artifacts/ghostty-vt.xcframework"),
   join(root, "apple/GhostteaKit/Artifacts/ghosttea-libssh2-candidate.xcframework"),
 ];
+const fontFixtureArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-font-fixture.xcframework");
 const combinedArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-apple-native.xcframework");
 const buildRoot = join(root, "native/build/ios-harness");
 const moduleCache = join(buildRoot, "module-cache");
 const environment = {
   ...process.env,
   CLANG_MODULE_CACHE_PATH: moduleCache,
+  SWIFTPM_MODULECACHE_OVERRIDE: moduleCache,
   DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
 };
 
@@ -25,6 +27,15 @@ for (const artifact of artifacts) {
     throw new Error(`Missing ${artifact}. Build the Apple VT and SSH artifacts first.`);
   }
 }
+const fontFixture = spawnSync(process.execPath, [join(root, "scripts/build-font-fixture-apple.mjs")], {
+  cwd: root,
+  env: environment,
+  encoding: "utf8",
+});
+if (fontFixture.error) throw fontFixture.error;
+if (fontFixture.status !== 0) throw new Error(fontFixture.stdout + fontFixture.stderr);
+process.stdout.write(fontFixture.stdout);
+if (!existsSync(fontFixtureArtifact)) throw new Error(`Missing ${fontFixtureArtifact}.`);
 const compose = spawnSync(process.execPath, [join(root, "scripts/compose-ghosttea-apple-native.mjs")], {
   cwd: root,
   env: environment,

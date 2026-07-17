@@ -78,6 +78,47 @@ pub struct NormalizedGlyphDefinition {
     pub pixel_sha256: String,
 }
 
+pub fn phase2_fixture_cases() -> Vec<ShapingFixtureCase> {
+    vec![
+        ShapingFixtureCase {
+            name: "ascii-ligatures".into(),
+            text: "Ghosttea => ffi != 0123456789".into(),
+            bold: false,
+            italic: false,
+        },
+        ShapingFixtureCase {
+            name: "bold".into(),
+            text: "bold terminal".into(),
+            bold: true,
+            italic: false,
+        },
+        ShapingFixtureCase {
+            name: "italic".into(),
+            text: "italic terminal".into(),
+            bold: false,
+            italic: true,
+        },
+        ShapingFixtureCase {
+            name: "bold-italic".into(),
+            text: "bold italic".into(),
+            bold: true,
+            italic: true,
+        },
+        ShapingFixtureCase {
+            name: "combining-wide-missing".into(),
+            text: "e\u{301} 界".into(),
+            bold: false,
+            italic: false,
+        },
+        ShapingFixtureCase {
+            name: "emoji-fallback".into(),
+            text: "terminal 😀".into(),
+            bold: false,
+            italic: false,
+        },
+    ]
+}
+
 impl TextEngine {
     pub fn shaping_fixture(&mut self, cases: &[ShapingFixtureCase]) -> Result<ShapingFixture> {
         let mut normalized_cases = BTreeMap::new();

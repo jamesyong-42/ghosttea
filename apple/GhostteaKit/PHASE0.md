@@ -221,10 +221,11 @@ Clippy, lint, package/consumer checks, daemon integration, the TRF1 golden, and
 the release benchmark all pass. Phase 2 may begin with explicit bundled font
 resources.
 
-Phase 2 started on 2026-07-17. The locked byte-backed bundle uses JetBrains Mono
+Phase 2 completed on 2026-07-17. The locked byte-backed bundle uses JetBrains Mono
 Nerd Font regular/bold/italic/bold-italic with Noto Color Emoji fallback,
 explicit metrics and raster scale, and normalized geometry/bitmap hashes. The
-text engine passes on macOS and cross-compiles for iOS device and arm64
-simulator. The remaining Phase 2 gate is to execute the same fixture in both
-Apple environments and compare it with the checked-in macOS golden. System-font
-discovery is retained only as an explicitly non-parity desktop mode.
+text engine passes through the generated XCFramework on macOS, in an arm64
+iPhone simulator, and on the physical iPhone 14 Pro. All three produce the same
+fixture as the checked-in desktop golden. System-font discovery is retained
+only as an explicitly non-parity desktop mode. Final font-license review remains
+a release checklist item, as agreed, rather than a Phase 2 implementation gate.

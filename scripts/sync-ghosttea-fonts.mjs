@@ -7,6 +7,8 @@ const root = resolve(import.meta.dirname, "..");
 const lock = JSON.parse(readFileSync(join(root, "native/fonts.lock.json"), "utf8"));
 const vendor = join(root, "native/vendor/ghostty");
 const output = join(root, "native/build/ghosttea-fonts");
+const appleResources = join(root, "apple/GhostteaKit/Sources/GhostteaFontProof/Resources");
+const appleFonts = join(appleResources, "Fonts");
 
 function capture(command, args, cwd = root) {
   return execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
@@ -25,6 +27,7 @@ if (capture("git", ["rev-parse", "HEAD"], vendor) !== lock.source.commit) {
 
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
+mkdirSync(appleFonts, { recursive: true });
 
 const manifestFonts = [];
 for (const font of lock.fonts) {
@@ -34,6 +37,7 @@ for (const font of lock.fonts) {
   if (digest !== font.sha256) throw new Error(`Digest mismatch for locked font ${font.path}.`);
   const filename = basename(font.path);
   cpSync(source, join(output, filename));
+  cpSync(source, join(appleFonts, filename));
   manifestFonts.push({ role: font.role, filename, sha256: digest });
 }
 
@@ -44,7 +48,10 @@ for (const [name, relativePath] of Object.entries({
   const source = join(vendor, relativePath);
   if (!existsSync(source)) throw new Error(`Missing font license material ${relativePath}.`);
   cpSync(source, join(output, name));
+  cpSync(source, join(appleResources, name));
 }
+
+cpSync(join(root, "native/terminald/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
 
 writeFileSync(
   join(output, "manifest.json"),
@@ -62,4 +69,4 @@ writeFileSync(
   )}\n`,
 );
 
-console.log(`Synced ${manifestFonts.length} locked fonts to ${output}`);
+console.log(`Synced ${manifestFonts.length} locked fonts to ${output} and Apple resources`);

@@ -1,3 +1,4 @@
 .build/
 .swiftpm/
 Artifacts/*.xcframework/
+Sources/GhostteaFontProof/Resources/Fonts/*.ttf

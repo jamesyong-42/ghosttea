@@ -1908,15 +1908,18 @@ extraction produces no intentional TRF1 or protocol change.
 
 **Estimated effort:** 1-2 weeks
 
-**Started:** 2026-07-17. `ghosttea-text` now supports owned byte-backed font
+**Completed:** 2026-07-17. `ghosttea-text` now supports owned byte-backed font
 resources, explicit style faces and ordered fallbacks, validated cell metrics,
 and explicit raster scale. System discovery is labeled non-parity. The initial
 parity bundle is locked to four JetBrains Mono Nerd Font styles plus Noto Color
 Emoji from the pinned Ghostty source, with SHA-256 verification and OFL-1.1
 notices. The macOS normalized geometry/bitmap golden passes, and the same crate
-cross-compiles for `aarch64-apple-ios` and `aarch64-apple-ios-sim`. Running that
-fixture inside the simulator and a physical device remains before the exit
-gate. Final font-license review remains a release checklist item.
+cross-compiles for `aarch64-apple-ios` and `aarch64-apple-ios-sim`. A narrow C
+probe, unified native XCFramework, and Swift package resource wrapper now run
+the fixture against identical font bytes. macOS and arm64 iPhone simulator
+runtime output and the physical iPhone 14 Pro output match the desktop golden.
+The cross-platform fixture exit gate is satisfied. Final font-license review
+remains a release checklist item.
 
 Deliverables:
 

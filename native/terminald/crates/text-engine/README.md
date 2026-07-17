@@ -19,8 +19,13 @@ OFL-1.1 notices inherited from the pinned Ghostty source. Run:
 ```sh
 npm run sync:fonts
 npm run check:font-parity
+npm run build:font-parity:apple
+npm run test:font-parity:apple-runtime
 ```
 
 The first command verifies hashes and stages generated assets under
 `native/build/ghosttea-fonts`. The second compares normalized shaping geometry
 and glyph bitmap hashes with the checked-in Phase 2 golden.
+The Apple build creates macOS, arm64 iOS simulator, and arm64 iOS device slices.
+The runtime test executes the same Rust engine through Swift package resources
+and a narrow C ABI instead of treating cross-compilation as parity evidence.
