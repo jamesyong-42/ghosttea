@@ -54,6 +54,18 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
         }
 
+        Section("TRF1 decoder") {
+          Text(model.frameDecoderResult)
+            .font(.footnote)
+          Button(model.isRunningFrameDecoder ? "Running…" : "Run strict TRF1 fixture") {
+            model.runFrameDecoderProof()
+          }
+          .disabled(model.isRunningFrameDecoder)
+          Text("Validates every currently emitted frame section before renderer allocation.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
         Section("Memory matrix") {
           Text(model.memoryStatus)
             .font(.footnote)

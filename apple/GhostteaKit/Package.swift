@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "GhostteaCredentials", targets: ["GhostteaCredentials"]),
     .library(name: "GhostteaCore", targets: ["GhostteaCore"]),
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
+    .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
@@ -65,6 +66,11 @@ let package = Package(
         .linkedLibrary("c++"),
       ]
     ),
+    .target(name: "GhostteaFrame"),
+    .target(
+      name: "GhostteaTerminal",
+      dependencies: ["GhostteaCore", "GhostteaFrame"]
+    ),
     .target(name: "GhostteaTransport"),
     .target(
       name: "GhostteaSSHProbe",
@@ -93,6 +99,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaCoreTests",
       dependencies: ["GhostteaCore"]
+    ),
+    .testTarget(
+      name: "GhostteaFrameTests",
+      dependencies: ["GhostteaCore", "GhostteaFrame"]
     ),
     .testTarget(
       name: "GhostteaSSHTests",

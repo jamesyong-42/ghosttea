@@ -34,6 +34,7 @@ npm run test:ghostty-vt:apple
 npm run test:font-parity:apple-runtime
 npm run test:ghosttea-core:ffi
 npm run test:ghosttea-core:apple-runtime
+npm run test:ghosttea-frame:apple-runtime
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
@@ -68,6 +69,14 @@ Clippy, and an AddressSanitizer build. The Apple runtime runner checks the same
 reply, logical snapshot, accessibility text, and TRF1 frame through Swift on
 macOS and iOS. Add `--device` to the underlying runner for physical-device
 evidence.
+
+Phase 4's decoder-first `GhostteaTerminal` slice validates TRF1 completely
+before a future Metal renderer sees any size, count, text, or pixel data. The
+internal decoder preserves unknown section kinds for compatible extensions,
+uses bounded zero-copy frame slices, and decodes every section currently
+emitted by `ghosttea-core`. Its Apple runtime gate executes a production frame
+on macOS and an arm64 iPhone Simulator; pass `--device` to the underlying
+runner to include a signed physical iPhone.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

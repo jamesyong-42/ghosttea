@@ -1983,6 +1983,22 @@ direct Rust fixtures with no leaks or ABI sanitizer findings.
 
 **Estimated effort:** 3-5 weeks
 
+**Started:** 2026-07-17. The first decoder-only vertical slice is implemented
+before any Metal allocation. The internal `GhostteaFrame` target mirrors the
+desktop decoder's header, section table, and currently emitted payload types,
+including strict UTF-8, count, pixel-length, reserved-field, and scrollbar
+validation. It uses overflow-safe range arithmetic, bounds collection
+reservations by the validated payload size, and retains zero-copy `Data` slices
+of the bounded frame. Unknown section kinds remain skippable for forward
+compatibility while the protocol version is unchanged.
+
+The public `GhostteaTerminal` product currently exposes a renderer-readiness
+inspection facade. Its macOS tests decode real TRF1 bytes returned through the
+Phase 3 Swift wrapper, malformed fixtures mirror the desktop decoder suite, and
+the same harness emits `GHOSTTEA_TRF1_PASS` in an arm64 iPhone Simulator. Both
+iOS SDK destinations compile. Metal state, retained rows, atlases, render
+passes, scheduling, lifecycle, and screenshot conformance remain Phase 4 work.
+
 Deliverables:
 
 - strict Swift TRF1 decoder;

@@ -34,6 +34,7 @@
     "test:font-parity:apple-runtime": "node scripts/test-font-parity-apple-runtime.mjs",
     "test:ghosttea-core:apple-runtime": "node scripts/test-font-parity-apple-runtime.mjs --core",
     "test:ghosttea-core:ffi": "node scripts/test-ghosttea-core-ffi.mjs",
+    "test:ghosttea-frame:apple-runtime": "node scripts/test-font-parity-apple-runtime.mjs --frame",
     "test:ios:harness": "node scripts/test-ios-harness.mjs",
     "test:ios:device": "node scripts/test-ios-device-harness.mjs",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",

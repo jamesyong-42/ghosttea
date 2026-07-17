@@ -503,3 +503,35 @@ SDK build results. Reproduce that final launch on an unlocked device with:
 ```sh
 node scripts/test-font-parity-apple-runtime.mjs --core --device-only --skip-build
 ```
+
+## 2026-07-17: strict TRF1 decoder vertical slice
+
+Phase 4 began with the decoder boundary rather than Metal allocation. The new
+internal Swift decoder accepts at most 16 MiB, checks the TRF1 magic and version,
+uses overflow-safe section-table arithmetic, and validates every currently
+emitted payload: glyph and style definitions, atomic row replacements, cursor,
+accessibility text, scrollbar state, and clipboard writes. UTF-8 is strict;
+glyph pixels must match dimensions and format; reserved bytes, counts, and
+fixed payload lengths are enforced. Collection reservations are bounded by the
+already validated section length, and section `Data` values retain slices of
+the original frame instead of copying every payload.
+
+Five Swift tests cover the same manual accessibility shape used by the desktop
+decoder tests, a real production-core frame with styled Unicode and glyph
+bitmaps, invalid envelope bounds and oversized packets, invalid UTF-8/counts/
+pixels/reserved fields, and clipboard/scrollbar bounds. The nine existing
+TypeScript decoder tests continue to pass. `GhostteaTerminal` then inspected a
+fresh Rust-produced frame in the iPhone harness; macOS and the arm64 iPhone 17
+Pro Simulator both emitted:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+The updated harness also compiles for the physical iOS arm64 SDK. A signed
+physical launch remains grouped with the pending Phase 3 retry above; the
+decoder gate itself is automated with:
+
+```sh
+npm run test:ghosttea-frame:apple-runtime
+```

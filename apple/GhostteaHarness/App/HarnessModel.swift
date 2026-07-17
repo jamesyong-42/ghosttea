@@ -4,6 +4,7 @@ import GhostteaCredentials
 import GhostteaCore
 import GhostteaFontProof
 import GhostteaSSH
+import GhostteaTerminal
 import GhostteaTransport
 import UIKit
 
@@ -59,6 +60,7 @@ final class HarnessModel: ObservableObject {
   @Published var vtResult = "Not run"
   @Published var fontParityResult = "Not run"
   @Published var coreResult = "Not run"
+  @Published var frameDecoderResult = "Not run"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
@@ -87,6 +89,7 @@ final class HarnessModel: ObservableObject {
   @Published var isRunningMemory = false
   @Published var isRunningFontParity = false
   @Published var isRunningCore = false
+  @Published var isRunningFrameDecoder = false
   @Published var isRunningWholeAppMemory = false
   @Published var isRunningActiveSSHMemory = false
   @Published var isRunningKeychain = false
@@ -131,6 +134,10 @@ final class HarnessModel: ObservableObject {
     Task { [weak self] in
       await Task.yield()
       self?.runCoreProof()
+    }
+    Task { [weak self] in
+      await Task.yield()
+      self?.runFrameDecoderProof()
     }
   }
 
@@ -231,6 +238,55 @@ final class HarnessModel: ObservableObject {
 
   private func finishCoreAutomation(exitCode: Int32) {
     guard ProcessInfo.processInfo.environment["GHOSTTEA_CORE_AUTOMATION"] == "1" else {
+      return
+    }
+    fflush(nil)
+    Darwin.exit(exitCode)
+  }
+
+  func runFrameDecoderProof() {
+    guard !isRunningFrameDecoder else { return }
+    isRunningFrameDecoder = true
+    frameDecoderResult = "Running strict TRF1 decoder fixture…"
+    Task {
+      do {
+        let runtime = try GhostteaRuntime()
+        let terminal = try GhostteaTerminal(
+          runtime: runtime,
+          configuration: .init(sessionHandle: 74, columns: 100, rows: 30)
+        )
+        let update = try await terminal.feed(Data("phase4-device ✓ 界\r\n".utf8), render: .full)
+        guard let frame = update.effects.first(where: { $0.kind == .frameReady })?.payload else {
+          throw HarnessError.frameDecoderMismatch
+        }
+        let summary = try GhostteaTerminalFrameDecoder.inspect(frame)
+        guard summary.sessionHandle == 74,
+          summary.columns == 100,
+          summary.rows == 30,
+          summary.sectionCount >= 6,
+          summary.glyphDefinitionCount > 0,
+          summary.styleDefinitionCount > 0,
+          summary.rowReplacementCount == 30,
+          summary.accessibilityRows.contains(where: { $0.contains("phase4-device ✓ 界") }),
+          summary.cursorRow == 1,
+          summary.scrollbarLength == 30
+        else {
+          throw HarnessError.frameDecoderMismatch
+        }
+        frameDecoderResult = "Passed · strict TRF1 sections are renderer-ready"
+        print("GHOSTTEA_TRF1_PASS")
+        finishFrameDecoderAutomation(exitCode: 0)
+      } catch {
+        frameDecoderResult = "Failed: \(error)"
+        print("GHOSTTEA_TRF1_ERROR \(error)")
+        finishFrameDecoderAutomation(exitCode: 2)
+      }
+      isRunningFrameDecoder = false
+    }
+  }
+
+  private func finishFrameDecoderAutomation(exitCode: Int32) {
+    guard ProcessInfo.processInfo.environment["GHOSTTEA_TRF1_AUTOMATION"] == "1" else {
       return
     }
     fflush(nil)
@@ -1018,6 +1074,7 @@ final class HarnessModel: ObservableObject {
 
 private enum HarnessError: Error, CustomStringConvertible {
   case coreParityMismatch
+  case frameDecoderMismatch
   case keychainRemovalFailed
   case keychainRoundTripMismatch
   case outputLimitExceeded
@@ -1027,6 +1084,8 @@ private enum HarnessError: Error, CustomStringConvertible {
     switch self {
     case .coreParityMismatch:
       return "production core fixture did not preserve ordered effects and state"
+    case .frameDecoderMismatch:
+      return "strict TRF1 decoder did not preserve the production frame"
     case .keychainRemovalFailed:
       return "credential remained after Keychain removal"
     case .keychainRoundTripMismatch:
