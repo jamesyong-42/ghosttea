@@ -592,3 +592,29 @@ GHOSTTEA_TRF1_PASS
 
 and exited successfully. A physical-device rerun is useful evidence before
 release, but it is not a blocker for beginning the render-pipeline slice.
+
+## 2026-07-17: ordered offscreen Metal render pass
+
+The first render pass consumes atomic retained state and emits desktop-ordered
+buffers for style backgrounds, view-owned selection, alpha glyphs,
+premultiplied-color glyphs, underline/strikethrough decorations, and cursor. It
+uses the desktop demo's cell geometry, origin, style resolution, and
+premultiplied blend factors. Invalid glyph geometry is rejected before command
+encoding. The bring-up target is an offscreen `rgba8Unorm` texture whose pixels
+are read back and hashed after command-buffer completion.
+
+One new focused test renders styled ANSI text plus a color emoji, proves a
+reversed selection has the same pixels as its normalized range, and verifies
+that repeated retained state keeps both pixels and atlas contents stable. The
+complete GhostteaKit suite now passes 44 tests on macOS. Both iOS SDK builds
+pass. On the arm64 iPhone 17 Pro Simulator, the automated harness compiled the
+Metal shaders, executed rectangle, alpha-glyph and color-glyph pipelines,
+validated non-background output and a stable rerender hash, emitted:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+and exited successfully. This is renderer bring-up rather than screenshot
+conformance: runtime shader compilation, offscreen readback, drawable
+presentation, lifecycle scheduling, and cross-device pixel goldens remain.

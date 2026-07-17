@@ -93,6 +93,16 @@ mutation. The fixed resource footprint is 20 MiB; tests cover real production
 glyphs, placement, reset, exhaustion, and malformed pixel storage on macOS, and
 the automated iPhone Simulator harness executes the real texture upload path.
 
+The first render-pass slice converts retained rows and styles into the same
+ordered geometry used by the desktop demo: style backgrounds, view-owned
+selection, alpha glyphs, premultiplied color glyphs, decorations, then cursor.
+It preserves the desktop cell/origin constants and premultiplied blending,
+rejects invalid geometry, renders to an offscreen `rgba8Unorm` target, and reads
+pixels back for deterministic same-device verification. Styled ANSI text and a
+color emoji exercise every pipeline on macOS and iPhone Simulator. Runtime MSL
+compilation and offscreen readback are deliberate bring-up mechanisms; a
+precompiled library, drawable presentation, and screenshot goldens remain.
+
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered
 terminal replies. The memory matrix measures macOS physical footprint for one,

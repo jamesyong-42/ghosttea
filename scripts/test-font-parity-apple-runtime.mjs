@@ -27,11 +27,7 @@ const automationVariable = frameMode
     ? "GHOSTTEA_CORE_AUTOMATION"
     : "GHOSTTEA_FONT_PARITY_AUTOMATION";
 const testFilter = frameMode ? "GhostteaFrameTests" : coreMode ? "GhostteaCoreTests" : "GhostteaFontProofTests";
-const checkName = frameMode
-  ? "TRF1 renderer foundation"
-  : coreMode
-    ? "production core ABI"
-    : "bundled-font runtime parity";
+const checkName = frameMode ? "TRF1 Metal renderer" : coreMode ? "production core ABI" : "bundled-font runtime parity";
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {

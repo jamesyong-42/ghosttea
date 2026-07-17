@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
-import GhostteaCredentials
 import GhostteaCore
+import GhostteaCredentials
 import GhostteaFontProof
 import GhostteaSSH
 import GhostteaTerminal
@@ -256,10 +256,13 @@ final class HarnessModel: ObservableObject {
           configuration: .init(sessionHandle: 74, columns: 100, rows: 30)
         )
         let fullUpdate = try await terminal.feed(
-          Data("phase4-device ✓ 界\r\n".utf8), render: .full)
+          Data("phase4-device ✓ 界 🙂 \u{1b}[31;44;4;9mstyled\u{1b}[0m\r\n".utf8),
+          render: .full
+        )
         let incrementalUpdate = try await terminal.feed(
           Data("retained-state\r\n".utf8), render: .damage)
-        guard let frame = fullUpdate.effects.first(where: { $0.kind == .frameReady })?.payload,
+        guard
+          let frame = fullUpdate.effects.first(where: { $0.kind == .frameReady })?.payload,
           let incremental = incrementalUpdate.effects.first(where: { $0.kind == .frameReady })?.payload
         else {
           throw HarnessError.frameDecoderMismatch
@@ -287,13 +290,21 @@ final class HarnessModel: ObservableObject {
           metal.uploadedBytes > 0,
           metal.cachedUploadBytes == 0,
           metal.alphaGlyphCount > 0,
-          metal.residentAtlasBytes == 20 * 1024 * 1024
+          metal.colorGlyphCount > 0,
+          metal.residentAtlasBytes == 20 * 1024 * 1024,
+          metal.renderedWidth == 787,
+          metal.renderedHeight == 574,
+          metal.rectangleVertexCount > 0,
+          metal.alphaGlyphVertexCount > 0,
+          metal.colorGlyphVertexCount > 0,
+          metal.nonBackgroundPixelCount > 0,
+          metal.pixelHash != 0
         else {
           throw HarnessError.frameDecoderMismatch
         }
         let atlasMiB = metal.residentAtlasBytes / 1_048_576
         frameDecoderResult =
-          "Passed · strict TRF1, retained state, Metal atlases (\(metal.deviceName), \(atlasMiB) MiB)"
+          "Passed · TRF1 offscreen Metal render (\(metal.deviceName), \(atlasMiB) MiB atlases)"
         print("GHOSTTEA_TRF1_PASS")
         finishFrameDecoderAutomation(exitCode: 0)
       } catch {

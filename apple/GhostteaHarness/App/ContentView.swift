@@ -62,7 +62,7 @@ struct ContentView: View {
           }
           .disabled(model.isRunningFrameDecoder)
           Text(
-            "Validates every frame section, retained-state transitions, and bounded alpha/color Metal atlas uploads and cache hits."
+            "Validates retained-state transitions, bounded alpha/color atlases, ordered Metal render passes, pixel readback, and cache-stable rerendering."
           )
           .font(.caption)
           .foregroundStyle(.secondary)

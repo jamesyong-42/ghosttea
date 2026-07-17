@@ -2021,8 +2021,24 @@ will fit from empty, and rejects oversized or malformed pixel storage before a
 partial upload. Production-core glyphs upload once and hit the cache with zero
 bytes on the second synchronization. Five Metal tests pass on macOS, both iOS
 SDK destinations build, and the arm64 iPhone Simulator executes the real Metal
-texture path within the fixed 20 MiB atlas budget. Render pipelines, render
-passes, scheduling, lifecycle, and screenshot conformance remain Phase 4 work.
+texture path within the fixed 20 MiB atlas budget. At that checkpoint, render
+passes, scheduling, lifecycle, and screenshot conformance remained Phase 4
+work.
+
+The fourth slice implements the first actual Metal render pass. Retained
+style runs and glyph instances produce ordered buffers for backgrounds,
+view-owned selection, alpha glyphs, premultiplied color glyphs, underline and
+strikethrough decorations, and cursor. Geometry uses the desktop demo's 7.83 by
+19 cell, two-point origin, style resolution, faint opacity, inverse colors, and
+premultiplied blend factors. Non-finite or non-positive glyph geometry is
+rejected before encoding. The bring-up renderer compiles its Metal source when
+the renderer is created, targets an offscreen `rgba8Unorm` texture, reads the
+completed pixels, and requires an identical retained frame to produce an
+identical hash with no repeated atlas upload. Styled ANSI text and a color emoji
+exercise all pipelines on macOS and arm64 iPhone Simulator. Before release,
+move shaders into a precompiled library and replace readback with drawable
+presentation; scheduling, lifecycle, and cross-platform screenshot goldens
+remain Phase 4 work.
 
 Deliverables:
 

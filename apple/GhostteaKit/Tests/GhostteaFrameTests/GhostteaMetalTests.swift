@@ -2,6 +2,7 @@ import Foundation
 import GhostteaCore
 import Metal
 import Testing
+
 @testable import GhostteaFrame
 @testable import GhostteaTerminal
 
@@ -32,7 +33,8 @@ private func productionFrame() async throws -> Data {
     runtime: runtime,
     configuration: .init(sessionHandle: 109, columns: 100, rows: 30)
   )
-  let update = try await terminal.feed(Data("Metal proof ✓ 界\r\n".utf8), render: .full)
+  let bytes = Data("Metal proof ✓ 界 \u{1b}[31;44;4;9mstyled\u{1b}[0m 🙂\r\n".utf8)
+  let update = try await terminal.feed(bytes, render: .full)
   return try #require(update.effects.first { $0.kind == .frameReady }?.payload)
 }
 
@@ -44,7 +46,52 @@ private func productionFrame() async throws -> Data {
   #expect(result.uploadedBytes > 0)
   #expect(result.cachedUploadBytes == 0)
   #expect(result.alphaGlyphCount > 0)
+  #expect(result.colorGlyphCount > 0)
   #expect(result.residentAtlasBytes == 20 * 1024 * 1024)
+  #expect(result.renderedWidth == 787)
+  #expect(result.renderedHeight == 574)
+  #expect(result.rectangleVertexCount > 0)
+  #expect(result.alphaGlyphVertexCount > 0)
+  #expect(result.colorGlyphVertexCount > 0)
+  #expect(result.nonBackgroundPixelCount > 0)
+  #expect(result.pixelHash != 0)
+}
+
+@Test func metalRendererPreservesPixelsAcrossCachedFramesAndAddsViewSelection() async throws {
+  let frame = try await productionFrame()
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  let runtime = try GhostteaMetalRuntime()
+  let renderer = try GhostteaMetalRenderer(
+    runtime: runtime, alphaAtlasSize: 512, colorAtlasSize: 512)
+  let plain = try renderer.render(state: state, width: 420, height: 100)
+  let selected = try renderer.render(
+    state: state,
+    width: 420,
+    height: 100,
+    selection: GhostteaMetalSelection(
+      anchor: GhostteaMetalCellPoint(column: 0, row: 0),
+      focus: GhostteaMetalCellPoint(column: 4, row: 0)
+    )
+  )
+  let selectedAgain = try renderer.render(
+    state: state,
+    width: 420,
+    height: 100,
+    selection: GhostteaMetalSelection(
+      anchor: GhostteaMetalCellPoint(column: 4, row: 0),
+      focus: GhostteaMetalCellPoint(column: 0, row: 0)
+    )
+  )
+
+  #expect(plain.atlasUpload.uploadedBytes > 0)
+  #expect(selected.atlasUpload.uploadedBytes == 0)
+  #expect(selectedAgain.atlasUpload.uploadedBytes == 0)
+  #expect(plain.alphaGlyphVertexCount > 0)
+  #expect(plain.rectangleVertexCount > 0)
+  #expect(selected.rectangleVertexCount == plain.rectangleVertexCount + 6)
+  #expect(selected.pixelHash != plain.pixelHash)
+  #expect(selectedAgain.pixelHash == selected.pixelHash)
 }
 
 @Test func metalAtlasesUseTheRequiredFormatsAndDeterministicShelfPlacement() throws {

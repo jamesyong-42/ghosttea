@@ -5,6 +5,13 @@ import Metal
 enum GhostteaMetalError: Error, Equatable, CustomStringConvertible {
   case unavailable
   case commandQueueUnavailable
+  case shaderUnavailable(String)
+  case pipelineUnavailable(String)
+  case bufferUnavailable(String)
+  case renderTargetUnavailable
+  case commandBufferFailed(String)
+  case invalidViewport
+  case invalidGeometry(UInt32)
   case textureUnavailable(String)
   case invalidAtlasSize(String, Int)
   case invalidGlyphDimensions(UInt32)
@@ -17,6 +24,20 @@ enum GhostteaMetalError: Error, Equatable, CustomStringConvertible {
       "Metal is unavailable"
     case .commandQueueUnavailable:
       "Metal command queue is unavailable"
+    case .shaderUnavailable(let label):
+      "Metal shader is unavailable: \(label)"
+    case .pipelineUnavailable(let label):
+      "Metal render pipeline is unavailable: \(label)"
+    case .bufferUnavailable(let label):
+      "Metal vertex buffer is unavailable: \(label)"
+    case .renderTargetUnavailable:
+      "Metal render target is unavailable"
+    case .commandBufferFailed(let reason):
+      "Metal command buffer failed: \(reason)"
+    case .invalidViewport:
+      "Metal viewport dimensions or scale are invalid"
+    case .invalidGeometry(let id):
+      "glyph \(id) has invalid render geometry"
     case .textureUnavailable(let label):
       "Metal texture is unavailable: \(label)"
     case .invalidAtlasSize(let label, let size):
@@ -272,25 +293,52 @@ public struct GhostteaMetalProofResult: Equatable, Sendable {
   public let alphaGlyphCount: Int
   public let colorGlyphCount: Int
   public let residentAtlasBytes: Int
+  public let renderedWidth: Int
+  public let renderedHeight: Int
+  public let rectangleVertexCount: Int
+  public let alphaGlyphVertexCount: Int
+  public let colorGlyphVertexCount: Int
+  public let nonBackgroundPixelCount: Int
+  public let pixelHash: UInt64
 }
 
 public enum GhostteaMetalProof {
   public static func run(frame data: Data) throws -> GhostteaMetalProofResult {
     let frame = try decodeTRF1Frame(data)
-    let definitions = try frame.sections
-      .filter { $0.kind == .glyphDefinitions }
-      .flatMap(decodeTRF1GlyphDefinitions)
+    var state = RetainedTRF1State()
+    guard case .applied = try state.apply(data) else {
+      throw TRF1DecodingError("proof frame did not produce retained state")
+    }
     let runtime = try GhostteaMetalRuntime()
-    let atlases = try GhostteaMetalAtlasSet(runtime: runtime)
-    let first = try atlases.synchronize(visible: definitions)
-    let cached = try atlases.synchronize(visible: definitions)
+    let renderer = try GhostteaMetalRenderer(runtime: runtime)
+    let width = Int(
+      ceil(
+        GhostteaMetalRenderer.originX * 2 + Float(frame.columns) * GhostteaMetalRenderer.cellWidth
+      ))
+    let height = Int(
+      ceil(
+        GhostteaMetalRenderer.originY * 2 + Float(frame.rows) * GhostteaMetalRenderer.lineHeight
+      ))
+    let first = try renderer.render(state: state, width: width, height: height)
+    let cached = try renderer.render(state: state, width: width, height: height)
+    guard first.pixelHash == cached.pixelHash else {
+      throw GhostteaMetalError.commandBufferFailed(
+        "identical retained state produced different pixels")
+    }
     return GhostteaMetalProofResult(
       deviceName: runtime.device.name,
-      uploadedBytes: first.uploadedBytes,
-      cachedUploadBytes: cached.uploadedBytes,
-      alphaGlyphCount: first.alphaGlyphCount,
-      colorGlyphCount: first.colorGlyphCount,
-      residentAtlasBytes: atlases.residentBytes
+      uploadedBytes: first.atlasUpload.uploadedBytes,
+      cachedUploadBytes: cached.atlasUpload.uploadedBytes,
+      alphaGlyphCount: first.atlasUpload.alphaGlyphCount,
+      colorGlyphCount: first.atlasUpload.colorGlyphCount,
+      residentAtlasBytes: renderer.atlases.residentBytes,
+      renderedWidth: first.width,
+      renderedHeight: first.height,
+      rectangleVertexCount: first.rectangleVertexCount,
+      alphaGlyphVertexCount: first.alphaGlyphVertexCount,
+      colorGlyphVertexCount: first.colorGlyphVertexCount,
+      nonBackgroundPixelCount: first.nonBackgroundPixelCount,
+      pixelHash: first.pixelHash
     )
   }
 }
