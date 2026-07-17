@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 
 import PackageDescription
 
@@ -70,11 +70,13 @@ let package = Package(
     .target(
       name: "GhostteaTerminal",
       dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTransport"],
+      exclude: ["GhostteaTerminal.metal"],
       linkerSettings: [
         .linkedFramework("Metal"),
         .linkedFramework("MetalKit", .when(platforms: [.iOS])),
         .linkedFramework("UIKit", .when(platforms: [.iOS])),
-      ]
+      ],
+      plugins: ["GhostteaMetalCompilerPlugin"]
     ),
     .target(name: "GhostteaTransport"),
     .target(
@@ -125,6 +127,10 @@ let package = Package(
       name: "GhosttyVtProofTests",
       dependencies: ["GhosttyVtProof"],
       resources: [.copy("Fixtures")]
+    ),
+    .plugin(
+      name: "GhostteaMetalCompilerPlugin",
+      capability: .buildTool()
     ),
   ]
 )

@@ -2035,10 +2035,9 @@ rejected before encoding. The bring-up renderer compiles its Metal source when
 the renderer is created, targets an offscreen `rgba8Unorm` texture, reads the
 completed pixels, and requires an identical retained frame to produce an
 identical hash with no repeated atlas upload. Styled ANSI text and a color emoji
-exercise all pipelines on macOS and arm64 iPhone Simulator. Before release,
-move shaders into a precompiled library and replace readback with drawable
-presentation; scheduling, lifecycle, and cross-platform screenshot goldens
-remain Phase 4 work.
+exercise all pipelines on macOS and arm64 iPhone Simulator. At this checkpoint,
+runtime shader compilation, drawable presentation, scheduling, lifecycle, and
+cross-platform screenshot goldens remained Phase 4 work.
 
 The fifth slice adds the first public iOS presentation surface.
 `GhostteaTerminalMetalView` subclasses `MTKView` with continuous drawing paused
@@ -2053,8 +2052,8 @@ catalogs; foreground or explicit resume lazily reconstructs resources from
 that retained state without another terminal frame. The simulator harness
 proves frame classification and a 20 MiB to zero to 20 MiB suspend/resume
 transition, and embeds the surface as a visible SwiftUI preview. Terminal-size
-negotiation from safe-area geometry, multi-scene ownership,
-precompiled shaders, and screenshot goldens remain.
+negotiation from safe-area geometry, multi-scene ownership, precompiled shaders,
+and screenshot goldens remain.
 
 The sixth slice establishes deterministic view-to-terminal sizing.
 `GhostteaTerminalLayout` converts point-space bounds to `UInt16` columns and
@@ -2094,6 +2093,16 @@ and restoration schedules from a visible cursor without enabling continuous
 Metal drawing. Pure main-actor tests cover timing, toggles, resets, hidden and
 static cursors, focus, and visibility. Multi-scene controllers must still call
 the surface visibility API as individual scenes activate and deactivate.
+
+The ninth slice removes runtime Metal compilation. A local SwiftPM build-tool
+plugin invokes the pinned Xcode Metal compiler, links a target-specific
+`GhostteaTerminal.metallib`, and declares the AIR and library files as package
+resources. The `.metal` source is excluded from implicit target processing so
+there is one compilation path on macOS, iOS Simulator, and iOS device builds.
+The renderer requires the packaged library URL and has no source-string
+fallback. Tests load the library, require the complete five-function catalog,
+and execute the existing deterministic pixel proof. The simulator harness runs
+the full TRF1/Metal automation with only the plugin library in the bundle.
 
 Deliverables:
 

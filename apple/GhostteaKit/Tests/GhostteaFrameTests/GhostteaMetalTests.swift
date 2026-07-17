@@ -261,6 +261,22 @@ private func productionFrame() async throws -> Data {
   #expect(result.pixelHash != 0)
 }
 
+@Test func packagedMetalLibraryContainsEveryRendererFunction() throws {
+  let renderer = try GhostteaMetalRenderer(
+    runtime: GhostteaMetalRuntime(), alphaAtlasSize: 8, colorAtlasSize: 8)
+
+  #expect(
+    renderer.shaderFunctionNames
+      == [
+        "ghosttea_rectangle_vertex",
+        "ghosttea_rectangle_fragment",
+        "ghosttea_glyph_vertex",
+        "ghosttea_alpha_glyph_fragment",
+        "ghosttea_color_glyph_fragment",
+      ]
+  )
+}
+
 @Test func metalRendererPreservesPixelsAcrossCachedFramesAndAddsViewSelection() async throws {
   let frame = try await productionFrame()
   var state = RetainedTRF1State()

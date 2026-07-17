@@ -41,6 +41,14 @@ npm run test:ssh:fixture:swift
 npm run bench:ghostty-vt:apple:matrix
 ```
 
+Xcode 26 installs its Metal compiler as an optional component. If `xcrun metal`
+reports a missing toolchain, install the pinned Xcode component once:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild -downloadComponent MetalToolchain
+```
+
 The Ghostty build uses a repository-pinned Zig archive and Ghostty commit. The
 SSH candidate build uses pinned OpenSSL and libssh2 commits. Both produce and
 validate macOS, iOS device, and iOS simulator slices. Before SwiftPM resolves
@@ -100,8 +108,9 @@ It preserves the desktop cell/origin constants and premultiplied blending,
 rejects invalid geometry, renders to an offscreen `rgba8Unorm` target, and reads
 pixels back for deterministic same-device verification. Styled ANSI text and a
 color emoji exercise every pipeline on macOS and iPhone Simulator. Runtime MSL
-compilation and offscreen readback are deliberate bring-up mechanisms; a
-precompiled library, drawable presentation, and screenshot goldens remain.
+compilation was the initial bring-up mechanism and has since been replaced by
+the packaged library described below. Offscreen readback remains for the proof;
+drawable screenshot goldens remain.
 
 On iOS, `GhostteaTerminalMetalView` is the first public presentation surface.
 It is an event-driven `MTKView`: continuous drawing is paused, accepted frames,
@@ -136,6 +145,14 @@ visible surface. Background/GPU suspension and scene occlusion cancel the task;
 `setTerminalVisible(_:)` lets a multi-scene host report per-scene visibility,
 and `noteCursorActivity()` restarts the interval after local input. Each toggle
 requests one Metal draw rather than enabling a display link.
+
+Renderer shaders live as Metal source in the package and are compiled ahead of
+time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
+target-specific `GhostteaTerminal.metallib` outputs as package resources; the
+renderer loads that library by URL and has no runtime-source compilation
+fallback. This keeps simulator, physical-device, and macOS libraries separate
+while making a missing build toolchain or packaged function a build/test
+failure.
 
 The conformance test loads a JSON fixture, feeds it as one buffer, one byte at
 a time, and patterned chunks, then compares state, visible text, and ordered

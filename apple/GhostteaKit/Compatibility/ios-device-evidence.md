@@ -705,3 +705,26 @@ blink transition. The complete GhostteaKit suite passes 51 tests on macOS, and
 the harness builds the package for arm64 simulator and physical-device SDKs.
 Physical multi-scene evidence remains a release gate because the owning scene
 controller must route activation changes through `setTerminalVisible(_:)`.
+
+## 2026-07-17: precompiled Metal shader library
+
+The renderer no longer embeds or compiles an MSL source string at runtime.
+`GhostteaMetalCompilerPlugin` invokes the Xcode `metal` and `metallib` tools and
+packages target-specific AIR and `GhostteaTerminal.metallib` resources. The
+renderer requires that library by bundle URL; there is no source fallback.
+Xcode's implicit compilation is excluded, leaving the plugin as the single
+shader build path in SwiftPM and Xcode builds.
+
+The macOS proof loads the packaged library, verifies all five vertex/fragment
+functions, and retains its deterministic pixel result; the complete suite now
+passes 52 tests. Arm64 simulator and physical-device SDK bundles contain
+distinct compiled libraries. With only the plugin-produced library present,
+the iPhone 17 Pro Simulator completed the full renderer automation and emitted:
+
+```text
+GHOSTTEA_CORE_PASS
+GHOSTTEA_TRF1_PASS
+```
+
+Xcode 26.1 requires its optional Metal Toolchain component on the build host;
+the package README records the one-time installation command.
