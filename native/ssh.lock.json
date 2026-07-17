@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "openssl": {
     "repository": "https://github.com/openssl/openssl.git",
-    "tag": "openssl-3.5.6",
-    "commit": "286ddeaac037533bbdce65b3c689e3f7ffebf0f6"
+    "tag": "openssl-3.5.7",
+    "commit": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"
   },
   "libssh2": {
     "repository": "https://github.com/libssh2/libssh2.git",
@@ -17,6 +17,30 @@
   },
   "candidateStatus": {
     "purpose": "Phase 0 compile and compatibility probe; not a production dependency",
+    "productionApproved": false,
     "knownGap": "A successful public-key partial step is reported as LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED (-19); explicit second-method sequencing works but must be policy-safe"
+  },
+  "securityReview": {
+    "reviewedAt": "2026-07-17",
+    "minimumOpenSSLTag": "openssl-3.5.7",
+    "affectedThrough": "libssh2-1.11.1",
+    "blockedReason": "The pinned libssh2 release is affected by newly disclosed pre-authentication vulnerabilities and no fixed upstream release has been tagged.",
+    "requiredFixCommits": [
+      "256d04b60d80bf1190e96b0ad1e91b2174d744b1",
+      "2dae3024897e1898d389835151f4e9606227721d",
+      "17626857d20b3c9a1addfa45979dadcee1cd84a4",
+      "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8",
+      "34497525929b9a47f03dfb81887ac896202b7e12",
+      "a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+    ],
+    "incorporatedFixCommits": [],
+    "requiredRevalidation": [
+      "apple-xcframework",
+      "package-tests",
+      "ssh-fixture-candidate",
+      "ssh-fixture-swift",
+      "ios-device-harness"
+    ],
+    "completedRevalidation": []
   }
 }

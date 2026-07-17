@@ -1298,9 +1298,14 @@ must support:
 
 Phase 0 screening found that SwiftNIO SSH 0.14.1 and Citadel 0.12.1 do not
 expose keyboard-interactive client authentication. A pinned libssh2 1.11.1 and
-OpenSSL 3.5.6 candidate now builds and imports for all required Apple slices,
+OpenSSL 3.5.7 candidate now builds and imports for all required Apple slices,
 including the multi-prompt keyboard-interactive API. It is not selected for
-production. Its opaque C shim and serialized nonblocking Swift adapter pass
+production. A 2026-07-17 review found newly disclosed pre-authentication
+vulnerabilities affecting libssh2 through 1.11.1 while that version remains the
+latest tag. The current artifact is therefore security-blocked; a fixed
+immutable pin must incorporate the recorded upstream fixes and rerun every
+compatibility/device gate before selection. Its opaque C shim and serialized
+nonblocking Swift adapter pass
 password, Ed25519 public key, two-round keyboard-interactive, and public key
 followed by keyboard-interactive. The accepted partial key step returns `-19`
 rather than a distinct partial-success result, so only the explicit chained
@@ -1819,8 +1824,9 @@ measurements and command output are recorded in
 `apple/GhostteaKit/Compatibility/ios-device-evidence.md`.
 Representative-server transition execution, production authentication UI
 promotion, representative DNS verification, compact-tier device execution,
-active-transport/renderer memory categories, and bundled-font licensing remain
-open.
+renderer memory categories, the libssh2 security upgrade/revalidation, and
+bundled-font licensing remain open. The standard-tier active-transport memory
+gate is complete.
 Encrypted OpenSSH Ed25519 keys now pass with the correct passphrase and reject
 an incorrect one through both direct fixture and opaque resolver paths.
 The opaque case uses libssh2's in-memory API and derives the public key without

@@ -22,6 +22,7 @@
     "build:ssh:fixture-probe": "node scripts/build-ssh-fixture-probe.mjs",
     "check:ghostty-vt:apple": "node scripts/validate-ghostty-vt-xcframework.mjs",
     "check:ssh:apple": "node scripts/validate-ssh-candidate-xcframework.mjs",
+    "check:ssh:production": "node scripts/check-ssh-production-readiness.mjs",
     "fixture:ssh:down": "node scripts/ssh-fixture.mjs down",
     "fixture:ssh:device:up": "node scripts/ssh-fixture.mjs device-up",
     "fixture:ssh:up": "node scripts/ssh-fixture.mjs up",

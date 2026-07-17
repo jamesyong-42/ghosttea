@@ -180,11 +180,18 @@ before transport implementation begins.
 
 Current screening confirms that Citadel 0.12.1 does not add
 keyboard-interactive authentication on top of SwiftNIO SSH. A second candidate,
-libssh2 1.11.1 with OpenSSL 3.5.6, was pinned and built as a static XCFramework
+libssh2 1.11.1 with OpenSSL 3.5.7, was pinned and built as a static XCFramework
 for macOS arm64, iOS arm64, and iOS simulator arm64. Swift can initialize the
 library, allocate/free a session, query its version, and import the
 multi-prompt keyboard-interactive function. Every archive slice is also
 validated for that function symbol.
+
+The 2026-07-17 dependency review makes this artifact non-shippable: newly
+disclosed pre-authentication vulnerabilities affect libssh2 through 1.11.1,
+which remains the latest tagged release. OpenSSL was raised to the fixed 3.5.7
+security floor and the Apple/package/live fixtures were rerun, but production
+selection remains blocked until a fixed immutable libssh2 pin incorporates the
+recorded upstream fixes and every device gate is repeated.
 
 This does not yet select libssh2. The pinned live fixture now runs through a
 serialized nonblocking Swift adapter and passes password, Ed25519 public key,

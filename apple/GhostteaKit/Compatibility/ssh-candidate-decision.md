@@ -1,9 +1,10 @@
 # Phase 0 SSH candidate decision
 
-**Status:** libssh2 passes the Phase 0 nonblocking Swift adapter fixture. It
-remains the leading candidate, but no SSH stack is selected for production yet.
+**Status:** libssh2 passes the Phase 0 capability and device fixtures, but the
+pinned 1.11.1 release is security-blocked and must not ship. No SSH stack is
+selected for production yet.
 
-**Recorded:** 2026-07-16
+**Recorded:** 2026-07-17
 
 ## Outcome
 
@@ -14,7 +15,16 @@ multi-prompt keyboard-interactive callback and a caller-driven nonblocking API,
 and this repository now proves it can be packaged and imported on the supported
 Apple targets.
 
-libssh2 is not yet the production choice. Against the pinned OpenSSH
+libssh2 is not yet the production choice. On 2026-07-17 the dependency review
+found that the latest tagged release remains 1.11.1 while newly disclosed
+pre-authentication vulnerabilities affect releases through 1.11.1. Upstream
+fixes exist on the development branch, but no fixed release is tagged. The
+checked-in `check:ssh:production` gate therefore fails closed until a fixed pin
+incorporates the recorded commits and the Apple, fixture, package, and physical-
+device gates are rerun. The unpatched artifact remains a Phase 0 compatibility
+probe only.
+
+Separately, against the pinned OpenSSH
 `publickey,keyboard-interactive` endpoint, the correct public key returns
 `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`) with the session still
 unauthenticated; explicitly invoking keyboard-interactive next succeeds with
@@ -37,17 +47,23 @@ worker rather than blocking a Swift cooperative executor.
 
 The exact inputs are locked in `native/ssh.lock.json`:
 
-- OpenSSL `openssl-3.5.6` at
-  `286ddeaac037533bbdce65b3c689e3f7ffebf0f6`;
+- OpenSSL `openssl-3.5.7` at
+  `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`;
 - libssh2 `libssh2-1.11.1` at
   `a312b43325e3383c865a87bb1d26cb52e3292641`;
 - deployment targets macOS 14 and iOS 17 on arm64.
 
 The build produces a static XCFramework with macOS arm64, iOS arm64, and iOS
-simulator arm64 slices. On Xcode 26.1 the unpacked artifact is 26,446,680 bytes;
+simulator arm64 slices. On Xcode 26.1 the three archives total 26,209,680 bytes;
 the individual archives are roughly 8.1–9.0 MB. These are pre-link archives
 containing libssh2 and libcrypto, not installed-app size. Dead stripping and App
 Store thinning must be measured in the eventual app.
+
+After raising the OpenSSL floor to 3.5.7 on 2026-07-17, the clean three-slice
+build and validator, C candidate fixture, complete Swift adapter fixture, all 25
+package tests, and both iOS SDK harness builds passed. This validates the
+OpenSSL-only upgrade; it does not satisfy the revalidation list for the future
+fixed libssh2 pin, which remains deliberately empty in the lock.
 
 The validator checks platform metadata, archive format, architecture, headers,
 module map, and the following symbols in every slice:
@@ -75,8 +91,9 @@ explicit chained-authentication sequence. It also locks the current `-19`
 partial-step behavior and rejects a wrong-key control. The PTY and flood results
 also run through the nonblocking Swift adapter. It allocates a 41x132 PTY,
 resizes it to 50x140, stops reading for 750 ms during a 32 MiB stream, and then
-drains exactly 33,554,432 bytes. The stalled process measured 10,043,392 bytes
-maximum RSS on the development Mac, below the 64 MiB gate. With
+drains exactly 33,554,432 bytes. The 2026-07-17 revalidation measured a stalled
+process maximum RSS of 10,764,288 bytes on the development Mac, below the 64
+MiB gate. With
 cancellation-triggered socket shutdown, a blocked channel read observed Swift
 task cancellation in under 1 ms. Strict
 known-host matching succeeds, while empty and changed-key files are rejected.
@@ -213,23 +230,29 @@ channel read without a `read(maxBytes:)` request; its stalled-reader fixture
 remains bounded and lossless. `ReplayTransport` and `OrderedTerminalWriter`
 separately test the host-neutral demand and queue semantics.
 
-## Live-fixture work required before selection
+## Work required before selection
 
-1. Promote the diagnostic asynchronous challenge responder and opaque
+1. Upgrade to a fixed, immutable upstream libssh2 release or an explicitly
+   reviewed commit that contains every fix recorded in `native/ssh.lock.json`.
+   Do not ship the current 1.11.1 artifact. Rerun the three-slice Apple build,
+   package suite, both live SSH fixtures, and physical-device harness before
+   changing `productionApproved`.
+
+2. Promote the diagnostic asynchronous challenge responder and opaque
    private-key chooser into the product connection UI. Opaque
    encrypted-key/passphrase resolution through the in-memory key API now
    passes both the macOS fixture and a physical iPhone. PAM informational text
    passes on macOS; nonempty protocol name/instruction metadata and mixed
    echo/no-echo prompts pass through the diagnostic UI on a physical iPhone.
-2. Promote the tested unknown/changed host-key responder into the product
+3. Promote the tested unknown/changed host-key responder into the product
    connection UI. Strict rejection, explicit accept-once decisions, atomic
    insertion/replacement, and permission preservation pass in fixtures. A
    physical iPhone persists an unknown key, warns before replacing a changed
    key, and then reconnects strictly without another prompt.
-3. Repeat the now-instrumented negotiated-method capture against the launch
+4. Repeat the now-instrumented negotiated-method capture against the launch
    server sample and decide which profiles must ship. Forced ECDSA P-256,
    AES-256-GCM, and RSA/SHA-2-512 endpoints already pass.
-4. Repeat the implemented resolver and reconnect orchestration against the
+5. Repeat the implemented resolver and reconnect orchestration against the
    representative server/network sample. PTY allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,
    DNS/connect/handshake deadlines and cancellation, and repeated auth/handshake
@@ -237,12 +260,12 @@ separately test the host-neutral demand and queue semantics.
    automatic Wi-Fi-to-cellular teardown, explicit fresh reconnect, background
    suspension, and foreground reconnect availability pass; representative-server
    transitions remain.
-5. Carry the completed active-SSH gate into the terminal controller. The
+6. Carry the completed active-SSH gate into the terminal controller. The
    standard-tier iPhone pauses app demand with unchanged delivered and raw
    socket counters, holds the process at 16.9 MB, and then drains the complete
    32 MiB flood byte-for-byte. The same device also passes one active and seven
    compressed background VT sessions at 30.5 MB process footprint.
-6. Run the package and network fixture on a physical low-end supported iOS
+7. Run the package and network fixture on a physical low-end supported iOS
    device.
 
 ## Sources
@@ -253,4 +276,12 @@ separately test the host-neutral demand and queue semantics.
   <https://libssh2.org/libssh2_userauth_keyboard_interactive_ex.html>
 - libssh2 partial-success pull request:
   <https://github.com/libssh2/libssh2/pull/1760>
+- libssh2 upstream releases (1.11.1 is still latest as of the review):
+  <https://github.com/libssh2/libssh2/releases>
+- upstream security fixes recorded by the 2026-06 disclosure:
+  <https://www.openwall.com/lists/oss-security/2026/06/23/10>
+- Debian DSA-6365-1 impact summary:
+  <https://lists.debian.org/debian-security-announce/2026/msg00276.html>
+- OpenSSL 3.5 vulnerability floor:
+  <https://openssl-library.org/news/vulnerabilities-3.5/>
 - OpenSSL releases: <https://github.com/openssl/openssl/releases>

@@ -12,7 +12,8 @@ Phase 0 answers the architectural questions that would otherwise force expensive
 - a repeatable one/four/eight-session physical-footprint and compression probe;
 - a host-neutral pull-based transport contract, bounded ordered writer, replay
   transport, and concurrency tests;
-- pinned OpenSSL/libssh2 macOS, iOS device, and iOS simulator candidate build;
+- pinned OpenSSL 3.5.7/libssh2 1.11.1 macOS, iOS device, and iOS simulator
+  candidate build, with a fail-closed production-readiness security gate;
 - XCFramework architecture/header/symbol validation and a Swift lifecycle and
   keyboard-interactive import probe;
 - SSH candidate decision, capability matrix, and flow-control gate.
@@ -192,7 +193,11 @@ UIKit, transport state, and the rest of the application.
    are complete. Repeat the compact-tier policy on a low-memory supported
    device, then add decoded-image, shaping/cache, TRF1, and GPU-atlas categories
    as those components enter the iOS application.
-4. Decide the SSH implementation from fixture evidence.
+4. Resolve the SSH security hold, then decide the implementation. The pinned
+   libssh2 1.11.1 candidate passes capability gates but is affected by newly
+   disclosed pre-authentication vulnerabilities. Upgrade to a fixed immutable
+   release/commit, rerun every Apple/fixture/device gate, and make
+   `check:ssh:production` pass before selection.
 5. Decide the v1 connection scope and bundled-font licensing.
 6. Land the in-flight embedding refactor and record byte-identical desktop fixture output as the Phase 1 extraction baseline.
 
