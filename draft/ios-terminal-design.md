@@ -1996,7 +1996,8 @@ The public `GhostteaTerminal` product currently exposes a renderer-readiness
 inspection facade. Its macOS tests decode real TRF1 bytes returned through the
 Phase 3 Swift wrapper, malformed fixtures mirror the desktop decoder suite, and
 the same harness emits `GHOSTTEA_TRF1_PASS` in an arm64 iPhone Simulator. Both
-iOS SDK destinations compile. Metal state, retained rows, atlases, render
+iOS SDK destinations compile, and the signed iPhone 14 Pro runtime emits the
+same pass marker. Metal state, retained rows, atlases, render
 passes, scheduling, lifecycle, and screenshot conformance remain Phase 4 work.
 
 Deliverables:

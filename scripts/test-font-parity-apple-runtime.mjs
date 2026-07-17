@@ -131,31 +131,52 @@ function connectedDevice() {
   return devices[0];
 }
 
-function deviceIsUnlocked(device) {
-  const response = jsonOutput(
-    "xcrun",
-    ["devicectl", "device", "info", "lockState", "--device", device.identifier],
-    { allowFailure: true },
-  );
-  // CoreDevice can briefly release its tunnel/resource while the phone is
-  // locking or unlocking. Treat that as unavailable and retry until the same
-  // deadline instead of failing a deterministic device gate.
-  return response ? !response.result.passcodeRequired : false;
-}
-
 function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
-async function waitForUnlockedDevice(device) {
-  if (deviceIsUnlocked(device)) return;
-  console.log(`Unlock ${device.hardwareProperties.marketingName}; launch will continue automatically…`);
+async function launchDeviceProof(device) {
   const deadline = Date.now() + 120_000;
+  let lastResult;
+  let announced = false;
   while (Date.now() < deadline) {
+    const result = execute(
+      "xcrun",
+      [
+        "devicectl",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        device.identifier,
+        "--terminate-existing",
+        "--console",
+        "--timeout",
+        "30",
+        "--environment-variables",
+        JSON.stringify({ [automationVariable]: "1" }),
+        bundleIdentifier,
+      ],
+      { capture: true, allowFailure: true },
+    );
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.status === 0 || output.includes(marker)) {
+      requirePass(result, device.hardwareProperties.marketingName);
+      return;
+    }
+    if (/GHOSTTEA_(?:FONT_PARITY|CORE|TRF1)_(?:FAIL|ERROR)/.test(output)) {
+      requirePass(result, device.hardwareProperties.marketingName);
+    }
+    lastResult = result;
+    if (!announced) {
+      console.log(`Unlock ${device.hardwareProperties.marketingName}; launch will continue automatically…`);
+      announced = true;
+    }
     await delay(1_000);
-    if (deviceIsUnlocked(device)) return;
   }
-  throw new Error(`Timed out waiting for ${device.hardwareProperties.marketingName} to be unlocked.`);
+  throw new Error(
+    `Timed out launching ${device.hardwareProperties.marketingName}:\n${lastResult?.stdout ?? ""}${lastResult?.stderr ?? ""}`,
+  );
 }
 
 async function runDevice() {
@@ -178,29 +199,9 @@ async function runDevice() {
     "CODE_SIGN_STYLE=Automatic",
     "build",
   ]);
-  await waitForUnlockedDevice(device);
   const app = join(derivedData, "Build/Products/Debug-iphoneos/GhostteaHarness.app");
   execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
-  const result = execute(
-    "xcrun",
-    [
-      "devicectl",
-      "device",
-      "process",
-      "launch",
-      "--device",
-      device.identifier,
-      "--terminate-existing",
-      "--console",
-      "--timeout",
-      "30",
-      "--environment-variables",
-      JSON.stringify({ [automationVariable]: "1" }),
-      bundleIdentifier,
-    ],
-    { capture: true, allowFailure: true },
-  );
-  requirePass(result, device.hardwareProperties.marketingName);
+  await launchDeviceProof(device);
 }
 
 if (!skipBuild) execute("npm", ["run", "test:ios:harness"]);

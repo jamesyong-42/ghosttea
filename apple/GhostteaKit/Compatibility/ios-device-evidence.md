@@ -494,11 +494,17 @@ the iPhone 17 Pro arm64 simulator emitted:
 GHOSTTEA_CORE_PASS
 ```
 
-The same signed build was installed successfully on the paired iPhone 14 Pro.
-The final automated launch marker remains a local evidence retry because the
-phone re-locked while Apple's transient CoreDevice tunnel was being recovered;
-this does not change the passing ABI, sanitizer, simulator-runtime, or physical
-SDK build results. Reproduce that final launch on an unlocked device with:
+The same signed build was installed and launched on the paired iPhone 14 Pro.
+Apple's lock-state service repeatedly failed to allocate its transient RSD
+resource even while the phone was unlocked, so the runner was corrected to use
+the authoritative install/launch operation and retry that operation directly.
+The physical process emitted:
+
+```text
+GHOSTTEA_CORE_PASS
+```
+
+and exited with status zero. Reproduce the physical gate with:
 
 ```sh
 node scripts/test-font-parity-apple-runtime.mjs --core --device-only --skip-build
@@ -528,9 +534,14 @@ Pro Simulator both emitted:
 GHOSTTEA_TRF1_PASS
 ```
 
-The updated harness also compiles for the physical iOS arm64 SDK. A signed
-physical launch remains grouped with the pending Phase 3 retry above; the
-decoder gate itself is automated with:
+The updated harness also compiles for the physical iOS arm64 SDK. The same
+signed iPhone 14 Pro process decoded its production frame, emitted:
+
+```text
+GHOSTTEA_TRF1_PASS
+```
+
+and exited with status zero. The decoder gate is automated with:
 
 ```sh
 npm run test:ghosttea-frame:apple-runtime
