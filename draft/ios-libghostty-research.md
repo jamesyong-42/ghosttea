@@ -215,7 +215,9 @@ fixture covers informational and multiple prompt rounds, exact nonempty
 protocol name/instruction metadata, and cancellation. A diagnostic challenge
 sheet passes the two-prompt mixed-echo metadata fixture on a physical iPhone;
 one continuous presentation bridges host-key confirmation and authentication
-without losing a challenge during sheet dismissal.
+without losing a challenge during sheet dismissal. Cancelling from that sheet
+unwinds the suspended responder and native callback worker in 162 ms on the
+same device.
 The adapter now uses a cancellable nonblocking TCP connector with a separate SSH
 handshake deadline. A local peer that accepts TCP without sending a banner proves
 the 250 ms handshake deadline and cancellation paths. The synchronous system DNS

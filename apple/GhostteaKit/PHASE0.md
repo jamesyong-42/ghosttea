@@ -109,7 +109,9 @@ Phase 0 answers the architectural questions that would otherwise force expensive
   and instruction, prompt order, and mixed echo policy, submitted two factors,
   authenticated, and drained the expected command output. A competing-sheet
   presentation race found by the first device attempt is covered by keeping one
-  interaction presentation alive across both stages.
+  interaction presentation alive across both stages. Cancelling directly from
+  the challenge sheet unwinds the responder and native callback worker in
+  162 ms on the same device.
 
 The first verified ReleaseFast artifact, built with Xcode 26.1 and SDK 26.1,
 is 36 MiB unpacked. Its static archives are 8,782,808 bytes for iOS device,

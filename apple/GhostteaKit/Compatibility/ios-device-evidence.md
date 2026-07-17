@@ -206,6 +206,19 @@ ghosttea-metadata-command-ok
 
 This closes the diagnostic physical-device keyboard-interactive UI gate for a
 two-prompt, mixed-echo challenge with nonempty name and instruction. Product UI
-promotion, representative 2FA servers, challenge cancellation on device, and
-the explicit public-key-plus-second-factor product policy remain open. The LAN
-fixture was stopped and removed immediately after the successful probe.
+promotion, representative 2FA servers, and the explicit
+public-key-plus-second-factor product policy remain open.
+
+The rebuilt harness then repeated the flow against a fresh fixture and
+independently supplied fingerprint. Instead of entering answers, the user
+pressed **Cancel** on the authentication challenge. The sheet routed that
+action through the SSH task-cancellation path; the suspended responder and
+native callback worker unwound, and the harness reported:
+
+```text
+Cancelled in 162 ms
+```
+
+This is below the one-second Phase 0 gate and closes the diagnostic on-device
+keyboard-interactive cancellation check. Each LAN fixture was stopped and
+removed immediately after its probe.

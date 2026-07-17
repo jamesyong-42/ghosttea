@@ -223,8 +223,9 @@ separately test the host-neutral demand and queue semantics.
    allocation, resize, shell I/O,
    command exit status/signal, half-close, graceful close, auth/read cancellation,
    deterministic handshake timeout/cancellation, and repeated auth/handshake
-   cancellation stress already pass. Physical Wi-Fi route-loss cancellation and
-   explicit fresh reconnect pass; automatic path monitoring, background
+   cancellation stress already pass. Physical challenge-sheet cancellation,
+   Wi-Fi route-loss cancellation, and explicit fresh reconnect pass; automatic
+   path monitoring, background
    suspension, retry state, and representative-server transitions remain.
 5. Add whole-app physical-footprint instrumentation on device. The candidate
    already exposes raw socket, delivered/written byte, socket-wait, and SSH

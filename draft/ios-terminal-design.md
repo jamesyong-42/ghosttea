@@ -1329,7 +1329,8 @@ The encrypted private-key/passphrase path also passes on a physical iPhone
 through opaque device-only Keychain items, with both items deleted before
 command output is read. A continuous diagnostic host-key/authentication sheet
 also passes the exact two-prompt, mixed-echo metadata fixture on a physical
-iPhone. Product authentication UI promotion,
+iPhone; cancelling from that sheet unwinds the suspended responder and native
+callback worker in 162 ms. Product authentication UI promotion,
 representative-server sampling, automatic path-state/reconnect orchestration,
 and complete device evidence remain open. Physical Wi-Fi route-loss
 cancellation completes in 23 ms and a fresh connection succeeds after Wi-Fi

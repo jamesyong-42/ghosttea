@@ -138,7 +138,7 @@ private struct SSHInteractionView: View {
         case .success(let responses):
           model.resolveKeyboardChallenge(responses)
         case .failure:
-          model.cancelKeyboardChallenge()
+          model.cancelSSHCommand()
         }
       }
     } else {

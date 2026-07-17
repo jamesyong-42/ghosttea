@@ -11,7 +11,8 @@ The harness provides:
 - a password-, in-memory private-key-, or keyboard-interactive-authenticated SSH
   command probe with bounded output;
 - an asynchronous keyboard-interactive challenge sheet that preserves protocol
-  name, instruction, prompt ordering, and per-prompt echo policy;
+  name, instruction, prompt ordering, and per-prompt echo policy, with challenge
+  cancellation routed through the measured SSH task-cancellation path;
 - explicit cancellation with measured unwind latency for physical-device
   adverse-network checks;
 - negotiated host-key and cipher reporting;
