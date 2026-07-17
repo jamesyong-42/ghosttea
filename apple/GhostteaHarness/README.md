@@ -31,6 +31,9 @@ The harness provides:
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a
   fresh connection;
+- aggregate WindowGroup lifecycle coordination, so backgrounding or closing one
+  scene cannot suspend the app-owned session while another scene remains
+  active, plus per-scene Metal visibility;
 - guided lifecycle probes that select commands and disposable credentials,
   capture teardown latency, enforce the one-second gate, validate exact fresh
   reconnect output, and report pass/fail on the device;

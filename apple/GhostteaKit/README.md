@@ -146,6 +146,15 @@ visible surface. Background/GPU suspension and scene occlusion cancel the task;
 and `noteCursorActivity()` restarts the interval after local input. Each toggle
 requests one Metal draw rather than enabling a display link.
 
+`GhostteaSceneAttachmentRegistry` supplies the iOS v1 presentation boundary:
+one generation-checked attachment token per session, explicit transfer to a
+new scene, stale-detach rejection, and per-scene visibility changes. Scene
+disconnection drops only presentation ownership; it never destroys the
+app-owned session. `GhostteaSceneLifecycleState` separately computes the
+aggregate app phase so one background window cannot suspend work still visible
+in another active scene. A future simultaneous multi-presentation release can
+replace this registry without changing the shared terminal model.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

@@ -1431,6 +1431,16 @@ moving a session transfers its one presentation attachment. A future
 multi-presentation release assigns a distinct view ID to each scene and reuses
 the core's existing view and resize-authority model.
 
+The iOS package enforces this boundary with generation-checked attachment
+tokens. Attaching an already-presented session returns the superseded token and
+installs a new current token; a delayed detach from the old scene is rejected
+and cannot unbind the new owner. Scene phase changes produce visibility updates
+only for that scene's current attachments. Disconnecting a scene removes its
+presentation tokens but deliberately does not destroy the application-owned
+sessions. App-wide suspension uses the aggregate of all connected scene phases:
+one scene entering the background cannot suspend transport or GPU state while
+another scene remains active.
+
 ### 17.1 Scene phases
 
 #### Active
@@ -2092,7 +2102,8 @@ suspension, view detachment, and host-reported scene occlusion cancel the task,
 and restoration schedules from a visible cursor without enabling continuous
 Metal drawing. Pure main-actor tests cover timing, toggles, resets, hidden and
 static cursors, focus, and visibility. Multi-scene controllers must still call
-the surface visibility API as individual scenes activate and deactivate.
+the surface visibility API as individual scenes activate and deactivate; the
+eleventh slice below provides the ownership and aggregate lifecycle primitive.
 
 The ninth slice removes runtime Metal compilation. A local SwiftPM build-tool
 plugin invokes the pinned Xcode Metal compiler, links a target-specific
@@ -2115,6 +2126,20 @@ for intentional golden updates. The independently compiled iOS Simulator
 library currently produces the exact reference hash and zero differences.
 Physical-iPhone and desktop-WebGPU comparisons remain before visual parity is
 complete.
+
+The eleventh slice establishes iOS v1 scene ownership. The
+`GhostteaSceneAttachmentRegistry` actor permits one current presentation token
+per terminal session, transfers authority explicitly, rejects stale detaches by
+generation, and reports visibility only for currently attached presentations.
+`GhostteaSceneLifecycleState` reduces all connected scenes to active, inactive,
+or background, so one WindowGroup instance cannot globally suspend an app-owned
+session while another remains active. The harness uses that aggregate for its
+global SSH/session lifecycle and passes each scene's own visibility directly to
+its Metal surface. Three tests cover transfer, stale-detach rejection,
+scene-disconnect semantics, and the two-active-scenes background transition.
+The complete 56-test package suite, both iOS SDK builds, and iPhone Simulator
+TRF1/Metal automation pass. Physical Stage Manager transfer/disconnect gestures
+remain release evidence rather than an implementation blocker.
 
 Deliverables:
 

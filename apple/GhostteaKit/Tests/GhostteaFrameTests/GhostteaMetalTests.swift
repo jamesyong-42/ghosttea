@@ -35,6 +35,71 @@ private let blinkingCursor = TRF1CursorState(
   blinking: true
 )
 
+@Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
+  let registry = GhostteaSceneAttachmentRegistry()
+  let sessionID = UUID()
+  let firstSceneID = UUID()
+  let secondSceneID = UUID()
+  await registry.registerScene(firstSceneID, phase: .active)
+  await registry.registerScene(secondSceneID, phase: .inactive)
+
+  let first = await registry.attach(sessionID: sessionID, to: firstSceneID)
+  #expect(first.detached == nil)
+  #expect(first.visible)
+
+  let transferred = await registry.attach(sessionID: sessionID, to: secondSceneID)
+  #expect(transferred.detached == first.attached)
+  #expect(!transferred.visible)
+  #expect(await !registry.detach(first.attached))
+  #expect(await registry.attachment(for: sessionID) == transferred.attached)
+  #expect(await registry.detach(transferred.attached))
+  #expect(await registry.attachment(for: sessionID) == nil)
+}
+
+@Test func scenePhasesAffectOnlyCurrentAttachmentsAndDisconnectPreservesSessions() async {
+  let registry = GhostteaSceneAttachmentRegistry()
+  let firstSessionID = UUID()
+  let secondSessionID = UUID()
+  let sceneID = UUID()
+  await registry.registerScene(sceneID, phase: .inactive)
+  let first = await registry.attach(sessionID: firstSessionID, to: sceneID)
+  let second = await registry.attach(sessionID: secondSessionID, to: sceneID)
+
+  let active = await registry.updateScene(sceneID, phase: .active)
+  #expect(active.map(\.attachment) == [first.attached, second.attached])
+  #expect(active.allSatisfy { $0.visible })
+  #expect(await registry.updateScene(sceneID, phase: .active).isEmpty)
+  let background = await registry.updateScene(sceneID, phase: .background)
+  #expect(background.map(\.visible) == [false, false])
+
+  let detached = await registry.disconnectScene(sceneID)
+  #expect(detached == [first.attached, second.attached])
+  #expect(await registry.attachment(for: firstSessionID) == nil)
+  #expect(await registry.attachment(for: secondSessionID) == nil)
+}
+
+@Test func aggregateSceneLifecycleKeepsAnotherActiveSceneForeground() {
+  var lifecycle = GhostteaSceneLifecycleState()
+  let firstSceneID = UUID()
+  let secondSceneID = UUID()
+
+  let firstActive = lifecycle.update(sceneID: firstSceneID, phase: .active)
+  #expect(firstActive?.previous == .background)
+  #expect(firstActive?.current == .active)
+  #expect(lifecycle.update(sceneID: secondSceneID, phase: .active) == nil)
+
+  #expect(lifecycle.update(sceneID: firstSceneID, phase: .background) == nil)
+  #expect(lifecycle.aggregatePhase == .active)
+  let lastInactive = lifecycle.update(sceneID: secondSceneID, phase: .inactive)
+  #expect(lastInactive?.previous == .active)
+  #expect(lastInactive?.current == .inactive)
+
+  let allBackground = lifecycle.disconnect(sceneID: secondSceneID)
+  #expect(allBackground?.previous == .inactive)
+  #expect(allBackground?.current == .background)
+  #expect(lifecycle.disconnect(sceneID: secondSceneID) == nil)
+}
+
 private func glyph(
   id: UInt32,
   width: UInt16 = 2,

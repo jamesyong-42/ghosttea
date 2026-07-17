@@ -5,7 +5,9 @@ import SwiftUI
 
 struct ContentView: View {
   @EnvironmentObject private var model: HarnessModel
+  @EnvironmentObject private var sceneLifecycle: HarnessSceneLifecycleCoordinator
   @Environment(\.scenePhase) private var scenePhase
+  @State private var sceneID = UUID()
 
   var body: some View {
     NavigationStack {
@@ -50,9 +52,11 @@ struct ContentView: View {
             model.runCoreProof()
           }
           .disabled(model.isRunningCore)
-          Text("Exercises the versioned C ABI, ordered effects, TRF1 arena ownership, and accessibility rows.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          Text(
+            "Exercises the versioned C ABI, ordered effects, TRF1 arena ownership, and accessibility rows."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
 
         Section("TRF1 renderer foundation") {
@@ -68,7 +72,7 @@ struct ContentView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
           if let frame = model.framePreview {
-            GhostteaTerminalPreview(frame: frame)
+            GhostteaTerminalPreview(frame: frame, visible: scenePhase == .active)
               .frame(height: 160)
               .clipShape(RoundedRectangle(cornerRadius: 8))
               .accessibilityLabel("Rendered Ghosttea terminal preview")
@@ -317,16 +321,13 @@ struct ContentView: View {
           .interactiveDismissDisabled()
       }
       .onChange(of: scenePhase) { _, phase in
-        switch phase {
-        case .active:
-          model.sceneDidBecomeActive()
-        case .background:
-          model.sceneDidEnterBackground()
-        case .inactive:
-          break
-        @unknown default:
-          break
-        }
+        sceneLifecycle.update(sceneID: sceneID, phase: phase, model: model)
+      }
+      .onAppear {
+        sceneLifecycle.update(sceneID: sceneID, phase: scenePhase, model: model)
+      }
+      .onDisappear {
+        sceneLifecycle.disconnect(sceneID: sceneID, model: model)
       }
     }
   }
@@ -345,6 +346,7 @@ struct ContentView: View {
 
 private struct GhostteaTerminalPreview: UIViewRepresentable {
   let frame: Data
+  let visible: Bool
 
   final class Coordinator {
     var appliedFrame: Data?
@@ -363,6 +365,7 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
   }
 
   func updateUIView(_ view: GhostteaTerminalMetalView, context: Context) {
+    view.setTerminalVisible(visible)
     guard context.coordinator.appliedFrame != frame else { return }
     do {
       try view.apply(frame: frame)
@@ -374,6 +377,43 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
 
   static func dismantleUIView(_ view: GhostteaTerminalMetalView, coordinator: Coordinator) {
     view.suspendGPU()
+  }
+}
+
+@MainActor
+final class HarnessSceneLifecycleCoordinator: ObservableObject {
+  private var lifecycle = GhostteaSceneLifecycleState()
+
+  func update(sceneID: UUID, phase: ScenePhase, model: HarnessModel) {
+    let transition = lifecycle.update(sceneID: sceneID, phase: phase.ghostteaPhase)
+    reconcile(transition, model: model)
+  }
+
+  func disconnect(sceneID: UUID, model: HarnessModel) {
+    reconcile(lifecycle.disconnect(sceneID: sceneID), model: model)
+  }
+
+  private func reconcile(
+    _ transition: GhostteaAggregateSceneTransition?,
+    model: HarnessModel
+  ) {
+    guard let transition else { return }
+    if transition.current == .active {
+      model.sceneDidBecomeActive()
+    } else if transition.current == .background {
+      model.sceneDidEnterBackground()
+    }
+  }
+}
+
+extension ScenePhase {
+  fileprivate var ghostteaPhase: GhostteaScenePhase {
+    switch self {
+    case .active: .active
+    case .inactive: .inactive
+    case .background: .background
+    @unknown default: .inactive
+    }
   }
 }
 

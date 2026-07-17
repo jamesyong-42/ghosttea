@@ -753,3 +753,26 @@ GHOSTTEA_TRF1_PASS
 The paired iPhone 14 Pro was visible over the local network but its CoreDevice
 tunnel was disconnected, so this slice does not claim a physical-GPU pass.
 Physical-device and desktop-WebGPU comparisons remain visual-parity gates.
+
+## 2026-07-17: generation-checked scene ownership
+
+The iOS v1 presentation contract is now executable rather than controller
+convention. `GhostteaSceneAttachmentRegistry` allows one current presentation
+token per session. Moving a session reports and invalidates the old token, so a
+late detach from the previous scene cannot remove the new owner. Phase changes
+affect only current attachments, and disconnecting a scene drops presentation
+ownership without claiming or destroying the application-owned session.
+
+`GhostteaSceneLifecycleState` computes the application phase across all
+connected scenes. The harness routes global SSH/session lifecycle callbacks
+through that aggregate and routes each WindowGroup's own active state to its
+Metal view. A unit test proves that backgrounding one of two active scenes does
+not suspend the app; only the last foreground scene leaving reaches the
+background state.
+
+The full GhostteaKit suite passes 56 tests with Metal and local-loopback access.
+The harness compiles for arm64 iOS Simulator and physical-device SDKs. The
+iPhone 17 Pro Simulator installs the rebuilt app and passes the production
+TRF1/Metal marker. Physical iPad Stage Manager transfer, stale teardown, and
+scene-disconnect gestures remain release evidence; they are recorded as a
+future release gate rather than blocking the next implementation slice.
