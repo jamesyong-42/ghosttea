@@ -2164,6 +2164,28 @@ sequencing, resize, cursor, colors, Unicode, and device lifecycle working.
 
 **Estimated effort:** 2-4 weeks
 
+**Started:** 2026-07-17. The first slice establishes the hardware-key parity
+boundary without putting terminal escape sequences in UIKit.
+`GhostteaHardwareKeyEvent` converts Apple USB HID usages to the same DOM-style
+physical codes used by the desktop client, preserves the unmodified layout
+codepoint, distinguishes down/repeat/up, and strips UIKit's private-use arrow
+characters from text input. `GhostteaTerminalInputEncoder` routes terminal keys
+through the shared `GhostteaCore.encodeKey` implementation and owns the small
+application-binding layer above it: Command word/line editing, clipboard and
+workspace shortcuts, plus configurable Option-as-terminal or Option-as-natural
+word motion. Bound key-up events are suppressed rather than leaking a second
+terminal event.
+
+`GhostteaTerminalMetalView` is now a tap-focusable first responder and forwards
+hardware `UIPress` events through a host decision callback. It tracks pressed
+HID usages to synthesize repeat actions and calls UIKit's responder chain for
+keys the host declines. Resigning first responder synthesizes key-up events for
+handled held keys, matching desktop blur behavior. Two tests prove common
+HID/DOM mappings, layout identity, non-text special keys, shared Ghostty bytes for letters, Ctrl-C and
+arrows, desktop-compatible Option motion, Command-paste routing, key-up
+suppression, committed Unicode, and terminal paste encoding. Software keyboard
+and `UITextInput` marked-text composition intentionally remain the next slice.
+
 Deliverables:
 
 - `UITextInput` integration and marked-text overlay;

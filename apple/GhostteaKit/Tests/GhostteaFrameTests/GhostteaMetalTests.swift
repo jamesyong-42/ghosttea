@@ -35,6 +35,140 @@ private let blinkingCursor = TRF1CursorState(
   blinking: true
 )
 
+@Test func hardwareKeysNormalizeToDesktopCodesAndLayoutIdentity() throws {
+  let shiftedA = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x04,
+      characters: "A",
+      charactersIgnoringModifiers: "a",
+      modifiers: [.shift],
+      action: .down
+    )
+  )
+  #expect(shiftedA.code == "KeyA")
+  #expect(shiftedA.text == "A")
+  #expect(shiftedA.unshiftedCodepoint == 97)
+  #expect(shiftedA.coreEvent.modifiers == GhostteaInputModifiers.shift.rawValue)
+  #expect(GhostteaHIDKeyCode.domCode(for: 0x27) == "Digit0")
+  #expect(GhostteaHIDKeyCode.domCode(for: 0x50) == "ArrowLeft")
+  #expect(GhostteaHIDKeyCode.domCode(for: 0x45) == "F12")
+  #expect(GhostteaHIDKeyCode.domCode(for: 0x73) == "F24")
+  #expect(GhostteaHIDKeyCode.domCode(for: 0xffff) == nil)
+
+  let arrow = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x50,
+      characters: "\u{f702}",
+      charactersIgnoringModifiers: "\u{f702}",
+      action: .down
+    )
+  )
+  #expect(arrow.text.isEmpty)
+  #expect(arrow.unshiftedCodepoint == 0)
+
+  let released = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x04,
+      characters: "a",
+      charactersIgnoringModifiers: "a",
+      action: .up
+    )
+  )
+  #expect(released.text.isEmpty)
+  #expect(released.unshiftedCodepoint == 97)
+}
+
+@Test func hardwareInputUsesSharedGhosttyEncodingAndDesktopBindings() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 112, columns: 80, rows: 24)
+  )
+  let encoder = GhostteaTerminalInputEncoder(terminal: terminal)
+
+  let letter = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x04,
+      characters: "a",
+      charactersIgnoringModifiers: "a",
+      action: .down
+    )
+  )
+  #expect(try await encoder.encode(letter) == .bytes(Data("a".utf8)))
+
+  let interrupt = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x06,
+      characters: "\u{3}",
+      charactersIgnoringModifiers: "c",
+      modifiers: [.control],
+      action: .down
+    )
+  )
+  #expect(try await encoder.encode(interrupt) == .bytes(Data([0x03])))
+
+  let arrowUp = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x52,
+      characters: "",
+      charactersIgnoringModifiers: "",
+      action: .down
+    )
+  )
+  #expect(try await encoder.encode(arrowUp) == .bytes(Data([0x1b, 0x5b, 0x41])))
+
+  let optionLeft = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x50,
+      characters: "",
+      charactersIgnoringModifiers: "",
+      modifiers: [.option],
+      action: .down
+    )
+  )
+  #expect(try await encoder.encode(optionLeft) == .bytes(Data([0x1b, 0x62])))
+  let optionLeftUp = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x50,
+      characters: "",
+      charactersIgnoringModifiers: "",
+      action: .up
+    )
+  )
+  #expect(try await encoder.encode(optionLeftUp) == .ignored)
+
+  let commandV = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x19,
+      characters: "v",
+      charactersIgnoringModifiers: "v",
+      modifiers: [.command],
+      action: .down
+    )
+  )
+  #expect(try await encoder.encode(commandV) == .pasteFromClipboard)
+  let commandVUp = try #require(
+    GhostteaHardwareKeyEvent(
+      hidUsage: 0x19,
+      characters: "v",
+      charactersIgnoringModifiers: "v",
+      action: .up
+    )
+  )
+  #expect(try await encoder.encode(commandVUp) == .ignored)
+
+  await encoder.setConfiguration(.init(optionKeyBehavior: .terminal))
+  let terminalOptionLeft = try await encoder.encode(optionLeft)
+  guard case .bytes(let terminalOptionBytes) = terminalOptionLeft else {
+    Issue.record("terminal Option behavior did not use the shared key encoder")
+    return
+  }
+  #expect(!terminalOptionBytes.isEmpty)
+  #expect(terminalOptionBytes != Data([0x1b, 0x62]))
+  #expect(await encoder.encodeCommittedText("界") == .bytes(Data("界".utf8)))
+  #expect(try await encoder.encodePaste("paste") == Data("paste".utf8))
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

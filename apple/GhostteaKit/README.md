@@ -155,6 +155,17 @@ aggregate app phase so one background window cannot suspend work still visible
 in another active scene. A future simultaneous multi-presentation release can
 replace this registry without changing the shared terminal model.
 
+The first native-input slice keeps UIKit above the terminal encoding boundary.
+`GhostteaHardwareKeyEvent` maps Apple HID usages to desktop-compatible DOM codes
+and carries printable text, unshifted layout identity, modifiers, and
+down/repeat/up actions. `GhostteaTerminalInputEncoder` sends terminal keys to
+the shared Ghostty-backed `GhostteaCore.encodeKey`, while handling the same
+small application-binding layer as desktop and exposing configurable Option
+behavior. The Metal view can become first responder on tap and reports hardware
+presses through `onHardwareKeyEvent`; returning `false` preserves UIKit's normal
+responder chain, and responder loss releases handled held keys.
+Software-keyboard and marked-text support are not part of this slice.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

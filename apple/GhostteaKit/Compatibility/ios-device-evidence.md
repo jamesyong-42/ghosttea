@@ -776,3 +776,27 @@ iPhone 17 Pro Simulator installs the rebuilt app and passes the production
 TRF1/Metal marker. Physical iPad Stage Manager transfer, stale teardown, and
 scene-disconnect gestures remain release evidence; they are recorded as a
 future release gate rather than blocking the next implementation slice.
+
+## 2026-07-17: hardware-key parity boundary
+
+The first Phase 5 slice maps iOS hardware-key USB HID usages to the same
+DOM-style physical codes consumed by the desktop path. Printable text and
+unmodified layout identity remain separate; special keys such as arrows discard
+UIKit private-use characters instead of misreporting them as terminal text.
+Down, repeat, and up actions retain the shared Ghostty ABI values.
+
+`GhostteaTerminalInputEncoder` delegates terminal bytes to the production
+Ghosttea core. The application layer above it matches the existing desktop
+natural-text-editing bindings, suppresses their paired key-up events, routes
+clipboard/workspace commands without sending them to the PTY, and permits
+Option to be configured as terminal Alt instead. The event-driven Metal view is
+tap-focusable and forwards `UIPress` values through a host callback, falling
+back to UIKit for declined keys. Responder loss synthesizes releases for
+handled held keys so focus changes cannot strand enhanced keyboard state.
+
+Two new tests cover HID mapping, keyboard-layout identity, letters, Ctrl-C,
+arrows, Option word movement, Command-paste, key-up suppression, Unicode text,
+and paste encoding. The complete package suite contains 58 tests. Both iOS SDK
+builds pass, and the rebuilt iPhone 17 Pro Simulator retains the production
+TRF1/Metal automation marker. Software keyboard, marked-text/IME composition,
+and physical hardware-key matrix evidence remain Phase 5 work.

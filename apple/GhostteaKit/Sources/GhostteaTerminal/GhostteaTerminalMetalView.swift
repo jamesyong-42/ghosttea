@@ -36,7 +36,16 @@
 
   @MainActor
   public final class GhostteaTerminalMetalView: MTKView, MTKViewDelegate {
+    private struct PressedHardwareKey {
+      let event: GhostteaHardwareKeyEvent
+      let handled: Bool
+    }
+
     public var onNeedsFullRefresh: (() -> Void)?
+    public var onHardwareKeyEvent: ((GhostteaHardwareKeyEvent) -> Bool)?
+    public var focusesInputOnTap = true {
+      didSet { inputFocusTapRecognizer.isEnabled = focusesInputOnTap }
+    }
     public var onGridSizeChange: ((GhostteaTerminalGridSize) -> Void)? {
       didSet { updateGridSize(notifyUnchanged: true) }
     }
@@ -63,6 +72,11 @@
     private var terminalVisible = true
     private var cursorBlinkVisible = true
     private var gpuSuspended = false
+    private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
+    private lazy var inputFocusTapRecognizer = UITapGestureRecognizer(
+      target: self,
+      action: #selector(handleInputFocusTap)
+    )
     private lazy var cursorBlinkController = GhostteaCursorBlinkController { [weak self] visible in
       self?.applyCursorBlinkVisibility(visible)
     }
@@ -78,6 +92,8 @@
       isPaused = true
       enableSetNeedsDisplay = true
       delegate = self
+      inputFocusTapRecognizer.cancelsTouchesInView = false
+      addGestureRecognizer(inputFocusTapRecognizer)
       NotificationCenter.default.addObserver(
         self,
         selector: #selector(applicationDidEnterBackground),
@@ -120,6 +136,43 @@
     public override func didMoveToWindow() {
       super.didMoveToWindow()
       updateCursorBlinkSurfaceVisibility()
+    }
+
+    public override var canBecomeFirstResponder: Bool { true }
+
+    @discardableResult
+    public func focusTerminalInput() -> Bool {
+      let focused = becomeFirstResponder()
+      if focused { setTerminalFocused(true) }
+      return focused
+    }
+
+    @objc private func handleInputFocusTap() {
+      _ = focusTerminalInput()
+    }
+
+    public override func resignFirstResponder() -> Bool {
+      let resigned = super.resignFirstResponder()
+      if resigned {
+        releaseHandledHardwareKeys()
+        setTerminalFocused(false)
+      }
+      return resigned
+    }
+
+    public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+      let unhandled = handleHardwarePresses(presses, ending: false)
+      if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+      let unhandled = handleHardwarePresses(presses, ending: true)
+      if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
+    }
+
+    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+      let unhandled = handleHardwarePresses(presses, ending: true)
+      if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
     }
 
     @discardableResult
@@ -180,6 +233,67 @@
 
     public func noteCursorActivity() {
       cursorBlinkController.noteCursorActivity()
+    }
+
+    private func handleHardwarePresses(
+      _ presses: Set<UIPress>,
+      ending: Bool
+    ) -> Set<UIPress> {
+      var unhandled: Set<UIPress> = []
+      for press in presses {
+        guard let key = press.key else {
+          unhandled.insert(press)
+          continue
+        }
+        let usage = UInt16(key.keyCode.rawValue)
+        let action: GhostteaHardwareKeyAction
+        if ending {
+          action = .up
+        } else if pressedHardwareKeys[usage] == nil {
+          action = .down
+        } else {
+          action = .repeated
+        }
+        guard
+          let hardwareEvent = GhostteaHardwareKeyEvent(
+            hidUsage: usage,
+            characters: key.characters,
+            charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+            modifiers: GhostteaInputModifiers(key.modifierFlags),
+            action: action
+          )
+        else {
+          unhandled.insert(press)
+          continue
+        }
+        let pressed = pressedHardwareKeys[usage]
+        let handled: Bool
+        if let pressed {
+          handled = pressed.handled
+          if handled { _ = onHardwareKeyEvent?(hardwareEvent) }
+        } else {
+          handled = onHardwareKeyEvent?(hardwareEvent) == true
+        }
+        if ending {
+          pressedHardwareKeys[usage] = nil
+        } else if pressed == nil {
+          pressedHardwareKeys[usage] = PressedHardwareKey(event: hardwareEvent, handled: handled)
+        }
+        guard handled else {
+          unhandled.insert(press)
+          continue
+        }
+        noteCursorActivity()
+      }
+      return unhandled
+    }
+
+    private func releaseHandledHardwareKeys() {
+      let handled = pressedHardwareKeys.values.filter(\.handled)
+      pressedHardwareKeys.removeAll(keepingCapacity: true)
+      for pressed in handled {
+        _ = onHardwareKeyEvent?(pressed.event.replacingAction(.up))
+      }
     }
 
     private func applyCursorBlinkVisibility(_ visible: Bool) {

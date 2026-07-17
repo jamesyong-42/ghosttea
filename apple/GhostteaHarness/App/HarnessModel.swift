@@ -337,6 +337,8 @@ final class HarnessModel: ObservableObject {
           landscapeGridSize == GhostteaTerminalGridSize(columns: 92, rows: 19),
           gridChanges.contains(GhostteaTerminalGridSize(columns: 49, rows: 39)),
           gridChanges.last == GhostteaTerminalGridSize(columns: 92, rows: 19),
+          surface.canBecomeFirstResponder,
+          surface.focusesInputOnTap,
           surface.isPaused,
           surface.enableSetNeedsDisplay
         else {
@@ -713,7 +715,8 @@ final class HarnessModel: ObservableObject {
           case .user:
             sshStatus = "Cancelled in \(milliseconds) ms"
           case .networkChange:
-            sshStatus = reconnectModel.path.canAttemptConnection
+            sshStatus =
+              reconnectModel.path.canAttemptConnection
               ? "Network route changed · reconnect available · cancelled in \(milliseconds) ms"
               : "Network unavailable · waiting to reconnect · cancelled in \(milliseconds) ms"
           case .background:
