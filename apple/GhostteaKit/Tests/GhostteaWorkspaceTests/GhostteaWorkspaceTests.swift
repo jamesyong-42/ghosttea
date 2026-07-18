@@ -191,3 +191,149 @@ func workspaceEncodingIsIdentityOnly() throws {
   #expect(!text.contains("connected"))
   #expect(!text.contains("credential"))
 }
+
+private struct TabsConformanceFixture: Decodable {
+  let schemaVersion: Int
+  let initial: GhostteaWorkspaceTabsDocument
+  let steps: [Step]
+
+  struct Step: Decodable {
+    let action: Action
+    let expected: Expected
+  }
+
+  struct Action: Decodable {
+    let value: GhostteaWorkspaceTabsAction
+
+    private enum CodingKeys: String, CodingKey {
+      case type
+      case tab
+      case tabID = "tabId"
+      case offset
+      case action
+    }
+
+    private enum Kind: String, Decodable {
+      case createTab = "create-tab"
+      case selectTab = "select-tab"
+      case selectRelative = "select-relative"
+      case moveTab = "move-tab"
+      case closeTab = "close-tab"
+      case applyToSelected = "apply-to-selected"
+    }
+
+    init(from decoder: any Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      switch try container.decode(Kind.self, forKey: .type) {
+      case .createTab:
+        value = .createTab(try container.decode(GhostteaWorkspaceTab.self, forKey: .tab))
+      case .selectTab:
+        value = .selectTab(id: try container.decode(String.self, forKey: .tabID))
+      case .selectRelative:
+        value = .selectRelative(offset: try container.decode(Int.self, forKey: .offset))
+      case .moveTab:
+        value = .moveTab(
+          id: try container.decode(String.self, forKey: .tabID),
+          offset: try container.decode(Int.self, forKey: .offset)
+        )
+      case .closeTab:
+        value = .closeTab(id: try container.decode(String.self, forKey: .tabID))
+      case .applyToSelected:
+        value = .applyToSelected(try container.decode(FixtureAction.self, forKey: .action).value)
+      }
+    }
+  }
+
+  struct Expected: Decodable {
+    let selectedTabID: String
+    let tabIDs: [String]
+    let closedTabID: String?
+    let closedSessionIDs: [String]
+    let shouldCloseWindow: Bool
+
+    private enum CodingKeys: String, CodingKey {
+      case selectedTabID = "selectedTabId"
+      case tabIDs = "tabIds"
+      case closedTabID = "closedTabId"
+      case closedSessionIDs = "closedSessionIds"
+      case shouldCloseWindow
+    }
+  }
+}
+
+@Test("Swift tab transitions match every shared TypeScript vector")
+func workspaceTabsConformanceVectors() throws {
+  let url = try #require(
+    Bundle.module.url(
+      forResource: "workspace-tabs-conformance-v1",
+      withExtension: "json",
+      subdirectory: "Fixtures"
+    )
+  )
+  let fixture = try JSONDecoder().decode(
+    TabsConformanceFixture.self,
+    from: Data(contentsOf: url)
+  )
+  #expect(fixture.schemaVersion == ghostteaWorkspaceTabsSchemaVersion)
+  var document = fixture.initial
+  for (index, step) in fixture.steps.enumerated() {
+    let transition = try document.applying(step.action.value)
+    #expect(
+      transition.document.selectedTabID == step.expected.selectedTabID,
+      "step \(index + 1): selected tab mismatch"
+    )
+    #expect(
+      transition.document.tabs.map(\.id) == step.expected.tabIDs,
+      "step \(index + 1): tab order mismatch"
+    )
+    #expect(transition.closedTabID == step.expected.closedTabID)
+    #expect(transition.closedSessionIDs == step.expected.closedSessionIDs)
+    #expect(transition.shouldCloseWindow == step.expected.shouldCloseWindow)
+    document = transition.document
+  }
+}
+
+@Test("Tab restoration drops empty tabs and selects the first survivor")
+func workspaceTabsRestoration() throws {
+  let first = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-a", sessionID: "stale")),
+    activePaneID: "pane-a"
+  )
+  let second = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-b", sessionID: "live")),
+    activePaneID: "pane-b"
+  )
+  let document = try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-a",
+    tabs: [
+      GhostteaWorkspaceTab(id: "tab-a", workspace: first),
+      GhostteaWorkspaceTab(id: "tab-b", workspace: second),
+    ]
+  )
+  let restored = try #require(try document.restoring(liveSessionIDs: ["live"]))
+  #expect(restored.selectedTabID == "tab-b")
+  #expect(restored.tabs.map(\.id) == ["tab-b"])
+  #expect(try document.restoring(liveSessionIDs: []) == nil)
+}
+
+@Test("Tab schema rejects duplicate tabs, sessions, and stale selection")
+func workspaceTabsSchemaValidation() throws {
+  let workspace = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane", sessionID: "session")),
+    activePaneID: "pane"
+  )
+  let tab = GhostteaWorkspaceTab(id: "tab", workspace: workspace)
+  #expect(throws: GhostteaWorkspaceValidationError.emptyTabCollection) {
+    try GhostteaWorkspaceTabsDocument(selectedTabID: "tab", tabs: [])
+  }
+  #expect(throws: GhostteaWorkspaceValidationError.duplicateTabID("tab")) {
+    try GhostteaWorkspaceTabsDocument(selectedTabID: "tab", tabs: [tab, tab])
+  }
+  let otherTab = GhostteaWorkspaceTab(id: "other", workspace: workspace)
+  #expect(throws: GhostteaWorkspaceValidationError.duplicateSessionID("session")) {
+    try GhostteaWorkspaceTabsDocument(selectedTabID: "tab", tabs: [tab, otherTab])
+  }
+  #expect(throws: GhostteaWorkspaceValidationError.missingSelectedTab("missing")) {
+    try GhostteaWorkspaceTabsDocument(selectedTabID: "missing", tabs: [tab])
+  }
+}

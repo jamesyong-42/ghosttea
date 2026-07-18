@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "initial": {
+    "version": 1,
+    "selectedTabId": "tab-a",
+    "tabs": [
+      {
+        "id": "tab-a",
+        "workspace": {
+          "version": 1,
+          "root": { "kind": "pane", "id": "pane-a", "sessionId": "session-a" },
+          "activePaneId": "pane-a",
+          "zoomedPaneId": null
+        }
+      },
+      {
+        "id": "tab-b",
+        "workspace": {
+          "version": 1,
+          "root": {
+            "kind": "split",
+            "id": "split-b",
+            "axis": "horizontal",
+            "ratio": 0.6,
+            "first": { "kind": "pane", "id": "pane-b1", "sessionId": "session-b1" },
+            "second": { "kind": "pane", "id": "pane-b2", "sessionId": "session-b2" }
+          },
+          "activePaneId": "pane-b2",
+          "zoomedPaneId": null
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "action": { "type": "select-relative", "offset": -1 },
+      "expected": {
+        "selectedTabId": "tab-b",
+        "tabIds": ["tab-a", "tab-b"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "move-tab", "tabId": "tab-b", "offset": -1 },
+      "expected": {
+        "selectedTabId": "tab-b",
+        "tabIds": ["tab-b", "tab-a"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": {
+        "type": "create-tab",
+        "tab": {
+          "id": "tab-c",
+          "workspace": {
+            "version": 1,
+            "root": { "kind": "pane", "id": "pane-c", "sessionId": "session-c" },
+            "activePaneId": "pane-c",
+            "zoomedPaneId": null
+          }
+        }
+      },
+      "expected": {
+        "selectedTabId": "tab-c",
+        "tabIds": ["tab-b", "tab-a", "tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "select-tab", "tabId": "tab-a" },
+      "expected": {
+        "selectedTabId": "tab-a",
+        "tabIds": ["tab-b", "tab-a", "tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": {
+        "type": "apply-to-selected",
+        "action": {
+          "type": "split",
+          "axis": "vertical",
+          "paneId": "pane-duplicate",
+          "sessionId": "session-c",
+          "splitId": "split-duplicate"
+        }
+      },
+      "expected": {
+        "selectedTabId": "tab-a",
+        "tabIds": ["tab-b", "tab-a", "tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": {
+        "type": "apply-to-selected",
+        "action": {
+          "type": "split",
+          "axis": "vertical",
+          "paneId": "pane-a2",
+          "sessionId": "session-a2",
+          "splitId": "split-a"
+        }
+      },
+      "expected": {
+        "selectedTabId": "tab-a",
+        "tabIds": ["tab-b", "tab-a", "tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "apply-to-selected", "action": { "type": "close" } },
+      "expected": {
+        "selectedTabId": "tab-a",
+        "tabIds": ["tab-b", "tab-a", "tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": ["session-a2"],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "close-tab", "tabId": "tab-b" },
+      "expected": {
+        "selectedTabId": "tab-a",
+        "tabIds": ["tab-a", "tab-c"],
+        "closedTabId": "tab-b",
+        "closedSessionIds": ["session-b1", "session-b2"],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "apply-to-selected", "action": { "type": "close" } },
+      "expected": {
+        "selectedTabId": "tab-c",
+        "tabIds": ["tab-c"],
+        "closedTabId": "tab-a",
+        "closedSessionIds": ["session-a"],
+        "shouldCloseWindow": false
+      }
+    },
+    {
+      "action": { "type": "apply-to-selected", "action": { "type": "close" } },
+      "expected": {
+        "selectedTabId": "tab-c",
+        "tabIds": ["tab-c"],
+        "closedTabId": null,
+        "closedSessionIds": [],
+        "shouldCloseWindow": true
+      }
+    }
+  ]
+}

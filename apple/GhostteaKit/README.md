@@ -32,15 +32,16 @@ completion remain generation-safe. PTY resize is sent before the matching core
 resize and full frame. The first replay tests cover clean drain/exit, native
 terminal replies, ordered input, resize propagation, and explicit reconnect.
 
-`GhostteaWorkspace` is the platform-neutral Phase 7 pane-tree contract. Its
-version-1 document stores only node IDs, opaque session IDs, axes, ratios,
-active pane, and zoomed pane—never credentials, host data, commands, cwd/title,
-or live connection state. The pure reducer implements split, activation,
-relative and geometry-based directional focus, resize, equalize, zoom, and
-close semantics. Swift and TypeScript consume the same JSON action vectors,
-including pane-collapse, replacement-focus, terminated-session, and
-close-window results. Restoration filters the tree against sessions that are
-actually live and repairs stale active/zoom references.
+`GhostteaWorkspace` is the platform-neutral Phase 7 pane-tree and tab-collection
+contract. Its version-1 documents store only stable layout IDs and opaque
+session IDs—never credentials, host data, commands, cwd/title, or live
+connection state. The pure reducers implement split, focus, resize, equalize,
+zoom, pane close, tab creation/selection/reordering, and deterministic tab
+close semantics. Pane actions route through the collection atomically so a
+last-pane close closes its tab when possible and only the sole remaining tab
+requests window closure. Swift and TypeScript consume the same JSON vectors.
+Restoration filters both trees and tabs against sessions that are actually live
+and repairs stale active, zoom, and selected-tab references.
 
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and

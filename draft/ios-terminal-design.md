@@ -1246,12 +1246,18 @@ Define a versioned JSON model used for fixtures and optional restoration:
   "tabs": [
     {
       "id": "tab-1",
-      "root": {
-        "kind": "split",
-        "axis": "horizontal",
-        "ratio": 0.5,
-        "first": { "kind": "pane", "paneId": "pane-1" },
-        "second": { "kind": "pane", "paneId": "pane-2" }
+      "workspace": {
+        "version": 1,
+        "root": {
+          "kind": "split",
+          "id": "split-1",
+          "axis": "horizontal",
+          "ratio": 0.5,
+          "first": { "kind": "pane", "id": "pane-1", "sessionId": "session-1" },
+          "second": { "kind": "pane", "id": "pane-2", "sessionId": "session-2" }
+        },
+        "activePaneId": "pane-1",
+        "zoomedPaneId": null
       }
     }
   ]
@@ -1261,12 +1267,16 @@ Define a versioned JSON model used for fixtures and optional restoration:
 Run identical mutation vectors against the TypeScript and Swift
 implementations and compare the resulting normalized tree and focused pane.
 
-The first Phase 7 slice implements and versions the per-tab payload before the
-outer tab collection. Its pane leaves contain only node `id`/opaque `sessionId`,
-and its record carries `activePaneId` and `zoomedPaneId`. The later tab-container
-slice embeds these payloads under stable tab IDs and owns `selectedTabId`; it
-does not change pane mutation semantics or add live session metadata to the
-persisted record.
+The first Phase 7 slice implements and versions the per-tab payload. Its pane
+leaves contain only node `id`/opaque `sessionId`, and its record carries
+`activePaneId` and `zoomedPaneId`. The second slice embeds these payloads under
+stable tab IDs and owns `selectedTabId`. Its reducer defines creation,
+selection, wraparound traversal, clamped reordering, and deterministic close
+replacement. Applying a pane mutation through the outer reducer is atomic: a
+last-pane close closes its tab when another tab remains, a last-tab close asks
+the host to close the window, and a split cannot duplicate a session already
+owned by another tab. Neither layer adds live session metadata to the persisted
+record.
 
 ### 15.3 Adaptive presentation
 
@@ -2461,9 +2471,17 @@ and vertical splits, geometry-based directional focus, relative focus, deepest
 matching-axis resize, ratio clamping, equalization, zoom focus suppression,
 pane collapse, replacement focus, terminated-session output, and the final
 close-window result. All 46 React package tests and all 77 Swift package tests
-pass. This establishes the per-tab mutation/persistence boundary; the tab
-container, adaptive iPad/iPhone presentation, command routing, and connection
-profile integration remain later Phase 7 slices.
+pass. This establishes the per-tab mutation/persistence boundary.
+
+The second slice adds the version-1 outer tab collection to both implementations.
+It stores stable tab IDs, a selected tab ID, and the existing per-tab documents;
+validates tab and session uniqueness across the whole window; restores only
+tabs with live sessions; and defines identical create, select, wraparound,
+reorder, close, and pane-action routing. A second shared fixture verifies tab
+order, replacement selection, ordered session-close output, and the sole-tab
+close-window result. The resulting totals are 50 React package tests and 80
+Swift package tests. Adaptive iPad/iPhone presentation, application command
+routing, and connection-profile integration remain later Phase 7 slices.
 
 Deliverables:
 

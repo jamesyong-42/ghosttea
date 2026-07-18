@@ -269,6 +269,9 @@ public enum GhostteaWorkspaceValidationError: Error, Equatable, Sendable {
   case duplicateSessionID(String)
   case missingActivePane(String)
   case missingZoomedPane(String)
+  case emptyTabCollection
+  case duplicateTabID(String)
+  case missingSelectedTab(String)
 }
 
 public struct GhostteaWorkspaceDocument: Equatable, Sendable, Codable {
@@ -276,6 +279,8 @@ public struct GhostteaWorkspaceDocument: Equatable, Sendable, Codable {
   public let root: GhostteaWorkspaceNode
   public let activePaneID: String
   public let zoomedPaneID: String?
+
+  public var sessionIDs: [String] { root.panes.map(\.sessionID) }
 
   private enum CodingKeys: String, CodingKey {
     case version

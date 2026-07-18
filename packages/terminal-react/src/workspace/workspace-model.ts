@@ -62,6 +62,10 @@ function workspaceLeaves(node: WorkspaceNode): WorkspacePaneNode[] {
   return node.kind === "pane" ? [node] : [...workspaceLeaves(node.first), ...workspaceLeaves(node.second)];
 }
 
+export function workspaceSessionIds(document: WorkspaceDocumentV1): string[] {
+  return workspaceLeaves(document.root).map((pane) => pane.sessionId);
+}
+
 function containsPane(node: WorkspaceNode, paneId: string): boolean {
   return node.kind === "pane"
     ? node.id === paneId
@@ -293,4 +297,24 @@ export function decodeWorkspaceDocument(value: unknown): WorkspaceDocumentV1 | n
     activePaneId: candidate.activePaneId,
     zoomedPaneId,
   };
+}
+
+export function restoreWorkspaceDocument(
+  document: WorkspaceDocumentV1,
+  liveSessionIds: ReadonlySet<string>,
+): WorkspaceDocumentV1 | null {
+  const retain = (node: WorkspaceNode): WorkspaceNode | null => {
+    if (node.kind === "pane") return liveSessionIds.has(node.sessionId) ? node : null;
+    const first = retain(node.first);
+    const second = retain(node.second);
+    if (!first) return second;
+    if (!second) return first;
+    return { ...node, first, second };
+  };
+  const root = retain(document.root);
+  if (!root) return null;
+  const panes = workspaceLeaves(root);
+  const activePaneId = panes.some((pane) => pane.id === document.activePaneId) ? document.activePaneId : panes[0]!.id;
+  const zoomedPaneId = panes.some((pane) => pane.id === document.zoomedPaneId) ? document.zoomedPaneId : null;
+  return { ...document, root, activePaneId, zoomedPaneId };
 }
