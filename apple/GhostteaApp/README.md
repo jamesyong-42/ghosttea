@@ -88,6 +88,14 @@ and in-app policy URL, encryption determination, and reviewer fixture access
 are approved. See
 [`../GhostteaKit/Compatibility/app-store-review-notes.md`](../GhostteaKit/Compatibility/app-store-review-notes.md).
 
+The production app also shares one `GhostteaDiagnosticRecorder` across every
+scene and both connection modes. It persists only audited codes, severities,
+sequences, and timestamps in a bounded, atomic, file-protected record. Raw
+errors, connection metadata, commands, credentials, and terminal content have
+no place in the schema. Users can copy the redacted JSON from the About sheet;
+`npm run check:ios-diagnostics` prevents raw error interpolation from returning
+to production app and terminal-renderer surfaces.
+
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second
 `WindowGroup` scene, verifies shared runtime and distinct terminal identities,

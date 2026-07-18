@@ -67,11 +67,17 @@ struct GhostteaContentView: View {
     }
     .task { model.start() }
     .onChange(of: scenePhase) { _, value in model.sceneChanged(value) }
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) {
+      _ in
+      model.terminationRecorded()
+    }
     .sheet(item: $model.authPage) { page in
       GhostteaLoginView(url: page.url, onDismiss: model.loginSheetDismissed)
         .ignoresSafeArea()
     }
-    .sheet(isPresented: $presentsAbout) { GhostteaAboutView() }
+    .sheet(isPresented: $presentsAbout) {
+      GhostteaAboutView(diagnostics: model.diagnostics)
+    }
   }
 
   private var browser: some View {

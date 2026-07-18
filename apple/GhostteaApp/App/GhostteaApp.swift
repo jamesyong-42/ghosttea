@@ -1,9 +1,23 @@
+import GhostteaDiagnostics
 import SwiftUI
 
 @main
 struct GhostteaApp: App {
-  @StateObject private var sharedRuntime = GhostteaSharedRuntimeModel()
-  @StateObject private var sshModel = GhostteaSSHAppModel()
+  @StateObject private var sharedRuntime: GhostteaSharedRuntimeModel
+  @StateObject private var sshModel: GhostteaSSHAppModel
+
+  init() {
+    let diagnostics =
+      (try? GhostteaDiagnosticRecorder.applicationSupport())
+      ?? GhostteaDiagnosticRecorder(
+        fileURL: FileManager.default.temporaryDirectory
+          .appendingPathComponent("ghosttea-redacted-diagnostics.json"))
+    _sharedRuntime = StateObject(
+      wrappedValue: GhostteaSharedRuntimeModel(diagnostics: diagnostics))
+    _sshModel = StateObject(
+      wrappedValue: GhostteaSSHAppModel(diagnostics: diagnostics))
+    Task { try? await diagnostics.beginLaunch() }
+  }
 
   var body: some Scene {
     WindowGroup(id: "terminal", for: UUID.self) { requestedSceneID in
@@ -55,7 +69,10 @@ private struct GhostteaSceneRoot: View {
     self.sharedRuntime = sharedRuntime
     self.sshModel = sshModel
     _sharedModel = StateObject(
-      wrappedValue: GhostteaAppModel(sharedRuntime: sharedRuntime, sceneID: sceneID))
+      wrappedValue: GhostteaAppModel(
+        sharedRuntime: sharedRuntime,
+        diagnostics: sharedRuntime.diagnostics,
+        sceneID: sceneID))
   }
 
   var body: some View {

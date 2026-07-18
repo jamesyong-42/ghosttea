@@ -12,6 +12,12 @@ on:
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaApp/Resources/**"
+      - "apple/GhostteaApp/App/**"
+      - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
+      - "apple/GhostteaKit/Package.swift"
+      - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
+      - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
+      - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
@@ -19,6 +25,7 @@ on:
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
+      - "scripts/check-ios-redacted-diagnostics.mjs"
       - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
   push:
@@ -33,6 +40,12 @@ on:
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaApp/Resources/**"
+      - "apple/GhostteaApp/App/**"
+      - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
+      - "apple/GhostteaKit/Package.swift"
+      - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
+      - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
+      - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
@@ -40,6 +53,7 @@ on:
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
+      - "scripts/check-ios-redacted-diagnostics.mjs"
       - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
 
@@ -61,6 +75,7 @@ jobs:
       - run: npm run check:ios-release-bom
       - run: npm run check:ios-release-resources
       - run: npm run check:ios-app-store
+      - run: npm run check:ios-diagnostics
 
       - name: Validate with the official CycloneDX CLI
         uses: docker://cyclonedx/cyclonedx-cli:0.32.0

@@ -229,3 +229,36 @@ link; complete encryption export review and documentation; and approve final
 review notes with working SSH and desktop-session access. These are not safe to
 infer from code, so development builds remain possible while release evidence
 stays ineligible.
+
+## Crash-safe redacted diagnostics
+
+`GhostteaDiagnostics` is a separate Swift package product used by the production
+app. Its persisted event schema contains only an audited enum code, enum
+severity, monotonically increasing sequence, and timestamp. It has no API for
+arbitrary messages, errors, hostnames, usernames, paths, commands, terminal
+content, byte buffers, or metadata dictionaries. Adding a new diagnostic
+therefore requires a source-reviewed enum case instead of passing an opaque
+string through a nominal redactor.
+
+The actor retains at most 128 events and 64 KiB. Every mutation writes an
+atomic replacement, synchronizes it, applies complete iOS file protection, and
+excludes the diagnostic directory and file from backup. A failed write leaves
+the previous snapshot intact. Invalid, unknown-schema, or over-budget input is
+discarded and replaced by a `diagnosticStoreRecovered` event; corrupt bytes are
+never copied into the support export. A launch left active by a crash, jetsam,
+or force-quit is conservatively reported as `previousTerminationUnrecorded` on
+the next launch. The app does not claim it can distinguish those causes without
+an Apple crash report.
+
+The About sheet can copy the JSON support record. Production shared-session,
+SSH workspace, renderer, resize, and Metal error surfaces use fixed UI text and
+audited event codes instead of interpolating native or server-controlled error
+descriptions. Verify the static contract with:
+
+```sh
+npm run check:ios-diagnostics
+```
+
+Swift package tests additionally prove event-count and byte limits, recorded
+versus unrecorded termination behavior, and replacement of a corrupt fixture
+containing a password, private-key marker, and terminal output.

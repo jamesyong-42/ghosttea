@@ -103,7 +103,7 @@ final class GhostteaMetalRenderer {
       }
       library = try runtime.device.makeLibrary(URL: libraryURL)
     } catch {
-      throw GhostteaMetalError.shaderUnavailable(String(describing: error))
+      throw GhostteaMetalError.shaderUnavailable("packaged Metal library")
     }
     shaderFunctionNames = Set(library.functionNames)
     rectanglePipeline = try Self.makeRectanglePipeline(runtime: runtime, library: library)
@@ -435,8 +435,7 @@ final class GhostteaMetalRenderer {
     commandBuffer.commit()
     commandBuffer.waitUntilCompleted()
     guard commandBuffer.status == .completed else {
-      throw GhostteaMetalError.commandBufferFailed(
-        commandBuffer.error?.localizedDescription ?? "unknown failure")
+      throw GhostteaMetalError.commandBufferFailed("Metal command did not complete")
     }
   }
 
@@ -504,7 +503,7 @@ final class GhostteaMetalRenderer {
     do {
       return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
     } catch {
-      throw GhostteaMetalError.pipelineUnavailable(String(describing: error))
+      throw GhostteaMetalError.pipelineUnavailable("rectangle pipeline")
     }
   }
 
@@ -534,7 +533,7 @@ final class GhostteaMetalRenderer {
     do {
       return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
     } catch {
-      throw GhostteaMetalError.pipelineUnavailable(String(describing: error))
+      throw GhostteaMetalError.pipelineUnavailable("glyph pipeline")
     }
   }
 

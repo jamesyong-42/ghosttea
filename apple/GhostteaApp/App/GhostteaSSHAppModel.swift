@@ -2,6 +2,7 @@ import Foundation
 import GhostteaConnectionProfiles
 import GhostteaCore
 import GhostteaCredentials
+import GhostteaDiagnostics
 import GhostteaSSH
 import GhostteaSSHWorkspace
 import GhostteaSession
@@ -35,6 +36,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   @Published var pendingKeyboardChallenge: GhostteaPendingKeyboardChallenge?
 
   private var runtime: GhostteaRuntime?
+  private let diagnostics: GhostteaDiagnosticRecorder
   private var factory: GhostteaSSHWorkspaceSessionFactory?
   private var coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>?
   private var repository: GhostteaSSHConnectionProfileRepository?
@@ -51,6 +53,10 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var keyboardContinuation: CheckedContinuation<[String], Error>?
   private var nextFactoryHandle: UInt64 = 10_000
   private var started = false
+
+  init(diagnostics: GhostteaDiagnosticRecorder) {
+    self.diagnostics = diagnostics
+  }
 
   var selectedSessionID: String? {
     guard
@@ -98,7 +104,8 @@ final class GhostteaSSHAppModel: ObservableObject {
         if try await restoreWorkspace() { return }
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
       } catch {
-        status = "Could not load saved connections: \(error)"
+        record(.sshRepositoryLoadFailed)
+        status = "Could not load saved connections"
       }
     }
   }
@@ -137,6 +144,7 @@ final class GhostteaSSHAppModel: ObservableObject {
         try await persistWorkspace()
       } catch {
         isBusy = false
+        record(.sshConnectFailed)
         status = GhostteaSSHFailurePolicy.description(error)
       }
     }
@@ -156,7 +164,8 @@ final class GhostteaSSHAppModel: ObservableObject {
         workspace = transition.document
         try await persistWorkspace()
       } catch {
-        status = "Could not create tab: \(error)"
+        record(.sshTabCreateFailed)
+        status = "Could not create tab"
       }
     }
   }
@@ -170,7 +179,8 @@ final class GhostteaSSHAppModel: ObservableObject {
         workspace = transition.document
         try await persistWorkspace()
       } catch {
-        status = "Could not split terminal: \(error)"
+        record(.sshSplitFailed)
+        status = "Could not split terminal"
       }
       isBusy = false
     }
@@ -188,7 +198,8 @@ final class GhostteaSSHAppModel: ObservableObject {
         workspace = transition.document
         try await persistWorkspace()
       } catch {
-        status = "Workspace update failed: \(error)"
+        record(.sshWorkspaceUpdateFailed)
+        status = "Workspace update failed"
       }
     }
   }
@@ -230,7 +241,8 @@ final class GhostteaSSHAppModel: ObservableObject {
           ? "Saved connection"
           : "Saved connection; credential cleanup will be retried"
       } catch {
-        status = "Could not save connection: \(error)"
+        record(.sshProfileSaveFailed)
+        status = "Could not save connection"
       }
     }
   }
@@ -247,7 +259,8 @@ final class GhostteaSSHAppModel: ObservableObject {
         profiles = try await repository.load()
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Deleted connection"
       } catch {
-        status = "Could not delete connection: \(error)"
+        record(.sshProfileDeleteFailed)
+        status = "Could not delete connection"
       }
     }
   }
@@ -628,6 +641,7 @@ final class GhostteaSSHAppModel: ObservableObject {
         guard let resource = await coordinator.session(for: sessionID) else { return }
         try await operation(resource)
       } catch {
+        record(.sshSessionOperationFailed)
         sessionStatuses[sessionID] = "Operation failed"
       }
     }
@@ -676,6 +690,10 @@ final class GhostteaSSHAppModel: ObservableObject {
 
   private func identity(_ kind: String) -> String {
     "ios-\(kind)-\(UUID().uuidString.lowercased())"
+  }
+
+  private func record(_ code: GhostteaDiagnosticCode) {
+    Task { try? await diagnostics.record(code, severity: .error) }
   }
 
   private static func softwareKey(hidUsage: UInt16) -> GhostteaKeyEvent {

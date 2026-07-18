@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import GhostteaCore
+import GhostteaDiagnostics
 import GhostteaTerminal
 import GhostteaTruffle
 import SwiftUI
@@ -18,6 +19,7 @@ final class GhostteaAppModel: ObservableObject {
   @Published private var localBusy = false
 
   private let sharedRuntime: GhostteaSharedRuntimeModel
+  let diagnostics: GhostteaDiagnosticRecorder
   private let sceneIdentity: GhostteaSceneTerminalIdentity
   private var runtimeObservation: AnyCancellable?
   private var selectedHost: GhostteaTruffleHostCandidate?
@@ -43,8 +45,13 @@ final class GhostteaAppModel: ObservableObject {
     set { sharedRuntime.authPage = newValue }
   }
 
-  init(sharedRuntime: GhostteaSharedRuntimeModel, sceneID: UUID = UUID()) {
+  init(
+    sharedRuntime: GhostteaSharedRuntimeModel,
+    diagnostics: GhostteaDiagnosticRecorder,
+    sceneID: UUID = UUID()
+  ) {
     self.sharedRuntime = sharedRuntime
+    self.diagnostics = diagnostics
     sceneIdentity = GhostteaSceneTerminalIdentity(sceneID: sceneID)
     runtimeObservation = sharedRuntime.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
@@ -58,9 +65,8 @@ final class GhostteaAppModel: ObservableObject {
       }
     #endif
     if renderRuntime == nil {
-      do { renderRuntime = try GhostteaRuntime() }
-      catch {
-        fail("Could not start terminal renderer: \(error)")
+      do { renderRuntime = try GhostteaRuntime() } catch {
+        fail("Could not start terminal renderer", code: .rendererStartFailed)
         return
       }
     }
@@ -102,12 +108,13 @@ final class GhostteaAppModel: ObservableObject {
           await client.close()
           throw error
         }
-        localStatus = sessions.isEmpty
+        localStatus =
+          sessions.isEmpty
           ? "This host has no attachable sessions."
           : "Choose a desktop session"
         localBusy = false
       } catch {
-        fail("Could not list shared sessions: \(error)")
+        fail("Could not list shared sessions", code: .truffleSessionListFailed)
       }
     }
   }
@@ -175,7 +182,8 @@ final class GhostteaAppModel: ObservableObject {
           try await attached.claimControl(
             cols: grid.columns, rows: grid.rows, sequence: claimSequence)
         }
-        localStatus = attachmentInfo.readWrite
+        localStatus =
+          attachmentInfo.readWrite
           ? "Attached · requesting keyboard control"
           : "Attached read-only"
         localBusy = false
@@ -187,7 +195,7 @@ final class GhostteaAppModel: ObservableObject {
           localBusy = false
           return
         }
-        fail("Could not attach to session: \(error)")
+        fail("Could not attach to session", code: .truffleAttachFailed)
       }
     }
   }
@@ -290,7 +298,10 @@ final class GhostteaAppModel: ObservableObject {
             startRow: selection.anchor.row,
             endColumn: selection.focus.column,
             endRow: selection.focus.row))
-      } catch { localStatus = "Copy failed: \(error)" }
+      } catch {
+        record(.truffleSelectionFailed)
+        localStatus = "Copy failed"
+      }
     }
   }
 
@@ -300,13 +311,26 @@ final class GhostteaAppModel: ObservableObject {
       do {
         _ = try await attachment.requestSelectionText(
           GhostteaSelectionRequest(selectAll: true))
-      } catch { localStatus = "Copy all failed: \(error)" }
+      } catch {
+        record(.truffleSelectionFailed)
+        localStatus = "Copy all failed"
+      }
     }
   }
 
   func sceneChanged(_ scenePhase: ScenePhase) {
+    switch scenePhase {
+    case .active: record(.applicationBecameActive, severity: .info)
+    case .background: record(.applicationEnteredBackground, severity: .info)
+    case .inactive: break
+    @unknown default: break
+    }
     guard scenePhase == .active, attachment != nil else { return }
     Task { try? await attachment?.requestSnapshot() }
+  }
+
+  func terminationRecorded() {
+    Task { try? await diagnostics.markTerminationRecorded() }
   }
 
   private func send(_ operation: GhostteaTunnelInput) {
@@ -314,8 +338,10 @@ final class GhostteaAppModel: ObservableObject {
     inputSequence &+= 1
     let sequence = inputSequence
     Task {
-      do { try await attachment.send(operation, sequence: sequence) }
-      catch { localStatus = "Input failed: \(error)" }
+      do { try await attachment.send(operation, sequence: sequence) } catch {
+        record(.truffleInputFailed)
+        localStatus = "Input failed"
+      }
     }
   }
 
@@ -342,9 +368,10 @@ final class GhostteaAppModel: ObservableObject {
     }
   }
 
-  private func attachmentFailed(_ error: Error) async {
-    trace("shared-session attachment failed: \(error)")
-    localStatus = "Shared session ended: \(error)"
+  private func attachmentFailed(_: Error) async {
+    record(.truffleStreamFailed)
+    trace("shared-session attachment failed")
+    localStatus = "Shared session ended"
     await disconnectAttachment(clearSelection: false)
   }
 
@@ -376,10 +403,18 @@ final class GhostteaAppModel: ObservableObject {
     }
   }
 
-  private func fail(_ message: String) {
+  private func fail(_ message: String, code: GhostteaDiagnosticCode) {
+    record(code)
     trace(message)
     localBusy = false
     localStatus = message
+  }
+
+  private func record(
+    _ code: GhostteaDiagnosticCode,
+    severity: GhostteaDiagnosticSeverity = .error
+  ) {
+    Task { try? await diagnostics.record(code, severity: severity) }
   }
 
   private func trace(_ message: String) {

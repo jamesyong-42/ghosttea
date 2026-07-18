@@ -1,7 +1,9 @@
 import Foundation
+import GhostteaDiagnostics
 import GhostteaTruffle
 import SwiftUI
 import UIKit
+
 #if DEBUG
   import Darwin
 #endif
@@ -22,11 +24,16 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
   @Published private(set) var isBusy = false
 
   private var mesh: GhostteaTruffleRuntime?
+  let diagnostics: GhostteaDiagnosticRecorder
   private(set) var directory: GhostteaTrufflePeerDirectory?
   private var eventTask: Task<Void, Never>?
   #if DEBUG
     private var sharedAutomationProbeStarted = false
   #endif
+
+  init(diagnostics: GhostteaDiagnosticRecorder) {
+    self.diagnostics = diagnostics
+  }
 
   func start() {
     guard mesh == nil, !isBusy else { return }
@@ -55,8 +62,8 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
         isBusy = false
         await refreshHosts()
       } catch {
-        trace("private mesh startup failed: \(error)")
-        fail("Could not start Truffle: \(error)")
+        record(.truffleStartFailed)
+        fail("Could not start the private mesh")
       }
     }
   }
@@ -77,8 +84,10 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
   func loginSheetDismissed() {
     authPage = nil
     Task {
-      do { try await mesh?.refresh() }
-      catch { status = "Login refresh failed: \(error)" }
+      do { try await mesh?.refresh() } catch {
+        record(.truffleRefreshFailed)
+        status = "Could not refresh private-mesh login"
+      }
     }
   }
 
@@ -87,7 +96,8 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
     hosts = await mesh.candidates()
     trace("discovered \(hosts.count) online Ghosttea host(s)")
     if phase == .running {
-      status = hosts.isEmpty
+      status =
+        hosts.isEmpty
         ? "Connected. Start the Ghosttea desktop demo to share a session."
         : "\(hosts.count) Ghosttea host\(hosts.count == 1 ? "" : "s") available"
     }
@@ -134,6 +144,10 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
     #endif
   }
 
+  private func record(_ code: GhostteaDiagnosticCode) {
+    Task { try? await diagnostics.record(code, severity: .error) }
+  }
+
   private func startSharedAutomationProbeIfRequested() {
     #if DEBUG
       guard
@@ -145,13 +159,15 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
       let runInterop = environment["GHOSTTEA_AUTORUN_SHARED_INTEROP"] == "1"
       let runRestart = environment["GHOSTTEA_AUTORUN_SHARED_RESTART"] == "1"
       guard runInterop != runRestart else { return }
-      let host = runRestart
+      let host =
+        runRestart
         ? hosts.first(where: { $0.persistentReference != nil })
         : hosts.first
       guard let host else { return }
       sharedAutomationProbeStarted = true
       isBusy = true
-      status = runRestart
+      status =
+        runRestart
         ? "Waiting for desktop restart…"
         : "Running shared-session interop probe…"
       Task {
@@ -180,10 +196,11 @@ final class GhostteaSharedRuntimeModel: ObservableObject {
           print(result.marker)
           Darwin.exit(EXIT_SUCCESS)
         } catch {
-          let marker = runRestart
+          let marker =
+            runRestart
             ? "GHOSTTEA_SHARED_RESTART_FAIL"
             : "GHOSTTEA_SHARED_INTEROP_FAIL"
-          print("\(marker) \(error)")
+          print(marker)
           Darwin.exit(EXIT_FAILURE)
         }
       }

@@ -37,6 +37,10 @@ The App Store gate separately pins the app and TailscaleKit privacy manifests,
 audits required-reason symbols in the built bundles, declares embedded
 non-Apple cryptography honestly, and keeps privacy-label, export-documentation,
 and reviewer-access decisions fail closed.
+`GhostteaDiagnostics` provides the production app's crash-surviving support
+record. Its typed schema cannot accept raw error text or terminal/session data;
+the bounded file is replaced atomically under complete iOS file protection and
+is available through the app's About sheet.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

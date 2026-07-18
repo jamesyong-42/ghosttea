@@ -2874,6 +2874,16 @@ user's SSH host or desktop session. A deterministic App Store gate passes in
 input-audit mode and remains release-blocked until the account owner approves
 the Tailscale privacy label and in-app privacy-policy URL, Apple's encryption
 determination, and working SSH/desktop reviewer access.
+The sixth slice adds `GhostteaDiagnostics`, a production package whose persisted
+schema accepts only audited event codes, severities, sequences, and timestamps.
+Its 128-event/64-KiB rolling snapshot is atomically replaced, synchronized,
+excluded from backup, and protected with complete iOS file protection. A prior
+launch without an observed termination is reported conservatively rather than
+misclassified as a crash, and corrupt input containing secret or terminal bytes
+is discarded before export. The app's About sheet copies this bounded record;
+shared-session, SSH, resize, and Metal production paths no longer interpolate
+raw library or server-controlled errors. Static and Swift package gates enforce
+the no-arbitrary-string contract, bounds, recovery, and lifecycle semantics.
 
 Deliverables:
 

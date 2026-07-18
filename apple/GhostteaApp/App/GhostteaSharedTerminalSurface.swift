@@ -26,7 +26,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
       configure(view)
       return view
     } catch {
-      preconditionFailure("Metal terminal unavailable: \(error)")
+      preconditionFailure("Metal terminal unavailable")
     }
   }
 
@@ -38,7 +38,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
       try view.apply(frame: frame)
       context.coordinator.appliedFrame = frame
     } catch {
-      assertionFailure("Metal terminal rejected shared frame: \(error)")
+      assertionFailure("Metal terminal rejected shared frame")
     }
   }
 

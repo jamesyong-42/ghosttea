@@ -146,13 +146,13 @@ public actor GhostteaResizeCoordinator {
     }
   }
 
-  private func publishFailure(_ error: Error, rollback: Error?, request: Request) async {
+  private func publishFailure(_: Error, rollback: Error?, request: Request) async {
     guard request.generation == generation else { return }
     await onFailure(
       GhostteaResizeFailure(
         size: request.size,
-        message: String(describing: error),
-        rollbackMessage: rollback.map { String(describing: $0) }
+        message: "Terminal resize failed",
+        rollbackMessage: rollback == nil ? nil : "Terminal resize rollback failed"
       ))
   }
 }

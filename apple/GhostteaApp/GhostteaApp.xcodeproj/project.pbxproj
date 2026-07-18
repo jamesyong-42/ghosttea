@@ -32,6 +32,7 @@
 		100000000000000000000018 /* THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* THIRD-PARTY-NOTICES.txt */; };
 		100000000000000000000019 /* Ghosttea-iOS.cdx.json in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* Ghosttea-iOS.cdx.json */; };
 		10000000000000000000001A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* PrivacyInfo.xcprivacy */; };
+		10000000000000000000001B /* GhostteaDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000D /* GhostteaDiagnostics */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -69,6 +70,7 @@
 				100000000000000000000010 /* GhostteaSSHWorkspace in Frameworks */,
 				100000000000000000000011 /* GhostteaWorkspace in Frameworks */,
 				100000000000000000000012 /* GhostteaWorkspaceUI in Frameworks */,
+				10000000000000000000001B /* GhostteaDiagnostics in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +149,7 @@
 				A0000000000000000000000A /* GhostteaSSHWorkspace */,
 				A0000000000000000000000B /* GhostteaWorkspace */,
 				A0000000000000000000000C /* GhostteaWorkspaceUI */,
+				A0000000000000000000000D /* GhostteaDiagnostics */,
 			);
 			productName = Ghosttea;
 			productReference = 200000000000000000000005 /* Ghosttea.app */;
@@ -391,6 +394,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaWorkspaceUI;
+		};
+		A0000000000000000000000D /* GhostteaDiagnostics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaDiagnostics;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

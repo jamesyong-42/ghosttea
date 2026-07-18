@@ -419,7 +419,7 @@
           return false
         }
       } catch {
-        updateDiagnostics(lastError: String(describing: error))
+        updateDiagnostics(lastError: "Terminal frame rejected")
         requestFullRefresh()
         throw error
       }
@@ -1025,7 +1025,7 @@
         )
         _ = draw
       } catch {
-        updateDiagnostics(lastError: String(describing: error))
+        updateDiagnostics(lastError: "Metal render failed")
       }
     }
 
