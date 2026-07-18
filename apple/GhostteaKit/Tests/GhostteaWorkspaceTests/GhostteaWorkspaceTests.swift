@@ -484,3 +484,105 @@ func workspaceShortcutPressState() {
   #expect(up == GhostteaWorkspaceShortcutResult(handled: true))
   #expect(unmatched == GhostteaWorkspaceShortcutResult(handled: false))
 }
+
+private actor WorkspaceAllocationProbe {
+  private var allocations: [GhostteaWorkspaceSessionAllocation<String>]
+  private(set) var requests: [GhostteaWorkspaceSessionRequest] = []
+  private(set) var terminated: [(String, String)] = []
+
+  init(_ allocations: [GhostteaWorkspaceSessionAllocation<String>]) {
+    self.allocations = allocations
+  }
+
+  func allocate(
+    _ request: GhostteaWorkspaceSessionRequest
+  ) throws -> GhostteaWorkspaceSessionAllocation<String> {
+    requests.append(request)
+    guard !allocations.isEmpty else { throw CocoaError(.fileNoSuchFile) }
+    return allocations.removeFirst()
+  }
+
+  func terminate(id: String, session: String) {
+    terminated.append((id, session))
+  }
+}
+
+private func singleSessionTabsDocument() throws -> GhostteaWorkspaceTabsDocument {
+  let workspace = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-a", sessionID: "session-a")),
+    activePaneID: "pane-a"
+  )
+  return try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-a",
+    tabs: [GhostteaWorkspaceTab(id: "tab-a", workspace: workspace)]
+  )
+}
+
+@Test("Session coordinator commits allocations before terminating exact close outputs")
+func workspaceSessionCoordinatorLifecycle() async throws {
+  let probe = WorkspaceAllocationProbe([
+    GhostteaWorkspaceSessionAllocation(sessionID: "session-b", session: "resource-b"),
+    GhostteaWorkspaceSessionAllocation(sessionID: "session-c", session: "resource-c"),
+  ])
+  let coordinator = try GhostteaWorkspaceSessionCoordinator(
+    document: singleSessionTabsDocument(),
+    sessions: ["session-a": "resource-a"],
+    identityPrefix: "fixture",
+    allocator: { try await probe.allocate($0) },
+    terminator: { await probe.terminate(id: $0, session: $1) }
+  )
+
+  _ = try await coordinator.createTab()
+  _ = try await coordinator.splitSelected(axis: .vertical)
+  #expect(await coordinator.sessionIDs == ["session-a", "session-b", "session-c"])
+  #expect(
+    await probe.requests == [
+      .newTab,
+      .split(axis: .vertical, sourceSessionID: "session-b"),
+    ]
+  )
+
+  _ = try await coordinator.apply(.applyToSelected(.close))
+  _ = try await coordinator.apply(.applyToSelected(.close))
+  #expect(await coordinator.sessionIDs == ["session-a"])
+  #expect(await probe.terminated.map(\.0) == ["session-c", "session-b"])
+
+  await coordinator.closeAll()
+  #expect(await coordinator.sessionIDs.isEmpty)
+  #expect(await probe.terminated.map(\.0) == ["session-c", "session-b", "session-a"])
+  await #expect(throws: GhostteaWorkspaceSessionCoordinatorError.closed) {
+    try await coordinator.createTab()
+  }
+}
+
+@Test("Session coordinator rolls back a duplicate allocation without mutating layout")
+func workspaceSessionCoordinatorRollsBackDuplicate() async throws {
+  let probe = WorkspaceAllocationProbe([
+    GhostteaWorkspaceSessionAllocation(sessionID: "session-a", session: "duplicate-resource")
+  ])
+  let initial = try singleSessionTabsDocument()
+  let coordinator = try GhostteaWorkspaceSessionCoordinator(
+    document: initial,
+    sessions: ["session-a": "resource-a"],
+    identityPrefix: "fixture",
+    allocator: { try await probe.allocate($0) },
+    terminator: { await probe.terminate(id: $0, session: $1) }
+  )
+  await #expect(throws: GhostteaWorkspaceSessionCoordinatorError.duplicateSessionID("session-a")) {
+    try await coordinator.createTab()
+  }
+  #expect(await coordinator.document == initial)
+  #expect(await probe.terminated.map(\.1) == ["duplicate-resource"])
+}
+
+@Test("Session coordinator rejects a registry that does not match the document")
+func workspaceSessionCoordinatorRejectsRegistryMismatch() throws {
+  #expect(throws: GhostteaWorkspaceSessionCoordinatorError.registryMismatch) {
+    try GhostteaWorkspaceSessionCoordinator<String>(
+      document: singleSessionTabsDocument(),
+      sessions: [:],
+      allocator: { _ in throw CocoaError(.fileNoSuchFile) },
+      terminator: { _, _ in }
+    )
+  }
+}

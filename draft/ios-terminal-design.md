@@ -2531,6 +2531,19 @@ The full Swift package passes 86 tests, and the signed iPhone 14 Pro production
 gate passes its SSH, shared-core, TRF1, native-accessibility, Metal, and typed
 exit checks with the live surface mounted through the workspace view.
 
+The sixth slice adds `GhostteaWorkspaceSessionCoordinator`, a transport-neutral
+actor that turns the outstanding new-tab and split host requests into a safe
+session lifecycle. Its async allocator must return a genuinely independent
+opaque session and ID before the model transition commits. Invalid or duplicate
+allocations are terminated immediately and leave the document unchanged.
+Successful close transitions remove and terminate exactly their ordered
+`closedSessionIds`; closing the whole window drains remaining sessions in
+workspace order and permanently closes the coordinator. The coordinator
+validates that its initial live registry exactly matches the identity-only
+document, preventing restoration from manufacturing a live-session claim.
+The complete Swift package passes 89 tests and both generic iOS builds.
+Concrete SSH allocation in the harness is the next integration step.
+
 Deliverables:
 
 - versioned workspace model;

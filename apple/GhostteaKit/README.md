@@ -60,6 +60,14 @@ terminal key encoding and forward only unmatched chords to the terminal core.
 down, repeat, and up events so a claimed application shortcut dispatches once
 and cannot leak its release into the terminal.
 
+`GhostteaWorkspaceSessionCoordinator` is the transport-neutral multi-session
+host boundary. It allocates a real session before committing a new tab or
+split, rolls invalid allocations back through the supplied terminator, removes
+only session IDs emitted by close transitions, and drains all remaining
+sessions in workspace order on window close. Its registry must exactly match
+the document at initialization, so persisted identities never become claims
+that a session is live.
+
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and
 the device harness. `GhostteaSSHSessionFactory` installs SSH-specific, redacted

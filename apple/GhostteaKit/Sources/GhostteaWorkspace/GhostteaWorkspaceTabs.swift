@@ -17,6 +17,8 @@ public struct GhostteaWorkspaceTabsDocument: Equatable, Sendable, Codable {
   public let selectedTabID: String
   public let tabs: [GhostteaWorkspaceTab]
 
+  public var sessionIDs: [String] { tabs.flatMap { $0.workspace.sessionIDs } }
+
   private enum CodingKeys: String, CodingKey {
     case version
     case selectedTabID = "selectedTabId"
