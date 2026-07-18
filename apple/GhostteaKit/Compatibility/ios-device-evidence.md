@@ -957,3 +957,33 @@ package suite contains 68 tests. This slice
 has no new UIKit or Metal behavior; dual iOS SDK compilation is retained as its
 Apple portability gate, while live SSH/TUI and physical lifecycle evidence
 remain later Phase 6 work.
+
+## 2026-07-17: production SSH session facade
+
+The second Phase 6 slice promotes the Phase 0-selected libssh2 implementation
+behind stable `GhostteaSSHConfiguration` and `GhostteaSSHTransport` names while
+leaving the candidate API available for compatibility fixtures. A production
+session factory now installs SSH-specific reconnect and display policies:
+socket and timeout failures may offer reconnect, while authentication,
+host-key, missing-credential, invalid configuration, and failed remote-profile
+startup require user action. Display strings are fixed categories and never
+include server-controlled or native libssh2 messages.
+
+Password, in-memory private-key, and optional passphrase authentication now
+have direct Keychain-backed constructors. Their opaque credential IDs are
+captured in the connection configuration and their secret bytes are resolved
+only when authentication begins. The known-host helper prepares an app-private
+Application Support directory and applies complete file protection on iOS; the
+existing native known-host writer continues to own atomic file replacement and
+permission preservation.
+
+Shell, named tmux, and named Zellij profiles map to PTY-allocating remote
+commands. Names are passed as one POSIX-shell argument with embedded quotes
+escaped, and empty or NUL-containing names are rejected before connection.
+Five new package tests cover the exact attach commands, injection-resistant
+quoting, Keychain-only production authentication, known-host path containment,
+redacted failure policy, and the session configuration wiring. All 73 package
+tests pass, and the full harness builds
+for arm64 iPhone Simulator and physical-device SDKs. This is build and replay
+evidence, not a live tmux/Zellij device claim; live shell/TUI runs and the
+credential-backed public-key-plus-keyboard-interactive gap remain open.

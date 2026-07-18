@@ -32,7 +32,13 @@ let package = Package(
     ),
     .target(
       name: "GhostteaSSH",
-      dependencies: ["CGhostteaSSH", "GhostteaCredentials", "GhostteaTransport"]
+      dependencies: [
+        "CGhostteaSSH",
+        "GhostteaCore",
+        "GhostteaCredentials",
+        "GhostteaSession",
+        "GhostteaTransport",
+      ]
     ),
     .target(
       name: "GhostteaCredentials",
@@ -123,7 +129,12 @@ let package = Package(
     ),
     .testTarget(
       name: "GhostteaSSHTests",
-      dependencies: ["GhostteaSSH"]
+      dependencies: [
+        "GhostteaCredentials",
+        "GhostteaSession",
+        "GhostteaSSH",
+        "GhostteaTransport",
+      ]
     ),
     .testTarget(
       name: "GhostteaSSHProbeTests",

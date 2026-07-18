@@ -2323,9 +2323,18 @@ Four replay tests prove chunked inbound drain, a native cursor-position reply,
 clean exit status, ordered raw/shared-core input, PTY/core resize, route-change
 teardown, explicit reconnect, generation advance, and redacted
 non-reconnectable operation failure. The full Swift package suite now contains
-68 tests. Concrete SSH configuration factories,
-non-reconnectable authentication classification, production UI binding,
-profiles, and live TUI/device gates remain later Phase 6 slices.
+73 tests. The second slice adds production `GhostteaSSHConfiguration`,
+`GhostteaSSHTransport`, and `GhostteaSSHSessionFactory` entry points over the
+Phase 0-selected implementation. It resolves password/private-key credentials
+from the device-only Keychain at authentication time, prepares an app-private
+known-host directory with complete iOS file protection, redacts native failure
+messages, and classifies authentication, host-key, credential, and invalid
+remote-command failures as requiring user action. Shell, tmux attach-or-create,
+and Zellij attach-or-create profiles allocate a PTY and shell-quote the session
+name. The package suite and complete harness pass for macOS, arm64 simulator,
+and physical-device SDK compilation. Production UI binding, chained
+credential-backed public-key MFA, and live TUI/device gates remain later Phase
+6 slices.
 
 Deliverables:
 

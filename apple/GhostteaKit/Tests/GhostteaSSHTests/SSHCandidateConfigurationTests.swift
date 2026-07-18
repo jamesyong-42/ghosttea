@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import GhostteaCredentials
+import GhostteaSession
 import GhostteaTransport
 import Testing
 
@@ -275,6 +276,159 @@ import Testing
     )
   )
   #expect(decision == .acceptOnce)
+}
+
+@Test func productionConfigurationBuildsSafeAttachProfiles() throws {
+  let authentication = GhostteaSSHAuthentication.keyboardInteractive(
+    username: "ghosttea",
+    responder: { _ in [] }
+  )
+  let tmux = try GhostteaSSHConfiguration(
+    host: "example.test",
+    knownHostsPath: "/tmp/known_hosts",
+    authentication: authentication,
+    profile: .tmux(sessionName: "team's work"),
+    columns: 132,
+    rows: 41
+  )
+  let zellij = try GhostteaSSHConfiguration(
+    host: "example.test",
+    knownHostsPath: "/tmp/known_hosts",
+    authentication: authentication,
+    profile: .zellij(sessionName: "main")
+  )
+
+  #expect(
+    tmux.candidate.session
+      == .command(
+        "exec tmux new-session -A -s 'team'\\''s work'",
+        allocatePTY: true
+      )
+  )
+  #expect(
+    zellij.candidate.session
+      == .command(
+        "exec zellij attach --create 'main'",
+        allocatePTY: true
+      )
+  )
+  #expect(tmux.initialSize == TerminalSize(uncheckedColumns: 132, rows: 41))
+
+  #expect(throws: GhostteaSSHProfileError.invalidSessionName) {
+    try GhostteaSSHConfiguration(
+      host: "example.test",
+      knownHostsPath: "/tmp/known_hosts",
+      authentication: authentication,
+      profile: .tmux(sessionName: "  ")
+    )
+  }
+}
+
+@Test func productionAuthenticationRetainsOnlyOpaqueKeychainReferences() throws {
+  let connectionID = UUID(uuidString: "42F18E0C-AB32-44D4-B183-EF5CA727149E")!
+  let privateKey = SSHCredentialID(connectionID: connectionID, kind: .privateKey)
+  let passphrase = SSHCredentialID(connectionID: connectionID, kind: .privateKeyPassphrase)
+  let store = try KeychainSSHCredentialStore(service: "com.vibecook.ghosttea.tests.production")
+  let configuration = try GhostteaSSHConfiguration(
+    host: "example.test",
+    knownHostsPath: "/tmp/known_hosts",
+    authentication: .privateKey(
+      username: "ghosttea",
+      privateKeyCredential: privateKey,
+      passphraseCredential: passphrase,
+      store: store
+    )
+  )
+
+  guard
+    case .publicKeyCredential(
+      let username,
+      let retainedPrivateKey,
+      let retainedPassphrase,
+      _
+    ) = configuration.candidate.authentication
+  else {
+    Issue.record("production authentication did not map to opaque key references")
+    return
+  }
+  #expect(username == "ghosttea")
+  #expect(retainedPrivateKey == privateKey)
+  #expect(retainedPassphrase == passphrase)
+}
+
+@Test func knownHostsFilePreparesAnAppPrivatePath() throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+    UUID().uuidString,
+    isDirectory: true
+  )
+  defer { try? FileManager.default.removeItem(at: root) }
+
+  let file = try GhostteaSSHKnownHostsFile(
+    applicationDirectoryName: "GhostteaTests",
+    fileName: "known_hosts"
+  )
+  let path = try file.prepare(in: root)
+
+  var isDirectory: ObjCBool = false
+  #expect(
+    FileManager.default.fileExists(
+      atPath: root.appendingPathComponent("GhostteaTests").path,
+      isDirectory: &isDirectory
+    )
+  )
+  #expect(isDirectory.boolValue)
+  #expect(path == root.appendingPathComponent("GhostteaTests/known_hosts").path)
+  #expect(!FileManager.default.fileExists(atPath: path))
+
+  #expect(throws: GhostteaSSHKnownHostsError.invalidPathComponent("../escape")) {
+    try GhostteaSSHKnownHostsFile(applicationDirectoryName: "../escape")
+  }
+}
+
+@Test func productionFailurePolicyClassifiesWithoutLeakingNativeMessages() {
+  let networkFailure = SSHCandidateError.socketConnect("secret.internal:22 refused")
+  let authenticationFailure = SSHCandidateError.operationFailed(
+    operation: "password authentication",
+    status: -18,
+    message: "server says secret-token"
+  )
+  let commandFailure = SSHCandidateError.operationFailed(
+    operation: "start command",
+    status: -1,
+    message: "tmux missing at /private/server/path"
+  )
+
+  #expect(GhostteaSSHFailurePolicy.isReconnectable(networkFailure))
+  #expect(!GhostteaSSHFailurePolicy.isReconnectable(authenticationFailure))
+  #expect(!GhostteaSSHFailurePolicy.isReconnectable(commandFailure))
+  #expect(GhostteaSSHFailurePolicy.description(networkFailure) == "Unable to reach SSH host")
+  #expect(
+    GhostteaSSHFailurePolicy.description(authenticationFailure)
+      == "SSH authentication failed"
+  )
+  #expect(!GhostteaSSHFailurePolicy.description(authenticationFailure).contains("secret-token"))
+  #expect(!GhostteaSSHFailurePolicy.description(commandFailure).contains("/private/server/path"))
+}
+
+@Test func productionSessionConfigurationInstallsSSHFailurePolicy() {
+  let wifiPath = TerminalNetworkPath(
+    availability: .satisfied,
+    interfaces: [.wifi]
+  )
+  let configuration = GhostteaSessionConfiguration.ssh(
+    inboundChunkBytes: 8_192,
+    outboundMaxItems: 32,
+    outboundMaxBytes: 65_536,
+    initialPath: wifiPath
+  )
+  let authenticationFailure = SSHCandidateError.authenticationFailed(status: -18)
+
+  #expect(configuration.inboundChunkBytes == 8_192)
+  #expect(configuration.outboundMaxItems == 32)
+  #expect(configuration.outboundMaxBytes == 65_536)
+  #expect(configuration.initialPath == wifiPath)
+  #expect(!configuration.errorIsReconnectable(authenticationFailure))
+  #expect(configuration.failureDescription(authenticationFailure) == "SSH authentication failed")
 }
 
 @Test func connectionObservesCancellationBeforeSocketWork() async throws {

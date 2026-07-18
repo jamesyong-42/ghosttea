@@ -6,7 +6,8 @@ It proves the pinned upstream `libghostty-vt`, shared Rust text engine, and
 production `ghosttea-core` model on Apple targets. `GhostteaCore` is the safe
 Swift boundary over the versioned `ghosttea-ffi` C ABI and its ordered effect
 arena. The package also contains the host-neutral, demand-driven
-`GhostteaTransport` contract and a pinned libssh2/OpenSSL nonblocking candidate.
+`GhostteaTransport` contract and the pinned libssh2/OpenSSL nonblocking SSH
+implementation selected by the Phase 0 gate.
 `GhostteaSession` is the production orchestration boundary that binds any such
 transport to one core terminal while preserving effect, input, resize, and
 lifecycle ordering.
@@ -30,6 +31,18 @@ changes, background suspension, explicit disconnect, clean exit, and late task
 completion remain generation-safe. PTY resize is sent before the matching core
 resize and full frame. The first replay tests cover clean drain/exit, native
 terminal replies, ordered input, resize propagation, and explicit reconnect.
+
+`GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
+entry points; the older candidate names remain for compatibility fixtures and
+the device harness. `GhostteaSSHSessionFactory` installs SSH-specific, redacted
+failure handling and separates transient network failures from authentication,
+host-key, credential, and remote-command failures that require user action.
+Passwords, private keys, and passphrases resolve from the Keychain only when
+authentication begins. The known-host path helper creates an app-private
+Application Support directory with complete file protection on iOS, while the
+native store retains atomic OpenSSH-format updates. Shell, named tmux, and
+named Zellij attach profiles request a PTY and quote session names as single
+shell arguments.
 
 ## Build and test
 
@@ -288,9 +301,10 @@ measurements remain.
 No package source should import `GhosttyVt` outside the `GhosttyVtProof` target. This keeps the unstable upstream API from leaking into future app code.
 
 Likewise, only `CGhostteaSSH` and the isolated `GhostteaSSHProbe` may import
-`LibSSH2Candidate`. The public `GhostteaSSH` candidate sees only opaque C shim
-handles and implements `TerminalTransport`; it is not yet a selected production
-transport. The current evidence and known chained-MFA return-state ambiguity are recorded in
+`LibSSH2Candidate`. The public `GhostteaSSH` implementation sees only opaque C
+shim handles and implements `TerminalTransport`; app code enters it through the
+production facade while compatibility fixtures retain the original candidate
+names. The current evidence and known chained-MFA return-state ambiguity are recorded in
 [`Compatibility/ssh-candidate-decision.md`](Compatibility/ssh-candidate-decision.md).
 The adapter uses one deadline across cancellable Apple DNS-SD resolution and
 TCP connect, plus an independent SSH-handshake deadline. Its local
