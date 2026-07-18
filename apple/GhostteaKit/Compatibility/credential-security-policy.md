@@ -30,6 +30,13 @@ with complete file protection on iOS. They are non-secret metadata, but receive
 the same locked-device filesystem boundary so restore cannot race ahead of the
 Keychain's `WhenUnlockedThisDeviceOnly` availability.
 
+Profile mutations use fresh opaque credential IDs for every secret
+replacement. The repository writes the new Keychain items before changing the
+profile document and removes them if profile persistence fails. After a
+successful replacement or deletion, old items are retired; removal failures
+are returned as opaque cleanup debt for explicit retry and never roll the
+already-durable profile document backward.
+
 The supported secret kinds are password, private key, and private-key
 passphrase. Empty secret data remains representable because SSH servers may
 permit an empty password; absence is represented by a missing Keychain item.
@@ -48,6 +55,14 @@ zeroization. Callers must:
 4. clear editable UIKit fields after submission; and
 5. request the credential again after reconnect rather than retaining it in
    workspace or session state.
+
+The reusable SwiftUI editor keeps secrets outside its non-secret profile draft
+and clears password, private-key, and passphrase properties before a validated
+save request reaches its callback. Validation failures retain the entered value
+so the user can correct metadata without retyping. These properties are Swift
+`String` values and the outgoing request contains `Data`; runtime copies may
+remain, so this is a lifetime-reduction boundary rather than a zeroization
+claim.
 
 `GhostteaSSH` includes async password and private-key credential cases that
 receive opaque `SSHCredentialID` values. The iOS harness clears its editable
@@ -91,6 +106,10 @@ Connection-profile tests additionally lock the versioned, secret-free encoding,
 reject credential-kind confusion and cross-connection private-key/passphrase
 references, require a fresh runtime responder for keyboard-interactive auth,
 reject duplicate profile IDs, and round-trip the atomic protected JSON store.
+Repository tests require fresh IDs, rollback on profile-write failure, and
+explicit reporting of retired-item cleanup failures. Editor tests require
+successful submission to clear every transient secret field and prohibit
+keeping an existing credential after changing authentication kind.
 Workspace-restoration tests require exactly one profile binding per persisted
 session and collapse the document only after real allocations report which
 session IDs succeeded.

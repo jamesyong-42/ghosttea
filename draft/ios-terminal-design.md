@@ -2610,6 +2610,23 @@ creating its second live tab, then passes the durable 706/707/708 restoration
 and connected 606/607/608 output/teardown gates. A real product scene and profile
 editing UI remain later work; the reusable Phase 7 palette boundary is complete.
 
+The eleventh slice adds reusable saved-connection management. A non-secret
+`GhostteaSSHConnectionProfileDraft` owns editable metadata, while a separate
+one-shot credential submission carries password, private-key/passphrase, or
+keyboard-interactive intent. `GhostteaSSHConnectionProfileRepository`
+serializes profile and Keychain mutations: replacement secrets receive fresh
+opaque IDs, profile-persistence failure rolls new items back, and successful
+replacement or deletion reports any old-item cleanup debt for retry. The
+`GhostteaConnectionProfilesUI` product supplies list, add, edit, and delete
+surfaces; after successful validation its editor clears all transient secret
+properties before invoking the host callback. Swift and Security may copy these
+buffers, so the boundary reduces lifetime without claiming zeroization. The
+command palette exposes a typed Manage Saved Connections route, while the
+diagnostic harness intentionally validates and releases submitted secrets
+without becoming a user credential store. The complete Swift package passes
+110 tests and both iOS SDK builds. Product scene composition can inject this
+view and the repository without coupling either to terminal/session ownership.
+
 Deliverables:
 
 - versioned workspace model;

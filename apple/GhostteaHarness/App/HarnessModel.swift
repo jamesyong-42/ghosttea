@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import GhostteaConnectionProfiles
+import GhostteaConnectionProfilesUI
 import GhostteaCore
 import GhostteaCredentials
 import GhostteaFontProof
@@ -94,6 +95,8 @@ final class HarnessModel: ObservableObject {
   @Published var productionSSHProfile = ProductionSSHProfile.shell
   @Published var productionProfileName = "ghosttea"
   @Published var isProductionCommandPalettePresented = false
+  @Published var isProductionProfileManagerPresented = false
+  @Published var productionSavedProfiles: [GhostteaSSHConnectionProfile] = []
   @Published var terminalInputResult = "Run the TRF1 fixture to enable the input probe"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
@@ -970,6 +973,7 @@ final class HarnessModel: ObservableObject {
         productionCredentialStore = store
         productionCredential = credential
         productionConnectionProfile = connectionProfile
+        productionSavedProfiles = [connectionProfile]
         productionSession = session
         productionPrimarySessionID = primarySessionID
         productionWorkspaceResources = [primarySessionID: primaryResource]
@@ -1070,7 +1074,8 @@ final class HarnessModel: ObservableObject {
     } else {
       profiles = []
     }
-    return profiles + GhostteaWorkspacePaletteEntry.workspaceCommands()
+    return profiles + [.manageConnectionProfiles()]
+      + GhostteaWorkspacePaletteEntry.workspaceCommands()
   }
 
   func presentProductionCommandPalette() {
@@ -1080,6 +1085,34 @@ final class HarnessModel: ObservableObject {
 
   func dismissProductionCommandPalette() {
     isProductionCommandPalettePresented = false
+  }
+
+  func dismissProductionProfileManager() {
+    isProductionProfileManagerPresented = false
+  }
+
+  func handleProductionProfileSaveRequest(
+    _ request: GhostteaSSHConnectionProfileSaveRequest
+  ) {
+    do {
+      let existing = productionSavedProfiles.first { $0.id == request.draft.id }
+      let prepared = try request.prepare(existingProfile: existing)
+      if let index = productionSavedProfiles.firstIndex(where: { $0.id == prepared.profile.id }) {
+        productionSavedProfiles[index] = prepared.profile
+      } else {
+        productionSavedProfiles.append(prepared.profile)
+      }
+      productionSessionInputStatus =
+        "Connection editor validated · diagnostic credentials were not persisted"
+    } catch {
+      productionSessionInputStatus = "Connection editor failed: \(error)"
+    }
+  }
+
+  func handleProductionProfileDelete(_ profileID: UUID) {
+    productionSavedProfiles.removeAll { $0.id == profileID }
+    productionSessionInputStatus =
+      "Connection removed from the diagnostic list · active fixture unchanged"
   }
 
   private func toggleProductionCommandPalette() {
@@ -1100,6 +1133,11 @@ final class HarnessModel: ObservableObject {
         return
       }
       handleProductionNewTabRequest()
+    case .manageConnectionProfiles:
+      Task {
+        await Task.yield()
+        isProductionProfileManagerPresented = true
+      }
     }
   }
 
@@ -1457,6 +1495,29 @@ final class HarnessModel: ObservableObject {
         else {
           throw HarnessError.sessionProbeMismatch("workspace command palette profile")
         }
+        guard
+          GhostteaWorkspacePaletteSnapshot(
+            entries: productionCommandPaletteEntries,
+            query: "manage saved connections"
+          ).selectedEntry?.invocation == .manageConnectionProfiles
+        else {
+          throw HarnessError.sessionProbeMismatch("workspace profile manager palette entry")
+        }
+        var editorState = GhostteaSSHConnectionProfileEditorState(
+          profile: productionConnectionProfile
+        )
+        editorState.replaceCredential = true
+        editorState.password = "ghosttea-editor-boundary"
+        let editorRequest = try editorState.takeSaveRequest()
+        guard editorState.password.isEmpty,
+          editorState.privateKey.isEmpty,
+          editorState.privateKeyPassphrase.isEmpty,
+          case .password(let editorSecret) = editorRequest.credentialSubmission,
+          editorSecret == Data("ghosttea-editor-boundary".utf8)
+        else {
+          throw HarnessError.sessionProbeMismatch("workspace profile editor secret boundary")
+        }
+        print("GHOSTTEA_PRODUCTION_PROFILE_EDITOR_PASS profile=\(profileID)")
         print("GHOSTTEA_PRODUCTION_WORKSPACE_PALETTE_PASS profile=\(profileID)")
         _ = try await coordinator.createTab()
         await synchronizeProductionWorkspace(from: coordinator)
@@ -2433,6 +2494,8 @@ final class HarnessModel: ObservableObject {
   private func cleanupProductionCredential() {
     productionWorkspace = nil
     isProductionCommandPalettePresented = false
+    isProductionProfileManagerPresented = false
+    productionSavedProfiles = []
     productionSessionFrames = [:]
     productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
     productionWorkspaceCoordinator = nil

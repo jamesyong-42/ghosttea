@@ -44,7 +44,9 @@ func commandPaletteFilteringIsDeterministic() {
     subtitle: "james@terminal.example.com:22 · Shell",
     keywords: ["ssh", "remote"]
   )
-  let entries = [connection, connection] + GhostteaWorkspacePaletteEntry.workspaceCommands()
+  let entries =
+    [connection, connection, .manageConnectionProfiles()]
+    + GhostteaWorkspacePaletteEntry.workspaceCommands()
 
   let hostMatch = GhostteaWorkspacePaletteSnapshot(
     entries: entries,
@@ -55,8 +57,8 @@ func commandPaletteFilteringIsDeterministic() {
 
   let splitMatch = GhostteaWorkspacePaletteSnapshot(entries: entries, query: "split vertical")
   #expect(splitMatch.entries.map(\.title) == ["Split Top and Bottom"])
-  #expect(entries.count == 11)
-  #expect(GhostteaWorkspacePaletteSnapshot(entries: entries, query: "").entries.count == 10)
+  #expect(entries.count == 12)
+  #expect(GhostteaWorkspacePaletteSnapshot(entries: entries, query: "").entries.count == 11)
 }
 
 @Test("Command palette navigation wraps and preserves typed invocations")

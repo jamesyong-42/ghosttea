@@ -117,6 +117,13 @@ connected handles 606–608.
 The tab strip also exposes the same searchable commands-and-connections palette
 opened by Command-Shift-O. The device automation requires its saved fixture
 profile to win a tokenized search before the second tab may be allocated.
+That palette includes a reusable saved-connections manager with add, edit, and
+delete flows for password, private-key, and keyboard-interactive profiles. In
+this diagnostic app its callback validates and immediately releases submitted
+secret bytes without persisting them; the production repository and Keychain
+mutation semantics are covered independently by package tests. Device
+automation also requires the editor to clear every transient secret property
+before allocation continues.
 
 Set `GHOSTTEA_IOS_DEVICE_ID` when more than one physical iOS device is connected,
 `GHOSTTEA_IOS_DEVELOPMENT_TEAM` when Xcode has zero or multiple teams, or

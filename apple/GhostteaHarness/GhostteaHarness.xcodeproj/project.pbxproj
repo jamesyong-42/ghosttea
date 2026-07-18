@@ -22,6 +22,7 @@
 		100000000000000000000013 /* GhostteaWorkspaceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000009 /* GhostteaWorkspaceUI */; };
 		100000000000000000000014 /* GhostteaSSHWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000010 /* GhostteaSSHWorkspace */; };
 		100000000000000000000015 /* GhostteaConnectionProfiles in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000011 /* GhostteaConnectionProfiles */; };
+		100000000000000000000016 /* GhostteaConnectionProfilesUI in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000012 /* GhostteaConnectionProfilesUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 				100000000000000000000013 /* GhostteaWorkspaceUI in Frameworks */,
 				100000000000000000000014 /* GhostteaSSHWorkspace in Frameworks */,
 				100000000000000000000015 /* GhostteaConnectionProfiles in Frameworks */,
+				100000000000000000000016 /* GhostteaConnectionProfilesUI in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -109,6 +111,7 @@
 				A00000000000000000000009 /* GhostteaWorkspaceUI */,
 				A00000000000000000000010 /* GhostteaSSHWorkspace */,
 				A00000000000000000000011 /* GhostteaConnectionProfiles */,
+				A00000000000000000000012 /* GhostteaConnectionProfilesUI */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -349,6 +352,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaConnectionProfiles;
+		};
+		A00000000000000000000012 /* GhostteaConnectionProfilesUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaConnectionProfilesUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

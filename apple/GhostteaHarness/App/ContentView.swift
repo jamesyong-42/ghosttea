@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaConnectionProfilesUI
 import GhostteaSSH
 import GhostteaTerminal
 import GhostteaWorkspace
@@ -438,6 +439,18 @@ struct ContentView: View {
         SSHInteractionView()
           .environmentObject(model)
           .interactiveDismissDisabled()
+      }
+      .sheet(isPresented: $model.isProductionProfileManagerPresented) {
+        GhostteaSSHConnectionProfilesView(
+          profiles: model.productionSavedProfiles,
+          onSave: model.handleProductionProfileSaveRequest,
+          onDelete: model.handleProductionProfileDelete
+        )
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Done", action: model.dismissProductionProfileManager)
+          }
+        }
       }
       .onChange(of: scenePhase) { _, phase in
         sceneLifecycle.update(sceneID: sceneID, phase: phase, model: model)

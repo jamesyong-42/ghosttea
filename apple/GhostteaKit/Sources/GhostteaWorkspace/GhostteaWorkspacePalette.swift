@@ -8,6 +8,7 @@ public enum GhostteaWorkspacePaletteCategory: String, Equatable, Sendable {
 public enum GhostteaWorkspacePaletteInvocation: Equatable, Sendable {
   case command(GhostteaWorkspaceCommand)
   case connectionProfile(profileID: String)
+  case manageConnectionProfiles
 }
 
 public struct GhostteaWorkspacePaletteEntry: Equatable, Sendable, Identifiable {
@@ -47,6 +48,17 @@ public struct GhostteaWorkspacePaletteEntry: Equatable, Sendable, Identifiable {
       category: .connections,
       keywords: keywords,
       invocation: .connectionProfile(profileID: profileID)
+    )
+  }
+
+  public static func manageConnectionProfiles() -> Self {
+    Self(
+      id: "ghosttea.connection-profiles.manage",
+      title: "Manage Saved Connections",
+      subtitle: "Add, edit, or remove SSH profiles",
+      category: .connections,
+      keywords: ["ssh", "remote", "settings", "profiles"],
+      invocation: .manageConnectionProfiles
     )
   }
 

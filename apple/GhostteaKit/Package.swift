@@ -11,6 +11,7 @@ let package = Package(
   products: [
     .library(name: "GhostteaCredentials", targets: ["GhostteaCredentials"]),
     .library(name: "GhostteaConnectionProfiles", targets: ["GhostteaConnectionProfiles"]),
+    .library(name: "GhostteaConnectionProfilesUI", targets: ["GhostteaConnectionProfilesUI"]),
     .library(name: "GhostteaCore", targets: ["GhostteaCore"]),
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
     .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
@@ -62,6 +63,10 @@ let package = Package(
     .target(
       name: "GhostteaConnectionProfiles",
       dependencies: ["GhostteaCredentials", "GhostteaSSH"]
+    ),
+    .target(
+      name: "GhostteaConnectionProfilesUI",
+      dependencies: ["GhostteaConnectionProfiles"]
     ),
     .target(
       name: "GhostteaFontProof",
@@ -146,6 +151,10 @@ let package = Package(
         "GhostteaCredentials",
         "GhostteaSSH",
       ]
+    ),
+    .testTarget(
+      name: "GhostteaConnectionProfilesUITests",
+      dependencies: ["GhostteaConnectionProfiles", "GhostteaConnectionProfilesUI"]
     ),
     .testTarget(
       name: "GhostteaFontProofTests",

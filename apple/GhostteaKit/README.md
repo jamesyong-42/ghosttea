@@ -29,6 +29,14 @@ contains only typed opaque Keychain references. Its actor-backed JSON store
 validates versions and duplicate IDs, writes atomically, and applies complete
 file protection on iOS. Keyboard-interactive responses remain runtime-only and
 must be supplied afresh when a profile is resolved.
+`GhostteaSSHConnectionProfileRepository` composes that store with the Keychain
+vault. New secrets receive fresh opaque IDs before profile JSON changes; a JSON
+failure rolls the new items back, while successful replacement or deletion
+retires old items and returns any cleanup debt for explicit retry.
+`GhostteaConnectionProfilesUI` provides the reusable SwiftUI list and editor.
+Its metadata draft cannot contain secret fields, and its transient editor
+clears password, private-key, and passphrase strings before a successfully
+validated one-shot save request leaves the view.
 
 `GhostteaSession` owns generation-checked connection and read tasks above the
 transport-neutral reconnect policy. Inbound data is pulled in bounded chunks,

@@ -1350,3 +1350,35 @@ Only then could the host allocate the second tab. The run subsequently passed
 independent connected handles 606–608, protected restoration handles 706–708,
 exact teardown, and process exit zero before removing the disposable fixture.
 The marker records only an opaque profile UUID and no connection secret.
+
+## 2026-07-18: saved-connection editor boundary gate
+
+The next Phase 7 slice adds `GhostteaConnectionProfilesUI`, a reusable SwiftUI
+saved-connection list and editor, plus the transactional
+`GhostteaSSHConnectionProfileRepository`. Editable profile metadata is a
+secret-free draft. Password, private-key, and optional passphrase bytes travel
+through a separate one-shot submission; after successful validation, the
+editor clears all three transient secret properties before invoking its host.
+The repository assigns replacement secrets fresh opaque Keychain IDs, rolls
+them back if protected profile persistence fails, and reports retired-item
+cleanup debt for explicit retry after a successful profile update or deletion.
+
+All 110 Swift package tests passed, including an induced profile-write failure
+that proves the newly written credential is removed. Generic iOS Simulator and
+iOS device SDK builds both succeeded. The signed iPhone 14 Pro workspace gate
+then required the disposable editor state to clear its transient secret before
+any additional session could be allocated, emitting:
+
+```text
+GHOSTTEA_PRODUCTION_PROFILE_EDITOR_PASS profile=<opaque UUID>
+GHOSTTEA_PRODUCTION_WORKSPACE_PALETTE_PASS profile=<opaque UUID>
+GHOSTTEA_PRODUCTION_WORKSPACE_RESTORE_PASS handles=706,707,708
+GHOSTTEA_PRODUCTION_WORKSPACE_PASS
+```
+
+The original connected handles 606–608 also produced independent native-text
+markers and completed exact pane, tab, and window teardown. The app exited zero
+and the runner removed its disposable SSH container and network. The harness
+deliberately validates and releases editor submissions without storing them;
+this is physical-device evidence for the reusable editor lifetime boundary,
+not evidence that diagnostic fixture credentials became user profiles.
