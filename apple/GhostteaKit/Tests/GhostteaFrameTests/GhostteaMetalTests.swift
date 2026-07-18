@@ -169,6 +169,75 @@ private let blinkingCursor = TRF1CursorState(
   #expect(try await encoder.encodePaste("paste") == Data("paste".utf8))
 }
 
+@Test func compositionBufferKeepsMarkedTextLocalUntilCommit() {
+  var composition = GhostteaCompositionBuffer()
+  #expect(
+    composition.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
+      .isEmpty
+  )
+  #expect(
+    composition.markedState
+      == GhostteaMarkedTextState(text: "にほん", selectionLocation: 3, selectionLength: 0)
+  )
+
+  #expect(composition.deleteBackward().isEmpty)
+  #expect(composition.markedState?.text == "にほ")
+  #expect(composition.markedState?.selectionLocation == 2)
+  #expect(composition.replace(NSRange(location: 1, length: 1), with: "字").isEmpty)
+  #expect(composition.markedState?.text == "に字")
+  #expect(composition.unmarkText() == [.text("に字")])
+  #expect(composition.markedState == nil)
+
+  let family = "👨‍👩‍👧‍👦"
+  _ = composition.setMarkedText(
+    family,
+    selectedRange: NSRange(location: (family as NSString).length, length: 0)
+  )
+  #expect(
+    composition.composedCharacterRange(
+      adjoining: (family as NSString).length,
+      towardStart: true
+    ) == NSRange(location: 0, length: (family as NSString).length)
+  )
+  #expect(
+    composition.composedCharacterRange(adjoining: 0, towardStart: false)
+      == NSRange(location: 0, length: (family as NSString).length)
+  )
+  #expect(composition.deleteBackward().isEmpty)
+  #expect(composition.markedState == nil)
+
+  #expect(
+    composition.insertText("alpha\r\nbeta\ngamma")
+      == [.text("alpha"), .enter, .text("beta"), .enter, .text("gamma")]
+  )
+  #expect(composition.deleteBackward() == [.deleteBackward])
+}
+
+@Test func softwareInputUsesGhosttyEnterDeleteAndBracketedPaste() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 113, columns: 80, rows: 24)
+  )
+  let encoder = GhostteaTerminalInputEncoder(terminal: terminal)
+
+  #expect(try await encoder.encode(.text("界")) == .bytes(Data("界".utf8)))
+  #expect(try await encoder.encode(.enter) == .bytes(Data([0x0d])))
+  #expect(try await encoder.encode(.deleteBackward) == .bytes(Data([0x7f])))
+  #expect(try await encoder.encode(.paste("")) == .ignored)
+
+  _ = try await terminal.feed(Data("\u{1b}[?2004h".utf8), render: .none)
+  let encodedPaste = try await encoder.encode(.paste("line 1\nline 2"))
+  guard case .bytes(let pasteBytes) = encodedPaste else {
+    Issue.record("software paste did not use the shared terminal encoder")
+    return
+  }
+  #expect(pasteBytes.starts(with: Data("\u{1b}[200~".utf8)))
+  let pasteSuffix = Data("\u{1b}[201~".utf8)
+  #expect(Data(pasteBytes.suffix(pasteSuffix.count)) == pasteSuffix)
+  #expect(pasteBytes.range(of: Data("line 1\nline 2".utf8)) != nil)
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

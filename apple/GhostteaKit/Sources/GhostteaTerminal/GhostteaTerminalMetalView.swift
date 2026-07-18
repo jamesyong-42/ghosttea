@@ -43,6 +43,24 @@
 
     public var onNeedsFullRefresh: (() -> Void)?
     public var onHardwareKeyEvent: ((GhostteaHardwareKeyEvent) -> Bool)?
+    public var onSoftwareInputEvent: ((GhostteaSoftwareInputEvent) -> Void)?
+    public var onMarkedTextChange: ((GhostteaMarkedTextState?) -> Void)?
+    public weak var inputDelegate: UITextInputDelegate?
+    public var markedTextStyle: [NSAttributedString.Key: Any]? {
+      didSet { updateMarkedTextOverlay() }
+    }
+    public var autocapitalizationType: UITextAutocapitalizationType = .none
+    public var autocorrectionType: UITextAutocorrectionType = .no
+    public var spellCheckingType: UITextSpellCheckingType = .no
+    public var smartQuotesType: UITextSmartQuotesType = .no
+    public var smartDashesType: UITextSmartDashesType = .no
+    public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+    public var keyboardType: UIKeyboardType = .default
+    public var keyboardAppearance: UIKeyboardAppearance = .dark
+    public var returnKeyType: UIReturnKeyType = .default
+    public var enablesReturnKeyAutomatically = false
+    public var isSecureTextEntry = false
+    public var textContentType: UITextContentType?
     public var focusesInputOnTap = true {
       didSet { inputFocusTapRecognizer.isEnabled = focusesInputOnTap }
     }
@@ -72,7 +90,10 @@
     private var terminalVisible = true
     private var cursorBlinkVisible = true
     private var gpuSuspended = false
+    private var compositionBuffer = GhostteaCompositionBuffer()
     private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
+    private let markedTextLabel = UILabel()
+    private lazy var textInputTokenizer = UITextInputStringTokenizer(textInput: self)
     private lazy var inputFocusTapRecognizer = UITapGestureRecognizer(
       target: self,
       action: #selector(handleInputFocusTap)
@@ -94,6 +115,18 @@
       delegate = self
       inputFocusTapRecognizer.cancelsTouchesInView = false
       addGestureRecognizer(inputFocusTapRecognizer)
+      markedTextLabel.backgroundColor = UIColor(
+        red: 40 / 255,
+        green: 44 / 255,
+        blue: 52 / 255,
+        alpha: 1
+      )
+      markedTextLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+      markedTextLabel.textColor = UIColor(red: 0.75, green: 0.78, blue: 0.82, alpha: 1)
+      markedTextLabel.isHidden = true
+      markedTextLabel.isUserInteractionEnabled = false
+      markedTextLabel.accessibilityElementsHidden = true
+      addSubview(markedTextLabel)
       NotificationCenter.default.addObserver(
         self,
         selector: #selector(applicationDidEnterBackground),
@@ -154,6 +187,7 @@
     public override func resignFirstResponder() -> Bool {
       let resigned = super.resignFirstResponder()
       if resigned {
+        commitMarkedTextIfNeeded()
         releaseHandledHardwareKeys()
         setTerminalFocused(false)
       }
@@ -175,6 +209,12 @@
       if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
     }
 
+    public override func paste(_ sender: Any?) {
+      guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+      commitMarkedTextIfNeeded()
+      emitSoftwareInputEvents([.paste(text)])
+    }
+
     @discardableResult
     public func apply(frame data: Data) throws -> Bool {
       do {
@@ -182,6 +222,7 @@
         case .applied:
           updateCursorBlinkSurfaceVisibility()
           cursorBlinkController.updateCursor(retainedState.cursor)
+          updateMarkedTextOverlay()
           updateDiagnostics(acceptedFrames: diagnostics.acceptedFrames + 1, clearError: true)
           requestEventDrivenDraw()
           return true
@@ -382,6 +423,7 @@
 
     private func geometryDidChange() {
       updateGridSize()
+      updateMarkedTextOverlay()
       requestEventDrivenDraw()
     }
 
@@ -458,6 +500,290 @@
     @objc private func applicationDidReceiveMemoryWarning() {
       evictRendererResources()
       requestEventDrivenDraw()
+    }
+  }
+
+  private final class GhostteaTextPosition: UITextPosition {
+    let offset: Int
+
+    init(_ offset: Int) {
+      self.offset = offset
+    }
+  }
+
+  private final class GhostteaTextRange: UITextRange {
+    let lower: GhostteaTextPosition
+    let upper: GhostteaTextPosition
+
+    init(_ first: Int, _ second: Int) {
+      lower = GhostteaTextPosition(min(first, second))
+      upper = GhostteaTextPosition(max(first, second))
+    }
+
+    override var start: UITextPosition { lower }
+    override var end: UITextPosition { upper }
+    override var isEmpty: Bool { lower.offset == upper.offset }
+
+    var nsRange: NSRange {
+      NSRange(location: lower.offset, length: upper.offset - lower.offset)
+    }
+  }
+
+  extension GhostteaTerminalMetalView: UITextInput {
+    public var hasText: Bool { true }
+
+    public var selectedTextRange: UITextRange? {
+      get {
+        GhostteaTextRange(
+          compositionBuffer.selection.location,
+          compositionBuffer.selection.location + compositionBuffer.selection.length
+        )
+      }
+      set {
+        guard let range = newValue as? GhostteaTextRange else { return }
+        inputDelegate?.selectionWillChange(self)
+        compositionBuffer.setSelectedRange(range.nsRange)
+        inputDelegate?.selectionDidChange(self)
+        updateMarkedTextOverlay()
+      }
+    }
+
+    public var markedTextRange: UITextRange? {
+      compositionBuffer.isMarked ? GhostteaTextRange(0, compositionBuffer.utf16Count) : nil
+    }
+
+    public var beginningOfDocument: UITextPosition { GhostteaTextPosition(0) }
+    public var endOfDocument: UITextPosition { GhostteaTextPosition(compositionBuffer.utf16Count) }
+    public var tokenizer: UITextInputTokenizer { textInputTokenizer }
+
+    public func text(in range: UITextRange) -> String? {
+      guard let range = range as? GhostteaTextRange else { return nil }
+      return compositionBuffer.text(in: range.nsRange)
+    }
+
+    public func replace(_ range: UITextRange, withText text: String) {
+      guard let range = range as? GhostteaTextRange else { return }
+      inputDelegate?.textWillChange(self)
+      inputDelegate?.selectionWillChange(self)
+      let events = compositionBuffer.replace(range.nsRange, with: text)
+      inputDelegate?.selectionDidChange(self)
+      inputDelegate?.textDidChange(self)
+      publishCompositionChange()
+      emitSoftwareInputEvents(events)
+    }
+
+    public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+      inputDelegate?.textWillChange(self)
+      inputDelegate?.selectionWillChange(self)
+      let events = compositionBuffer.setMarkedText(markedText, selectedRange: selectedRange)
+      inputDelegate?.selectionDidChange(self)
+      inputDelegate?.textDidChange(self)
+      publishCompositionChange()
+      emitSoftwareInputEvents(events)
+    }
+
+    public func unmarkText() {
+      inputDelegate?.textWillChange(self)
+      inputDelegate?.selectionWillChange(self)
+      let events = compositionBuffer.unmarkText()
+      inputDelegate?.selectionDidChange(self)
+      inputDelegate?.textDidChange(self)
+      publishCompositionChange()
+      emitSoftwareInputEvents(events)
+    }
+
+    public func insertText(_ text: String) {
+      inputDelegate?.textWillChange(self)
+      inputDelegate?.selectionWillChange(self)
+      let events = compositionBuffer.insertText(text)
+      inputDelegate?.selectionDidChange(self)
+      inputDelegate?.textDidChange(self)
+      publishCompositionChange()
+      emitSoftwareInputEvents(events)
+    }
+
+    public func deleteBackward() {
+      inputDelegate?.textWillChange(self)
+      inputDelegate?.selectionWillChange(self)
+      let events = compositionBuffer.deleteBackward()
+      inputDelegate?.selectionDidChange(self)
+      inputDelegate?.textDidChange(self)
+      publishCompositionChange()
+      emitSoftwareInputEvents(events)
+    }
+
+    public func textRange(
+      from fromPosition: UITextPosition,
+      to toPosition: UITextPosition
+    ) -> UITextRange? {
+      guard let from = fromPosition as? GhostteaTextPosition,
+        let to = toPosition as? GhostteaTextPosition
+      else { return nil }
+      return GhostteaTextRange(clampTextOffset(from.offset), clampTextOffset(to.offset))
+    }
+
+    public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+      guard let position = position as? GhostteaTextPosition else { return nil }
+      let target = position.offset + offset
+      guard target >= 0, target <= compositionBuffer.utf16Count else { return nil }
+      return GhostteaTextPosition(target)
+    }
+
+    public func position(
+      from position: UITextPosition,
+      in direction: UITextLayoutDirection,
+      offset: Int
+    ) -> UITextPosition? {
+      let signedOffset = direction == .left || direction == .up ? -offset : offset
+      return self.position(from: position, offset: signedOffset)
+    }
+
+    public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+      guard let first = position as? GhostteaTextPosition,
+        let second = other as? GhostteaTextPosition
+      else { return .orderedSame }
+      if first.offset < second.offset { return .orderedAscending }
+      if first.offset > second.offset { return .orderedDescending }
+      return .orderedSame
+    }
+
+    public func offset(from: UITextPosition, to: UITextPosition) -> Int {
+      guard let from = from as? GhostteaTextPosition, let to = to as? GhostteaTextPosition else {
+        return 0
+      }
+      return to.offset - from.offset
+    }
+
+    public func position(
+      within range: UITextRange,
+      farthestIn direction: UITextLayoutDirection
+    ) -> UITextPosition? {
+      guard let range = range as? GhostteaTextRange else { return nil }
+      return direction == .left || direction == .up ? range.start : range.end
+    }
+
+    public func characterRange(
+      byExtending position: UITextPosition,
+      in direction: UITextLayoutDirection
+    ) -> UITextRange? {
+      guard let position = position as? GhostteaTextPosition else { return nil }
+      let offset = clampTextOffset(position.offset)
+      let range = compositionBuffer.composedCharacterRange(
+        adjoining: offset,
+        towardStart: direction == .left || direction == .up
+      )
+      return GhostteaTextRange(range.location, range.location + range.length)
+    }
+
+    public func baseWritingDirection(
+      for position: UITextPosition,
+      in direction: UITextStorageDirection
+    ) -> NSWritingDirection {
+      .leftToRight
+    }
+
+    public func setBaseWritingDirection(
+      _ writingDirection: NSWritingDirection,
+      for range: UITextRange
+    ) {}
+
+    public func firstRect(for range: UITextRange) -> CGRect { terminalInputCaretRect() }
+
+    public func caretRect(for position: UITextPosition) -> CGRect {
+      guard let position = position as? GhostteaTextPosition else {
+        return terminalInputCaretRect()
+      }
+      return terminalInputCaretRect(at: position.offset)
+    }
+
+    public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
+
+    public func closestPosition(to point: CGPoint) -> UITextPosition? {
+      GhostteaTextPosition(compositionBuffer.selection.location)
+    }
+
+    public func closestPosition(
+      to point: CGPoint,
+      within range: UITextRange
+    ) -> UITextPosition? {
+      guard let range = range as? GhostteaTextRange else { return nil }
+      return range.start
+    }
+
+    public func characterRange(at point: CGPoint) -> UITextRange? {
+      let offset = compositionBuffer.selection.location
+      return GhostteaTextRange(offset, offset)
+    }
+
+    private func clampTextOffset(_ offset: Int) -> Int {
+      max(0, min(compositionBuffer.utf16Count, offset))
+    }
+
+    private func commitMarkedTextIfNeeded() {
+      guard compositionBuffer.isMarked else { return }
+      unmarkText()
+    }
+
+    private func emitSoftwareInputEvents(_ events: [GhostteaSoftwareInputEvent]) {
+      guard !events.isEmpty else { return }
+      for event in events { onSoftwareInputEvent?(event) }
+      noteCursorActivity()
+    }
+
+    private func publishCompositionChange() {
+      onMarkedTextChange?(compositionBuffer.markedState)
+      updateMarkedTextOverlay()
+    }
+
+    private func updateMarkedTextOverlay() {
+      guard let marked = compositionBuffer.markedState, !marked.text.isEmpty else {
+        markedTextLabel.isHidden = true
+        markedTextLabel.attributedText = nil
+        return
+      }
+      let attributes =
+        markedTextStyle ?? [
+          .underlineStyle: NSUnderlineStyle.single.rawValue,
+          .foregroundColor: markedTextLabel.textColor as Any,
+        ]
+      markedTextLabel.attributedText = NSAttributedString(
+        string: marked.text, attributes: attributes)
+      markedTextLabel.isHidden = false
+      let origin = terminalInputCaretRect().origin
+      let availableWidth = max(
+        CGFloat(GhostteaTerminalLayout.cellWidth),
+        bounds.width - origin.x - CGFloat(effectiveContentInsets().right)
+      )
+      let measured = markedTextLabel.sizeThatFits(
+        CGSize(width: availableWidth, height: CGFloat(GhostteaTerminalLayout.lineHeight)))
+      markedTextLabel.frame = CGRect(
+        x: origin.x,
+        y: origin.y,
+        width: min(availableWidth, max(CGFloat(GhostteaTerminalLayout.cellWidth), measured.width)),
+        height: CGFloat(GhostteaTerminalLayout.lineHeight)
+      )
+    }
+
+    private func terminalInputCaretRect(at textOffset: Int? = nil) -> CGRect {
+      let insets = effectiveContentInsets()
+      let cursor = retainedState.cursor
+      var x =
+        CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding)
+        + CGFloat(cursor?.x ?? 0) * CGFloat(GhostteaTerminalLayout.cellWidth)
+      let y =
+        CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding)
+        + CGFloat(cursor?.y ?? 0) * CGFloat(GhostteaTerminalLayout.lineHeight)
+      if let textOffset, textOffset > 0, !compositionBuffer.text.isEmpty {
+        let prefix = compositionBuffer.text(
+          in: NSRange(location: 0, length: clampTextOffset(textOffset)))
+        x += (prefix as NSString).size(withAttributes: [.font: markedTextLabel.font as Any]).width
+      }
+      return CGRect(
+        x: x,
+        y: y,
+        width: max(1, CGFloat(GhostteaTerminalLayout.cellWidth)),
+        height: CGFloat(GhostteaTerminalLayout.lineHeight)
+      )
     }
   }
 #endif

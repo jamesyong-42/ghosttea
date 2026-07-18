@@ -62,6 +62,7 @@ final class HarnessModel: ObservableObject {
   @Published var coreResult = "Not run"
   @Published var frameDecoderResult = "Not run"
   @Published var framePreview: Data?
+  @Published var terminalInputResult = "Run the TRF1 fixture to enable the input probe"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
   @Published var reconnectStateSummary = "Idle"
@@ -104,6 +105,7 @@ final class HarnessModel: ObservableObject {
   private var sshGeneration: UInt64?
   private var reconnectModel = TerminalReconnectModel()
   private var networkPathTask: Task<Void, Never>?
+  private var terminalInputEncoder: GhostteaTerminalInputEncoder?
   private var lifecycleProbe = LifecycleProbe.none
   private var backgroundCancellationMilliseconds: Int64?
   private var disposableFixtureHost = "10.0.0.103"
@@ -287,6 +289,17 @@ final class HarnessModel: ObservableObject {
         let surfaceAcceptedFull = try surface.apply(frame: frame)
         let surfaceAcceptedIncremental = try surface.apply(frame: incremental)
         let surfaceAcceptedStale = try surface.apply(frame: incremental)
+        var softwareInputEvents: [GhostteaSoftwareInputEvent] = []
+        var markedTextStates: [GhostteaMarkedTextState?] = []
+        surface.onSoftwareInputEvent = { softwareInputEvents.append($0) }
+        surface.onMarkedTextChange = { markedTextStates.append($0) }
+        surface.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
+        let markedRange = surface.markedTextRange
+        let markedText = markedRange.flatMap { surface.text(in: $0) }
+        let compositionCaret = surface.caretRect(for: surface.endOfDocument)
+        surface.unmarkText()
+        surface.insertText("界\n")
+        surface.deleteBackward()
         try surface.prepareGPUResources()
         let surfaceResidentBeforeSuspend = surface.diagnostics.residentAtlasBytes
         surface.suspendGPU()
@@ -333,6 +346,19 @@ final class HarnessModel: ObservableObject {
           surface.diagnostics.resourceEvictions == 1,
           surface.diagnostics.resourceRebuilds == 2,
           surface.diagnostics.residentAtlasBytes == 20 * 1024 * 1024,
+          markedText == "にほん",
+          markedTextStates.contains(
+            GhostteaMarkedTextState(text: "にほん", selectionLocation: 3, selectionLength: 0)
+          ),
+          markedTextStates.last.map({ $0 == nil }) == true,
+          softwareInputEvents
+            == [.text("にほん"), .text("界"), .enter, .deleteBackward],
+          compositionCaret.width > 0,
+          compositionCaret.height == CGFloat(GhostteaTerminalLayout.lineHeight),
+          compositionCaret.origin.x.isFinite,
+          compositionCaret.origin.y.isFinite,
+          surface.autocapitalizationType == .none,
+          surface.autocorrectionType == .no,
           portraitGridSize == GhostteaTerminalGridSize(columns: 49, rows: 39),
           landscapeGridSize == GhostteaTerminalGridSize(columns: 92, rows: 19),
           gridChanges.contains(GhostteaTerminalGridSize(columns: 49, rows: 39)),
@@ -346,6 +372,8 @@ final class HarnessModel: ObservableObject {
         }
         let atlasMiB = metal.residentAtlasBytes / 1_048_576
         framePreview = frame
+        terminalInputEncoder = GhostteaTerminalInputEncoder(terminal: terminal)
+        terminalInputResult = "Ready · tap the preview to type"
         frameDecoderResult =
           "Passed · TRF1 offscreen Metal render (\(metal.deviceName), \(atlasMiB) MiB atlases)"
         print(
@@ -371,6 +399,52 @@ final class HarnessModel: ObservableObject {
     }
     fflush(nil)
     Darwin.exit(exitCode)
+  }
+
+  func handleHardwareInput(_ event: GhostteaHardwareKeyEvent) -> Bool {
+    guard let terminalInputEncoder else { return false }
+    Task {
+      do {
+        let encoding = try await terminalInputEncoder.encode(event)
+        try await recordInputEncoding(encoding, encoder: terminalInputEncoder)
+      } catch {
+        terminalInputResult = "Hardware input failed: \(error)"
+      }
+    }
+    return true
+  }
+
+  func handleSoftwareInput(_ event: GhostteaSoftwareInputEvent) {
+    guard let terminalInputEncoder else { return }
+    Task {
+      do {
+        let encoding = try await terminalInputEncoder.encode(event)
+        try await recordInputEncoding(encoding, encoder: terminalInputEncoder)
+      } catch {
+        terminalInputResult = "Software input failed: \(error)"
+      }
+    }
+  }
+
+  private func recordInputEncoding(
+    _ pending: GhostteaInputEncoding,
+    encoder: GhostteaTerminalInputEncoder
+  ) async throws {
+    var encoding = pending
+    if case .pasteFromClipboard = encoding {
+      encoding = try await encoder.encode(.paste(UIPasteboard.general.string ?? ""))
+    }
+    switch encoding {
+    case .bytes(let bytes):
+      let prefix = bytes.prefix(32).map { String(format: "%02x", $0) }.joined(separator: " ")
+      terminalInputResult = "Encoded \(bytes.count) bytes · \(prefix)"
+    case .pasteFromClipboard:
+      terminalInputResult = "Paste requested"
+    case .applicationShortcut(let shortcut):
+      terminalInputResult = "Application shortcut · \(String(describing: shortcut))"
+    case .ignored:
+      terminalInputResult = "Ignored paired input event"
+    }
   }
 
   func runKeychainProof() {

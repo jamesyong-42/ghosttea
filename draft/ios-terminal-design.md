@@ -2184,7 +2184,28 @@ handled held keys, matching desktop blur behavior. Two tests prove common
 HID/DOM mappings, layout identity, non-text special keys, shared Ghostty bytes for letters, Ctrl-C and
 arrows, desktop-compatible Option motion, Command-paste routing, key-up
 suppression, committed Unicode, and terminal paste encoding. Software keyboard
-and `UITextInput` marked-text composition intentionally remain the next slice.
+and `UITextInput` marked-text composition were the next slice.
+
+The second slice makes `GhostteaTerminalMetalView` a native `UITextInput`
+surface without presenting terminal scrollback as an editable UIKit document.
+Its document contains only transient marked text, UTF-16 selection, and the
+geometry UIKit needs for the active composition. Marked text stays local until
+unmark/commit, is rendered as a cursor-anchored overlay, and supplies matching
+caret and candidate-window rectangles. Composed-character deletion and range
+queries keep emoji and combining sequences intact.
+
+Committed text becomes ordered `GhostteaSoftwareInputEvent` values. Plain
+Unicode remains byte-exact UTF-8; Return and backward delete go through the
+same Ghostty key encoder as hardware keys; paste goes through the same
+terminal-mode-aware paste encoder and therefore respects bracketed-paste mode.
+CR, LF, and CRLF are normalized into one Return event each. UIKit smart quotes,
+smart dashes, smart insertion/deletion, autocorrection, spell checking, and
+autocapitalization are disabled at the terminal boundary. The simulator gate
+drives the production view directly through `setMarkedText`, `unmarkText`,
+`insertText`, and `deleteBackward` and checks the ordered committed events,
+marked-state lifetime, caret geometry, and safe input traits. Physical CJK,
+combining-mark, emoji, dictation, and third-party-keyboard evidence remains in
+the Phase 5 interaction matrix rather than being inferred from simulator APIs.
 
 Deliverables:
 

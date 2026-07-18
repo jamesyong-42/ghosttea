@@ -164,7 +164,24 @@ small application-binding layer as desktop and exposing configurable Option
 behavior. The Metal view can become first responder on tap and reports hardware
 presses through `onHardwareKeyEvent`; returning `false` preserves UIKit's normal
 responder chain, and responder loss releases handled held keys.
-Software-keyboard and marked-text support are not part of this slice.
+
+The next native-input slice makes that same Metal view a deliberately small
+`UITextInput` document. The document contains only the active marked-text
+composition; terminal history remains native-model state and is never mirrored
+into UIKit. Committed Unicode is emitted once through `onSoftwareInputEvent`,
+while Return, backward delete, and paste reuse the Ghostty-backed key and paste
+encoders. Newlines are normalized into ordered Return events, including CRLF,
+and terminal bracketed-paste mode therefore applies equally to software paste
+and Command-V.
+
+Marked text is drawn as a transient overlay at the retained terminal cursor,
+with UIKit candidate and caret geometry anchored to the same position. UTF-16
+selection is retained for UIKit, but deletion and character-range queries honor
+composed character sequences so emoji and combining text are not split. Smart
+quotes, smart dashes, autocorrection, spell checking, and autocapitalization
+are disabled because terminal input must preserve user intent. The harness
+preview exposes both hardware and software input callbacks and displays their
+encoded bytes after its production TRF1 proof.
 
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and

@@ -800,3 +800,30 @@ and paste encoding. The complete package suite contains 58 tests. Both iOS SDK
 builds pass, and the rebuilt iPhone 17 Pro Simulator retains the production
 TRF1/Metal automation marker. Software keyboard, marked-text/IME composition,
 and physical hardware-key matrix evidence remain Phase 5 work.
+
+## 2026-07-17: software keyboard and marked-text boundary
+
+The second Phase 5 slice makes the production Metal surface conform to
+`UITextInput`. Its UIKit document intentionally contains only the current
+marked-text composition and selection; it does not duplicate the terminal
+screen or scrollback. Marked text remains local until commit, is rendered at
+the retained terminal cursor, and reports cursor-anchored caret and candidate
+geometry. Backward deletion and UIKit character-range queries use composed
+character sequences so multi-scalar emoji are not split.
+
+Committed Unicode, Return, backward delete, and paste are expressed as ordered
+software-input events. Return and delete reuse the shared Ghostty key encoder,
+and paste reuses terminal-mode-aware paste encoding, including bracketed paste.
+The terminal surface disables UIKit spelling and smart-text transformations.
+The harness preview now accepts real software/IME and hardware input after its
+TRF1 proof and displays the resulting bytes or application action.
+
+Two package tests cover local Japanese composition, replacement, unmarking,
+composed emoji deletion/range queries, CR/LF/CRLF ordering, terminal deletion,
+Unicode encoding, Ghostty Return/Delete bytes, empty paste, and bracketed paste.
+The simulator automation drives the real `UITextInput` methods and checks
+marked-state lifetime, ordered callbacks, cursor geometry, and terminal-safe
+keyboard traits. The package suite now contains 60 tests; both iOS SDK builds
+and the iPhone 17 Pro production TRF1/Metal marker pass. Physical-device CJK,
+combining-mark, emoji, dictation, third-party software-keyboard, and hardware
+keyboard matrix runs remain release evidence.

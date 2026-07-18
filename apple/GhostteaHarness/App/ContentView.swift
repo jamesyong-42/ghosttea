@@ -72,10 +72,18 @@ struct ContentView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
           if let frame = model.framePreview {
-            GhostteaTerminalPreview(frame: frame, visible: scenePhase == .active)
-              .frame(height: 160)
-              .clipShape(RoundedRectangle(cornerRadius: 8))
-              .accessibilityLabel("Rendered Ghosttea terminal preview")
+            GhostteaTerminalPreview(
+              frame: frame,
+              visible: scenePhase == .active,
+              onHardwareInput: model.handleHardwareInput,
+              onSoftwareInput: model.handleSoftwareInput
+            )
+            .frame(height: 160)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("Rendered Ghosttea terminal preview")
+            Text(model.terminalInputResult)
+              .font(.caption)
+              .foregroundStyle(.secondary)
           }
         }
 
@@ -347,6 +355,8 @@ struct ContentView: View {
 private struct GhostteaTerminalPreview: UIViewRepresentable {
   let frame: Data
   let visible: Bool
+  let onHardwareInput: (GhostteaHardwareKeyEvent) -> Bool
+  let onSoftwareInput: (GhostteaSoftwareInputEvent) -> Void
 
   final class Coordinator {
     var appliedFrame: Data?
@@ -358,13 +368,18 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
 
   func makeUIView(context: Context) -> GhostteaTerminalMetalView {
     do {
-      return try GhostteaTerminalMetalView(terminalFrame: .zero)
+      let view = try GhostteaTerminalMetalView(terminalFrame: .zero)
+      view.onHardwareKeyEvent = onHardwareInput
+      view.onSoftwareInputEvent = onSoftwareInput
+      return view
     } catch {
       preconditionFailure("Metal terminal preview unavailable: \(error)")
     }
   }
 
   func updateUIView(_ view: GhostteaTerminalMetalView, context: Context) {
+    view.onHardwareKeyEvent = onHardwareInput
+    view.onSoftwareInputEvent = onSoftwareInput
     view.setTerminalVisible(visible)
     guard context.coordinator.appliedFrame != frame else { return }
     do {
