@@ -1,0 +1,411 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:2d610210-754c-4eed-a3c6-8f798651d2e9",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-18T00:00:00Z",
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:npm/ghosttea@0.1.0",
+      "name": "Ghosttea iOS",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/ghosttea@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:scope",
+          "value": "iOS release direct and bundled inputs"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/ghostty.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/ssh.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/fonts.lock.json"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "ghosttea:reproducible",
+        "value": "true"
+      },
+      {
+        "name": "ghosttea:license-file:MIT:sha256",
+        "value": "d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0"
+      },
+      {
+        "name": "ghosttea:license-file:OFL-1.1:sha256",
+        "value": "fb755fa3280d1d215a20df2e64fe6a0f75f8208439b11671978214aae60d2997"
+      },
+      {
+        "name": "ghosttea:font-notices:sha256",
+        "value": "b3177ac25cc57c976ae9e2a458a23cf840b7d4c919e4f87fdc8cab7875c3ea17"
+      },
+      {
+        "name": "ghosttea:ssh-production-approved",
+        "value": "false"
+      },
+      {
+        "name": "ghosttea:ssh-security-reviewed-at",
+        "value": "2026-07-17"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-ffi@0.1.0",
+      "name": "ghosttea-ffi",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-ffi@0.1.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "Ghostty VT",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "name": "OpenSSL",
+      "version": "openssl-3.5.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/openssl/openssl.git"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "name": "libssh2",
+      "version": "libssh2-1.11.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/libssh2/libssh2.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:production-approved",
+          "value": "false"
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "The pinned libssh2 release is affected by newly disclosed pre-authentication vulnerabilities and no fixed upstream release has been tagged."
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "SSH security fixes not incorporated: 256d04b60d80bf1190e96b0ad1e91b2174d744b1, 2dae3024897e1898d389835151f4e9606227721d, 17626857d20b3c9a1addfa45979dadcee1cd84a4, 97acf3dfda80c91c3a8c9f2372546301d4a1a7a8, 34497525929b9a47f03dfb81887ac896202b7e12, a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "SSH revalidation incomplete: apple-xcframework, package-tests, ssh-fixture-candidate, ssh-fixture-swift, ios-device-harness"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "256d04b60d80bf1190e96b0ad1e91b2174d744b1"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "2dae3024897e1898d389835151f4e9606227721d"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "17626857d20b3c9a1addfa45979dadcee1cd84a4"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "34497525929b9a47f03dfb81887ac896202b7e12"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Regular.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "regular"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Regular.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Bold.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ece02baa478a98f3b6ea0c276c1a9207c6bbdcbde04b8010542f2b0671432438"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "bold"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Bold.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Italic.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7fab948d4bea3441d6dbff7f726b4fa1e27087e98286902b53ddf523be7a20fc"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "italic"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Italic.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-BoldItalic.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a70e3862b5d186548b8cc0badc65016ac8040205cc9753f31329c4b51dd131e3"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "bold-italic"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-BoldItalic.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "NotoColorEmoji.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bf2a8506b80614ba190a34c7b037af1269a7d614fe9f3b613cc15cdeec6f814b"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "fallback-emoji"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/NotoColorEmoji.ttf"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/ghosttea@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ghosttea-ffi@0.1.0",
+        "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+        "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+        "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-ffi@0.1.0",
+      "dependsOn": ["pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"]
+    },
+    {
+      "ref": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "dependsOn": ["pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"]
+    },
+    {
+      "ref": "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    }
+  ]
+}

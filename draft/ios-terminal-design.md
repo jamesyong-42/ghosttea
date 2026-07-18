@@ -2465,6 +2465,12 @@ change, suspension, reconnection, and explicit disconnect scenarios.
 
 **Estimated effort:** 2-4 weeks
 
+**Completed:** 2026-07-18. All stated model, conformance, adaptive SwiftUI,
+command, multi-session SSH, protected restoration, palette, and saved-profile
+deliverables pass the shared tests, both generic iOS builds, and the signed
+iPhone workspace gate. The identity-only persistence contract satisfies the
+phase exit gate without restoring secrets or stale live-connection claims.
+
 **Started:** 2026-07-18. The first slice adds a version-1, per-tab pane-tree
 document and pure reducers to both `@vibecook/ghosttea-react` and the new
 `GhostteaWorkspace` Swift product. The persisted shape contains only node IDs,
@@ -2648,6 +2654,17 @@ not restore secrets or stale live-connection claims.
 ### Phase 8: release hardening
 
 **Estimated effort:** 2-3 weeks
+
+**Started:** 2026-07-18. The first slice adds a deterministic CycloneDX 1.6
+inventory for the iOS application's direct/static native inputs and exact
+bundled font files. Its verifier derives the expected graph from the Ghostty,
+SSH, font, package, license, and notice locks and rejects any unreviewed drift.
+The normal repository check runs inventory mode; release mode additionally
+fails closed while the SSH lock records `productionApproved: false`. The
+checked-in BOM currently contains nine components and exact SHA-256 values for
+all five fonts plus tracked license/notice hashes. Transitive Rust crates,
+final toolchain identity, schema validation in release CI, notice packaging,
+and the other Phase 8 gates remain open.
 
 Deliverables:
 

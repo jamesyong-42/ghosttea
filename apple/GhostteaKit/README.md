@@ -22,6 +22,11 @@ libssh2's in-memory API without a filesystem path. The policy and
 remaining product integration work are recorded in
 [`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
 
+Phase 8 release inputs are tracked in a deterministic CycloneDX inventory.
+[`Compatibility/release-hardening.md`](Compatibility/release-hardening.md)
+defines its direct/static scope, exact drift check, fail-closed SSH approval
+gate, and the transitive/toolchain expansion still required before release.
+
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,
 terminal dimensions, and a shell/tmux/Zellij attach choice, but authentication
