@@ -110,14 +110,14 @@ public indirect enum GhostteaWorkspaceNode: Equatable, Sendable, Codable {
     }
   }
 
-  fileprivate var id: String {
+  public var id: String {
     switch self {
     case .pane(let pane): pane.id
     case .split(let split): split.id
     }
   }
 
-  fileprivate var panes: [GhostteaWorkspacePane] {
+  public var panes: [GhostteaWorkspacePane] {
     switch self {
     case .pane(let pane): [pane]
     case .split(let split): split.first.panes + split.second.panes

@@ -43,6 +43,13 @@ requests window closure. Swift and TypeScript consume the same JSON vectors.
 Restoration filters both trees and tabs against sessions that are actually live
 and repairs stale active, zoom, and selected-tab references.
 
+`GhostteaWorkspaceUI` adapts that same model without changing it. Regular iPad
+and external-display size classes show the selected tab's recursive split tree;
+compact iPhone size classes mount only the active pane and provide a pane
+switcher. Zoom presents one pane in either mode. The caller supplies pane views
+and handles emitted reducer actions, keeping terminal/session ownership outside
+the SwiftUI layout product.
+
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and
 the device harness. `GhostteaSSHSessionFactory` installs SSH-specific, redacted

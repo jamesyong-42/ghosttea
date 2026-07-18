@@ -492,12 +492,13 @@ Its `Session` owns a `TerminalModel` rather than owning
 
 `apple/GhostteaKit/Package.swift` should expose:
 
-| Product             | Responsibility                                   |
-| ------------------- | ------------------------------------------------ |
-| `GhostteaCore`      | Safe Swift ownership of the C handle and buffers |
-| `GhostteaTerminal`  | UIKit input surface and Metal renderer           |
-| `GhostteaWorkspace` | SwiftUI tabs, splits, commands, and restoration  |
-| `GhostteaSSH`       | First-party SSH transport selected by Phase 0    |
+| Product               | Responsibility                                      |
+| --------------------- | --------------------------------------------------- |
+| `GhostteaCore`        | Safe Swift ownership of the C handle and buffers    |
+| `GhostteaTerminal`    | UIKit input surface and Metal renderer              |
+| `GhostteaWorkspace`   | Portable tab/split model, commands, and restoration |
+| `GhostteaWorkspaceUI` | Adaptive SwiftUI tabs and split presentation        |
+| `GhostteaSSH`         | First-party SSH transport selected by Phase 0       |
 
 Applications may consume `GhostteaTerminal` with a custom transport without
 depending on `GhostteaSSH` or `GhostteaWorkspace`.
@@ -2482,6 +2483,19 @@ order, replacement selection, ordered session-close output, and the sole-tab
 close-window result. The resulting totals are 50 React package tests and 80
 Swift package tests. Adaptive iPad/iPhone presentation, application command
 routing, and connection-profile integration remain later Phase 7 slices.
+
+The third slice adds `GhostteaWorkspaceUI` as a separate SwiftUI product over
+the portable model. Regular horizontal size classes render the selected tab's
+recursive split tree at its model ratios; compact size classes retain that same
+tree but mount only the active pane and expose a pane switcher. Zoom mounts one
+pane in either mode, and compact zoom presents an explicit exit rather than
+allowing hidden focus changes. The view emits reducer actions and receives pane
+content through a closure, so it does not own terminal, transport, credential,
+or session objects. A pure presentation snapshot makes selected-tab, visible-
+pane, focus, compact, and zoom behavior testable without UI introspection.
+The complete Swift package now passes 83 tests, and the UI product builds for
+generic physical iOS and iOS Simulator destinations. Application command
+routing and connection-profile integration remain later Phase 7 slices.
 
 Deliverables:
 

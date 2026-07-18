@@ -18,6 +18,7 @@ let package = Package(
     .library(name: "GhostteaSession", targets: ["GhostteaSession"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
     .library(name: "GhostteaWorkspace", targets: ["GhostteaWorkspace"]),
+    .library(name: "GhostteaWorkspaceUI", targets: ["GhostteaWorkspaceUI"]),
     .library(name: "GhosttyVtProof", targets: ["GhosttyVtProof"]),
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
   ],
@@ -94,6 +95,10 @@ let package = Package(
     .target(name: "GhostteaTransport"),
     .target(name: "GhostteaWorkspace"),
     .target(
+      name: "GhostteaWorkspaceUI",
+      dependencies: ["GhostteaWorkspace"]
+    ),
+    .target(
       name: "GhostteaSSHProbe",
       dependencies: ["GhostteaTransport", "GhostteaAppleNative"]
     ),
@@ -154,6 +159,10 @@ let package = Package(
       name: "GhostteaWorkspaceTests",
       dependencies: ["GhostteaWorkspace"],
       resources: [.copy("Fixtures")]
+    ),
+    .testTarget(
+      name: "GhostteaWorkspaceUITests",
+      dependencies: ["GhostteaWorkspace", "GhostteaWorkspaceUI"]
     ),
     .testTarget(
       name: "GhosttyVtProofTests",
