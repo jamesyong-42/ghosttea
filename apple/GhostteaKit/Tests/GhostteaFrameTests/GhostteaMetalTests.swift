@@ -353,6 +353,14 @@ private let blinkingCursor = TRF1CursorState(
   #expect(wheel.remainder == 1)
   #expect(wheel.consume(deltaPoints: -10, lineHeight: 19) == -1)
   #expect(wheel.remainder == 0)
+
+  let selectAll = GhostteaTerminalSelection.selectAll(totalRows: 100, columns: 80)
+  #expect(selectAll?.anchor == GhostteaTerminalCellPoint(column: 0, row: 0))
+  #expect(selectAll?.focus == GhostteaTerminalCellPoint(column: 79, row: 99))
+  #expect(GhostteaTerminalSelection.selectAll(totalRows: 0, columns: 80) == nil)
+  #expect(GhostteaSelectionAutoScroll.direction(y: -1, minimum: 0, maximum: 100) == -1)
+  #expect(GhostteaSelectionAutoScroll.direction(y: 50, minimum: 0, maximum: 100) == 0)
+  #expect(GhostteaSelectionAutoScroll.direction(y: 101, minimum: 0, maximum: 100) == 1)
 }
 
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {

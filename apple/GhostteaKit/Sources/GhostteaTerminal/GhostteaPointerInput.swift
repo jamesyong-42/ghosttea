@@ -113,6 +113,17 @@ public struct GhostteaTerminalSelection: Equatable, Sendable {
     self.focus = focus
   }
 
+  public static func selectAll(totalRows: UInt64, columns: UInt16) -> Self? {
+    guard totalRows > 0, columns > 0 else { return nil }
+    return Self(
+      anchor: GhostteaTerminalCellPoint(column: 0, row: 0),
+      focus: GhostteaTerminalCellPoint(
+        column: columns - 1,
+        row: UInt32(min(UInt64(UInt32.max), totalRows - 1))
+      )
+    )
+  }
+
   public func viewportSelection(
     offset: UInt64,
     columns: UInt16,
@@ -137,6 +148,14 @@ public struct GhostteaTerminalSelection: Equatable, Sendable {
         row: endAfterViewport ? rows - 1 : UInt16(UInt64(end.row) - offset)
       )
     )
+  }
+}
+
+enum GhostteaSelectionAutoScroll {
+  static func direction(y: Double, minimum: Double, maximum: Double) -> Int {
+    if y < minimum { return -1 }
+    if y > maximum { return 1 }
+    return 0
   }
 }
 

@@ -55,6 +55,7 @@
     public var onScrollRows: ((Int) -> Void)?
     public var onSelectionChange: ((GhostteaTerminalSelection?) -> Void)?
     public var onSelectionCommit: ((GhostteaTerminalSelection) -> Void)?
+    public var onSelectAll: (() -> Void)?
     public var forceLocalSelection = false
     public weak var inputDelegate: UITextInputDelegate?
     public var markedTextStyle: [NSAttributedString.Key: Any]? {
@@ -119,6 +120,9 @@
     private var absoluteSelection: GhostteaTerminalSelection?
     private var wheelAccumulator = GhostteaWheelAccumulator()
     private var previousScrollTranslation: CGFloat = 0
+    private var selectionAutoScrollDirection = 0
+    private var selectionAutoScrollColumn: UInt16 = 0
+    private var selectionAutoScrollTask: Task<Void, Never>?
     private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
     private let markedTextLabel = UILabel()
     private lazy var textInputTokenizer = UITextInputStringTokenizer(textInput: self)
@@ -153,6 +157,17 @@
       target: self,
       action: #selector(handlePointerHover(_:))
     )
+    private lazy var contextMenuTapRecognizer: UITapGestureRecognizer = {
+      let recognizer = UITapGestureRecognizer(
+        target: self,
+        action: #selector(handleContextMenuTap(_:))
+      )
+      recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+      recognizer.buttonMaskRequired = .secondary
+      recognizer.cancelsTouchesInView = false
+      return recognizer
+    }()
+    private lazy var editMenuInteraction = UIEditMenuInteraction(delegate: self)
     private lazy var cursorBlinkController = GhostteaCursorBlinkController { [weak self] visible in
       self?.applyCursorBlinkVisibility(visible)
     }
@@ -173,6 +188,8 @@
       addGestureRecognizer(pointerPanRecognizer)
       addGestureRecognizer(touchSelectionRecognizer)
       addGestureRecognizer(pointerHoverRecognizer)
+      addGestureRecognizer(contextMenuTapRecognizer)
+      addInteraction(editMenuInteraction)
       markedTextLabel.backgroundColor = UIColor(
         red: 40 / 255,
         green: 44 / 255,
@@ -211,6 +228,7 @@
     }
 
     deinit {
+      selectionAutoScrollTask?.cancel()
       NotificationCenter.default.removeObserver(self)
     }
 
@@ -304,6 +322,7 @@
     public override func resignFirstResponder() -> Bool {
       let resigned = super.resignFirstResponder()
       if resigned {
+        stopSelectionAutoScroll()
         commitMarkedTextIfNeeded()
         clearAccessoryModifiers()
         releaseHandledHardwareKeys()
@@ -354,6 +373,7 @@
       do {
         switch try retainedState.apply(data) {
         case .applied:
+          updateAutoScrollSelectionAfterFrame()
           updateRenderedSelection()
           updateCursorBlinkSurfaceVisibility()
           cursorBlinkController.updateCursor(retainedState.cursor)
@@ -409,6 +429,19 @@
       absoluteSelection = selection
       updateRenderedSelection()
       onSelectionChange?(selection)
+    }
+
+    public func selectAllTerminal() {
+      let total = retainedState.scrollbar?.total ?? UInt64(retainedState.rows.count)
+      let columns = max(1, currentGridSize?.columns ?? retainedState.columns)
+      guard
+        let selection = GhostteaTerminalSelection.selectAll(
+          totalRows: total,
+          columns: columns
+        )
+      else { return }
+      setSelection(selection)
+      onSelectAll?()
     }
 
     public func setTerminalFocused(_ focused: Bool) {
@@ -516,6 +549,7 @@
           emitMouse(action: .motion, button: .left, at: location, modifiers: modifiers)
         case .selection(let anchor):
           updateLocalSelection(anchor: anchor, focus: terminalCell(at: location))
+          updateSelectionAutoScroll(at: location)
         case .none:
           break
         }
@@ -537,6 +571,7 @@
       case .changed:
         guard case .selection(let anchor) = pointerInteraction else { return }
         updateLocalSelection(anchor: anchor, focus: terminalCell(at: location))
+        updateSelectionAutoScroll(at: location)
       case .ended, .cancelled, .failed:
         finishPointerInteraction(at: location, modifiers: [])
       default:
@@ -557,6 +592,17 @@
       default:
         break
       }
+    }
+
+    @objc private func handleContextMenuTap(_ recognizer: UITapGestureRecognizer) {
+      guard recognizer.state == .ended else { return }
+      _ = focusTerminalInput()
+      editMenuInteraction.presentEditMenu(
+        with: UIEditMenuConfiguration(
+          identifier: nil,
+          sourcePoint: recognizer.location(in: self)
+        )
+      )
     }
 
     private func handleScrollPan(_ recognizer: UIPanGestureRecognizer) {
@@ -615,6 +661,7 @@
       at location: CGPoint,
       modifiers: GhostteaInputModifiers
     ) {
+      stopSelectionAutoScroll()
       switch pointerInteraction {
       case .remote:
         emitMouse(action: .release, button: .left, at: location, modifiers: modifiers)
@@ -634,6 +681,51 @@
         break
       }
       pointerInteraction = .none
+    }
+
+    private func updateSelectionAutoScroll(at location: CGPoint) {
+      let direction = GhostteaSelectionAutoScroll.direction(
+        y: Double(location.y),
+        minimum: Double(bounds.minY),
+        maximum: Double(bounds.maxY)
+      )
+      guard direction != 0 else {
+        stopSelectionAutoScroll()
+        return
+      }
+      selectionAutoScrollColumn = viewportCell(at: location).column
+      guard selectionAutoScrollDirection != direction || selectionAutoScrollTask == nil else {
+        return
+      }
+      selectionAutoScrollDirection = direction
+      selectionAutoScrollTask?.cancel()
+      selectionAutoScrollTask = Task { [weak self] in
+        while !Task.isCancelled {
+          try? await Task.sleep(for: .milliseconds(40))
+          guard !Task.isCancelled, let self else { return }
+          self.onScrollRows?(direction)
+        }
+      }
+    }
+
+    private func stopSelectionAutoScroll() {
+      selectionAutoScrollDirection = 0
+      selectionAutoScrollTask?.cancel()
+      selectionAutoScrollTask = nil
+    }
+
+    private func updateAutoScrollSelectionAfterFrame() {
+      guard selectionAutoScrollDirection != 0,
+        case .selection(let anchor) = pointerInteraction
+      else { return }
+      let offset = retainedState.scrollbar?.offset ?? 0
+      let viewportRows = max(1, currentGridSize?.rows ?? UInt16(retainedState.rows.count))
+      let viewportRow: UInt16 = selectionAutoScrollDirection < 0 ? 0 : viewportRows - 1
+      let focus = GhostteaTerminalCellPoint(
+        column: selectionAutoScrollColumn,
+        row: UInt32(min(UInt64(UInt32.max), offset + UInt64(viewportRow)))
+      )
+      updateLocalSelection(anchor: anchor, focus: focus)
     }
 
     private func emitMouse(
@@ -831,6 +923,7 @@
     }
 
     @objc private func applicationDidEnterBackground() {
+      stopSelectionAutoScroll()
       suspendGPU()
     }
 
@@ -1137,6 +1230,37 @@
         width: max(1, CGFloat(GhostteaTerminalLayout.cellWidth)),
         height: CGFloat(GhostteaTerminalLayout.lineHeight)
       )
+    }
+  }
+
+  extension GhostteaTerminalMetalView: @preconcurrency UIEditMenuInteractionDelegate {
+    public func editMenuInteraction(
+      _ interaction: UIEditMenuInteraction,
+      menuFor configuration: UIEditMenuConfiguration,
+      suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+      let copy = UIAction(
+        title: "Copy",
+        image: UIImage(systemName: "doc.on.doc"),
+        attributes: absoluteSelection == nil ? .disabled : []
+      ) { [weak self] _ in
+        guard let self, let selection = self.absoluteSelection else { return }
+        self.onSelectionCommit?(selection)
+      }
+      let selectAll = UIAction(
+        title: "Select All",
+        image: UIImage(systemName: "selection.pin.in.out")
+      ) { [weak self] _ in
+        self?.selectAllTerminal()
+      }
+      let paste = UIAction(
+        title: "Paste",
+        image: UIImage(systemName: "doc.on.clipboard"),
+        attributes: UIPasteboard.general.hasStrings ? [] : .disabled
+      ) { [weak self] _ in
+        self?.paste(nil)
+      }
+      return UIMenu(children: [copy, selectAll, paste])
     }
   }
 #endif

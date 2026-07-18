@@ -2248,6 +2248,18 @@ keyboard input. Zero-length clicks clear selection. Word/line expansion,
 selection-edge autoscroll, secondary-button context menus, and physical pointer
 ergonomics remain later Phase 5 work.
 
+The sixth slice closes the remaining selection behaviors already present in
+the desktop demo. A local drag held outside the top or bottom edge starts a
+cancellable 40 ms, one-row native scroll request. Each returned TRF1 scrollbar
+frame advances the absolute selection focus at that edge; completion,
+backgrounding, or responder loss cancels the task. A secondary indirect-pointer
+click presents a UIKit edit menu with Copy, Select All, and Paste. Copy and
+non-empty drag completion remain host effects that use native selection-text
+extraction. Select All constructs the full absolute range for rendering and
+invokes the native `select_all` extraction path. The diagnostic host alone owns
+the resulting clipboard write. Word/line expansion is not claimed here because
+the current desktop demo does not implement it either.
+
 Deliverables:
 
 - `UITextInput` integration and marked-text overlay;

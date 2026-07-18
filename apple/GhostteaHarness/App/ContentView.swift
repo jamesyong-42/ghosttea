@@ -79,7 +79,8 @@ struct ContentView: View {
               onSoftwareInput: model.handleSoftwareInput,
               onMouseInput: model.handleMouseInput,
               onScrollRows: model.handleScrollRows,
-              onSelectionCommit: model.handleSelectionCommit
+              onSelectionCommit: model.handleSelectionCommit,
+              onSelectAll: model.handleSelectAll
             )
             .frame(height: 160)
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -363,6 +364,7 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
   let onMouseInput: (GhostteaTerminalMouseEvent) -> Void
   let onScrollRows: (Int) -> Void
   let onSelectionCommit: (GhostteaTerminalSelection) -> Void
+  let onSelectAll: () -> Void
 
   final class Coordinator {
     var appliedFrame: Data?
@@ -380,6 +382,7 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
       view.onMouseInputEvent = onMouseInput
       view.onScrollRows = onScrollRows
       view.onSelectionCommit = onSelectionCommit
+      view.onSelectAll = onSelectAll
       return view
     } catch {
       preconditionFailure("Metal terminal preview unavailable: \(error)")
@@ -392,6 +395,7 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
     view.onMouseInputEvent = onMouseInput
     view.onScrollRows = onScrollRows
     view.onSelectionCommit = onSelectionCommit
+    view.onSelectAll = onSelectAll
     view.setTerminalVisible(visible)
     guard context.coordinator.appliedFrame != frame else { return }
     do {

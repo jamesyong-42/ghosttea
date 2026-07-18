@@ -34,6 +34,8 @@ The harness provides:
   in the automatic TRF1 simulator probe;
 - interactive indirect-pointer mouse/hover, local wheel scrolling, touch
   selection, and native-model selection extraction on the TRF1 preview;
+- secondary-click Copy/Select All/Paste plus cancellable edge autoscroll, with
+  clipboard writes performed only after native selection extraction;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a

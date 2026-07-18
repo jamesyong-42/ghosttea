@@ -887,3 +887,22 @@ iPhone 17 Pro simulator production marker pass, including recognizer presence,
 absolute selection state, local ownership, and coordinate assertions. Physical
 trackpad/mouse/touch ergonomics, edge autoscroll, word/line expansion, and
 secondary-button menus remain device and implementation gates.
+
+## 2026-07-17: selection edge scrolling and edit menu
+
+The sixth Phase 5 slice matches the desktop demo's remaining local-selection
+behavior. A drag beyond the vertical bounds requests one native scroll row
+every 40 ms and moves the absolute focus after each returned TRF1 scrollbar
+frame. Gesture completion, responder loss, and backgrounding cancel the task.
+The production surface now exposes a secondary-click UIKit menu with Copy,
+Select All, and Paste. Copy and completed selections use native extraction;
+Select All retains a full absolute highlight and uses Ghostty's native
+`select_all` path. The harness owns the explicit `UIPasteboard` write.
+
+The existing pointer conformance test now also covers edge direction, bounded
+full-range construction, and empty-terminal handling. Both iOS SDK builds pass
+under Swift 6, including the pre-concurrency bridge required by UIKit's legacy
+edit-menu delegate annotation. The complete 63-test suite and iPhone 17 Pro
+simulator marker pass. Physical secondary-click, edge-hold timing, clipboard
+confirmation, and touch ergonomics remain device evidence; word/line expansion
+is not a parity claim because it is absent from the desktop demo.

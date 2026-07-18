@@ -218,6 +218,16 @@ native-model decisions. Zero-length clicks clear selection. Word/line expansion,
 selection-edge autoscroll, secondary-button menus, and device ergonomics remain
 follow-up interaction work.
 
+Selection now also matches the desktop demo at viewport edges and in its edit
+menu. While a local drag remains above or below the surface, a cancellable
+40 ms task requests one native scroll row and advances the absolute focus when
+the returned TRF1 scrollbar frame arrives. Responder loss, backgrounding, and
+gesture completion stop the task. A secondary indirect-pointer click presents
+UIKit's Copy, Select All, and Paste menu. Copy and completed non-empty drags ask
+the host to extract native selection text; Select All highlights the entire
+absolute row range and invokes the native `selectAll` extraction path. The
+diagnostic harness writes only those user-invoked results to `UIPasteboard`.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

@@ -301,13 +301,18 @@ final class HarnessModel: ObservableObject {
           at: CGPoint(x: 16, y: 22)
         )
         var selectionChanges: [GhostteaTerminalSelection?] = []
+        var selectAllCount = 0
         surface.onSelectionChange = { selectionChanges.append($0) }
+        surface.onSelectAll = { selectAllCount += 1 }
         let probeSelection = GhostteaTerminalSelection(
           anchor: GhostteaTerminalCellPoint(column: 1, row: 0),
           focus: GhostteaTerminalCellPoint(column: 8, row: 1)
         )
         surface.setSelection(probeSelection)
         let retainedSelection = surface.selection
+        surface.clearSelection()
+        surface.selectAllTerminal()
+        let retainedSelectAll = surface.selection
         surface.clearSelection()
         let recognizers = surface.gestureRecognizers ?? []
         var softwareInputEvents: [GhostteaSoftwareInputEvent] = []
@@ -400,8 +405,10 @@ final class HarnessModel: ObservableObject {
           pointerEvent.paddingLeft == 61,
           pointerEvent.paddingTop == 2,
           retainedSelection == probeSelection,
-          selectionChanges.count == 2,
+          selectionChanges.count == 4,
           selectionChanges.last.map({ $0 == nil }) == true,
+          selectAllCount == 1,
+          retainedSelectAll?.anchor == GhostteaTerminalCellPoint(column: 0, row: 0),
           recognizers.contains(where: { $0 is UIPanGestureRecognizer }),
           recognizers.contains(where: { $0 is UILongPressGestureRecognizer }),
           recognizers.contains(where: { $0 is UIHoverGestureRecognizer }),
@@ -518,9 +525,29 @@ final class HarnessModel: ObservableObject {
           endColumn: selection.focus.column,
           endRow: selection.focus.row
         )
-        terminalInputResult = "Selected \(text.utf8.count) UTF-8 bytes · \(text.prefix(32))"
+        UIPasteboard.general.string = text
+        terminalInputResult = "Copied \(text.utf8.count) UTF-8 bytes · \(text.prefix(32))"
       } catch {
         terminalInputResult = "Selection extraction failed: \(error)"
+      }
+    }
+  }
+
+  func handleSelectAll() {
+    guard let terminalInputEncoder else { return }
+    Task {
+      do {
+        let text = try await terminalInputEncoder.terminal.selectionText(
+          startColumn: 0,
+          startRow: 0,
+          endColumn: 0,
+          endRow: 0,
+          selectAll: true
+        )
+        UIPasteboard.general.string = text
+        terminalInputResult = "Copied all · \(text.utf8.count) UTF-8 bytes"
+      } catch {
+        terminalInputResult = "Select All extraction failed: \(error)"
       }
     }
   }
