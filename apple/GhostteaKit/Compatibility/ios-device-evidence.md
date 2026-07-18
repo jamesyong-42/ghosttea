@@ -864,3 +864,26 @@ cell mapping, and non-tracking local-selection decision. The package suite now
 contains 62 tests; both iOS SDK builds and the iPhone 17 Pro production
 TRF1/Metal marker pass. UIKit gestures, wheel momentum, scrollback selection,
 and device pointer ergonomics remain the next implementation and release gates.
+
+## 2026-07-17: UIKit pointer, wheel, and local selection
+
+The fifth Phase 5 slice installs indirect-pointer pan and hover recognizers and
+a direct-touch long-press selection recognizer on the production Metal view.
+Remote ownership emits normalized Ghostty mouse events; Shift or explicit
+force-local mode retains local selection. Wheel normalization matches desktop's
+2× multiplier and sub-row accumulation, caps remote wheel floods at 12 packets,
+and returns local row deltas to the host's native scroll path.
+
+Selections now live in absolute scrollback coordinates and are clipped into the
+visible viewport solely for rendering. A zero-length click clears selection;
+non-empty completion invokes a host effect that extracts text through the
+native terminal model. The diagnostic harness wires remote mouse encoding,
+native scroll updates, and native selection extraction to its retained terminal
+actor. The new package test covers forward/reverse viewport clipping, offscreen
+selection removal, and byte-for-byte desktop wheel accumulation.
+
+The complete package suite now contains 63 tests. Both iOS SDK builds and the
+iPhone 17 Pro simulator production marker pass, including recognizer presence,
+absolute selection state, local ownership, and coordinate assertions. Physical
+trackpad/mouse/touch ergonomics, edge autoscroll, word/line expansion, and
+secondary-button menus remain device and implementation gates.

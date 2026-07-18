@@ -2230,6 +2230,24 @@ proves the shared Ghostty encoder remains the only source of mouse bytes.
 Gesture recognizers, momentum/wheel accumulation, absolute scrollback
 selection, and native selection-text extraction remain the next pointer slice.
 
+The fifth slice adds the UIKit interaction layer. Indirect-pointer pan emits
+normalized left press/motion/release when the application owns the mouse, while
+hover emits tracking motion without a pressed button. Shift and the explicit
+force-local mode override application tracking. Direct touch uses a long-press
+selection gesture rather than sending accidental remote clicks. Wheel input
+ports desktop's 2× precise-device multiplier and retained sub-row remainder;
+tracking mode emits at most 12 wheel packets per update, while local mode asks
+the host to mutate native scrollback and apply its returned frame.
+
+Selections are view-owned in absolute scrollback coordinates and are clipped
+to viewport coordinates only for Metal rendering, so a later scroll frame does
+not detach the highlight from its rows. Change and commit callbacks remain
+effects rather than view-owned I/O. The harness routes commits to native
+`selectionText`, and routes mouse and scroll through the same terminal actor as
+keyboard input. Zero-length clicks clear selection. Word/line expansion,
+selection-edge autoscroll, secondary-button context menus, and physical pointer
+ergonomics remain later Phase 5 work.
+
 Deliverables:
 
 - `UITextInput` integration and marked-text overlay;

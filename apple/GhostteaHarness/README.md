@@ -32,6 +32,8 @@ The harness provides:
   row, and reports their exact encoded bytes or application action;
 - production pointer routing and safe-area-aware mouse/cell geometry assertions
   in the automatic TRF1 simulator probe;
+- interactive indirect-pointer mouse/hover, local wheel scrolling, touch
+  selection, and native-model selection extraction on the TRF1 preview;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a

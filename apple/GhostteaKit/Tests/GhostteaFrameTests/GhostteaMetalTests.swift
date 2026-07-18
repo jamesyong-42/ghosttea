@@ -330,6 +330,31 @@ private let blinkingCursor = TRF1CursorState(
   #expect(!state.mouseTracking)
 }
 
+@Test func pointerSelectionAndWheelNormalizationMatchDesktop() {
+  let selection = GhostteaTerminalSelection(
+    anchor: GhostteaTerminalCellPoint(column: 3, row: 40),
+    focus: GhostteaTerminalCellPoint(column: 8, row: 60)
+  )
+  let viewport = selection.viewportSelection(offset: 50, columns: 80, rows: 10)
+  #expect(viewport?.anchor == GhostteaViewportCellPoint(column: 0, row: 0))
+  #expect(viewport?.focus == GhostteaViewportCellPoint(column: 79, row: 9))
+  #expect(selection.viewportSelection(offset: 70, columns: 80, rows: 10) == nil)
+
+  let reversed = GhostteaTerminalSelection(anchor: selection.focus, focus: selection.anchor)
+  #expect(
+    reversed.viewportSelection(offset: 50, columns: 80, rows: 10)?.anchor
+      == GhostteaViewportCellPoint(column: 0, row: 0)
+  )
+
+  var wheel = GhostteaWheelAccumulator()
+  #expect(wheel.consume(deltaPoints: 4, lineHeight: 19) == 0)
+  #expect(wheel.remainder == 8)
+  #expect(wheel.consume(deltaPoints: 6, lineHeight: 19) == 1)
+  #expect(wheel.remainder == 1)
+  #expect(wheel.consume(deltaPoints: -10, lineHeight: 19) == -1)
+  #expect(wheel.remainder == 0)
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

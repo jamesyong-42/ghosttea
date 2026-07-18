@@ -300,6 +300,16 @@ final class HarnessModel: ObservableObject {
           button: .left,
           at: CGPoint(x: 16, y: 22)
         )
+        var selectionChanges: [GhostteaTerminalSelection?] = []
+        surface.onSelectionChange = { selectionChanges.append($0) }
+        let probeSelection = GhostteaTerminalSelection(
+          anchor: GhostteaTerminalCellPoint(column: 1, row: 0),
+          focus: GhostteaTerminalCellPoint(column: 8, row: 1)
+        )
+        surface.setSelection(probeSelection)
+        let retainedSelection = surface.selection
+        surface.clearSelection()
+        let recognizers = surface.gestureRecognizers ?? []
         var softwareInputEvents: [GhostteaSoftwareInputEvent] = []
         var markedTextStates: [GhostteaMarkedTextState?] = []
         surface.onSoftwareInputEvent = { softwareInputEvents.append($0) }
@@ -389,6 +399,12 @@ final class HarnessModel: ObservableObject {
           pointerEvent.cellHeight == 19,
           pointerEvent.paddingLeft == 61,
           pointerEvent.paddingTop == 2,
+          retainedSelection == probeSelection,
+          selectionChanges.count == 2,
+          selectionChanges.last.map({ $0 == nil }) == true,
+          recognizers.contains(where: { $0 is UIPanGestureRecognizer }),
+          recognizers.contains(where: { $0 is UILongPressGestureRecognizer }),
+          recognizers.contains(where: { $0 is UIHoverGestureRecognizer }),
           compositionCaret.width > 0,
           compositionCaret.height == CGFloat(GhostteaTerminalLayout.lineHeight),
           compositionCaret.origin.x.isFinite,
@@ -458,6 +474,53 @@ final class HarnessModel: ObservableObject {
         try await recordInputEncoding(encoding, encoder: terminalInputEncoder)
       } catch {
         terminalInputResult = "Software input failed: \(error)"
+      }
+    }
+  }
+
+  func handleMouseInput(_ event: GhostteaTerminalMouseEvent) {
+    guard let terminalInputEncoder else { return }
+    Task {
+      do {
+        let encoding = try await terminalInputEncoder.encode(event)
+        try await recordInputEncoding(encoding, encoder: terminalInputEncoder)
+      } catch {
+        terminalInputResult = "Mouse input failed: \(error)"
+      }
+    }
+  }
+
+  func handleScrollRows(_ rows: Int) {
+    guard let terminalInputEncoder, rows != 0 else { return }
+    Task {
+      do {
+        let update = try await terminalInputEncoder.terminal.scroll(
+          rows: Int64(rows),
+          render: .damage
+        )
+        if let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload {
+          framePreview = frame
+        }
+        terminalInputResult = "Scrolled \(rows) rows"
+      } catch {
+        terminalInputResult = "Scroll failed: \(error)"
+      }
+    }
+  }
+
+  func handleSelectionCommit(_ selection: GhostteaTerminalSelection) {
+    guard let terminalInputEncoder else { return }
+    Task {
+      do {
+        let text = try await terminalInputEncoder.terminal.selectionText(
+          startColumn: selection.anchor.column,
+          startRow: selection.anchor.row,
+          endColumn: selection.focus.column,
+          endRow: selection.focus.row
+        )
+        terminalInputResult = "Selected \(text.utf8.count) UTF-8 bytes · \(text.prefix(32))"
+      } catch {
+        terminalInputResult = "Selection extraction failed: \(error)"
       }
     }
   }

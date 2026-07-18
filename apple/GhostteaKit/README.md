@@ -202,6 +202,22 @@ Ghostty encoder remains the only component that emits mouse protocol bytes.
 Gesture recognizers, wheel accumulation, and selection extraction build on this
 boundary in the next slice.
 
+The interaction slice installs indirect-pointer pan and hover recognizers plus
+a direct-touch long-press selection recognizer. Active mouse-tracking sessions
+receive normalized left press/motion/release and hover events; Shift or
+`forceLocalSelection` keeps the same drag view-local. Wheel input uses desktop's
+2× precise-device multiplier, retains sub-row remainder across events, and caps
+remote wheel packets at 12 per update. Non-tracking wheel rows are returned to
+the host for native terminal scrolling.
+
+Local selections are stored in absolute scrollback coordinates, clipped back
+to the current viewport for Metal rendering, and retained across scroll frames.
+The host receives change and commit callbacks; committed extraction goes to
+`GhostteaTerminal.selectionText` so wrapped rows, wide cells, and graphemes stay
+native-model decisions. Zero-length clicks clear selection. Word/line expansion,
+selection-edge autoscroll, secondary-button menus, and device ergonomics remain
+follow-up interaction work.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

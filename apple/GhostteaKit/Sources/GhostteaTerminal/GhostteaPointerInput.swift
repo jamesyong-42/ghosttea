@@ -94,6 +94,68 @@ public struct GhostteaViewportCellPoint: Equatable, Sendable {
   }
 }
 
+public struct GhostteaTerminalCellPoint: Equatable, Sendable {
+  public let column: UInt16
+  public let row: UInt32
+
+  public init(column: UInt16, row: UInt32) {
+    self.column = column
+    self.row = row
+  }
+}
+
+public struct GhostteaTerminalSelection: Equatable, Sendable {
+  public let anchor: GhostteaTerminalCellPoint
+  public let focus: GhostteaTerminalCellPoint
+
+  public init(anchor: GhostteaTerminalCellPoint, focus: GhostteaTerminalCellPoint) {
+    self.anchor = anchor
+    self.focus = focus
+  }
+
+  public func viewportSelection(
+    offset: UInt64,
+    columns: UInt16,
+    rows: UInt16
+  ) -> (anchor: GhostteaViewportCellPoint, focus: GhostteaViewportCellPoint)? {
+    guard columns > 0, rows > 0 else { return nil }
+    let forward =
+      anchor.row < focus.row || (anchor.row == focus.row && anchor.column <= focus.column)
+    let start = forward ? anchor : focus
+    let end = forward ? focus : anchor
+    let viewportEnd = offset + UInt64(rows) - 1
+    guard UInt64(end.row) >= offset, UInt64(start.row) <= viewportEnd else { return nil }
+    let startBeforeViewport = UInt64(start.row) < offset
+    let endAfterViewport = UInt64(end.row) > viewportEnd
+    return (
+      anchor: GhostteaViewportCellPoint(
+        column: startBeforeViewport ? 0 : start.column,
+        row: startBeforeViewport ? 0 : UInt16(UInt64(start.row) - offset)
+      ),
+      focus: GhostteaViewportCellPoint(
+        column: endAfterViewport ? columns - 1 : end.column,
+        row: endAfterViewport ? rows - 1 : UInt16(UInt64(end.row) - offset)
+      )
+    )
+  }
+}
+
+struct GhostteaWheelAccumulator: Equatable, Sendable {
+  private(set) var remainder: Double = 0
+
+  mutating func consume(deltaPoints: Double, lineHeight: Double) -> Int {
+    guard deltaPoints.isFinite, lineHeight.isFinite, lineHeight > 0 else { return 0 }
+    let pixels = remainder + deltaPoints * 2
+    let rows = Int(pixels / lineHeight)
+    remainder = pixels - Double(rows) * lineHeight
+    return rows
+  }
+
+  mutating func reset() {
+    remainder = 0
+  }
+}
+
 extension GhostteaTerminalInputEncoder {
   public func encode(_ event: GhostteaTerminalMouseEvent) async throws -> GhostteaInputEncoding {
     .bytes(try await terminal.encodeMouse(event.coreEvent))

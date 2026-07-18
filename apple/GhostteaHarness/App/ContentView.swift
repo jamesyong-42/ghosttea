@@ -76,7 +76,10 @@ struct ContentView: View {
               frame: frame,
               visible: scenePhase == .active,
               onHardwareInput: model.handleHardwareInput,
-              onSoftwareInput: model.handleSoftwareInput
+              onSoftwareInput: model.handleSoftwareInput,
+              onMouseInput: model.handleMouseInput,
+              onScrollRows: model.handleScrollRows,
+              onSelectionCommit: model.handleSelectionCommit
             )
             .frame(height: 160)
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -357,6 +360,9 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
   let visible: Bool
   let onHardwareInput: (GhostteaHardwareKeyEvent) -> Bool
   let onSoftwareInput: (GhostteaSoftwareInputEvent) -> Void
+  let onMouseInput: (GhostteaTerminalMouseEvent) -> Void
+  let onScrollRows: (Int) -> Void
+  let onSelectionCommit: (GhostteaTerminalSelection) -> Void
 
   final class Coordinator {
     var appliedFrame: Data?
@@ -371,6 +377,9 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
       let view = try GhostteaTerminalMetalView(terminalFrame: .zero)
       view.onHardwareKeyEvent = onHardwareInput
       view.onSoftwareInputEvent = onSoftwareInput
+      view.onMouseInputEvent = onMouseInput
+      view.onScrollRows = onScrollRows
+      view.onSelectionCommit = onSelectionCommit
       return view
     } catch {
       preconditionFailure("Metal terminal preview unavailable: \(error)")
@@ -380,6 +389,9 @@ private struct GhostteaTerminalPreview: UIViewRepresentable {
   func updateUIView(_ view: GhostteaTerminalMetalView, context: Context) {
     view.onHardwareKeyEvent = onHardwareInput
     view.onSoftwareInputEvent = onSoftwareInput
+    view.onMouseInputEvent = onMouseInput
+    view.onScrollRows = onScrollRows
+    view.onSelectionCommit = onSelectionCommit
     view.setTerminalVisible(visible)
     guard context.coordinator.appliedFrame != frame else { return }
     do {
