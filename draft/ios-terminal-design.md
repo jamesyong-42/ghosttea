@@ -1,6 +1,6 @@
 # Ghosttea iOS terminal architecture and implementation plan
 
-**Status:** Proposed
+**Status:** In implementation
 **Date:** July 16, 2026
 **Owners:** Ghosttea maintainers
 **Target:** iOS 17 and later for the first production release
@@ -23,7 +23,7 @@ local PTY bytes
 
 iOS
 
-SSH or remote-session bytes
+direct SSH bytes, or a Truffle attachment to a desktop-hosted session
     -> shared Ghosttea terminal core
     -> libghostty-vt
     -> shared shaping, rasterization, and TRF1 frame producer
@@ -35,6 +35,14 @@ desktop demo does not use that surface; it combines `libghostty-vt`, Ghosttea's
 native text engine, TRF1 display-list frames, and a custom WebGPU renderer.
 Using the same state and frame pipeline on iOS therefore provides closer
 Ghosttea parity than embedding full `libghostty` would.
+
+The production iOS application also integrates the Apple-native Truffle
+packages from the sibling `p008/truffle/apple` package. Truffle is not an
+optional companion feature: it is the authenticated device mesh through which
+the desktop demo and iOS application discover one another and attach two views
+to the same authoritative Ghosttea session. Direct SSH remains available for
+standalone use, but it does not satisfy the cross-device continuity goal by
+itself.
 
 The repository should add three implementation boundaries:
 
@@ -107,8 +115,8 @@ desktop path.
 2. Match the desktop demo's VT, key, paste, mouse, scroll, resize, cursor,
    color, selection, and workspace behavior where the platform permits.
 3. Support software keyboards, hardware keyboards, pointer devices, and IME.
-4. Support direct SSH sessions and leave a clean seam for Ghosttea remote
-   sessions.
+4. Support direct SSH sessions and Truffle attachments to desktop-hosted
+   Ghosttea sessions.
 5. Preserve remote shells across ordinary network changes and iOS suspension
    through reconnectable transports and remote session persistence.
 6. Support tabs and splits, with adaptive presentation on compact iPhone
@@ -117,6 +125,9 @@ desktop path.
    Manager.
 8. Keep the Ghostty revision, native artifacts, licenses, checksums, and build
    inputs pinned and reproducible.
+9. Let the desktop demo and iOS application concurrently attach to the same
+   Truffle-published Ghosttea session, with one terminal authority and the
+   existing view/control epochs governing both clients.
 
 ### 3.2 Engineering goals
 
@@ -165,8 +176,8 @@ The first production version will not promise:
   color space, or safe-area geometry;
 - complete Ghostty graphics-protocol support in the first milestone;
 - a stable public Rust ABI;
-- making the existing Truffle/Tailscale sidecar composition run unchanged
-  inside an iOS application;
+- running the desktop Go sidecar unchanged inside an iOS application; iOS uses
+  the Apple-native Truffle package and its in-process network backend instead;
 - changing the desktop output path while extracting the shared core.
 
 ---
@@ -255,14 +266,15 @@ tmux/zellij, or a remote Ghosttea authority.
 ### 6.1 Why not ship only a remote-frame client?
 
 A client that attaches to a running Ghosttea daemon can reuse the most server
-behavior and avoid compiling the terminal model into iOS. It is a useful
-future companion mode, but it cannot provide standalone SSH without a Ghosttea
-host. The existing remote adapter also sends logical terminal state rather
-than TRF1 glyph frames and assumes a host-owned Truffle/Tailscale composition
-that cannot be reused unchanged on iOS.
+behavior and is the correct mode for seamless desktop/iOS continuity, but it
+cannot provide standalone SSH without a Ghosttea host. Conversely, a purely
+standalone terminal cannot join the desktop demo's already-running session.
 
-The adopted terminal core plus transport abstraction supports both standalone
-SSH and a future companion transport.
+The production app therefore supports both modes. Direct SSH feeds the local
+shared core. A Truffle attachment treats the desktop daemon as terminal
+authority, receives its logical snapshots and patches, and projects that state
+through the same iOS renderer. The remote replica never reparses terminal bytes
+and never claims to be an independent copy of the session.
 
 ---
 
@@ -1424,25 +1436,75 @@ The app must not imply that a disconnected ordinary shell remained alive.
 Show explicit states: connecting, connected, reconnecting, suspended,
 disconnected, authentication required, and failed.
 
-### 16.3 Future Ghosttea remote transport
+### 16.3 Production Truffle shared-session transport
 
-The existing terminal mirroring protocol and authority model are useful, but
-the iOS client needs a supported network entry point that does not assume it
-can launch the current host-owned Tailscale sidecar.
+Shared-session mode is a required production path. The desktop demo remains
+the session authority and publishes attachable sessions through its existing
+host-owned Truffle node. The iOS application embeds the Swift products from
+`p008/truffle/apple`; it does not launch the desktop sidecar.
 
-Design work for that mode must specify:
+The integration has two protocol layers with deliberately separate ownership:
 
-- gateway ownership and discovery;
-- end-to-end authentication and authorization;
-- certificate or device identity;
-- replay protection;
-- logical snapshots versus TRF1 frame transport;
-- font and glyph ownership;
-- reconnect and resynchronization;
-- read-only and read-write capabilities;
-- resize authority across desktop and mobile views.
+```text
+Truffle
+  appId, device identity, interactive login, peer discovery, authenticated
+  tailnet routing, connection lifecycle
 
-That is a separate protocol project and must not block standalone SSH.
+Ghosttea terminal protocol
+  session listing, view attachment, access capability, input/control epochs,
+  logical snapshot/patch, selection, resize, detach, resynchronization
+```
+
+Both clients use Truffle app ID `ghosttea-terminal`. Persisted references use
+Truffle's durable `deviceId`, never a generation-scoped `PeerRef`, hostname, IP
+address, or Tailscale node key. On reconnect the app resolves the durable ID to
+a fresh peer generation before dialing.
+
+The desktop's current terminal protocol is `TSP1` version 1.3 over
+Truffle-authenticated QUIC streams. The Apple Truffle package currently exposes
+an authenticated full-duplex `MeshConnection`, but not that QUIC stream API.
+The implementation must therefore add a transport binding without forking the
+terminal semantics. The selected binding is a compact TCP mode on a dedicated
+application port:
+
+- one connection-control stream lists sessions and returns the host instance;
+- one full-duplex attachment stream carries session control toward the host and
+  typed logical state/control messages toward iOS;
+- every connection is accepted only after Truffle/WhoIs identity succeeds;
+- every attachment begins with the same protocol major/minor and nonce checks;
+- message sizes retain the existing 1 MiB control and 16 MiB state limits;
+- state sequence gaps cause an explicit snapshot request, never best-effort
+  continuation;
+- reconnect creates a new attachment and attachment epoch; no stale view,
+  input sequence, control epoch, or resize sequence is reused.
+
+This compact binding is an adapter around the existing `ConnectionMessage`,
+`SessionControlMessage`, `StateMessage`, logical snapshot, and logical patch
+contracts. It must have shared Rust/Swift conformance vectors. It does not
+create an unrelated mobile synchronization protocol.
+
+One session may have a visible desktop view and a visible iOS view at the same
+time. Each owns selection and presentation state. The existing Ghosttea
+controller election decides which view may send human input and authoritative
+resize operations. Focusing the iOS terminal claims control with a fresh
+control epoch; the desktop receives the corresponding control change. Read-only
+attachments can observe and select text but cannot claim control.
+
+Remote state is logical rather than TRF1. The desktop host owns VT parsing; iOS
+applies snapshots and patches to `LogicalReplicaModel`, then produces local
+TRF1 using the same bundled fonts and text engine. This avoids sending a
+device-scale-specific glyph atlas over the network while retaining the desktop
+model's exact cell/style/cursor semantics.
+
+The first release requires:
+
+- interactive Truffle login in the production app;
+- peer and shared-session picker integrated into the workspace palette;
+- attach, read-write input, control handoff, resize, selection, and detach;
+- network-change and foreground reconnect with snapshot resynchronization;
+- simultaneous desktop/iPhone and desktop/iPad tests against one live session;
+- a test proving text entered on either controlling client appears in both
+  views without duplicated input or divergent terminal revisions.
 
 ---
 
@@ -2651,11 +2713,59 @@ Desktop and iOS workspace conformance tests agree, and restored workspaces do
 not restore secrets or stale live-connection claims.
 ```
 
-### Phase 8: release hardening
+### Phase 8: production iOS application and Truffle continuity
+
+**Estimated effort:** 3-5 weeks
+
+Phase 8 turns the reusable package work into the actual Ghosttea iOS product
+and makes cross-device session continuity a release gate. The diagnostic
+`GhostteaHarness` remains a fixture runner and is not promoted into the app.
+
+**Started:** 2026-07-18. The first slice adds the `GhostteaTruffle` Swift
+product against the real sibling Apple package at locked revision
+`2743a2c0ea51bd8b2ca928903666233b2e74d1c5`. It defines durable host/session
+references, generation-checked peer resolution, the shared app/service IDs,
+and byte-compatible `TSP1` connection-control framing. A typed client completes
+the nonce handshake and lists desktop sessions over Truffle's
+`MeshConnection`. Six new tests include an end-to-end loopback connection and
+a connection-control fixture consumed by both Swift and Rust; all 116 package
+tests, the Rust fixture test, and generic simulator/device builds pass. The desktop
+compact-stream listener, live attachment/replica, production Truffle backend,
+and real app target remain open.
+
+Deliverables:
+
+- a separate production SwiftUI iOS application target with no fixture-only
+  defaults or diagnostic controls;
+- application-owned composition of saved SSH profiles, Keychain credentials,
+  workspace restoration, terminal surfaces, lifecycle, and error states;
+- dependency on the sibling Truffle Swift package with an exact reviewed
+  revision recorded in the release lock;
+- `GhostteaTruffle` package product containing the terminal protocol codec,
+  durable peer/session references, discovery, attachment, reconnect, and
+  replica adapter;
+- desktop raw-stream adapter for the same Ghosttea terminal protocol semantics;
+- Truffle login, peer browser, shared-session picker, and explicit
+  read-only/read-write state in the production UI;
+- live desktop/iOS same-session conformance, control-handoff, resize,
+  disconnect, foreground resync, and stale-generation tests;
+- signed device builds plus a TestFlight-shaped archive of the real app.
+
+Exit gate:
+
+```text
+The production iOS app and desktop demo attach concurrently to one
+desktop-authoritative session through Truffle. Input from the controlling view,
+control handoff, resize, selection, disconnect, and snapshot resync remain
+consistent, and the app can also create an independent direct SSH workspace.
+```
+
+### Phase 9: release hardening
 
 **Estimated effort:** 2-3 weeks
 
-**Started:** 2026-07-18. The first slice adds a deterministic CycloneDX 1.6
+**Started:** 2026-07-18 under the former Phase 8 numbering. The first slice
+adds a deterministic CycloneDX 1.6
 inventory for the iOS application's direct/static native inputs and exact
 bundled font files. Its verifier derives the expected graph from the Ghostty,
 SSH, font, package, license, and notice locks and rejects any unreviewed drift.
@@ -2664,7 +2774,7 @@ fails closed while the SSH lock records `productionApproved: false`. The
 checked-in BOM currently contains nine components and exact SHA-256 values for
 all five fonts plus tracked license/notice hashes. Transitive Rust crates,
 final toolchain identity, schema validation in release CI, notice packaging,
-and the other Phase 8 gates remain open.
+and the other release-hardening gates remain open.
 
 Deliverables:
 
@@ -2688,7 +2798,7 @@ pass on release artifacts.
 
 ### Overall planning range
 
-The complete first production version is approximately 16-27 engineer-weeks
+The complete first production version is approximately 19-32 engineer-weeks
 for one engineer, with the largest uncertainty in Metal polish, IME/selection,
 and SSH lifecycle behavior. A vertical slice through Phase 4 can be available
 substantially earlier and should be the first funding and architecture gate.
@@ -2735,7 +2845,16 @@ Includes Phase 6.
 iPad and iPhone provide the agreed desktop workspace behaviors and persistence.
 ```
 
-Includes Phases 7 and 8.
+Includes Phase 7.
+
+### Milestone F: production app and cross-device continuity
+
+```text
+The signed iOS app and desktop demo can work in the same authoritative
+terminal session through Truffle, while direct SSH remains available.
+```
+
+Includes Phases 8 and 9.
 
 ---
 
@@ -2750,12 +2869,14 @@ Includes Phases 7 and 8.
 | Swift/Rust boundary becomes chatty                             | Latency and energy regression     | One call per input/update; one contiguous frame; no per-cell calls                |
 | Metal renderer diverges from WebGPU                            | Visual inconsistency              | Shared TRF1; render-order specification; screenshot suite                         |
 | IME behavior is incomplete                                     | Poor international usability      | UIKit-native composition; dedicated CJK/emoji test matrix                         |
-| iOS suspension kills SSH                                       | Lost interactive session          | tmux/zellij; explicit states; reconnect; remote Ghosttea mode later               |
+| iOS suspension kills SSH                                       | Lost interactive session          | tmux/zellij; explicit states; reconnect; prefer desktop-hosted Truffle sessions   |
 | Host-key handling is weakened for convenience                  | Security failure                  | Verification required; fingerprint prompt; known-host management                  |
 | GPU atlases exceed mobile memory                               | Termination under pressure        | Bounded atlases; LRU eviction; full refresh; memory-warning tests                 |
 | Full-libghostty community APIs look faster                     | Architectural drift               | Keep spike bounded; measure against Ghosttea parity contract                      |
 | App Store policy misunderstanding                              | Review delay                      | Remote-execution review note; no downloaded app code; documented background use   |
-| Current Truffle integration cannot run on iOS                  | Companion mode delay              | Treat as separate gateway transport; do not block SSH                             |
+| Apple Truffle backend is not yet device-production-ready       | Shared-session release blocker    | Integrate sibling Swift package now; gate release on pinned backend and live interop |
+| Desktop QUIC and Apple raw-stream APIs do not match            | Duplicate or divergent protocol   | Keep Ghosttea message semantics; add a compact TCP binding with shared vectors    |
+| Stale Truffle peer generations are persisted                   | Reconnects target the wrong node  | Persist durable device ID only; resolve a fresh generation for every reconnect    |
 | Selected SSH stack lacks required authentication or algorithms | Launch-host incompatibility       | Phase 0 server matrix; fund missing work or select another stack before Phase 6   |
 | Inbound output outruns terminal processing                     | Memory growth or disconnect       | Pull-based reads; SSH channel-window backpressure; sustained-flood tests          |
 | CPU terminal and scrollback state exceed mobile budget         | Jetsam termination                | Device-tier budgets; cache reclamation; trim shim or whole-session eviction       |
@@ -2823,6 +2944,18 @@ and reconnection.
 **Reason:** This follows iOS execution and Metal lifecycle constraints and
 avoids unreliable hidden keepalive behavior.
 
+### ADR-IOS-008: Truffle is the cross-device session fabric
+
+**Decision:** The production iOS app imports the sibling Apple-native Truffle
+package and uses it for mesh identity, login, peer discovery, and authenticated
+connections. Ghosttea's existing terminal protocol remains responsible for
+session authority and replication.
+
+**Reason:** Truffle already supplies the cross-platform device identity and
+networking product. Reusing it lets the desktop demo and iOS app address the
+same peer and session without weakening Ghosttea's epoch, ordering, resize, or
+snapshot rules.
+
 ---
 
 ## 26. Open product decisions
@@ -2830,8 +2963,8 @@ avoids unreliable hidden keepalive behavior.
 These decisions should be made during Phase 0. They do not block writing the
 shared core, but they affect UI, security, and release scope.
 
-1. Is the first release standalone SSH only, or must it also attach to a
-   Ghosttea desktop/server?
+1. **Resolved:** the first release supports both direct SSH and attachment to a
+   Ghosttea desktop/server through Truffle.
 2. Is iPhone required at launch, or may the first vertical slice target iPad?
 3. Is iOS 17 an acceptable minimum?
 4. Which font family may be bundled, and is user-supplied font import required?
@@ -2841,7 +2974,8 @@ shared core, but they affect UI, security, and release scope.
 7. Which SSH authentication methods are required at launch?
 8. Is tmux/zellij integration an onboarding recommendation or a first-class
    managed feature?
-9. Must one session be simultaneously writable from desktop and iOS?
+9. **Resolved:** one session may be visible on both; exactly one view controls
+   human input and authoritative resize at a time under the existing epochs.
 10. Which desktop workspace shortcuts should map to iPad hardware keyboards,
     and which must yield to system shortcuts?
 11. Are terminal transcripts retained, and if so, what encryption, retention,
@@ -2869,7 +3003,12 @@ The iOS terminal architecture is complete when:
 10. release artifacts include pins, checksums, licenses, and an SBOM;
 11. performance gates pass on representative iPhone and iPad hardware;
 12. desktop package, integration, and benchmark checks show no extraction
-    regression.
+    regression;
+13. a signed production iOS application—not the diagnostic harness—ships the
+    terminal, workspace, SSH, restoration, and Truffle flows;
+14. desktop and iOS concurrently attach to one authoritative Truffle session,
+    hand control across devices, reconnect, and resynchronize without duplicate
+    input or divergent terminal revisions.
 
 ---
 
@@ -2886,6 +3025,8 @@ The iOS terminal architecture is complete when:
 - `native/terminald/crates/ghostty-adapter/src/lib.rs`
 - `native/terminald/crates/ghostty-vt-sys/artifacts.json`
 - `native/terminald/crates/text-engine/src/lib.rs`
+- `native/terminald/crates/truffle/src/lib.rs`
+- `native/terminald/src/tunnel_protocol.rs`
 - `packages/terminal-frame/src/index.ts`
 - `packages/terminal-react/src/TerminalSurface.tsx`
 - `packages/terminal-react/src/workspace/`
@@ -2893,6 +3034,8 @@ The iOS terminal architecture is complete when:
 - `draft/embedding-refactor.md`
 - `draft/terminal-tunneling.md`
 - `draft/ios-libghostty-research.md`
+- sibling `p008/truffle/apple/Package.swift`
+- sibling `p008/truffle/docs/rfcs/024-truffle-swift.md`
 
 ### Upstream and platform sources
 

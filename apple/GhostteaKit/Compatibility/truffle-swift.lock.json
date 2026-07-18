@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "Truffle",
+    "repository": "https://github.com/jamesyong-42/truffle.git",
+    "revision": "2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+    "packagePath": "apple",
+    "license": "MIT",
+    "products": [
+      "Truffle",
+      "TruffleSwiftUI",
+      "TruffleTailscale"
+    ]
+  },
+  "ghosttea": {
+    "appId": "ghosttea-terminal",
+    "serviceName": "terminal.v1",
+    "desktopQuicPort": 9420,
+    "appleCompactStreamPort": 9421,
+    "terminalProtocolMajor": 1,
+    "terminalProtocolMinor": 3
+  },
+  "releaseRequirements": {
+    "requireCleanCheckout": true,
+    "requireExactRevision": true,
+    "requireProductionTailscaleBackend": true,
+    "requirePhysicalDeviceInterop": true
+  }
+}

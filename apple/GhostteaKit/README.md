@@ -22,10 +22,22 @@ libssh2's in-memory API without a filesystem path. The policy and
 remaining product integration work are recorded in
 [`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
 
-Phase 8 release inputs are tracked in a deterministic CycloneDX inventory.
+Phase 9 release inputs are tracked in a deterministic CycloneDX inventory.
 [`Compatibility/release-hardening.md`](Compatibility/release-hardening.md)
 defines its direct/static scope, exact drift check, fail-closed SSH approval
 gate, and the transitive/toolchain expansion still required before release.
+
+`GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
+the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
+uses the same `ghosttea-terminal` app ID as the desktop daemon, persists only
+Truffle's durable device ID, and resolves a fresh generation-checked `Peer`
+before every connection. Its initial typed client implements the desktop
+`TSP1` connection-control preface, nonce handshake, and shared-session listing
+over Truffle's full-duplex `MeshConnection`. The exact sibling revision and
+Ghosttea ports/protocol version are recorded in
+[`Compatibility/truffle-swift.lock.json`](Compatibility/truffle-swift.lock.json)
+and included in the deterministic iOS BOM. Live attachment, logical replica,
+and production TailscaleKit composition remain the next Phase 8 slices.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

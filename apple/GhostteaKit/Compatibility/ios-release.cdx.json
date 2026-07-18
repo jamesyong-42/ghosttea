@@ -34,6 +34,10 @@
         {
           "name": "ghosttea:source-lock",
           "value": "native/fonts.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
         }
       ]
     },
@@ -178,6 +182,40 @@
         {
           "name": "ghosttea:required-fix-commit",
           "value": "a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/jamesyong-42/truffle@2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+      "name": "Truffle Swift",
+      "version": "2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/jamesyong-42/truffle@2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/jamesyong-42/truffle.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:package-path",
+          "value": "apple"
+        },
+        {
+          "name": "ghosttea:truffle-app-id",
+          "value": "ghosttea-terminal"
+        },
+        {
+          "name": "ghosttea:production-tailscale-backend-required",
+          "value": "true"
         }
       ]
     },
@@ -364,6 +402,7 @@
         "pkg:cargo/ghosttea-ffi@0.1.0",
         "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+        "pkg:github/jamesyong-42/truffle@2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
         "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
@@ -386,6 +425,10 @@
     {
       "ref": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
       "dependsOn": ["pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"]
+    },
+    {
+      "ref": "pkg:github/jamesyong-42/truffle@2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+      "dependsOn": []
     },
     {
       "ref": "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",

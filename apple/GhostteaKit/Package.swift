@@ -20,10 +20,16 @@ let package = Package(
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaSession", targets: ["GhostteaSession"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
+    .library(name: "GhostteaTruffle", targets: ["GhostteaTruffle"]),
     .library(name: "GhostteaWorkspace", targets: ["GhostteaWorkspace"]),
     .library(name: "GhostteaWorkspaceUI", targets: ["GhostteaWorkspaceUI"]),
     .library(name: "GhosttyVtProof", targets: ["GhosttyVtProof"]),
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
+  ],
+  dependencies: [
+    // Development intentionally mirrors the Rust workspace's sibling Truffle
+    // checkout. Release automation records and verifies its exact Git revision.
+    .package(path: "../../../p008/truffle/apple"),
   ],
   targets: [
     .binaryTarget(
@@ -115,6 +121,12 @@ let package = Package(
       plugins: ["GhostteaMetalCompilerPlugin"]
     ),
     .target(name: "GhostteaTransport"),
+    .target(
+      name: "GhostteaTruffle",
+      dependencies: [
+        .product(name: "Truffle", package: "apple"),
+      ]
+    ),
     .target(name: "GhostteaWorkspace"),
     .target(
       name: "GhostteaWorkspaceUI",
@@ -201,6 +213,14 @@ let package = Package(
     .testTarget(
       name: "GhostteaTransportTests",
       dependencies: ["GhostteaTransport"]
+    ),
+    .testTarget(
+      name: "GhostteaTruffleTests",
+      dependencies: [
+        "GhostteaTruffle",
+        .product(name: "Truffle", package: "apple"),
+      ],
+      resources: [.copy("Fixtures")]
     ),
     .testTarget(
       name: "GhostteaWorkspaceTests",

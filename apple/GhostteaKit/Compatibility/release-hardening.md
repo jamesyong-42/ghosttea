@@ -1,6 +1,6 @@
 # iOS release hardening
 
-**Status:** Phase 8 in progress
+**Status:** Phase 9 in progress (started under former Phase 8 numbering)
 
 **Started:** 2026-07-18
 
@@ -14,11 +14,12 @@ pins:
 - `native/ghostty.lock.json`;
 - `native/ssh.lock.json`;
 - `native/fonts.lock.json`;
+- `truffle-swift.lock.json`;
 - the root package version and license; and
 - the tracked MIT, OFL-1.1, and font-notice files.
 
 The BOM records the shared Rust FFI runtime, pinned Ghostty source, OpenSSL,
-libssh2, and each of the five exact bundled font files. Relationships describe
+libssh2, the exact sibling Truffle Swift revision, and each of the five exact bundled font files. Relationships describe
 the static native/runtime inputs, and every font carries its locked SHA-256.
 The BOM timestamp and serial are fixed so identical repository inputs produce
 byte-identical JSON.

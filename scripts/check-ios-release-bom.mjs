@@ -9,6 +9,7 @@ const packageManifest = readJSON("package.json");
 const ghostty = readJSON("native/ghostty.lock.json");
 const ssh = readJSON("native/ssh.lock.json");
 const fonts = readJSON("native/fonts.lock.json");
+const truffle = readJSON("apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
 
 const sha256 = (path) =>
   createHash("sha256")
@@ -38,6 +39,7 @@ const runtimeRef = `pkg:cargo/ghosttea-ffi@${packageManifest.version}`;
 const ghosttyRef = `pkg:github/ghostty-org/ghostty@${ghostty.ghostty.commit}`;
 const opensslRef = `pkg:github/openssl/openssl@${ssh.openssl.commit}`;
 const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
+const truffleRef = `pkg:github/jamesyong-42/truffle@${truffle.package.revision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
 const releaseBlockers = iosReleaseBlockers();
 
@@ -60,6 +62,10 @@ const expected = {
         { name: "ghosttea:source-lock", value: "native/ghostty.lock.json" },
         { name: "ghosttea:source-lock", value: "native/ssh.lock.json" },
         { name: "ghosttea:source-lock", value: "native/fonts.lock.json" },
+        {
+          name: "ghosttea:source-lock",
+          value: "apple/GhostteaKit/Compatibility/truffle-swift.lock.json",
+        },
       ],
     }),
     properties: [
@@ -127,6 +133,23 @@ const expected = {
         })),
       ],
     }),
+    component({
+      type: "library",
+      ref: truffleRef,
+      name: "Truffle Swift",
+      version: truffle.package.revision,
+      license: truffle.package.license,
+      purl: truffleRef,
+      repository: truffle.package.repository,
+      properties: [
+        { name: "ghosttea:package-path", value: truffle.package.packagePath },
+        { name: "ghosttea:truffle-app-id", value: truffle.ghosttea.appId },
+        {
+          name: "ghosttea:production-tailscale-backend-required",
+          value: String(truffle.releaseRequirements.requireProductionTailscaleBackend),
+        },
+      ],
+    }),
     ...fonts.fonts.map((font, index) =>
       component({
         type: "file",
@@ -144,11 +167,12 @@ const expected = {
     ),
   ],
   dependencies: [
-    { ref: appRef, dependsOn: [runtimeRef, opensslRef, libssh2Ref, ...fontRefs] },
+    { ref: appRef, dependsOn: [runtimeRef, opensslRef, libssh2Ref, truffleRef, ...fontRefs] },
     { ref: runtimeRef, dependsOn: [ghosttyRef] },
     { ref: ghosttyRef, dependsOn: [] },
     { ref: opensslRef, dependsOn: [] },
     { ref: libssh2Ref, dependsOn: [opensslRef] },
+    { ref: truffleRef, dependsOn: [] },
     ...fontRefs.map((ref) => ({ ref, dependsOn: [] })),
   ],
 };

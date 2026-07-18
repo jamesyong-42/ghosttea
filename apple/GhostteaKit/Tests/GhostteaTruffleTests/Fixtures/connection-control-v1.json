@@ -1,0 +1,32 @@
+{
+  "clientHello": {
+    "type": "client-hello",
+    "protocolMajor": 1,
+    "protocolMinor": 3,
+    "hostInstanceId": "desktop-instance",
+    "localDeviceId": "01J4K9M2Z8AB3RNYQPW6H5TC0X",
+    "nonce": "nonce-1"
+  },
+  "serverHello": {
+    "type": "server-hello",
+    "protocolMajor": 1,
+    "protocolMinor": 3,
+    "hostInstanceId": "desktop-instance",
+    "nonce": "nonce-1"
+  },
+  "sessions": {
+    "type": "sessions",
+    "requestId": "request-1",
+    "sessions": [
+      {
+        "sessionId": "session-1",
+        "title": "vim",
+        "cwdLabel": "~/project100",
+        "running": true,
+        "attachable": true,
+        "readWrite": true,
+        "createdAtMs": 42
+      }
+    ]
+  }
+}

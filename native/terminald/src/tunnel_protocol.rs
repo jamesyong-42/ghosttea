@@ -345,6 +345,53 @@ mod tests {
     }
 
     #[test]
+    fn apple_connection_control_fixture_matches_rust_contract() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Fixture {
+            client_hello: ConnectionMessage,
+            server_hello: ConnectionMessage,
+            sessions: ConnectionMessage,
+        }
+
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../apple/GhostteaKit/Tests/GhostteaTruffleTests/Fixtures/connection-control-v1.json"
+        ))
+        .unwrap();
+        assert!(matches!(
+            fixture.client_hello,
+            ConnectionMessage::ClientHello {
+                protocol_major: 1,
+                protocol_minor: 3,
+                ref host_instance_id,
+                ref local_device_id,
+                ref nonce,
+            } if host_instance_id == "desktop-instance"
+                && local_device_id == "01J4K9M2Z8AB3RNYQPW6H5TC0X"
+                && nonce == "nonce-1"
+        ));
+        assert!(matches!(
+            fixture.server_hello,
+            ConnectionMessage::ServerHello {
+                protocol_major: 1,
+                protocol_minor: 3,
+                ref host_instance_id,
+                ref nonce,
+            } if host_instance_id == "desktop-instance" && nonce == "nonce-1"
+        ));
+        assert!(matches!(
+            fixture.sessions,
+            ConnectionMessage::Sessions {
+                ref request_id,
+                ref sessions,
+            } if request_id == "request-1"
+                && sessions.len() == 1
+                && sessions[0].session_id == "session-1"
+                && sessions[0].read_write
+        ));
+    }
+
+    #[test]
     fn typed_terminal_input_round_trips() {
         let message = SessionControlMessage::Input {
             view_id: "view".into(),
