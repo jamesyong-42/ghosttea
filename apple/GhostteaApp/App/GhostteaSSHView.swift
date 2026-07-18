@@ -49,6 +49,14 @@ struct GhostteaSSHView: View {
         }
       }
     }
+    .sheet(isPresented: $model.presentsCommandPalette) {
+      GhostteaWorkspacePaletteView(
+        entries: model.commandPaletteEntries,
+        onDismiss: { model.presentsCommandPalette = false },
+        onInvoke: model.invoke
+      )
+      .presentationDetents([.medium, .large])
+    }
     .sheet(item: $model.pendingKeyboardChallenge) { pending in
       GhostteaKeyboardChallengeView(
         challenge: pending.challenge,
@@ -116,8 +124,9 @@ struct GhostteaSSHView: View {
       },
       paneTitle: { model.title(for: $0.sessionID) },
       onAction: model.apply,
-      onNewTab: model.createTab,
-      onSplit: model.split
+      onNewTab: { model.createTab() },
+      onSplit: model.split,
+      onCommandPalette: { model.presentsCommandPalette = true }
     ) { _, pane, _ in
       GhostteaSSHWorkspacePane(
         sessionID: pane.sessionID,

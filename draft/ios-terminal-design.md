@@ -2771,8 +2771,10 @@ Swift package suite remains green. The production app now also composes the
 existing workspace coordinator and adaptive workspace UI: tabs and splits own
 independent native terminals and transports, structural changes atomically save
 secret-free profile bindings, and process restoration recreates available panes
-without starting network demand. Live desktop/iPhone/iPad interop evidence and
-the TestFlight-shaped archive remain open.
+without starting network demand. The adaptive command palette opens saved
+profiles into the current workspace and invokes the same tab/split/focus/resize
+command model used by hardware-keyboard shortcuts. Live desktop/iPhone/iPad
+interop evidence and the TestFlight-shaped archive remain open.
 
 Deliverables:
 

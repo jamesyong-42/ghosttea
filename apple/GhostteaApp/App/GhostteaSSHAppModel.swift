@@ -30,6 +30,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   @Published private(set) var status = "Loading saved connections…"
   @Published private(set) var isBusy = false
   @Published var presentsProfileManager = false
+  @Published var presentsCommandPalette = false
   @Published var pendingHostKey: GhostteaPendingHostKey?
   @Published var pendingKeyboardChallenge: GhostteaPendingKeyboardChallenge?
 
@@ -42,6 +43,8 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var sessionProfileIDs: [String: String] = [:]
   private var grids: [String: GhostteaTerminalGridSize] = [:]
   private var layoutEpochs: [String: UInt64] = [:]
+  private var shortcutState = GhostteaWorkspaceShortcutState()
+  private var requestedProfileID: String?
   private var networkTask: Task<Void, Never>?
   private var networkPath = TerminalNetworkPath.unknown
   private var hostKeyContinuation: CheckedContinuation<GhostteaSSHHostKeyDecision, Never>?
@@ -56,6 +59,16 @@ final class GhostteaSSHAppModel: ObservableObject {
     else { return nil }
     return tab.workspace.root.panes
       .first(where: { $0.id == tab.workspace.activePaneID })?.sessionID
+  }
+
+  var commandPaletteEntries: [GhostteaWorkspacePaletteEntry] {
+    profiles.map { profile in
+      GhostteaWorkspacePaletteEntry.connectionProfile(
+        profileID: profile.id.uuidString.lowercased(),
+        name: profile.name,
+        subtitle: "\(profile.username)@\(profile.host):\(profile.port)",
+        keywords: ["ssh", "remote", profile.host, profile.username])
+    } + [.manageConnectionProfiles()] + GhostteaWorkspacePaletteEntry.workspaceCommands()
   }
 
   func start() {
@@ -129,10 +142,15 @@ final class GhostteaSSHAppModel: ObservableObject {
     }
   }
 
-  func createTab() {
+  func createTab(profileID: String? = nil) {
     guard let coordinator, !isBusy else { return }
     isBusy = true
+    requestedProfileID = profileID
     Task {
+      defer {
+        requestedProfileID = nil
+        isBusy = false
+      }
       do {
         let transition = try await coordinator.createTab()
         workspace = transition.document
@@ -140,7 +158,6 @@ final class GhostteaSSHAppModel: ObservableObject {
       } catch {
         status = "Could not create tab: \(error)"
       }
-      isBusy = false
     }
   }
 
@@ -173,6 +190,17 @@ final class GhostteaSSHAppModel: ObservableObject {
       } catch {
         status = "Workspace update failed: \(error)"
       }
+    }
+  }
+
+  func invoke(_ invocation: GhostteaWorkspacePaletteInvocation) {
+    switch invocation {
+    case .connectionProfile(let profileID):
+      createTab(profileID: profileID)
+    case .manageConnectionProfiles:
+      presentsProfileManager = true
+    case .command(let command):
+      route(command)
     }
   }
 
@@ -272,7 +300,27 @@ final class GhostteaSSHAppModel: ObservableObject {
   }
 
   func handleHardwareKey(_ event: GhostteaHardwareKeyEvent, sessionID: String) -> Bool {
-    guard coordinator != nil, !event.modifiers.contains(.command) else { return false }
+    guard coordinator != nil else { return false }
+    let modifiers = event.modifiers
+    let chord = GhostteaWorkspaceKeyChord(
+      domCode: event.code,
+      command: modifiers.contains(.command),
+      shift: modifiers.contains(.shift),
+      option: modifiers.contains(.option),
+      control: modifiers.contains(.control))
+    let phase: GhostteaWorkspaceKeyPhase
+    switch event.action {
+    case .down: phase = .down
+    case .repeated: phase = .repeated
+    case .up: phase = .up
+    }
+    let shortcut = shortcutState.handle(
+      usage: event.hidUsage,
+      phase: phase,
+      chord: chord)
+    if let command = shortcut.command { route(command) }
+    if shortcut.handled { return true }
+    guard !modifiers.contains(.command) else { return false }
     withSession(sessionID) { try? await $0.session.sendKey(event.coreEvent) }
     return true
   }
@@ -424,7 +472,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     _ request: GhostteaWorkspaceSessionRequest,
     factory: GhostteaSSHWorkspaceSessionFactory
   ) async throws -> GhostteaWorkspaceSessionAllocation<GhostteaSSHWorkspaceSession> {
-    guard let profile = profileForAllocation(request) else {
+    guard let profile = profileForAllocation(request, requestedProfileID: requestedProfileID) else {
       throw GhostteaSSHAppError.missingProfile
     }
     let profileID = profile.id.uuidString.lowercased()
@@ -467,8 +515,15 @@ final class GhostteaSSHAppModel: ObservableObject {
   }
 
   private func profileForAllocation(
-    _ request: GhostteaWorkspaceSessionRequest
+    _ request: GhostteaWorkspaceSessionRequest,
+    requestedProfileID: String?
   ) -> GhostteaSSHConnectionProfile? {
+    if case .newTab = request,
+      let requestedProfileID,
+      let requested = profile(id: requestedProfileID)
+    {
+      return requested
+    }
     let sourceID: String?
     switch request {
     case .newTab: sourceID = selectedSessionID
@@ -484,6 +539,16 @@ final class GhostteaSSHAppModel: ObservableObject {
 
   private func profile(id: String) -> GhostteaSSHConnectionProfile? {
     profiles.first { $0.id.uuidString.lowercased() == id.lowercased() }
+  }
+
+  private func route(_ command: GhostteaWorkspaceCommand) {
+    guard let workspace, let route = command.route(in: workspace) else { return }
+    switch route {
+    case .reducer(let action): apply(action)
+    case .requestNewTab: createTab()
+    case .requestSplit(let axis): split(axis)
+    case .openRemoteSessions: presentsCommandPalette = true
+    }
   }
 
   private func persistWorkspace() async throws {
@@ -539,6 +604,8 @@ final class GhostteaSSHAppModel: ObservableObject {
     sessionProfileIDs = [:]
     grids = [:]
     layoutEpochs = [:]
+    requestedProfileID = nil
+    shortcutState = GhostteaWorkspaceShortcutState()
     if clearPersistence { try? await restorationStore?.remove() }
     status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
   }

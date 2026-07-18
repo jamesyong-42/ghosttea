@@ -52,8 +52,10 @@ The app's SSH tab now composes the protected profile repository, device-only
 Keychain credentials, host-key and keyboard-interactive prompt boundaries,
 network-aware `GhostteaSession`, the shared Metal terminal surface, and the
 tested tabs/splits coordinator. Secret-free multi-pane workspace state is saved
-atomically and restored demand-paused. Live cross-device release evidence and a
-TestFlight-shaped archive remain later Phase 8 gates.
+atomically and restored demand-paused. The app also composes the shared command
+palette and routes hardware-keyboard workspace chords before terminal input.
+Live cross-device release evidence and a TestFlight-shaped archive remain later
+Phase 8 gates.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,
