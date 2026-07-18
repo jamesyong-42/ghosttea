@@ -23,3 +23,20 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project GhostteaApp.xcodeproj -scheme Ghosttea \
   -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
+
+With one paired iPhone or iPad connected, the repository runner selects the
+configured Xcode team, signs, installs, and launches the app:
+
+```bash
+npm run run:ios:app
+```
+
+For a signed-device interoperability run, keep the app's debug console attached
+until the app exits:
+
+```bash
+npm run run:ios:app:console
+```
+
+Set `GHOSTTEA_IOS_DEVELOPMENT_TEAM` or `GHOSTTEA_IOS_DEVICE_ID` only when Xcode
+has multiple teams or more than one physical iOS device is paired.

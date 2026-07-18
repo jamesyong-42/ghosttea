@@ -41,6 +41,7 @@ final class GhostteaAppModel: ObservableObject {
 
   func start() {
     guard mesh == nil, !isBusy else { return }
+    trace("starting private mesh")
     isBusy = true
     status = "Starting private mesh…"
     phase = .starting
@@ -54,6 +55,7 @@ final class GhostteaAppModel: ObservableObject {
           })
         mesh = runtime
         directory = await runtime.directory
+        trace("private mesh runtime started")
         let events = await runtime.events()
         eventTask = Task { [weak self] in
           for await event in events {
@@ -65,6 +67,7 @@ final class GhostteaAppModel: ObservableObject {
         isBusy = false
         await refreshHosts()
       } catch {
+        trace("private mesh startup failed: \(error)")
         fail("Could not start Truffle: \(error)")
       }
     }
@@ -97,6 +100,7 @@ final class GhostteaAppModel: ObservableObject {
   func refreshHosts() async {
     guard let mesh else { return }
     hosts = await mesh.candidates()
+    trace("discovered \(hosts.count) online Ghosttea host(s)")
     if phase == .running {
       status = hosts.isEmpty
         ? "Connected. Start the Ghosttea desktop demo to share a session."
@@ -116,6 +120,7 @@ final class GhostteaAppModel: ObservableObject {
         let client = try await directory.connect(to: candidate)
         do {
           sessions = try await client.listSessions().filter(\.attachable)
+          trace("host \(candidate.displayName) advertised \(sessions.count) attachable session(s)")
           await client.close()
         } catch {
           await client.close()
@@ -160,6 +165,9 @@ final class GhostteaAppModel: ObservableObject {
         claimSequence = 1
         controlEpoch = nil
         hasControl = false
+        trace(
+          "attached to \(session.sessionID); read-write=\(attachmentInfo.readWrite); "
+            + "grid=\(attachmentInfo.cols)x\(attachmentInfo.rows)")
         attachmentTask = Task { [weak self] in
           do {
             while !Task.isCancelled {
@@ -313,6 +321,7 @@ final class GhostteaAppModel: ObservableObject {
   private func handle(_ event: GhostteaTruffleRuntimeEvent) async {
     switch event {
     case .phase(let newPhase):
+      trace("private mesh phase: \(newPhase.rawValue)")
       phase = newPhase
       switch newPhase {
       case .running:
@@ -325,10 +334,13 @@ final class GhostteaAppModel: ObservableObject {
       case .stopping, .stopped: status = "Disconnected"
       }
     case .authRequired(let url):
+      trace("interactive authentication required at \(url.host ?? "Tailscale")")
       authPage = GhostteaLoginPage(url: url)
     case .peersChanged:
+      trace("private mesh peer set changed")
       await refreshHosts()
     case .health(let message):
+      trace("private mesh health: \(message)")
       status = message
     }
   }
@@ -357,6 +369,7 @@ final class GhostteaAppModel: ObservableObject {
   }
 
   private func attachmentFailed(_ error: Error) async {
+    trace("shared-session attachment failed: \(error)")
     status = "Shared session ended: \(error)"
     await disconnectAttachment(clearSelection: false)
   }
@@ -382,8 +395,15 @@ final class GhostteaAppModel: ObservableObject {
   }
 
   private func fail(_ message: String) {
+    trace(message)
     isBusy = false
     status = message
     if mesh == nil { phase = .failed }
+  }
+
+  private func trace(_ message: String) {
+    #if DEBUG
+      print("[Ghosttea] \(message)")
+    #endif
   }
 }
