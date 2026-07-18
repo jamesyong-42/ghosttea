@@ -4,6 +4,7 @@ import GhostteaCore
 import GhostteaCredentials
 import GhostteaFontProof
 import GhostteaSSH
+import GhostteaSSHWorkspace
 import GhostteaSession
 import GhostteaTerminal
 import GhostteaTransport
@@ -85,6 +86,7 @@ final class HarnessModel: ObservableObject {
   @Published var frameDecoderResult = "Not run"
   @Published var framePreview: Data?
   @Published var productionSessionFrame: Data?
+  @Published var productionSessionFrames: [String: Data] = [:]
   @Published var productionWorkspace: GhostteaWorkspaceTabsDocument?
   @Published var productionSessionStatus = "Not run"
   @Published var productionSessionInputStatus = "Connect to enable input"
@@ -131,6 +133,12 @@ final class HarnessModel: ObservableObject {
   private var sshTask: Task<Void, Never>?
   private var productionSession: GhostteaSession?
   private var productionTerminal: GhostteaTerminal?
+  private var productionWorkspaceCoordinator:
+    GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>?
+  private var productionWorkspaceResources: [String: GhostteaSSHWorkspaceSession] = [:]
+  private var retiredProductionSessionIDs: Set<String> = []
+  private var productionPrimarySessionID: String?
+  private var productionWorkspaceGeneration: String?
   private var productionCredentialStore: KeychainSSHCredentialStore?
   private var productionCredential: SSHCredentialID?
   private var productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
@@ -186,8 +194,16 @@ final class HarnessModel: ObservableObject {
   private var productionClaudeResizeSent = false
   private var productionClaudeExitSent = false
   private var productionClaudeExitObserved = false
+  private var productionWorkspaceConnectedSessionIDs: Set<String> = []
+  private var productionWorkspaceMarkerSentSessionIDs: Set<String> = []
+  private var productionWorkspaceMarkerObservedSessionIDs: Set<String> = []
+  private var productionWorkspaceCreatedAdditionalSessions = false
+  private var productionWorkspaceValidationStarted = false
+  private let productionWorkspaceAutomation =
+    ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_WORKSPACE"] == "1"
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
+    || ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_WORKSPACE"] == "1"
   private var didAutorunProductionSession = false
   private var sshCancellationRequestedAt: ContinuousClock.Instant?
   private var sshCancellationReason: SSHCancellationReason?
@@ -801,6 +817,8 @@ final class HarnessModel: ObservableObject {
     productionSessionStatus = "Preparing protected credentials and known hosts…"
     productionSessionInputStatus = "Connecting…"
     productionSessionFrame = nil
+    productionSessionFrames = [:]
+    retiredProductionSessionIDs = []
     productionShellCommandSent = false
     productionTmuxResizeSent = false
     productionTmuxInitialSizeObserved = false
@@ -853,9 +871,16 @@ final class HarnessModel: ObservableObject {
     productionClaudeResizeSent = false
     productionClaudeExitSent = false
     productionClaudeExitObserved = false
+    productionWorkspaceConnectedSessionIDs = []
+    productionWorkspaceMarkerSentSessionIDs = []
+    productionWorkspaceMarkerObservedSessionIDs = []
+    productionWorkspaceCreatedAdditionalSessions = false
+    productionWorkspaceValidationStarted = false
 
     Task {
       do {
+        let workspaceGeneration = UUID().uuidString.lowercased()
+        productionWorkspaceGeneration = workspaceGeneration
         let store = try KeychainSSHCredentialStore()
         let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
         try await store.store(Data("ghosttea-password".utf8), for: credential)
@@ -897,14 +922,53 @@ final class HarnessModel: ObservableObject {
           ssh: ssh,
           session: .ssh(initialPath: reconnectModel.path),
           eventHandler: { [weak self] event in
-            await self?.handleProductionSessionEvent(event)
+            await self?.handleProductionSessionEvent(
+              sessionID: "primary-\(workspaceGeneration)",
+              generation: workspaceGeneration,
+              event: event
+            )
+          }
+        )
+        let primarySessionID = "primary-\(workspaceGeneration)"
+        let primaryResource = GhostteaSSHWorkspaceSession(
+          id: primarySessionID,
+          terminalSessionHandle: 606,
+          request: .newTab,
+          terminal: terminal,
+          session: session
+        )
+        let workspace = try makeProductionWorkspace(sessionID: primarySessionID)
+        let factory = try GhostteaSSHWorkspaceSessionFactory(
+          runtime: runtime,
+          ssh: ssh,
+          sessionConfiguration: .ssh(initialPath: reconnectModel.path),
+          initialSessionHandle: 607,
+          eventHandler: { [weak self] routedEvent in
+            await self?.handleProductionSessionEvent(
+              sessionID: routedEvent.sessionID,
+              generation: workspaceGeneration,
+              event: routedEvent.event
+            )
+          }
+        )
+        let coordinator = try GhostteaWorkspaceSessionCoordinator(
+          document: workspace,
+          sessions: [primarySessionID: primaryResource],
+          allocator: { request in
+            try await factory.allocate(request)
+          },
+          terminator: { _, resource in
+            await GhostteaSSHWorkspaceSessionFactory.disconnect(resource)
           }
         )
         productionTerminal = terminal
         productionCredentialStore = store
         productionCredential = credential
         productionSession = session
-        productionWorkspace = try makeProductionWorkspace()
+        productionPrimarySessionID = primarySessionID
+        productionWorkspaceResources = [primarySessionID: primaryResource]
+        productionWorkspaceCoordinator = coordinator
+        productionWorkspace = workspace
         productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
         productionSessionStatus = "Connecting through production session…"
         await session.requestConnect()
@@ -919,17 +983,28 @@ final class HarnessModel: ObservableObject {
   }
 
   func cancelProductionSession() {
-    guard let productionSession else { return }
+    guard let coordinator = productionWorkspaceCoordinator else { return }
     productionSessionStatus = "Disconnecting…"
     Task {
-      await productionSession.disconnect()
+      await coordinator.closeAll()
       cleanupProductionCredential()
       isRunningProductionSession = false
     }
   }
 
   func handleProductionHardwareInput(_ event: GhostteaHardwareKeyEvent) -> Bool {
-    guard let productionSession, isRunningProductionSession else { return false }
+    guard let sessionID = selectedProductionSessionID else { return false }
+    return handleProductionHardwareInput(event, sessionID: sessionID)
+  }
+
+  func handleProductionHardwareInput(
+    _ event: GhostteaHardwareKeyEvent,
+    sessionID: String
+  ) -> Bool {
+    guard
+      let productionSession = productionWorkspaceResources[sessionID]?.session,
+      isRunningProductionSession
+    else { return false }
     let shortcut = productionWorkspaceShortcutState.handle(
       usage: event.hidUsage,
       phase: event.action.workspacePhase,
@@ -961,6 +1036,14 @@ final class HarnessModel: ObservableObject {
     applyProductionWorkspaceRoute(.reducer(action))
   }
 
+  func handleProductionNewTabRequest() {
+    applyProductionWorkspaceRoute(.requestNewTab)
+  }
+
+  func handleProductionSplitRequest(_ axis: GhostteaWorkspaceSplitAxis) {
+    applyProductionWorkspaceRoute(.requestSplit(axis))
+  }
+
   private func handleProductionWorkspaceCommand(_ command: GhostteaWorkspaceCommand) {
     guard let productionWorkspace, let route = command.route(in: productionWorkspace) else {
       return
@@ -969,35 +1052,57 @@ final class HarnessModel: ObservableObject {
   }
 
   private func applyProductionWorkspaceRoute(_ route: GhostteaWorkspaceCommandRoute) {
+    guard let coordinator = productionWorkspaceCoordinator else { return }
     switch route {
     case .reducer(let action):
-      guard let productionWorkspace else { return }
-      do {
-        let transition = try productionWorkspace.applying(action)
-        self.productionWorkspace = transition.document
-        productionSessionInputStatus = "Workspace command applied"
-        if transition.shouldCloseWindow { cancelProductionSession() }
-      } catch {
-        productionSessionInputStatus = "Workspace command failed: \(error)"
+      Task {
+        do {
+          let transition = try await coordinator.apply(action)
+          await synchronizeProductionWorkspace(from: coordinator)
+          productionSessionInputStatus = "Workspace command applied"
+          if transition.shouldCloseWindow { cancelProductionSession() }
+        } catch {
+          productionSessionInputStatus = "Workspace command failed: \(error)"
+        }
       }
     case .requestNewTab:
-      productionSessionInputStatus = "New tab requires the Phase 7 session factory"
+      productionSessionInputStatus = "Creating independent SSH tab…"
+      Task {
+        do {
+          _ = try await coordinator.createTab()
+          await synchronizeProductionWorkspace(from: coordinator)
+          productionSessionInputStatus = "New SSH tab connected"
+        } catch {
+          productionSessionInputStatus = "New tab failed: \(error)"
+        }
+      }
     case .requestSplit(let axis):
-      productionSessionInputStatus =
-        "\(axis == .horizontal ? "Horizontal" : "Vertical") split requires the Phase 7 session factory"
+      productionSessionInputStatus = "Creating independent SSH split…"
+      Task {
+        do {
+          _ = try await coordinator.splitSelected(axis: axis)
+          await synchronizeProductionWorkspace(from: coordinator)
+          productionSessionInputStatus =
+            "\(axis == .horizontal ? "Horizontal" : "Vertical") SSH split connected"
+        } catch {
+          productionSessionInputStatus = "Split failed: \(error)"
+        }
+      }
     case .openRemoteSessions:
       productionSessionInputStatus = "Remote-session picker is not installed in the harness"
     }
   }
 
-  private func makeProductionWorkspace() throws -> GhostteaWorkspaceTabsDocument {
+  private func makeProductionWorkspace(
+    sessionID: String
+  ) throws -> GhostteaWorkspaceTabsDocument {
     let paneID = "pane-\(UUID().uuidString.lowercased())"
     let tabID = "tab-\(UUID().uuidString.lowercased())"
     let workspace = try GhostteaWorkspaceDocument(
       root: .pane(
         GhostteaWorkspacePane(
           id: paneID,
-          sessionID: "session-\(UUID().uuidString.lowercased())"
+          sessionID: sessionID
         )
       ),
       activePaneID: paneID
@@ -1013,8 +1118,55 @@ final class HarnessModel: ObservableObject {
     )
   }
 
+  private var selectedProductionSessionID: String? {
+    guard
+      let productionWorkspace,
+      let tab = productionWorkspace.tabs.first(where: {
+        $0.id == productionWorkspace.selectedTabID
+      })
+    else { return nil }
+    return tab.workspace.root.panes.first(where: {
+      $0.id == tab.workspace.activePaneID
+    })?.sessionID
+  }
+
+  private func synchronizeProductionWorkspace(
+    from coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async {
+    let document = await coordinator.document
+    var resources: [String: GhostteaSSHWorkspaceSession] = [:]
+    for sessionID in document.sessionIDs {
+      if let resource = await coordinator.session(for: sessionID) {
+        resources[sessionID] = resource
+      }
+    }
+    retiredProductionSessionIDs.formUnion(
+      productionWorkspaceResources.keys.filter { resources[$0] == nil }
+    )
+    retiredProductionSessionIDs.subtract(resources.keys)
+    productionWorkspaceResources = resources
+    productionWorkspace = document
+    productionSessionFrames = productionSessionFrames.filter { resources[$0.key] != nil }
+    if productionWorkspaceAutomation {
+      for sessionID in productionWorkspaceConnectedSessionIDs {
+        sendAutomatedProductionWorkspaceMarkerIfReady(sessionID: sessionID)
+      }
+    }
+  }
+
   func handleProductionSoftwareInput(_ event: GhostteaSoftwareInputEvent) {
-    guard let productionSession, isRunningProductionSession else { return }
+    guard let sessionID = selectedProductionSessionID else { return }
+    handleProductionSoftwareInput(event, sessionID: sessionID)
+  }
+
+  func handleProductionSoftwareInput(
+    _ event: GhostteaSoftwareInputEvent,
+    sessionID: String
+  ) {
+    guard
+      let productionSession = productionWorkspaceResources[sessionID]?.session,
+      isRunningProductionSession
+    else { return }
     Task {
       do {
         switch event {
@@ -1037,7 +1189,18 @@ final class HarnessModel: ObservableObject {
   }
 
   func handleProductionMouseInput(_ event: GhostteaTerminalMouseEvent) {
-    guard let productionSession, isRunningProductionSession else { return }
+    guard let sessionID = selectedProductionSessionID else { return }
+    handleProductionMouseInput(event, sessionID: sessionID)
+  }
+
+  func handleProductionMouseInput(
+    _ event: GhostteaTerminalMouseEvent,
+    sessionID: String
+  ) {
+    guard
+      let productionSession = productionWorkspaceResources[sessionID]?.session,
+      isRunningProductionSession
+    else { return }
     Task {
       do {
         try await productionSession.sendMouse(event.coreEvent)
@@ -1048,7 +1211,15 @@ final class HarnessModel: ObservableObject {
   }
 
   func handleProductionScrollRows(_ rows: Int) {
-    guard let productionSession, rows != 0 else { return }
+    guard let sessionID = selectedProductionSessionID else { return }
+    handleProductionScrollRows(rows, sessionID: sessionID)
+  }
+
+  func handleProductionScrollRows(_ rows: Int, sessionID: String) {
+    guard
+      let productionSession = productionWorkspaceResources[sessionID]?.session,
+      rows != 0
+    else { return }
     Task {
       do {
         try await productionSession.scroll(rows: Int64(rows))
@@ -1059,7 +1230,17 @@ final class HarnessModel: ObservableObject {
   }
 
   func handleProductionSelectionCommit(_ selection: GhostteaTerminalSelection) {
-    guard let productionTerminal else { return }
+    guard let sessionID = selectedProductionSessionID else { return }
+    handleProductionSelectionCommit(selection, sessionID: sessionID)
+  }
+
+  func handleProductionSelectionCommit(
+    _ selection: GhostteaTerminalSelection,
+    sessionID: String
+  ) {
+    guard let productionTerminal = productionWorkspaceResources[sessionID]?.terminal else {
+      return
+    }
     Task {
       do {
         let text = try await productionTerminal.selectionText(
@@ -1077,7 +1258,14 @@ final class HarnessModel: ObservableObject {
   }
 
   func handleProductionSelectAll() {
-    guard let productionTerminal else { return }
+    guard let sessionID = selectedProductionSessionID else { return }
+    handleProductionSelectAll(sessionID: sessionID)
+  }
+
+  func handleProductionSelectAll(sessionID: String) {
+    guard let productionTerminal = productionWorkspaceResources[sessionID]?.terminal else {
+      return
+    }
     Task {
       do {
         let text = try await productionTerminal.selectionText(
@@ -1095,13 +1283,30 @@ final class HarnessModel: ObservableObject {
     }
   }
 
-  private func handleProductionSessionEvent(_ event: GhostteaSessionEvent) async {
+  private func handleProductionSessionEvent(
+    sessionID: String,
+    generation: String,
+    event: GhostteaSessionEvent
+  ) async {
+    guard
+      productionWorkspaceGeneration == generation,
+      !retiredProductionSessionIDs.contains(sessionID)
+    else { return }
+    let isPrimary = sessionID == productionPrimarySessionID
     switch event {
     case .stateChanged(let snapshot):
-      handleProductionSessionState(snapshot)
+      handleProductionSessionState(snapshot, sessionID: sessionID, isPrimary: isPrimary)
     case .frameReady(let frame):
-      productionSessionFrame = frame
-      await observeAutomatedProductionProfileFrame()
+      productionSessionFrames[sessionID] = frame
+      if isPrimary {
+        productionSessionFrame = frame
+        if !productionWorkspaceAutomation {
+          await observeAutomatedProductionProfileFrame()
+        }
+      }
+      if productionWorkspaceAutomation {
+        await observeAutomatedProductionWorkspaceFrame(sessionID: sessionID)
+      }
     case .metadataChanged:
       break
     case .bell:
@@ -1113,40 +1318,193 @@ final class HarnessModel: ObservableObject {
     }
   }
 
-  private func handleProductionSessionState(_ snapshot: GhostteaSessionSnapshot) {
+  private func handleProductionSessionState(
+    _ snapshot: GhostteaSessionSnapshot,
+    sessionID: String,
+    isPrimary: Bool
+  ) {
     switch snapshot.reconnectState {
     case .idle:
-      if let exit = snapshot.lastExitStatus {
+      if let exit = snapshot.lastExitStatus, isPrimary, productionSessionAutomation {
         validateCompletedProductionShell(exit: exit)
+      } else if let exit = snapshot.lastExitStatus {
+        productionSessionStatus = "Session ended · \(exit)"
       } else {
         productionSessionStatus = "Disconnected"
-        isRunningProductionSession = false
-        cleanupProductionCredential()
       }
     case .waitingForNetwork:
       productionSessionStatus = "Waiting for network"
     case .connecting(let generation):
       productionSessionStatus = "Connecting · generation \(generation)"
     case .connected(let generation):
-      productionSessionStatus = "Connected · generation \(generation)"
+      productionSessionStatus =
+        "Connected · \(productionWorkspaceResources.count) session\(productionWorkspaceResources.count == 1 ? "" : "s") · generation \(generation)"
       productionSessionInputStatus = "Tap the terminal to type"
-      if productionSessionAutomation {
+      if productionWorkspaceAutomation {
+        advanceAutomatedProductionWorkspaceConnected(
+          sessionID: sessionID,
+          isPrimary: isPrimary
+        )
+      } else if isPrimary, productionSessionAutomation {
         print("GHOSTTEA_PRODUCTION_CONNECTED profile=\(productionSSHProfile)")
+        sendAutomaticProductionProfileCommandIfNeeded()
       }
-      sendAutomaticProductionProfileCommandIfNeeded()
     case .reconnectAvailable:
-      productionSessionStatus = "Reconnect available"
-      isRunningProductionSession = false
-      cleanupProductionCredential()
+      productionSessionStatus = "Reconnect available · \(sessionID)"
     case .suspended:
       productionSessionStatus = "Suspended"
     case .failed:
       productionSessionStatus = snapshot.lastFailure?.message ?? "SSH session failed"
       productionSessionInputStatus = "Unavailable"
-      isRunningProductionSession = false
-      finishProductionSessionAutomation(exitCode: 2)
-      cleanupProductionCredential()
+      if isPrimary, productionSessionAutomation {
+        isRunningProductionSession = false
+        finishProductionSessionAutomation(exitCode: 2)
+        cleanupProductionCredential()
+      }
     }
+  }
+
+  private func advanceAutomatedProductionWorkspaceConnected(
+    sessionID: String,
+    isPrimary: Bool
+  ) {
+    if productionWorkspaceConnectedSessionIDs.insert(sessionID).inserted {
+      print("GHOSTTEA_PRODUCTION_WORKSPACE_CONNECTED id=\(sessionID)")
+    }
+    sendAutomatedProductionWorkspaceMarkerIfReady(sessionID: sessionID)
+
+    guard
+      isPrimary,
+      !productionWorkspaceCreatedAdditionalSessions,
+      let coordinator = productionWorkspaceCoordinator
+    else { return }
+    productionWorkspaceCreatedAdditionalSessions = true
+    Task {
+      do {
+        _ = try await coordinator.createTab()
+        await synchronizeProductionWorkspace(from: coordinator)
+        _ = try await coordinator.splitSelected(axis: .horizontal)
+        await synchronizeProductionWorkspace(from: coordinator)
+        guard productionWorkspaceResources.count == 3 else {
+          throw HarnessError.sessionProbeMismatch("workspace allocation count")
+        }
+        print("GHOSTTEA_PRODUCTION_WORKSPACE_ALLOCATED sessions=3 tabs=2")
+      } catch {
+        failAutomatedProductionAction("workspace allocation", error: error)
+      }
+    }
+  }
+
+  private func sendAutomatedProductionWorkspaceMarkerIfReady(sessionID: String) {
+    guard
+      productionWorkspaceConnectedSessionIDs.contains(sessionID),
+      let resource = productionWorkspaceResources[sessionID],
+      productionWorkspaceMarkerSentSessionIDs.insert(sessionID).inserted
+    else { return }
+    let marker = automatedProductionWorkspaceMarker(for: resource)
+    Task {
+      do {
+        try await resource.session.send(Data("printf '\(marker)\\n'\n".utf8))
+        print("GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_SENT handle=\(resource.terminalSessionHandle)")
+      } catch {
+        failAutomatedProductionAction("workspace marker", error: error)
+      }
+    }
+  }
+
+  private func observeAutomatedProductionWorkspaceFrame(sessionID: String) async {
+    guard
+      productionWorkspaceMarkerSentSessionIDs.contains(sessionID),
+      let resource = productionWorkspaceResources[sessionID]
+    else { return }
+    do {
+      let rows = try await resource.terminal.accessibilityRows(start: 0, count: 100)
+      let text = String(decoding: rows, as: UTF8.self)
+      guard text.contains(automatedProductionWorkspaceMarker(for: resource)) else { return }
+      if productionWorkspaceMarkerObservedSessionIDs.insert(sessionID).inserted {
+        print(
+          "GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=\(resource.terminalSessionHandle)"
+        )
+      }
+      guard
+        productionWorkspaceMarkerObservedSessionIDs.count == 3,
+        !productionWorkspaceValidationStarted,
+        let coordinator = productionWorkspaceCoordinator
+      else { return }
+      productionWorkspaceValidationStarted = true
+      Task { await validateAutomatedProductionWorkspace(coordinator: coordinator) }
+    } catch {
+      failAutomatedProductionAction("workspace frame validation", error: error)
+    }
+  }
+
+  private func validateAutomatedProductionWorkspace(
+    coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async {
+    do {
+      guard
+        let document = productionWorkspace,
+        document.tabs.count == 2,
+        productionWorkspaceResources.count == 3,
+        Set(productionWorkspaceResources.values.map(\.terminalSessionHandle)).count == 3,
+        let selectedTab = document.tabs.first(where: { $0.id == document.selectedTabID }),
+        selectedTab.workspace.sessionIDs.count == 2,
+        let closedPaneSessionID = selectedProductionSessionID,
+        let closedPaneResource = productionWorkspaceResources[closedPaneSessionID]
+      else {
+        throw HarnessError.sessionProbeMismatch("workspace independent resources")
+      }
+
+      let paneClose = try await coordinator.apply(.applyToSelected(.close))
+      guard paneClose.closedSessionIDs == [closedPaneSessionID] else {
+        throw HarnessError.sessionProbeMismatch("workspace pane close identity")
+      }
+      await synchronizeProductionWorkspace(from: coordinator)
+      guard
+        productionWorkspaceResources.count == 2,
+        await closedPaneResource.session.snapshot().reconnectState == .idle,
+        let afterPaneClose = productionWorkspace,
+        let splitTab = afterPaneClose.tabs.first(where: {
+          $0.id == afterPaneClose.selectedTabID
+        }),
+        let closedTabSessionID = splitTab.workspace.sessionIDs.first,
+        let closedTabResource = productionWorkspaceResources[closedTabSessionID]
+      else {
+        throw HarnessError.sessionProbeMismatch("workspace pane teardown")
+      }
+
+      let tabClose = try await coordinator.apply(.closeTab(id: splitTab.id))
+      guard tabClose.closedSessionIDs == [closedTabSessionID] else {
+        throw HarnessError.sessionProbeMismatch("workspace tab close identity")
+      }
+      await synchronizeProductionWorkspace(from: coordinator)
+      guard
+        productionWorkspaceResources.count == 1,
+        productionWorkspaceResources[productionPrimarySessionID ?? ""] != nil,
+        await closedTabResource.session.snapshot().reconnectState == .idle,
+        let primarySession = productionSession
+      else {
+        throw HarnessError.sessionProbeMismatch("workspace tab teardown")
+      }
+
+      await coordinator.closeAll()
+      guard await primarySession.snapshot().reconnectState == .idle else {
+        throw HarnessError.sessionProbeMismatch("workspace window teardown")
+      }
+      productionSessionStatus = "Passed · 3 independent SSH workspace sessions"
+      productionSessionInputStatus = "Pane, tab, and window teardown validated"
+      isRunningProductionSession = false
+      print("GHOSTTEA_PRODUCTION_WORKSPACE_PASS")
+      finishProductionSessionAutomation(exitCode: 0)
+    } catch {
+      failAutomatedProductionAction("workspace lifecycle validation", error: error)
+    }
+  }
+
+  private func automatedProductionWorkspaceMarker(
+    for resource: GhostteaSSHWorkspaceSession
+  ) -> String {
+    "ghosttea-workspace-\(resource.terminalSessionHandle)-ok"
   }
 
   private func sendAutomaticProductionProfileCommandIfNeeded() {
@@ -1870,7 +2228,13 @@ final class HarnessModel: ObservableObject {
 
   private func cleanupProductionCredential() {
     productionWorkspace = nil
+    productionSessionFrames = [:]
     productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
+    productionWorkspaceCoordinator = nil
+    productionWorkspaceResources = [:]
+    retiredProductionSessionIDs = []
+    productionPrimarySessionID = nil
+    productionWorkspaceGeneration = nil
     productionSession = nil
     productionTerminal = nil
     guard let store = productionCredentialStore, let credential = productionCredential else {
@@ -2268,8 +2632,13 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.enteredBackground)
     applyReconnectEffects(effects, cancellationReason: .background)
     updateReconnectStateSummary()
-    if let productionSession {
-      Task { await productionSession.enteredBackground() }
+    let productionSessions = productionWorkspaceResources.values.map(\.session)
+    if !productionSessions.isEmpty {
+      Task {
+        for productionSession in productionSessions {
+          await productionSession.enteredBackground()
+        }
+      }
     }
   }
 
@@ -2278,8 +2647,13 @@ final class HarnessModel: ObservableObject {
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
     evaluateBackgroundLifecycleProbe()
-    if let productionSession {
-      Task { await productionSession.becameActive() }
+    let productionSessions = productionWorkspaceResources.values.map(\.session)
+    if !productionSessions.isEmpty {
+      Task {
+        for productionSession in productionSessions {
+          await productionSession.becameActive()
+        }
+      }
     }
   }
 
@@ -2305,8 +2679,13 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.pathChanged(path))
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
-    if let productionSession {
-      Task { await productionSession.updateNetworkPath(path) }
+    let productionSessions = productionWorkspaceResources.values.map(\.session)
+    if !productionSessions.isEmpty {
+      Task {
+        for productionSession in productionSessions {
+          await productionSession.updateNetworkPath(path)
+        }
+      }
     }
     if productionSessionAutomation, !didAutorunProductionSession, path.canAttemptConnection {
       didAutorunProductionSession = true

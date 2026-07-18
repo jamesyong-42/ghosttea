@@ -68,6 +68,14 @@ sessions in workspace order on window close. Its registry must exactly match
 the document at initialization, so persisted identities never become claims
 that a session is live.
 
+`GhostteaSSHWorkspace` is the concrete bridge injected into that coordinator.
+One factory shares only immutable SSH configuration and the native text
+runtime; every allocation receives a unique opaque workspace ID, native
+terminal handle, `GhostteaTerminal`, `GhostteaSession`, ordered event identity,
+and disconnect lifecycle. Allocation can remain demand-paused for restoration,
+while ordinary new-tab and split requests start a fresh transport before the
+coordinator commits their layout identity.
+
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and
 the device harness. `GhostteaSSHSessionFactory` installs SSH-specific, redacted

@@ -6,8 +6,10 @@ The production-session surface also hosts the Phase 7 workspace integration.
 Its live SSH terminal is represented as an identity-only one-tab/one-pane
 workspace and rendered through `GhostteaWorkspaceUI`. Hardware shortcuts are
 resolved by `GhostteaWorkspace` before unmatched keys reach terminal encoding;
-new-tab and split commands remain explicit host requests until the harness has
-a multi-session factory.
+new-tab and split requests now allocate independent native terminals and SSH
+session actors through `GhostteaSSHWorkspace` before the layout commits. The
+tab-strip touch controls expose the same requests when no hardware keyboard is
+attached, and closing a pane tears down only its corresponding connection.
 
 The harness provides:
 
@@ -94,6 +96,14 @@ the fixture on error, Return, Ctrl-C, or termination:
 
 ```sh
 npm run test:ios:device
+```
+
+The Phase 7 multi-session gate is fully automatic: it creates a second tab,
+splits that tab into a third SSH session, validates distinct native-terminal
+markers, and then proves pane, tab, and whole-window teardown ordering:
+
+```sh
+npm run test:ios:production-workspace
 ```
 
 Set `GHOSTTEA_IOS_DEVICE_ID` when more than one physical iOS device is connected,

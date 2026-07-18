@@ -38,6 +38,7 @@
     "test:ios:harness": "node scripts/test-ios-harness.mjs",
     "test:ios:device": "node scripts/test-ios-device-harness.mjs",
     "test:ios:production-session": "node scripts/test-ios-device-harness.mjs --production-session",
+    "test:ios:production-workspace": "node scripts/test-ios-device-harness.mjs --production-workspace",
     "test:ios:production-tmux": "node scripts/test-ios-device-harness.mjs --production-tmux",
     "test:ios:production-vim": "node scripts/test-ios-device-harness.mjs --production-vim",
     "test:ios:production-zellij": "node scripts/test-ios-device-harness.mjs --production-zellij",

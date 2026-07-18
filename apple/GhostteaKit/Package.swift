@@ -14,6 +14,7 @@ let package = Package(
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
     .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
+    .library(name: "GhostteaSSHWorkspace", targets: ["GhostteaSSHWorkspace"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaSession", targets: ["GhostteaSession"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
@@ -40,6 +41,15 @@ let package = Package(
         "GhostteaCredentials",
         "GhostteaSession",
         "GhostteaTransport",
+      ]
+    ),
+    .target(
+      name: "GhostteaSSHWorkspace",
+      dependencies: [
+        "GhostteaCore",
+        "GhostteaSession",
+        "GhostteaSSH",
+        "GhostteaWorkspace",
       ]
     ),
     .target(
@@ -141,6 +151,17 @@ let package = Package(
         "GhostteaSession",
         "GhostteaSSH",
         "GhostteaTransport",
+      ]
+    ),
+    .testTarget(
+      name: "GhostteaSSHWorkspaceTests",
+      dependencies: [
+        "GhostteaCore",
+        "GhostteaSession",
+        "GhostteaSSH",
+        "GhostteaSSHWorkspace",
+        "GhostteaTransport",
+        "GhostteaWorkspace",
       ]
     ),
     .testTarget(

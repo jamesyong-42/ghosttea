@@ -1232,3 +1232,39 @@ The process exited zero and the runner removed its disposable SSH container and
 network. This proves the host boundary without pretending the single-session
 harness can create additional tabs or splits; those commands remain explicit
 session-factory requests for the next Phase 7 slice.
+
+## 2026-07-18: independent SSH workspace-session gate
+
+The next Phase 7 slice adds the concrete `GhostteaSSHWorkspace` allocator and
+injects it into `GhostteaWorkspaceSessionCoordinator`. The allocator shares an
+immutable SSH configuration and native runtime, but assigns every allocation a
+unique opaque session ID, native terminal handle, terminal actor, SSH session
+actor, routed event identity, and disconnect lifecycle. The host keeps frames
+and input routing keyed by session ID, propagates network and app lifecycle
+events to all live resources, and rejects late events after a pane retires.
+
+`npm run test:ios:production-workspace` passed the complete 92-test Swift suite,
+both iOS SDK builds, and a signed iPhone 14 Pro run. On-device automation kept
+the original handle 606 session, created a second tab on handle 607, split that
+tab into handle 608, and required a distinct marker through each terminal's
+native accessibility rows:
+
+```text
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=606
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=608
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=607
+```
+
+It then closed the active pane and required only that resource to reach idle,
+closed the selected tab and required only its remaining resource to reach idle,
+and finally closed the coordinator and required the original session to reach
+idle. The exact ordered close identities and three unique native handles were
+asserted before the app emitted:
+
+```text
+GHOSTTEA_PRODUCTION_WORKSPACE_PASS
+```
+
+The app exited zero and the runner removed its disposable SSH container and
+network. New-tab and split are also exposed as touch controls, so the same host
+requests are available on an iPhone without a hardware keyboard.

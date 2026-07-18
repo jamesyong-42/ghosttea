@@ -1,0 +1,151 @@
+import Foundation
+import GhostteaCore
+import GhostteaSSH
+import GhostteaSession
+import GhostteaWorkspace
+
+/// The independently owned native and transport state behind one workspace pane.
+///
+/// A runtime may be shared by many resources, but a terminal and session never are.
+/// Keeping the opaque workspace identity beside those actors makes event routing and
+/// teardown independent of the currently selected tab or pane.
+public struct GhostteaSSHWorkspaceSession: Sendable {
+  public let id: String
+  public let terminalSessionHandle: UInt64
+  public let request: GhostteaWorkspaceSessionRequest
+  public let terminal: GhostteaTerminal
+  public let session: GhostteaSession
+
+  public init(
+    id: String,
+    terminalSessionHandle: UInt64,
+    request: GhostteaWorkspaceSessionRequest,
+    terminal: GhostteaTerminal,
+    session: GhostteaSession
+  ) {
+    self.id = id
+    self.terminalSessionHandle = terminalSessionHandle
+    self.request = request
+    self.terminal = terminal
+    self.session = session
+  }
+}
+
+public struct GhostteaSSHWorkspaceSessionEvent: Equatable, Sendable {
+  public let sessionID: String
+  public let event: GhostteaSessionEvent
+
+  public init(sessionID: String, event: GhostteaSessionEvent) {
+    self.sessionID = sessionID
+    self.event = event
+  }
+}
+
+public enum GhostteaSSHWorkspaceSessionFactoryError: Error, Equatable, Sendable {
+  case invalidInitialSessionHandle
+  case terminalSizeOutOfRange(columns: Int, rows: Int)
+  case sessionHandleExhausted
+}
+
+/// Creates the concrete SSH-backed resources consumed by a workspace coordinator.
+///
+/// Allocation is serialized so native terminal handles and workspace identities are
+/// unique even when multiple scenes request tabs concurrently. The SSH configuration
+/// is immutable and may resolve the same protected credential for each independent
+/// connection; plaintext credentials never become part of workspace state.
+public actor GhostteaSSHWorkspaceSessionFactory {
+  public typealias EventHandler =
+    @Sendable (GhostteaSSHWorkspaceSessionEvent) async -> Void
+
+  private let runtime: GhostteaRuntime
+  private let ssh: GhostteaSSHConfiguration
+  private let sessionConfiguration: GhostteaSessionConfiguration
+  private let scrollbackBytes: UInt64
+  private let identityPrefix: String
+  private let eventHandler: EventHandler
+  private var nextSessionHandle: UInt64?
+
+  public init(
+    runtime: GhostteaRuntime,
+    ssh: GhostteaSSHConfiguration,
+    sessionConfiguration: GhostteaSessionConfiguration = .ssh(),
+    initialSessionHandle: UInt64 = 1,
+    scrollbackBytes: UInt64 = 5_000_000,
+    identityPrefix: String = UUID().uuidString.lowercased(),
+    eventHandler: @escaping EventHandler = { _ in }
+  ) throws {
+    guard initialSessionHandle != 0 else {
+      throw GhostteaSSHWorkspaceSessionFactoryError.invalidInitialSessionHandle
+    }
+    self.runtime = runtime
+    self.ssh = ssh
+    self.sessionConfiguration = sessionConfiguration
+    self.nextSessionHandle = initialSessionHandle
+    self.scrollbackBytes = scrollbackBytes
+    self.identityPrefix = identityPrefix
+    self.eventHandler = eventHandler
+  }
+
+  /// Allocates one terminal and one SSH session, then requests its initial connection.
+  ///
+  /// `connect` is exposed for deterministic tests and restoration flows that need to
+  /// create resources while network demand remains paused.
+  public func allocate(
+    _ request: GhostteaWorkspaceSessionRequest,
+    connect: Bool = true
+  ) async throws -> GhostteaWorkspaceSessionAllocation<GhostteaSSHWorkspaceSession> {
+    guard let handle = nextSessionHandle else {
+      throw GhostteaSSHWorkspaceSessionFactoryError.sessionHandleExhausted
+    }
+    guard
+      let columns = UInt16(exactly: ssh.initialSize.columns),
+      let rows = UInt16(exactly: ssh.initialSize.rows)
+    else {
+      throw GhostteaSSHWorkspaceSessionFactoryError.terminalSizeOutOfRange(
+        columns: ssh.initialSize.columns,
+        rows: ssh.initialSize.rows
+      )
+    }
+
+    let sessionID = "\(identityPrefix)-session-\(handle)"
+    let terminal = try GhostteaTerminal(
+      runtime: runtime,
+      configuration: GhostteaTerminalConfiguration(
+        sessionHandle: handle,
+        scrollbackBytes: scrollbackBytes,
+        columns: columns,
+        rows: rows
+      )
+    )
+    let handler = eventHandler
+    let session = GhostteaSSHSessionFactory.make(
+      terminal: terminal,
+      ssh: ssh,
+      session: sessionConfiguration,
+      eventHandler: { event in
+        await handler(
+          GhostteaSSHWorkspaceSessionEvent(sessionID: sessionID, event: event)
+        )
+      }
+    )
+    let resource = GhostteaSSHWorkspaceSession(
+      id: sessionID,
+      terminalSessionHandle: handle,
+      request: request,
+      terminal: terminal,
+      session: session
+    )
+
+    nextSessionHandle = handle == UInt64.max ? nil : handle + 1
+    if connect {
+      await session.requestConnect()
+    }
+    return GhostteaWorkspaceSessionAllocation(sessionID: sessionID, session: resource)
+  }
+
+  public nonisolated static func disconnect(
+    _ resource: GhostteaSSHWorkspaceSession
+  ) async {
+    await resource.session.disconnect()
+  }
+}

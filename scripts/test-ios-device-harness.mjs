@@ -22,8 +22,10 @@ const productionVimAutomation = process.argv.includes("--production-vim");
 const productionZellijAutomation = process.argv.includes("--production-zellij");
 const productionMonitorTuisAutomation = process.argv.includes("--production-monitor-tuis");
 const productionClaudeAutomation = process.argv.includes("--production-claude");
+const productionWorkspaceAutomation = process.argv.includes("--production-workspace");
 const productionSessionAutomation =
   process.argv.includes("--production-session") ||
+  productionWorkspaceAutomation ||
   productionTmuxAutomation ||
   productionVimAutomation ||
   productionZellijAutomation ||
@@ -222,6 +224,7 @@ async function main() {
         ...(productionSessionAutomation
           ? {
               GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1",
+              ...(productionWorkspaceAutomation ? { GHOSTTEA_AUTORUN_PRODUCTION_WORKSPACE: "1" } : {}),
               ...(productionTmuxAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "tmux" } : {}),
               ...(productionVimAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "vim" } : {}),
               ...(productionZellijAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "zellij" } : {}),
@@ -243,17 +246,19 @@ async function main() {
     console.log(`\nLaunched on ${device.hardwareProperties.marketingName} with disposable fixture ${host}:22022.`);
     if (productionSessionAutomation) {
       console.log(
-        productionTmuxAutomation
-          ? "Production tmux attach/input/resize device gate passed."
-          : productionVimAutomation
-            ? "Production Vim render/input/resize device gate passed."
-            : productionZellijAutomation
-              ? "Production Zellij attach/input/resize device gate passed."
-              : productionMonitorTuisAutomation
-                ? "Production htop/btop render/input/resize device gate passed."
-                : productionClaudeAutomation
-                  ? "Production Claude Code prompt/interrupt/shortcuts/resize device gate passed."
-                  : "Production SSH → core → TRF1 device gate passed.",
+        productionWorkspaceAutomation
+          ? "Production 3-session workspace allocation and teardown device gate passed."
+          : productionTmuxAutomation
+            ? "Production tmux attach/input/resize device gate passed."
+            : productionVimAutomation
+              ? "Production Vim render/input/resize device gate passed."
+              : productionZellijAutomation
+                ? "Production Zellij attach/input/resize device gate passed."
+                : productionMonitorTuisAutomation
+                  ? "Production htop/btop render/input/resize device gate passed."
+                  : productionClaudeAutomation
+                    ? "Production Claude Code prompt/interrupt/shortcuts/resize device gate passed."
+                    : "Production SSH → core → TRF1 device gate passed.",
       );
     } else {
       await waitForCleanupRequest();

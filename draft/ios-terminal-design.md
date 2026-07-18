@@ -2542,7 +2542,22 @@ workspace order and permanently closes the coordinator. The coordinator
 validates that its initial live registry exactly matches the identity-only
 document, preventing restoration from manufacturing a live-session claim.
 The complete Swift package passes 89 tests and both generic iOS builds.
-Concrete SSH allocation in the harness is the next integration step.
+At that checkpoint, concrete SSH allocation remained the next integration step.
+
+The seventh slice adds `GhostteaSSHWorkspace`, the concrete coordinator
+allocator. A single immutable SSH configuration and native runtime may be
+shared, but every tab or split receives a unique native terminal handle,
+`GhostteaTerminal`, `GhostteaSession`, opaque session ID, routed event stream,
+and explicit disconnect path. The iOS host now keeps a session-ID keyed resource
+and frame registry, routes hardware/software/pointer/selection input to the
+correct pane, propagates path and app lifecycle changes to every live session,
+and rejects late events from retired panes. New-tab and split requests are
+transactional coordinator operations and are available from both shared
+hardware shortcuts and touch controls. The complete Swift package passes 92
+tests, and the integrated app builds for both iOS SDK variants. The signed
+iPhone 14 Pro gate creates three concurrent SSH sessions, validates distinct
+native-terminal output for handles 606, 607, and 608, then passes exact pane,
+tab, and window teardown checks.
 
 Deliverables:
 

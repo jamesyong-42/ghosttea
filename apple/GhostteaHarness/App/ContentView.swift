@@ -105,25 +105,59 @@ struct ContentView: View {
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
           }
-          if let frame = model.productionSessionFrame,
-            let workspace = model.productionWorkspace
-          {
+          if let workspace = model.productionWorkspace {
             GhostteaWorkspaceView(
               document: workspace,
               tabTitle: { _ in model.productionSSHProfile.rawValue },
               paneTitle: { _ in "Terminal" },
-              onAction: model.handleProductionWorkspaceAction
-            ) { _, _, isActive in
-              GhostteaTerminalPreview(
-                frame: frame,
-                visible: scenePhase == .active && isActive,
-                onHardwareInput: model.handleProductionHardwareInput,
-                onSoftwareInput: model.handleProductionSoftwareInput,
-                onMouseInput: model.handleProductionMouseInput,
-                onScrollRows: model.handleProductionScrollRows,
-                onSelectionCommit: model.handleProductionSelectionCommit,
-                onSelectAll: model.handleProductionSelectAll
-              )
+              onAction: model.handleProductionWorkspaceAction,
+              onNewTab: model.handleProductionNewTabRequest,
+              onSplit: model.handleProductionSplitRequest
+            ) { _, pane, isActive in
+              Group {
+                if let frame = model.productionSessionFrames[pane.sessionID] {
+                  GhostteaTerminalPreview(
+                    frame: frame,
+                    visible: scenePhase == .active && isActive,
+                    onHardwareInput: {
+                      model.handleProductionHardwareInput(
+                        $0,
+                        sessionID: pane.sessionID
+                      )
+                    },
+                    onSoftwareInput: {
+                      model.handleProductionSoftwareInput(
+                        $0,
+                        sessionID: pane.sessionID
+                      )
+                    },
+                    onMouseInput: {
+                      model.handleProductionMouseInput(
+                        $0,
+                        sessionID: pane.sessionID
+                      )
+                    },
+                    onScrollRows: {
+                      model.handleProductionScrollRows(
+                        $0,
+                        sessionID: pane.sessionID
+                      )
+                    },
+                    onSelectionCommit: {
+                      model.handleProductionSelectionCommit(
+                        $0,
+                        sessionID: pane.sessionID
+                      )
+                    },
+                    onSelectAll: {
+                      model.handleProductionSelectAll(sessionID: pane.sessionID)
+                    }
+                  )
+                } else {
+                  ProgressView("Connecting SSH session…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+              }
             }
             .frame(height: 260)
             .clipShape(RoundedRectangle(cornerRadius: 8))

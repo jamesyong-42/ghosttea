@@ -43,6 +43,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
   private let paneTitle: (GhostteaWorkspacePane) -> String
   private let onAction: (GhostteaWorkspaceTabsAction) -> Void
   private let onNewTab: (() -> Void)?
+  private let onSplit: ((GhostteaWorkspaceSplitAxis) -> Void)?
   private let paneContent: (String, GhostteaWorkspacePane, Bool) -> PaneContent
 
   public init(
@@ -51,6 +52,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
     paneTitle: @escaping (GhostteaWorkspacePane) -> String = { $0.id },
     onAction: @escaping (GhostteaWorkspaceTabsAction) -> Void,
     onNewTab: (() -> Void)? = nil,
+    onSplit: ((GhostteaWorkspaceSplitAxis) -> Void)? = nil,
     @ViewBuilder paneContent: @escaping (String, GhostteaWorkspacePane, Bool) -> PaneContent
   ) {
     self.document = document
@@ -58,6 +60,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
     self.paneTitle = paneTitle
     self.onAction = onAction
     self.onNewTab = onNewTab
+    self.onSplit = onSplit
     self.paneContent = paneContent
   }
 
@@ -125,6 +128,18 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
           .buttonStyle(.plain)
           .accessibilityLabel("New tab")
           .accessibilityIdentifier("ghosttea.tab.new")
+        }
+
+        if let onSplit {
+          Menu {
+            Button("Split Side by Side") { onSplit(.horizontal) }
+            Button("Split Top and Bottom") { onSplit(.vertical) }
+          } label: {
+            Image(systemName: "rectangle.split.2x1")
+              .padding(8)
+          }
+          .accessibilityLabel("Split terminal")
+          .accessibilityIdentifier("ghosttea.pane.split")
         }
       }
       .padding(.horizontal, 6)
