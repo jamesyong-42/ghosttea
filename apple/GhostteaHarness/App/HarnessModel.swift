@@ -53,12 +53,13 @@ final class HarnessModel: ObservableObject {
     case tmux = "tmux"
     case vim = "Vim"
     case zellij = "Zellij"
+    case monitorTuis = "htop + btop"
 
     var id: Self { self }
 
     func attachProfile(sessionName: String) -> GhostteaSSHAttachProfile {
       switch self {
-      case .shell: .shell
+      case .shell, .monitorTuis: .shell
       case .tmux: .tmux(sessionName: sessionName)
       case .vim: .shell
       case .zellij: .zellij(sessionName: sessionName)
@@ -153,6 +154,20 @@ final class HarnessModel: ObservableObject {
   private var productionZellijInputSent = false
   private var productionZellijInputObserved = false
   private var productionZellijExitSent = false
+  private var productionMonitorNoEchoObserved = false
+  private var productionHtopLaunchSent = false
+  private var productionHtopMainObserved = false
+  private var productionHtopHelpSent = false
+  private var productionHtopHelpObserved = false
+  private var productionHtopResizeSent = false
+  private var productionHtopExitSent = false
+  private var productionHtopExitObserved = false
+  private var productionBtopMainObserved = false
+  private var productionBtopMenuSent = false
+  private var productionBtopMenuObserved = false
+  private var productionBtopResizeSent = false
+  private var productionBtopExitSent = false
+  private var productionBtopExitObserved = false
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
   private var didAutorunProductionSession = false
@@ -792,6 +807,20 @@ final class HarnessModel: ObservableObject {
     productionZellijInputSent = false
     productionZellijInputObserved = false
     productionZellijExitSent = false
+    productionMonitorNoEchoObserved = false
+    productionHtopLaunchSent = false
+    productionHtopMainObserved = false
+    productionHtopHelpSent = false
+    productionHtopHelpObserved = false
+    productionHtopResizeSent = false
+    productionHtopExitSent = false
+    productionHtopExitObserved = false
+    productionBtopMainObserved = false
+    productionBtopMenuSent = false
+    productionBtopMenuObserved = false
+    productionBtopResizeSent = false
+    productionBtopExitSent = false
+    productionBtopExitObserved = false
 
     Task {
       do {
@@ -1033,7 +1062,9 @@ final class HarnessModel: ObservableObject {
     case .zellij where productionSessionAutomation:
       // Zellij starts a real shell pane; suppress echo before its marker probe.
       command = "stty -echo; printf 'ghosttea-zellij-%s\\n' noecho\n"
-    case .tmux, .vim, .zellij:
+    case .monitorTuis where productionSessionAutomation:
+      command = "stty -echo; printf 'ghosttea-monitor-%s\\n' noecho\n"
+    case .tmux, .vim, .zellij, .monitorTuis:
       return
     }
     productionShellCommandSent = true
@@ -1073,6 +1104,8 @@ final class HarnessModel: ObservableObject {
         advanceAutomatedVim(text: text)
       case .zellij:
         advanceAutomatedZellij(text: text)
+      case .monitorTuis:
+        advanceAutomatedMonitorTuis(text: text)
       case .shell:
         break
       }
@@ -1292,6 +1325,137 @@ final class HarnessModel: ObservableObject {
     }
   }
 
+  private func advanceAutomatedMonitorTuis(text: String) {
+    guard let productionSession else { return }
+    if text.contains("ghosttea-monitor-noecho") {
+      if !productionMonitorNoEchoObserved {
+        print("GHOSTTEA_PRODUCTION_MONITOR_NOECHO_OBSERVED")
+      }
+      productionMonitorNoEchoObserved = true
+    }
+    if text.contains("Tasks:"), text.contains("Load average:"), text.contains("F10Quit") {
+      if !productionHtopMainObserved {
+        print("GHOSTTEA_PRODUCTION_HTOP_MAIN_OBSERVED")
+      }
+      productionHtopMainObserved = true
+    }
+    if text.contains("htop 3.2.2"), text.contains("F10 q: quit") {
+      if !productionHtopHelpObserved {
+        print("GHOSTTEA_PRODUCTION_HTOP_HELP_OBSERVED")
+      }
+      productionHtopHelpObserved = true
+    }
+    if text.contains("ghosttea-htop-exit 40 120") {
+      if !productionHtopExitObserved {
+        print("GHOSTTEA_PRODUCTION_HTOP_EXIT_OBSERVED")
+      }
+      productionHtopExitObserved = true
+    }
+    if productionHtopExitObserved, text.contains("download"), text.contains("upload"),
+      text.contains("proc"), text.contains("mem")
+    {
+      if !productionBtopMainObserved {
+        print("GHOSTTEA_PRODUCTION_BTOP_MAIN_OBSERVED")
+      }
+      productionBtopMainObserved = true
+    }
+    if productionBtopMenuSent, text.contains("v1.2.13") {
+      if !productionBtopMenuObserved {
+        print("GHOSTTEA_PRODUCTION_BTOP_MENU_OBSERVED")
+      }
+      productionBtopMenuObserved = true
+    }
+    if text.contains("ghosttea-btop-exit 30 100") {
+      if !productionBtopExitObserved {
+        print("GHOSTTEA_PRODUCTION_BTOP_EXIT_OBSERVED")
+      }
+      productionBtopExitObserved = true
+    }
+
+    if productionMonitorNoEchoObserved, !productionHtopLaunchSent {
+      productionHtopLaunchSent = true
+      print("GHOSTTEA_PRODUCTION_HTOP_LAUNCH_SENT")
+      Task {
+        do {
+          try await productionSession.send(
+            Data(
+              ("htop -C -M --readonly -d 20; "
+                + "printf 'ghosttea-htop-exit '; stty size; "
+                + "btop --utf-force -lc; "
+                + "printf 'ghosttea-btop-exit '; stty size; sleep 1; exit\n").utf8
+            )
+          )
+        } catch {
+          failAutomatedProductionAction("monitor TUI launch", error: error)
+        }
+      }
+    }
+    if productionHtopMainObserved, !productionHtopHelpSent {
+      productionHtopHelpSent = true
+      print("GHOSTTEA_PRODUCTION_HTOP_HELP_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("h".utf8))
+        } catch {
+          failAutomatedProductionAction("htop help", error: error)
+        }
+      }
+    }
+    if productionHtopHelpObserved, !productionHtopResizeSent {
+      productionHtopResizeSent = true
+      print("GHOSTTEA_PRODUCTION_HTOP_RESIZE_SENT")
+      Task {
+        do {
+          try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+          try await Task.sleep(for: .milliseconds(500))
+          try await productionSession.send(Data("q".utf8))
+          print("GHOSTTEA_PRODUCTION_HTOP_HELP_DISMISS_SENT")
+        } catch {
+          failAutomatedProductionAction("htop resize and help dismissal", error: error)
+        }
+      }
+    }
+    if productionHtopResizeSent, !productionHtopExitSent, text.contains("Tasks:"),
+      text.contains("Load average:"), text.contains("F10Quit")
+    {
+      productionHtopExitSent = true
+      print("GHOSTTEA_PRODUCTION_HTOP_EXIT_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("q".utf8))
+        } catch {
+          failAutomatedProductionAction("htop exit", error: error)
+        }
+      }
+    }
+    if productionBtopMainObserved, !productionBtopMenuSent {
+      productionBtopMenuSent = true
+      print("GHOSTTEA_PRODUCTION_BTOP_MENU_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("m".utf8))
+        } catch {
+          failAutomatedProductionAction("btop menu", error: error)
+        }
+      }
+    }
+    if productionBtopMenuObserved, !productionBtopResizeSent {
+      productionBtopResizeSent = true
+      productionBtopExitSent = true
+      print("GHOSTTEA_PRODUCTION_BTOP_RESIZE_SENT")
+      Task {
+        do {
+          try await productionSession.resize(columns: 100, rows: 30, layoutEpoch: 2)
+          try await Task.sleep(for: .milliseconds(500))
+          try await productionSession.send(Data("q".utf8))
+          print("GHOSTTEA_PRODUCTION_BTOP_EXIT_SENT")
+        } catch {
+          failAutomatedProductionAction("btop resize and exit", error: error)
+        }
+      }
+    }
+  }
+
   private func failAutomatedProductionAction(_ action: String, error: any Error) {
     productionSessionStatus = "\(action) failed: \(error)"
     print("GHOSTTEA_PRODUCTION_ACTION_ERROR action=\(action) error=\(error)")
@@ -1361,6 +1525,34 @@ final class HarnessModel: ObservableObject {
               + "input=\(productionZellijInputSent) observed=\(productionZellijInputObserved) "
               + "exitSent=\(productionZellijExitSent)"
           )
+        case .monitorTuis:
+          markerIsValid =
+            productionMonitorNoEchoObserved
+            && productionHtopLaunchSent
+            && productionHtopMainObserved
+            && productionHtopHelpSent
+            && productionHtopHelpObserved
+            && productionHtopResizeSent
+            && productionHtopExitSent
+            && productionHtopExitObserved
+            && productionBtopMainObserved
+            && productionBtopMenuSent
+            && productionBtopMenuObserved
+            && productionBtopResizeSent
+            && productionBtopExitSent
+            && productionBtopExitObserved
+          print(
+            "GHOSTTEA_PRODUCTION_MONITOR_TUIS_FINAL exit=\(exit.description) "
+              + "noecho=\(productionMonitorNoEchoObserved) "
+              + "htopMain=\(productionHtopMainObserved) "
+              + "htopHelp=\(productionHtopHelpObserved) "
+              + "htopResize=\(productionHtopResizeSent) "
+              + "htopExit=\(productionHtopExitObserved) "
+              + "btopMain=\(productionBtopMainObserved) "
+              + "btopMenu=\(productionBtopMenuObserved) "
+              + "btopResize=\(productionBtopResizeSent) "
+              + "btopExit=\(productionBtopExitObserved)"
+          )
         }
         guard exit == .exited(code: 0), markerIsValid else {
           throw HarnessError.sessionProbeMismatch("production terminal output")
@@ -1379,6 +1571,9 @@ final class HarnessModel: ObservableObject {
         case .zellij:
           productionSessionStatus = "Passed · Zellij attach, input, and resize"
           passMarker = "GHOSTTEA_PRODUCTION_ZELLIJ_PASS"
+        case .monitorTuis:
+          productionSessionStatus = "Passed · htop + btop render, input, and resize"
+          passMarker = "GHOSTTEA_PRODUCTION_MONITOR_TUIS_PASS"
         }
         productionSessionInputStatus = "Native terminal text validated"
         print(passMarker)
@@ -1838,6 +2033,8 @@ final class HarnessModel: ObservableObject {
         productionSSHProfile = .vim
       case "zellij":
         productionSSHProfile = .zellij
+      case "monitor-tuis":
+        productionSSHProfile = .monitorTuis
       default:
         productionSSHProfile = .shell
       }

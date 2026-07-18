@@ -23,6 +23,8 @@ COPY --from=zellij /usr/local/bin/zellij /usr/local/bin/zellij
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         gcc \
+        btop=1.2.13-1 \
+        htop=3.2.2-2 \
         libc6-dev \
         libpam0g-dev \
         netcat-openbsd \

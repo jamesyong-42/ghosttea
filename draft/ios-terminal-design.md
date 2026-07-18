@@ -2387,6 +2387,16 @@ delay accounts for the SSH channel becoming connected before Zellij creates
 its first pane. The full package and SDK build matrix and the signed iPhone 14
 Pro gate pass. Live htop/btop and representative agent-TUI gates remain.
 
+The seventh slice adds `npm run test:ios:production-monitor-tuis`, a combined
+physical-device htop and btop gate with exact fixture package pins. htop renders
+at 100x30, exposes its help overlay through native accessibility rows, handles
+an ordered PTY/core resize to 120x40, dismisses help, and exits through distinct
+key events. btop then renders at 120x40, exposes its menu overlay, handles the
+reverse resize to 100x30, and exits normally. Shell markers after each TUI
+prove the remote PTY reached the requested dimensions, and typed exit zero is
+required. The full package and SSH matrices, both iOS SDK builds, and the
+signed iPhone 14 Pro gate pass. Representative agent-TUI interaction remains.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

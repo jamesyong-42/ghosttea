@@ -1125,3 +1125,40 @@ The process exited zero after passing all 73 package tests, both iOS SDK
 builds, and the core, font, TRF1, and visual prerequisites. The runner then
 removed its disposable SSH container and network. htop/btop and representative
 agent-TUI interaction remain separate Phase 6 evidence.
+
+## 2026-07-18: production htop and btop render, input, and resize gate
+
+The seventh Phase 6 slice adds `npm run test:ios:production-monitor-tuis`.
+The disposable Debian fixture pins htop 3.2.2-2 and btop 1.2.13-1 so the
+full-screen layouts and interaction contract cannot drift underneath the
+device gate. Both applications run sequentially in one production shell over
+the same Keychain credential, known-host policy, session actor, shared core,
+TRF1 renderer, and Metal surface exercised by the preceding gates.
+
+At the initial 100x30 PTY, the app requires htop's task, load-average, and
+function-key rows through native terminal accessibility text. It sends `h`
+through the ordered writer, validates htop's help screen, and resizes the
+PTY/core to 120x40. The first device run correctly exposed that `q` dismisses
+the help overlay before a later `q` exits htop. The state machine now requires
+the main screen to reappear after resize before sending the distinct exit key.
+After htop returns, the shell reports `40 120`, proving the remote PTY received
+the resize.
+
+btop then starts at 120x40. The app validates its CPU, memory, process, and
+network panels, sends `m`, and requires the versioned menu overlay through
+native accessibility rows. It resizes the PTY/core back to 100x30, sends the
+menu's quit key, and requires the shell to report `30 100`. The shell then
+exits, and the gate requires typed exit status zero plus every intermediate
+render, input, resize, and return flag.
+
+The signed run passed on the physical iPhone 14 Pro running iOS 26.5.2 and
+emitted:
+
+```text
+GHOSTTEA_PRODUCTION_MONITOR_TUIS_PASS
+```
+
+The same run passed all 73 package tests, both iOS SDK builds, and the core,
+font, TRF1, and visual prerequisites, then removed its disposable container
+and network. Representative agent-TUI interaction remains the final planned
+Phase 6 compatibility slice.

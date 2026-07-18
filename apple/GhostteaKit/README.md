@@ -64,6 +64,10 @@ official no-web binary in the disposable fixture. It validates the initial
 pane, propagates an outer PTY resize, sends input through the ordered session
 writer, observes every marker through native accessibility rows, and requires
 Zellij and its pane to exit cleanly.
+The monitor-TUI gate runs pinned htop and btop builds in one production SSH
+session. It validates each application's main and overlay views through native
+accessibility rows, drives their normal keyboard paths, resizes the PTY in both
+directions, and requires both applications and the shell to exit normally.
 
 ## Build and test
 
@@ -89,6 +93,7 @@ npm run test:ios:production-session
 npm run test:ios:production-tmux
 npm run test:ios:production-vim
 npm run test:ios:production-zellij
+npm run test:ios:production-monitor-tuis
 npm run bench:ghostty-vt:apple:matrix
 ```
 
