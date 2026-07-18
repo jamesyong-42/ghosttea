@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "apple": {
+    "developerDirectory": "/Applications/Xcode.app/Contents/Developer",
+    "xcodeVersion": "26.1",
+    "xcodeBuild": "17B55",
+    "swiftVersion": "6.2.1",
+    "swiftCompilerBuild": "swiftlang-6.2.1.4.8",
+    "clangVersion": "17.0.0",
+    "clangBuild": "clang-1700.4.4.1"
+  },
+  "rust": {
+    "release": "1.95.0",
+    "commitHash": "59807616e1fa2540724bfbac14d7976d7e4a3860",
+    "cargoVersion": "1.95.0",
+    "cargoCommit": "f2d3ce0bd",
+    "llvmVersion": "22.1.2"
+  },
+  "targets": ["aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios"]
+}

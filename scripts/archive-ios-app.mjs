@@ -59,6 +59,9 @@ function main() {
     throw new Error(`Missing ${tailscaleArtifact}; run p008/truffle/apple/scripts/materialize-tailscalekit.sh first.`);
   }
 
+  execute("node", ["scripts/check-ios-release-bom.mjs"]);
+  execute("node", ["scripts/check-ios-release-toolchain.mjs"]);
+
   const team = developmentTeam();
   rmSync(archive, { recursive: true, force: true });
   execute("xcodebuild", [

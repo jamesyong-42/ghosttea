@@ -1,0 +1,57 @@
+name: iOS release hardening
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ios-release-hardening.yml"
+      - "Cargo.lock"
+      - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
+      - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
+      - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
+      - "native/fonts.lock.json"
+      - "native/ghostty.lock.json"
+      - "native/ssh.lock.json"
+      - "scripts/check-ios-release-bom.mjs"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ios-release-hardening.yml"
+      - "Cargo.lock"
+      - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
+      - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
+      - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
+      - "native/fonts.lock.json"
+      - "native/ghostty.lock.json"
+      - "native/ssh.lock.json"
+      - "scripts/check-ios-release-bom.mjs"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-bom:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run check:ios-release-bom
+
+      - name: Validate with the official CycloneDX CLI
+        uses: docker://cyclonedx/cyclonedx-cli:0.32.0
+        with:
+          args: >-
+            validate
+            --input-file apple/GhostteaKit/Compatibility/ios-release.cdx.json
+            --input-format json
+            --input-version v1_6
+            --fail-on-errors

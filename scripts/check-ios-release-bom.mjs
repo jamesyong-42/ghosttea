@@ -10,6 +10,8 @@ const ghostty = readJSON("native/ghostty.lock.json");
 const ssh = readJSON("native/ssh.lock.json");
 const fonts = readJSON("native/fonts.lock.json");
 const truffle = readJSON("apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
+const rust = readJSON("apple/GhostteaKit/Compatibility/ios-rust-components.lock.json");
+const toolchain = readJSON("apple/GhostteaKit/Compatibility/ios-toolchain.lock.json");
 
 const sha256 = (path) =>
   createHash("sha256")
@@ -27,7 +29,7 @@ const component = ({ type, ref, name, version, license, purl, hashes, repository
   "bom-ref": ref,
   name,
   version,
-  licenses: [{ license: { id: license } }],
+  ...(license ? { licenses: [cycloneDXLicense(license)] } : {}),
   ...(purl ? { purl } : {}),
   ...(hashes ? { hashes } : {}),
   ...(repository ? { externalReferences: [{ type: "vcs", url: repository }] } : {}),
@@ -42,9 +44,76 @@ const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
 const truffleRef = `pkg:github/jamesyong-42/truffle@${truffle.package.revision}`;
 const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
+const xcodeRef = `ghosttea:toolchain/xcode@${toolchain.apple.xcodeVersion}+${toolchain.apple.xcodeBuild}`;
+const swiftRef = `ghosttea:toolchain/swift@${toolchain.apple.swiftVersion}`;
+const rustcRef = `ghosttea:toolchain/rustc@${toolchain.rust.release}`;
 const releaseBlockers = iosReleaseBlockers();
 
+if (rust.schemaVersion !== 1 || rust.target !== "aarch64-apple-ios") {
+  throw new Error("The iOS Rust component lock has an unsupported schema or target.");
+}
+if (rust.root.ref !== runtimeRef) {
+  throw new Error(`The iOS Rust graph root drifted: expected ${runtimeRef}, got ${rust.root.ref}.`);
+}
+const actualCargoLockHash = sha256("Cargo.lock");
+if (rust.cargoLockSha256 !== actualCargoLockHash) {
+  throw new Error(
+    "Cargo.lock changed after the iOS Rust graph was reviewed; run npm run update:ios-rust-components and review the result",
+  );
+}
+
+const rustComponents = rust.components.map((entry) =>
+  component({
+    type: "library",
+    ref: entry.ref,
+    name: entry.name,
+    version: entry.version,
+    license: normalizeLicense(entry.license),
+    purl: entry.ref,
+    hashes: entry.checksum ? [{ alg: "SHA-256", content: entry.checksum }] : undefined,
+    properties: [
+      { name: "ghosttea:cargo-source", value: entry.source },
+      { name: "ghosttea:rust-target", value: rust.target },
+    ],
+  }),
+);
+
+const toolchainComponents = [
+  component({
+    type: "application",
+    ref: xcodeRef,
+    name: "Xcode",
+    version: `${toolchain.apple.xcodeVersion} (${toolchain.apple.xcodeBuild})`,
+    properties: [
+      { name: "ghosttea:developer-directory", value: toolchain.apple.developerDirectory },
+      { name: "ghosttea:clang-version", value: toolchain.apple.clangVersion },
+      { name: "ghosttea:clang-build", value: toolchain.apple.clangBuild },
+    ],
+  }),
+  component({
+    type: "framework",
+    ref: swiftRef,
+    name: "Apple Swift",
+    version: toolchain.apple.swiftVersion,
+    properties: [{ name: "ghosttea:compiler-build", value: toolchain.apple.swiftCompilerBuild }],
+  }),
+  component({
+    type: "application",
+    ref: rustcRef,
+    name: "Rust compiler",
+    version: toolchain.rust.release,
+    properties: [
+      { name: "ghosttea:rustc-commit", value: toolchain.rust.commitHash },
+      { name: "ghosttea:cargo-version", value: toolchain.rust.cargoVersion },
+      { name: "ghosttea:cargo-commit", value: toolchain.rust.cargoCommit },
+      { name: "ghosttea:llvm-version", value: toolchain.rust.llvmVersion },
+      ...toolchain.targets.map((value) => ({ name: "ghosttea:apple-target", value })),
+    ],
+  }),
+];
+
 const expected = {
+  $schema: "https://cyclonedx.org/schema/bom-1.6.schema.json",
   bomFormat: "CycloneDX",
   specVersion: "1.6",
   serialNumber: "urn:uuid:2d610210-754c-4eed-a3c6-8f798651d2e9",
@@ -59,7 +128,10 @@ const expected = {
       license: packageManifest.license,
       purl: appRef,
       properties: [
-        { name: "ghosttea:scope", value: "iOS release direct and bundled inputs" },
+        {
+          name: "ghosttea:scope",
+          value: "iOS release direct, transitive Rust, bundled, and build inputs",
+        },
         { name: "ghosttea:source-lock", value: "native/ghostty.lock.json" },
         { name: "ghosttea:source-lock", value: "native/ssh.lock.json" },
         { name: "ghosttea:source-lock", value: "native/fonts.lock.json" },
@@ -67,10 +139,21 @@ const expected = {
           name: "ghosttea:source-lock",
           value: "apple/GhostteaKit/Compatibility/truffle-swift.lock.json",
         },
+        {
+          name: "ghosttea:source-lock",
+          value: "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json",
+        },
+        {
+          name: "ghosttea:source-lock",
+          value: "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json",
+        },
       ],
     }),
+    tools: { components: toolchainComponents },
     properties: [
       { name: "ghosttea:reproducible", value: "true" },
+      { name: "ghosttea:cargo-lock:sha256", value: rust.cargoLockSha256 },
+      { name: "ghosttea:rust-target", value: rust.target },
       { name: "ghosttea:license-file:MIT:sha256", value: licenseHashes.mit },
       { name: "ghosttea:license-file:OFL-1.1:sha256", value: licenseHashes.ofl },
       { name: "ghosttea:font-notices:sha256", value: licenseHashes.fontNotices },
@@ -190,6 +273,7 @@ const expected = {
         },
       ],
     }),
+    ...rustComponents,
     ...fonts.fonts.map((font, index) =>
       component({
         type: "file",
@@ -208,15 +292,18 @@ const expected = {
   ],
   dependencies: [
     { ref: appRef, dependsOn: [runtimeRef, opensslRef, libssh2Ref, truffleRef, ...fontRefs] },
-    { ref: runtimeRef, dependsOn: [ghosttyRef] },
+    { ref: runtimeRef, dependsOn: [...rust.root.dependencies, ghosttyRef].sort() },
     { ref: ghosttyRef, dependsOn: [] },
     { ref: opensslRef, dependsOn: [] },
     { ref: libssh2Ref, dependsOn: [opensslRef] },
     { ref: truffleRef, dependsOn: [tailscaleRef] },
     { ref: tailscaleRef, dependsOn: [] },
+    ...rust.components.map((entry) => ({ ref: entry.ref, dependsOn: entry.dependencies })),
     ...fontRefs.map((ref) => ({ ref, dependsOn: [] })),
   ],
 };
+
+validateBom(expected);
 
 if (process.argv.includes("--print")) {
   process.stdout.write(`${JSON.stringify(expected, null, 2)}\n`);
@@ -248,6 +335,47 @@ console.log(
 
 function readJSON(path) {
   return JSON.parse(readFileSync(resolve(root, path), "utf8"));
+}
+
+function cycloneDXLicense(value) {
+  return value.includes(" ") || value.includes("/") || value.includes("(")
+    ? { expression: value }
+    : { license: { id: value } };
+}
+
+function normalizeLicense(value) {
+  return value.replaceAll("MIT / Apache-2.0", "MIT OR Apache-2.0").replaceAll("MIT/Apache-2.0", "MIT OR Apache-2.0");
+}
+
+function validateBom(bom) {
+  if (bom.bomFormat !== "CycloneDX" || bom.specVersion !== "1.6") {
+    throw new Error("The generated document is not a CycloneDX 1.6 BOM.");
+  }
+  const componentRefs = [bom.metadata.component, ...bom.components].map((entry) => entry["bom-ref"]);
+  const repeatedRefs = componentRefs.filter((ref, index) => componentRefs.indexOf(ref) !== index);
+  if (repeatedRefs.length > 0) {
+    throw new Error(`CycloneDX component references are not unique: ${[...new Set(repeatedRefs)].join(", ")}`);
+  }
+  const knownRefs = new Set(componentRefs);
+  const dependencyRefs = new Set();
+  for (const dependency of bom.dependencies) {
+    if (!knownRefs.has(dependency.ref)) {
+      throw new Error(`CycloneDX dependency subject is unknown: ${dependency.ref}`);
+    }
+    if (dependencyRefs.has(dependency.ref)) {
+      throw new Error(`CycloneDX dependency subject is duplicated: ${dependency.ref}`);
+    }
+    dependencyRefs.add(dependency.ref);
+    for (const child of dependency.dependsOn) {
+      if (!knownRefs.has(child)) {
+        throw new Error(`CycloneDX dependency target is unknown: ${child}`);
+      }
+    }
+  }
+  const missingDependencySubjects = componentRefs.filter((ref) => !dependencyRefs.has(ref));
+  if (missingDependencySubjects.length > 0) {
+    throw new Error(`CycloneDX dependency graph omits: ${missingDependencySubjects.join(", ")}`);
+  }
 }
 
 function iosReleaseBlockers() {

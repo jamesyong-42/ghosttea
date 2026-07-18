@@ -2843,13 +2843,17 @@ inventory for the iOS application's direct/static native inputs and exact
 bundled font files. Its verifier derives the expected graph from the Ghostty,
 SSH, font, package, license, and notice locks and rejects any unreviewed drift.
 The normal repository check runs inventory mode; release mode additionally
-fails closed while the SSH lock records `productionApproved: false`. The
-checked-in BOM currently contains eleven components, including the exact
-Truffle and TailscaleKit revisions, the device and simulator TailscaleKit
-binary hashes, and exact SHA-256 values for all five fonts plus tracked
-license/notice hashes. Transitive Rust crates,
-final toolchain identity, schema validation in release CI, notice packaging,
-and the other release-hardening gates remain open.
+fails closed while the SSH lock records `productionApproved: false`. That first
+inventory contained eleven components, including the exact Truffle and
+TailscaleKit revisions, binary hashes, and all five font hashes. The second
+slice expands it to 94 components: all 83 non-development crates selected for
+the `aarch64-apple-ios` Rust archive, the exact `Cargo.lock` hash and dependency
+graph, and the existing native/bundled inputs. It also locks the Xcode, Swift,
+Clang, Rust, Cargo, and LLVM identities. Release archives fail before Xcode
+when either the BOM or toolchain drifts, while a dedicated CI workflow validates
+the document with the official CycloneDX CLI. Human-readable notice packaging,
+release provenance attachment, and the other release-hardening gates remain
+open.
 
 Deliverables:
 

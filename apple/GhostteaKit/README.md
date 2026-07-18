@@ -24,8 +24,9 @@ remaining product integration work are recorded in
 
 Phase 9 release inputs are tracked in a deterministic CycloneDX inventory.
 [`Compatibility/release-hardening.md`](Compatibility/release-hardening.md)
-defines its direct/static scope, exact drift check, fail-closed SSH approval
-gate, and the transitive/toolchain expansion still required before release.
+defines its direct/static and 83-crate Apple-target scope, exact drift check,
+reviewed compiler lock, independent CI schema validation, and fail-closed SSH
+approval gate.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
