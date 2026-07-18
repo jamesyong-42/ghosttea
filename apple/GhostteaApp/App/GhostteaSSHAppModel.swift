@@ -3,9 +3,11 @@ import GhostteaConnectionProfiles
 import GhostteaCore
 import GhostteaCredentials
 import GhostteaSSH
+import GhostteaSSHWorkspace
 import GhostteaSession
 import GhostteaTerminal
 import GhostteaTransport
+import GhostteaWorkspace
 import SwiftUI
 import UIKit
 
@@ -22,8 +24,9 @@ struct GhostteaPendingKeyboardChallenge: Identifiable {
 @MainActor
 final class GhostteaSSHAppModel: ObservableObject {
   @Published private(set) var profiles: [GhostteaSSHConnectionProfile] = []
-  @Published private(set) var activeProfile: GhostteaSSHConnectionProfile?
-  @Published private(set) var frame: Data?
+  @Published private(set) var workspace: GhostteaWorkspaceTabsDocument?
+  @Published private(set) var frames: [String: Data] = [:]
+  @Published private(set) var sessionStatuses: [String: String] = [:]
   @Published private(set) var status = "Loading saved connections…"
   @Published private(set) var isBusy = false
   @Published var presentsProfileManager = false
@@ -31,18 +34,29 @@ final class GhostteaSSHAppModel: ObservableObject {
   @Published var pendingKeyboardChallenge: GhostteaPendingKeyboardChallenge?
 
   private var runtime: GhostteaRuntime?
-  private var terminal: GhostteaTerminal?
-  private var session: GhostteaSession?
+  private var factory: GhostteaSSHWorkspaceSessionFactory?
+  private var coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>?
   private var repository: GhostteaSSHConnectionProfileRepository?
   private var credentialStore: KeychainSSHCredentialStore?
+  private var restorationStore: GhostteaWorkspaceRestorationStore?
+  private var sessionProfileIDs: [String: String] = [:]
+  private var grids: [String: GhostteaTerminalGridSize] = [:]
+  private var layoutEpochs: [String: UInt64] = [:]
   private var networkTask: Task<Void, Never>?
   private var networkPath = TerminalNetworkPath.unknown
   private var hostKeyContinuation: CheckedContinuation<GhostteaSSHHostKeyDecision, Never>?
   private var keyboardContinuation: CheckedContinuation<[String], Error>?
-  private var nextSessionHandle: UInt64 = 10_000
-  private var layoutEpoch: UInt64 = 0
-  private var grid = GhostteaTerminalGridSize(columns: 80, rows: 24)
+  private var nextFactoryHandle: UInt64 = 10_000
   private var started = false
+
+  var selectedSessionID: String? {
+    guard
+      let workspace,
+      let tab = workspace.tabs.first(where: { $0.id == workspace.selectedTabID })
+    else { return nil }
+    return tab.workspace.root.panes
+      .first(where: { $0.id == tab.workspace.activePaneID })?.sessionID
+  }
 
   func start() {
     guard !started else { return }
@@ -56,13 +70,19 @@ final class GhostteaSSHAppModel: ObservableObject {
     Task {
       do {
         let store = try KeychainSSHCredentialStore()
-        let profileStore = GhostteaSSHConnectionProfileStore(fileURL: try profilesURL())
+        let root = try applicationSupportRoot()
+        let profileStore = GhostteaSSHConnectionProfileStore(
+          fileURL: root.appendingPathComponent("ssh-profiles.json"))
         let repository = GhostteaSSHConnectionProfileRepository(
           profileStore: profileStore,
           credentialVault: store)
+        let restorationStore = GhostteaWorkspaceRestorationStore(
+          fileURL: root.appendingPathComponent("ssh-workspace.json"))
         credentialStore = store
         self.repository = repository
+        self.restorationStore = restorationStore
         profiles = try await repository.load()
+        if try await restoreWorkspace() { return }
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
       } catch {
         status = "Could not load saved connections: \(error)"
@@ -75,45 +95,33 @@ final class GhostteaSSHAppModel: ObservableObject {
     isBusy = true
     status = "Preparing \(profile.name)…"
     Task {
-      await disconnectSession(clearProfile: false)
+      await disconnectWorkspace(clearPersistence: true)
       do {
-        guard let credentialStore else { throw GhostteaSSHAppError.notReady }
         let runtime = try self.runtime ?? GhostteaRuntime()
         self.runtime = runtime
-        let handle = nextSessionHandle
-        nextSessionHandle = handle == UInt64.max ? 10_000 : handle + 1
-        let terminal = try GhostteaTerminal(
-          runtime: runtime,
-          configuration: GhostteaTerminalConfiguration(
-            sessionHandle: handle,
-            columns: UInt16(profile.columns),
-            rows: UInt16(profile.rows)))
-        let configuration = try profile.configuration(
-          knownHostsPath: try GhostteaSSHKnownHostsFile().prepare(),
-          hostKeyPolicy: .ask { [weak self] challenge in
-            guard let self else { return .reject }
-            return await self.requestHostKeyDecision(challenge)
-          },
-          credentialStore: credentialStore,
-          keyboardInteractiveResponder: { [weak self] challenge in
-            guard let self else { throw CancellationError() }
-            return try await self.requestKeyboardResponses(challenge)
-          })
-        let session = GhostteaSSHSessionFactory.make(
-          terminal: terminal,
-          ssh: configuration,
-          session: .ssh(initialPath: networkPath),
-          eventHandler: { [weak self] event in await self?.handle(event) })
-        self.terminal = terminal
-        self.session = session
-        activeProfile = profile
-        frame = nil
-        grid = GhostteaTerminalGridSize(
+        let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
+        let allocation = try await factory.allocate(.newTab)
+        let paneID = identity("pane")
+        let tabID = identity("tab")
+        let pane = GhostteaWorkspacePane(id: paneID, sessionID: allocation.sessionID)
+        let terminal = try GhostteaWorkspaceDocument(root: .pane(pane), activePaneID: paneID)
+        let document = try GhostteaWorkspaceTabsDocument(
+          selectedTabID: tabID,
+          tabs: [GhostteaWorkspaceTab(id: tabID, workspace: terminal)])
+
+        sessionProfileIDs[allocation.sessionID] = profile.id.uuidString.lowercased()
+        grids[allocation.sessionID] = GhostteaTerminalGridSize(
           columns: UInt16(profile.columns), rows: UInt16(profile.rows))
-        layoutEpoch = 0
-        status = "Connecting to \(profile.name)…"
+        sessionStatuses[allocation.sessionID] = "Connecting…"
+        self.factory = factory
+        coordinator = try makeCoordinator(
+          document: document,
+          sessions: [allocation.sessionID: allocation.session],
+          factory: factory)
+        workspace = document
+        status = "Workspace ready"
         isBusy = false
-        await session.requestConnect()
+        try await persistWorkspace()
       } catch {
         isBusy = false
         status = GhostteaSSHFailurePolicy.description(error)
@@ -121,14 +129,66 @@ final class GhostteaSSHAppModel: ObservableObject {
     }
   }
 
-  func reconnect() {
-    guard let session, !isBusy else { return }
-    status = "Reconnecting…"
-    Task { await session.requestConnect() }
+  func createTab() {
+    guard let coordinator, !isBusy else { return }
+    isBusy = true
+    Task {
+      do {
+        let transition = try await coordinator.createTab()
+        workspace = transition.document
+        try await persistWorkspace()
+      } catch {
+        status = "Could not create tab: \(error)"
+      }
+      isBusy = false
+    }
+  }
+
+  func split(_ axis: GhostteaWorkspaceSplitAxis) {
+    guard let coordinator, !isBusy else { return }
+    isBusy = true
+    Task {
+      do {
+        let transition = try await coordinator.splitSelected(axis: axis)
+        workspace = transition.document
+        try await persistWorkspace()
+      } catch {
+        status = "Could not split terminal: \(error)"
+      }
+      isBusy = false
+    }
+  }
+
+  func apply(_ action: GhostteaWorkspaceTabsAction) {
+    guard let coordinator else { return }
+    Task {
+      do {
+        let transition = try await coordinator.apply(action)
+        if transition.shouldCloseWindow {
+          await disconnectWorkspace(clearPersistence: true)
+          return
+        }
+        workspace = transition.document
+        try await persistWorkspace()
+      } catch {
+        status = "Workspace update failed: \(error)"
+      }
+    }
+  }
+
+  func reconnect(_ sessionID: String? = nil) {
+    guard let coordinator else { return }
+    let target = sessionID ?? selectedSessionID
+    guard let target else { return }
+    sessionStatuses[target] = "Connecting…"
+    Task {
+      guard let resource = await coordinator.session(for: target) else { return }
+      await resource.session.requestConnect()
+    }
   }
 
   func disconnect() {
-    Task { await disconnectSession(clearProfile: true) }
+    Task { await disconnectWorkspace(clearPersistence: true) }
   }
 
   func saveProfile(_ request: GhostteaSSHConnectionProfileSaveRequest) {
@@ -151,9 +211,12 @@ final class GhostteaSSHAppModel: ObservableObject {
     guard let repository else { return }
     Task {
       do {
+        let profileID = id.uuidString.lowercased()
+        if sessionProfileIDs.values.contains(profileID) {
+          await disconnectWorkspace(clearPersistence: true)
+        }
         _ = try await repository.delete(profileID: id)
         profiles = try await repository.load()
-        if activeProfile?.id == id { await disconnectSession(clearProfile: true) }
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Deleted connection"
       } catch {
         status = "Could not delete connection: \(error)"
@@ -182,122 +245,336 @@ final class GhostteaSSHAppModel: ObservableObject {
     continuation?.resume(throwing: CancellationError())
   }
 
-  func updateGrid(_ value: GhostteaTerminalGridSize) {
-    guard value != grid, let session else { return }
-    grid = value
-    layoutEpoch &+= 1
-    let epoch = layoutEpoch
+  func frame(for sessionID: String) -> Data? { frames[sessionID] }
+
+  func sessionStatus(for sessionID: String) -> String {
+    sessionStatuses[sessionID] ?? "Reconnect available"
+  }
+
+  func title(for sessionID: String) -> String {
+    guard
+      let profileID = sessionProfileIDs[sessionID],
+      let profile = profiles.first(where: { $0.id.uuidString.lowercased() == profileID })
+    else { return "Terminal" }
+    return profile.name
+  }
+
+  func updateGrid(_ value: GhostteaTerminalGridSize, sessionID: String) {
+    guard value != grids[sessionID], let coordinator else { return }
+    grids[sessionID] = value
+    let epoch = (layoutEpochs[sessionID] ?? 0) &+ 1
+    layoutEpochs[sessionID] = epoch
     Task {
-      try? await session.resize(
+      guard let resource = await coordinator.session(for: sessionID) else { return }
+      try? await resource.session.resize(
         columns: Int(value.columns), rows: Int(value.rows), layoutEpoch: epoch)
     }
   }
 
-  func handleHardwareKey(_ event: GhostteaHardwareKeyEvent) -> Bool {
-    guard let session, !event.modifiers.contains(.command) else { return false }
-    Task { try? await session.sendKey(event.coreEvent) }
+  func handleHardwareKey(_ event: GhostteaHardwareKeyEvent, sessionID: String) -> Bool {
+    guard coordinator != nil, !event.modifiers.contains(.command) else { return false }
+    withSession(sessionID) { try? await $0.session.sendKey(event.coreEvent) }
     return true
   }
 
-  func handleSoftwareInput(_ event: GhostteaSoftwareInputEvent) {
-    guard let session else { return }
-    Task {
-      do {
-        switch event {
-        case .text(let text): try await session.send(Data(text.utf8))
-        case .enter: try await session.sendKey(Self.softwareKey(hidUsage: 0x28))
-        case .deleteBackward: try await session.sendKey(Self.softwareKey(hidUsage: 0x2a))
-        case .paste(let text): try await session.sendPaste(text)
-        case .key(let key): try await session.sendKey(key.coreEvent)
-        }
-      } catch { status = "Input failed" }
+  func handleSoftwareInput(_ event: GhostteaSoftwareInputEvent, sessionID: String) {
+    withSession(sessionID) { resource in
+      switch event {
+      case .text(let text): try await resource.session.send(Data(text.utf8))
+      case .enter: try await resource.session.sendKey(Self.softwareKey(hidUsage: 0x28))
+      case .deleteBackward:
+        try await resource.session.sendKey(Self.softwareKey(hidUsage: 0x2a))
+      case .paste(let text): try await resource.session.sendPaste(text)
+      case .key(let key): try await resource.session.sendKey(key.coreEvent)
+      }
     }
   }
 
-  func handleMouse(_ event: GhostteaTerminalMouseEvent) {
-    guard let session else { return }
-    Task { try? await session.sendMouse(event.coreEvent) }
+  func handleMouse(_ event: GhostteaTerminalMouseEvent, sessionID: String) {
+    withSession(sessionID) { try? await $0.session.sendMouse(event.coreEvent) }
   }
 
-  func handleScroll(_ rows: Int) {
-    guard let session, rows != 0 else { return }
-    Task { try? await session.scroll(rows: Int64(rows)) }
+  func handleScroll(_ rows: Int, sessionID: String) {
+    guard rows != 0 else { return }
+    withSession(sessionID) { try? await $0.session.scroll(rows: Int64(rows)) }
   }
 
-  func copySelection(_ selection: GhostteaTerminalSelection) {
-    guard let terminal else { return }
-    Task {
-      do {
-        let data = try await terminal.selectionTextBytes(
-          startColumn: selection.anchor.column,
-          startRow: selection.anchor.row,
-          endColumn: selection.focus.column,
-          endRow: selection.focus.row)
+  func copySelection(_ selection: GhostteaTerminalSelection, sessionID: String) {
+    withSession(sessionID) { resource in
+      let data = try await resource.terminal.selectionTextBytes(
+        startColumn: selection.anchor.column,
+        startRow: selection.anchor.row,
+        endColumn: selection.focus.column,
+        endRow: selection.focus.row)
+      await MainActor.run {
         UIPasteboard.general.string = String(decoding: data, as: UTF8.self)
-      } catch { status = "Copy failed" }
+      }
     }
   }
 
-  func copyAll() {
-    guard let terminal else { return }
-    Task {
-      do {
-        let data = try await terminal.selectionTextBytes(
-          startColumn: 0, startRow: 0, endColumn: 0, endRow: 0, selectAll: true)
+  func copyAll(sessionID: String) {
+    withSession(sessionID) { resource in
+      let data = try await resource.terminal.selectionTextBytes(
+        startColumn: 0, startRow: 0, endColumn: 0, endRow: 0, selectAll: true)
+      await MainActor.run {
         UIPasteboard.general.string = String(decoding: data, as: UTF8.self)
-      } catch { status = "Copy failed" }
+      }
     }
   }
 
   func sceneChanged(_ phase: ScenePhase) {
-    guard let session else { return }
+    guard coordinator != nil else { return }
     Task {
-      switch phase {
-      case .active: await session.becameActive()
-      case .background: await session.enteredBackground()
-      case .inactive: break
-      @unknown default: break
+      await forEachSession { resource in
+        switch phase {
+        case .active: await resource.session.becameActive()
+        case .background: await resource.session.enteredBackground()
+        case .inactive: break
+        @unknown default: break
+        }
       }
     }
+  }
+
+  private func restoreWorkspace() async throws -> Bool {
+    guard
+      let restorationStore,
+      let credentialStore,
+      let persisted = try await restorationStore.load()
+    else { return false }
+    guard
+      let defaultBinding = persisted.sessionProfiles.first,
+      let defaultProfile = profile(id: defaultBinding.profileID)
+    else {
+      try await restorationStore.remove()
+      return false
+    }
+
+    let runtime = try self.runtime ?? GhostteaRuntime()
+    self.runtime = runtime
+    let factory = try makeFactory(runtime: runtime, defaultProfile: defaultProfile)
+    let result = try await factory.restore(
+      persisted,
+      profiles: profiles,
+      knownHostsPath: try GhostteaSSHKnownHostsFile().prepare(),
+      hostKeyPolicy: hostKeyPolicy(),
+      credentialStore: credentialStore,
+      keyboardInteractiveResponder: keyboardInteractiveResponder(),
+      connect: false)
+    guard let document = result.document else {
+      try await restorationStore.remove()
+      return false
+    }
+
+    let liveIDs = Set(result.sessions.keys)
+    sessionProfileIDs = persisted.profileIDBySessionID.filter { liveIDs.contains($0.key) }
+    for (sessionID, resource) in result.sessions {
+      let restoredProfile = resource.profileID.flatMap { profile(id: $0) } ?? defaultProfile
+      grids[sessionID] = GhostteaTerminalGridSize(
+        columns: UInt16(restoredProfile.columns),
+        rows: UInt16(restoredProfile.rows))
+      sessionStatuses[sessionID] = "Reconnect available"
+    }
+    self.factory = factory
+    coordinator = try makeCoordinator(
+      document: document, sessions: result.sessions, factory: factory)
+    workspace = document
+    status =
+      result.unavailableSessionIDs.isEmpty
+      ? "Workspace restored · reconnect when ready"
+      : "Workspace restored; \(result.unavailableSessionIDs.count) unavailable pane(s) removed"
+    try await persistWorkspace()
+    return true
+  }
+
+  private func makeFactory(
+    runtime: GhostteaRuntime,
+    defaultProfile: GhostteaSSHConnectionProfile
+  ) throws -> GhostteaSSHWorkspaceSessionFactory {
+    let initialHandle = nextFactoryHandle
+    nextFactoryHandle = initialHandle > UInt64.max - 10_000 ? 10_000 : initialHandle + 10_000
+    return try GhostteaSSHWorkspaceSessionFactory(
+      runtime: runtime,
+      ssh: try configuration(for: defaultProfile),
+      profileID: defaultProfile.id.uuidString.lowercased(),
+      sessionConfiguration: .ssh(initialPath: networkPath),
+      initialSessionHandle: initialHandle,
+      eventHandler: { [weak self] event in await self?.handle(event) })
+  }
+
+  private func makeCoordinator(
+    document: GhostteaWorkspaceTabsDocument,
+    sessions: [String: GhostteaSSHWorkspaceSession],
+    factory: GhostteaSSHWorkspaceSessionFactory
+  ) throws -> GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession> {
+    try GhostteaWorkspaceSessionCoordinator(
+      document: document,
+      sessions: sessions,
+      allocator: { [weak self, factory] request in
+        guard let self else { throw GhostteaSSHAppError.notReady }
+        return try await self.allocate(request, factory: factory)
+      },
+      terminator: { [weak self] sessionID, resource in
+        await GhostteaSSHWorkspaceSessionFactory.disconnect(resource)
+        await self?.sessionTerminated(sessionID)
+      })
+  }
+
+  private func allocate(
+    _ request: GhostteaWorkspaceSessionRequest,
+    factory: GhostteaSSHWorkspaceSessionFactory
+  ) async throws -> GhostteaWorkspaceSessionAllocation<GhostteaSSHWorkspaceSession> {
+    guard let profile = profileForAllocation(request) else {
+      throw GhostteaSSHAppError.missingProfile
+    }
+    let profileID = profile.id.uuidString.lowercased()
+    let allocation = try await factory.allocate(
+      request,
+      ssh: try configuration(for: profile),
+      sessionID: nil,
+      profileID: profileID,
+      connect: true)
+    sessionProfileIDs[allocation.sessionID] = profileID
+    grids[allocation.sessionID] = GhostteaTerminalGridSize(
+      columns: UInt16(profile.columns), rows: UInt16(profile.rows))
+    sessionStatuses[allocation.sessionID] = "Connecting…"
+    return allocation
+  }
+
+  private func configuration(
+    for profile: GhostteaSSHConnectionProfile
+  ) throws -> GhostteaSSHConfiguration {
+    guard let credentialStore else { throw GhostteaSSHAppError.notReady }
+    return try profile.configuration(
+      knownHostsPath: try GhostteaSSHKnownHostsFile().prepare(),
+      hostKeyPolicy: hostKeyPolicy(),
+      credentialStore: credentialStore,
+      keyboardInteractiveResponder: keyboardInteractiveResponder())
+  }
+
+  private func hostKeyPolicy() -> GhostteaSSHHostKeyPolicy {
+    .ask { [weak self] challenge in
+      guard let self else { return .reject }
+      return await self.requestHostKeyDecision(challenge)
+    }
+  }
+
+  private func keyboardInteractiveResponder() -> GhostteaSSHKeyboardInteractiveResponder {
+    { [weak self] challenge in
+      guard let self else { throw CancellationError() }
+      return try await self.requestKeyboardResponses(challenge)
+    }
+  }
+
+  private func profileForAllocation(
+    _ request: GhostteaWorkspaceSessionRequest
+  ) -> GhostteaSSHConnectionProfile? {
+    let sourceID: String?
+    switch request {
+    case .newTab: sourceID = selectedSessionID
+    case .split(_, let sourceSessionID): sourceID = sourceSessionID
+    }
+    if let sourceID, let profileID = sessionProfileIDs[sourceID],
+      let profile = profile(id: profileID)
+    {
+      return profile
+    }
+    return profiles.first
+  }
+
+  private func profile(id: String) -> GhostteaSSHConnectionProfile? {
+    profiles.first { $0.id.uuidString.lowercased() == id.lowercased() }
+  }
+
+  private func persistWorkspace() async throws {
+    guard let workspace, let restorationStore else { return }
+    let document = try GhostteaWorkspaceRestorationDocument(
+      workspace: workspace,
+      sessionProfiles: workspace.sessionIDs.compactMap { sessionID in
+        sessionProfileIDs[sessionID].map {
+          GhostteaWorkspaceSessionProfileBinding(sessionID: sessionID, profileID: $0)
+        }
+      })
+    try await restorationStore.save(document)
   }
 
   private func networkChanged(_ path: TerminalNetworkPath) async {
     networkPath = path
-    await session?.updateNetworkPath(path)
+    await forEachSession { await $0.session.updateNetworkPath(path) }
   }
 
-  private func handle(_ event: GhostteaSessionEvent) async {
-    switch event {
+  private func handle(_ routed: GhostteaSSHWorkspaceSessionEvent) async {
+    let sessionID = routed.sessionID
+    switch routed.event {
     case .stateChanged(let snapshot):
       switch snapshot.reconnectState {
       case .idle:
-        status = snapshot.lastExitStatus.map(Self.exitDescription) ?? "Disconnected"
-      case .waitingForNetwork: status = "Waiting for network"
-      case .connecting: status = "Connecting…"
-      case .connected: status = "Connected"
-      case .reconnectAvailable: status = "Reconnect available"
-      case .suspended: status = "Suspended"
-      case .failed: status = snapshot.lastFailure?.message ?? "SSH session failed"
+        sessionStatuses[sessionID] =
+          snapshot.lastExitStatus.map(Self.exitDescription) ?? "Disconnected"
+      case .waitingForNetwork: sessionStatuses[sessionID] = "Waiting for network"
+      case .connecting: sessionStatuses[sessionID] = "Connecting…"
+      case .connected: sessionStatuses[sessionID] = "Connected"
+      case .reconnectAvailable: sessionStatuses[sessionID] = "Reconnect available"
+      case .suspended: sessionStatuses[sessionID] = "Suspended"
+      case .failed: sessionStatuses[sessionID] = snapshot.lastFailure?.message ?? "SSH failed"
       }
-    case .frameReady(let value): frame = value
+    case .frameReady(let value): frames[sessionID] = value
     case .clipboardWrite(let data):
       UIPasteboard.general.string = String(decoding: data, as: UTF8.self)
-    case .bell: status = "Bell"
+    case .bell: sessionStatuses[sessionID] = "Bell"
     case .logicalSnapshot, .metadataChanged: break
     }
   }
 
-  private func disconnectSession(clearProfile: Bool) async {
+  private func disconnectWorkspace(clearPersistence: Bool) async {
     resolveHostKey(.reject)
     cancelKeyboardChallenge()
-    let current = session
-    session = nil
-    terminal = nil
-    frame = nil
-    await current?.disconnect()
-    if clearProfile {
-      activeProfile = nil
-      status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
+    let current = coordinator
+    coordinator = nil
+    factory = nil
+    await current?.closeAll()
+    workspace = nil
+    frames = [:]
+    sessionStatuses = [:]
+    sessionProfileIDs = [:]
+    grids = [:]
+    layoutEpochs = [:]
+    if clearPersistence { try? await restorationStore?.remove() }
+    status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
+  }
+
+  private func sessionTerminated(_ sessionID: String) {
+    frames[sessionID] = nil
+    sessionStatuses[sessionID] = nil
+    sessionProfileIDs[sessionID] = nil
+    grids[sessionID] = nil
+    layoutEpochs[sessionID] = nil
+  }
+
+  private func withSession(
+    _ sessionID: String,
+    operation: @escaping @Sendable (GhostteaSSHWorkspaceSession) async throws -> Void
+  ) {
+    guard let coordinator else { return }
+    Task {
+      do {
+        guard let resource = await coordinator.session(for: sessionID) else { return }
+        try await operation(resource)
+      } catch {
+        sessionStatuses[sessionID] = "Operation failed"
+      }
+    }
+  }
+
+  private func forEachSession(
+    _ operation: @escaping @Sendable (GhostteaSSHWorkspaceSession) async -> Void
+  ) async {
+    guard let coordinator else { return }
+    let sessionIDs = await coordinator.sessionIDs
+    for sessionID in sessionIDs {
+      if let resource = await coordinator.session(for: sessionID) {
+        await operation(resource)
+      }
     }
   }
 
@@ -321,16 +598,17 @@ final class GhostteaSSHAppModel: ObservableObject {
     }
   }
 
-  private func profilesURL() throws -> URL {
+  private func applicationSupportRoot() throws -> URL {
     guard
       let root = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask
       ).first
     else { throw GhostteaSSHAppError.applicationSupportUnavailable }
-    return
-      root
-      .appendingPathComponent("Ghosttea", isDirectory: true)
-      .appendingPathComponent("ssh-profiles.json", isDirectory: false)
+    return root.appendingPathComponent("Ghosttea", isDirectory: true)
+  }
+
+  private func identity(_ kind: String) -> String {
+    "ios-\(kind)-\(UUID().uuidString.lowercased())"
   }
 
   private static func softwareKey(hidUsage: UInt16) -> GhostteaKeyEvent {
@@ -351,5 +629,6 @@ final class GhostteaSSHAppModel: ObservableObject {
 
 private enum GhostteaSSHAppError: Error {
   case notReady
+  case missingProfile
   case applicationSupportUnavailable
 }

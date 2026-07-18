@@ -1,5 +1,8 @@
 import GhostteaConnectionProfilesUI
 import GhostteaSSH
+import GhostteaTerminal
+import GhostteaWorkspace
+import GhostteaWorkspaceUI
 import SwiftUI
 
 struct GhostteaSSHView: View {
@@ -9,21 +12,17 @@ struct GhostteaSSHView: View {
   var body: some View {
     NavigationStack {
       Group {
-        if model.activeProfile != nil { terminal } else { connections }
+        if let workspace = model.workspace { terminal(workspace) } else { connections }
       }
-      .navigationTitle(model.activeProfile?.name ?? "SSH")
+      .navigationTitle(model.workspace == nil ? "SSH" : "SSH Workspace")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        if model.activeProfile != nil {
+        if model.workspace != nil {
           ToolbarItem(placement: .topBarLeading) {
             Button("Done") { model.disconnect() }
           }
           ToolbarItem(placement: .topBarTrailing) {
-            if model.status == "Reconnect available" {
-              Button("Reconnect") { model.reconnect() }
-            } else {
-              Text(model.status).font(.caption).foregroundStyle(.secondary)
-            }
+            Button("Reconnect") { model.reconnect() }
           }
         } else {
           ToolbarItem(placement: .topBarTrailing) {
@@ -109,23 +108,22 @@ struct GhostteaSSHView: View {
     }
   }
 
-  private var terminal: some View {
-    ZStack {
-      Color(red: 40 / 255, green: 44 / 255, blue: 52 / 255).ignoresSafeArea()
-      if let frame = model.frame {
-        GhostteaSharedTerminalSurface(
-          frame: frame,
-          visible: scenePhase == .active,
-          onGridSize: model.updateGrid,
-          onHardwareInput: model.handleHardwareKey,
-          onSoftwareInput: model.handleSoftwareInput,
-          onMouseInput: model.handleMouse,
-          onScrollRows: model.handleScroll,
-          onSelectionCommit: model.copySelection,
-          onSelectAll: model.copyAll)
-      } else {
-        ProgressView(model.status).tint(.white).foregroundStyle(.white)
-      }
+  private func terminal(_ document: GhostteaWorkspaceTabsDocument) -> some View {
+    GhostteaWorkspaceView(
+      document: document,
+      tabTitle: { tab in
+        tab.workspace.sessionIDs.first.map(model.title) ?? "Terminal"
+      },
+      paneTitle: { model.title(for: $0.sessionID) },
+      onAction: model.apply,
+      onNewTab: model.createTab,
+      onSplit: model.split
+    ) { _, pane, _ in
+      GhostteaSSHWorkspacePane(
+        sessionID: pane.sessionID,
+        frame: model.frame(for: pane.sessionID),
+        status: model.sessionStatus(for: pane.sessionID),
+        visible: scenePhase == .active)
     }
   }
 
@@ -135,6 +133,44 @@ struct GhostteaSSHView: View {
       set: { presented in
         if !presented, model.pendingHostKey != nil { model.resolveHostKey(.reject) }
       })
+  }
+}
+
+private struct GhostteaSSHWorkspacePane: View {
+  @EnvironmentObject private var model: GhostteaSSHAppModel
+
+  let sessionID: String
+  let frame: Data?
+  let status: String
+  let visible: Bool
+
+  var body: some View {
+    ZStack {
+      Color(red: 40 / 255, green: 44 / 255, blue: 52 / 255)
+      if let frame {
+        GhostteaSharedTerminalSurface(
+          frame: frame,
+          visible: visible,
+          accessibilityTitle: model.title(for: sessionID),
+          accessibilityConnectionState: status,
+          onGridSize: { model.updateGrid($0, sessionID: sessionID) },
+          onHardwareInput: { model.handleHardwareKey($0, sessionID: sessionID) },
+          onSoftwareInput: { model.handleSoftwareInput($0, sessionID: sessionID) },
+          onMouseInput: { model.handleMouse($0, sessionID: sessionID) },
+          onScrollRows: { model.handleScroll($0, sessionID: sessionID) },
+          onSelectionCommit: { model.copySelection($0, sessionID: sessionID) },
+          onSelectAll: { model.copyAll(sessionID: sessionID) })
+      } else {
+        VStack(spacing: 12) {
+          ProgressView().tint(.white)
+          Text(status).font(.caption).foregroundStyle(.white.opacity(0.8))
+          if status == "Reconnect available" || status == "Disconnected" {
+            Button("Reconnect") { model.reconnect(sessionID) }
+              .buttonStyle(.borderedProminent)
+          }
+        }
+      }
+    }
   }
 }
 

@@ -4,6 +4,8 @@ import SwiftUI
 struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   let frame: Data
   let visible: Bool
+  var accessibilityTitle = "Shared terminal"
+  var accessibilityConnectionState = "Connected through Truffle"
   let onGridSize: (GhostteaTerminalGridSize) -> Void
   let onHardwareInput: (GhostteaHardwareKeyEvent) -> Bool
   let onSoftwareInput: (GhostteaSoftwareInputEvent) -> Void
@@ -54,7 +56,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
     view.onScrollRows = onScrollRows
     view.onSelectionCommit = onSelectionCommit
     view.onSelectAll = onSelectAll
-    view.accessibilityTerminalTitle = "Shared terminal"
-    view.accessibilityConnectionState = "Connected through Truffle"
+    view.accessibilityTerminalTitle = accessibilityTitle
+    view.accessibilityConnectionState = accessibilityConnectionState
   }
 }

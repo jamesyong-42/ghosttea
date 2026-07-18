@@ -50,9 +50,10 @@ application composition now live in the separate `apple/GhostteaApp` target.
 The pinned TailscaleKit binary sets the production package minimum to iOS 18.1.
 The app's SSH tab now composes the protected profile repository, device-only
 Keychain credentials, host-key and keyboard-interactive prompt boundaries,
-network-aware `GhostteaSession`, and the shared Metal terminal surface. Durable
-multi-pane workspace composition and live cross-device release evidence remain
-later Phase 8 slices.
+network-aware `GhostteaSession`, the shared Metal terminal surface, and the
+tested tabs/splits coordinator. Secret-free multi-pane workspace state is saved
+atomically and restored demand-paused. Live cross-device release evidence and a
+TestFlight-shaped archive remain later Phase 8 gates.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

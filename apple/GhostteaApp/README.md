@@ -12,8 +12,10 @@ profiles are protected application-support documents; password, private-key,
 and passphrase material is stored only behind device-only Keychain references.
 The SSH tab handles host-key trust, keyboard-interactive challenges, route and
 background lifecycle changes, PTY resize, and the same Metal/input/selection
-surface as shared sessions. Multi-pane workspace persistence remains the next
-composition slice.
+surface as shared sessions. Tabs and splits own independent terminals and
+transports. Their secret-free profile bindings are persisted atomically with
+complete file protection; process restoration recreates them demand-paused and
+requires an explicit reconnect.
 
 The app requires iOS 18.1 or newer, matching the minimum deployment target of
 the pinned TailscaleKit binary. Simulator builds are arm64-only because the

@@ -2767,9 +2767,12 @@ supports password, private-key, and keyboard-interactive authentication,
 explicit host-key trust, route/background lifecycle handling, reconnect, PTY
 resize, and the same Metal/input/selection surface used by shared sessions.
 Both generic device and arm64 simulator builds pass and the complete 118-test
-Swift package suite remains green. Durable multi-pane workspace composition,
-persisted app restoration, live desktop/iPhone/iPad interop evidence, and the
-TestFlight-shaped archive remain open.
+Swift package suite remains green. The production app now also composes the
+existing workspace coordinator and adaptive workspace UI: tabs and splits own
+independent native terminals and transports, structural changes atomically save
+secret-free profile bindings, and process restoration recreates available panes
+without starting network demand. Live desktop/iPhone/iPad interop evidence and
+the TestFlight-shaped archive remain open.
 
 Deliverables:
 

@@ -21,6 +21,9 @@
 		10000000000000000000000D /* GhostteaSSH in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000007 /* GhostteaSSH */; };
 		10000000000000000000000E /* GhostteaSession in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000008 /* GhostteaSession */; };
 		10000000000000000000000F /* GhostteaTransport in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000009 /* GhostteaTransport */; };
+		100000000000000000000010 /* GhostteaSSHWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000A /* GhostteaSSHWorkspace */; };
+		100000000000000000000011 /* GhostteaWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000B /* GhostteaWorkspace */; };
+		100000000000000000000012 /* GhostteaWorkspaceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000C /* GhostteaWorkspaceUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +50,9 @@
 				10000000000000000000000D /* GhostteaSSH in Frameworks */,
 				10000000000000000000000E /* GhostteaSession in Frameworks */,
 				10000000000000000000000F /* GhostteaTransport in Frameworks */,
+				100000000000000000000010 /* GhostteaSSHWorkspace in Frameworks */,
+				100000000000000000000011 /* GhostteaWorkspace in Frameworks */,
+				100000000000000000000012 /* GhostteaWorkspaceUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,6 +112,9 @@
 				A00000000000000000000007 /* GhostteaSSH */,
 				A00000000000000000000008 /* GhostteaSession */,
 				A00000000000000000000009 /* GhostteaTransport */,
+				A0000000000000000000000A /* GhostteaSSHWorkspace */,
+				A0000000000000000000000B /* GhostteaWorkspace */,
+				A0000000000000000000000C /* GhostteaWorkspaceUI */,
 			);
 			productName = Ghosttea;
 			productReference = 200000000000000000000005 /* Ghosttea.app */;
@@ -324,6 +333,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaTransport;
+		};
+		A0000000000000000000000A /* GhostteaSSHWorkspace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaSSHWorkspace;
+		};
+		A0000000000000000000000B /* GhostteaWorkspace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaWorkspace;
+		};
+		A0000000000000000000000C /* GhostteaWorkspaceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaWorkspaceUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
