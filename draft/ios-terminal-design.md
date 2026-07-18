@@ -2884,6 +2884,16 @@ is discarded before export. The app's About sheet copies this bounded record;
 shared-session, SSH, resize, and Metal production paths no longer interpolate
 raw library or server-controlled errors. Static and Swift package gates enforce
 the no-arbitrary-string contract, bounds, recovery, and lifecycle semantics.
+The seventh slice makes Ghostty upgrades atomic and executable. Its checked
+runbook ties the full source pin to the font lock, downloadable artifact
+identity, C ABI/shim review, Apple rebuilds, model/TRF1/visual fixtures,
+CycloneDX BOM and notices, performance budgets, physical-device evidence, and
+desktop/iOS attachment to the same Truffle session. Explicit source, ABI,
+parity, font, packaging, performance, and device stop conditions prevent a
+golden or binary from being updated merely to follow a new commit. The release
+workflow now derives attestation paths from the artifact manifest instead of a
+revision literal, and normal/CI checks reject inconsistent pins or an
+incomplete upgrade procedure.
 
 Deliverables:
 

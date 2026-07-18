@@ -70,16 +70,23 @@ jobs:
           expected="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].release")"
           test "$RELEASE_TAG" = "$expected"
 
+      - name: Resolve locked artifact paths
+        id: ghostty_artifact
+        run: |
+          filename="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].filename")"
+          echo "path=artifacts/ghostty-vt/$filename" >> "$GITHUB_OUTPUT"
+          echo "sbom=artifacts/ghostty-vt/$filename.spdx.json" >> "$GITHUB_OUTPUT"
+
       - name: Attest bundle provenance
         uses: actions/attest@v4
         with:
-          subject-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar
+          subject-path: ${{ steps.ghostty_artifact.outputs.path }}
 
       - name: Attest bundle SBOM
         uses: actions/attest@v4
         with:
-          subject-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar
-          sbom-path: artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar.spdx.json
+          subject-path: ${{ steps.ghostty_artifact.outputs.path }}
+          sbom-path: ${{ steps.ghostty_artifact.outputs.sbom }}
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

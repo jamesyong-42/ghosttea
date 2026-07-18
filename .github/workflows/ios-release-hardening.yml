@@ -4,13 +4,16 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".github/workflows/ghostty-vt-artifact.yml"
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
+      - "package.json"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
       - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
       - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaApp/App/**"
       - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
@@ -21,24 +24,34 @@ on:
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
+      - "native/terminald/crates/ghostty-vt-sys/artifacts.json"
       - "native/ssh.lock.json"
+      - "scripts/archive-ios-app.mjs"
+      - "scripts/bootstrap-ghostty-vt-apple.mjs"
+      - "scripts/bootstrap-ghostty-vt.mjs"
+      - "scripts/build-ghostty-vt-apple.mjs"
+      - "scripts/build-ghostty-vt.mjs"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
       - "scripts/check-ios-redacted-diagnostics.mjs"
+      - "scripts/check-ghostty-upgrade-procedure.mjs"
       - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
   push:
     branches:
       - main
     paths:
+      - ".github/workflows/ghostty-vt-artifact.yml"
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
+      - "package.json"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
       - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
       - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaApp/App/**"
       - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
@@ -49,11 +62,18 @@ on:
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
+      - "native/terminald/crates/ghostty-vt-sys/artifacts.json"
       - "native/ssh.lock.json"
+      - "scripts/archive-ios-app.mjs"
+      - "scripts/bootstrap-ghostty-vt-apple.mjs"
+      - "scripts/bootstrap-ghostty-vt.mjs"
+      - "scripts/build-ghostty-vt-apple.mjs"
+      - "scripts/build-ghostty-vt.mjs"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
       - "scripts/check-ios-redacted-diagnostics.mjs"
+      - "scripts/check-ghostty-upgrade-procedure.mjs"
       - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
 
@@ -72,6 +92,7 @@ jobs:
           cache: npm
 
       - run: npm ci --ignore-scripts
+      - run: npm run check:ghostty-upgrade
       - run: npm run check:ios-release-bom
       - run: npm run check:ios-release-resources
       - run: npm run check:ios-app-store

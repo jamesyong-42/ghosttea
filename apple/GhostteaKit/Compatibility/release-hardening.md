@@ -262,3 +262,28 @@ npm run check:ios-diagnostics
 Swift package tests additionally prove event-count and byte limits, recorded
 versus unrecorded termination behavior, and replacement of a corrupt fixture
 containing a password, private-key marker, and terminal output.
+
+## Atomic Ghostty upgrades
+
+[`ghostty-upgrade-procedure.md`](ghostty-upgrade-procedure.md) makes a Ghostty
+revision change an atomic source, ABI, artifact, font, parity, release-metadata,
+performance, and physical-device operation. It names explicit stop conditions
+for each boundary and requires desktop and iOS to prove the same Truffle
+session after the upgrade. A rollback restores the complete compatibility set,
+never only the source pin or only a binary.
+
+Run the offline consistency gate with:
+
+```sh
+npm run check:ghostty-upgrade
+```
+
+The gate requires a full immutable source commit; exact agreement among the
+Ghostty, font, downloadable-artifact, source-BOM, and bundled-BOM locks; all
+authoritative fixture inputs; and the complete runbook command/stop checklist.
+The release workflow now derives its provenance and SBOM subject paths from
+the locked artifact manifest, eliminating the prior revision literal that
+would otherwise become stale during an upgrade. CI and the normal repository
+check both run this verifier. Runtime and human-review gates remain mandatory:
+passing the offline consistency check cannot authorize an ABI, golden,
+performance, licensing, or terminal-behavior change.

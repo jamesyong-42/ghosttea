@@ -69,6 +69,7 @@ function main() {
   }
   if (exportOptions) requirePath(exportOptions, "export options plist");
 
+  execute("node", ["scripts/check-ghostty-upgrade-procedure.mjs"]);
   execute("node", ["scripts/check-ios-release-bom.mjs"]);
   execute("node", ["scripts/check-ios-release-resources.mjs"]);
   execute("node", ["scripts/check-ios-release-toolchain.mjs"]);

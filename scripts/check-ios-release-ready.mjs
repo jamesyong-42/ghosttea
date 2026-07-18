@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const checks = [
+  ["scripts/check-ghostty-upgrade-procedure.mjs"],
   ["scripts/check-ios-release-bom.mjs", "--release"],
   ["scripts/check-ios-release-resources.mjs"],
   ["scripts/check-ios-release-toolchain.mjs"],

@@ -41,6 +41,11 @@ and reviewer-access decisions fail closed.
 record. Its typed schema cannot accept raw error text or terminal/session data;
 the bounded file is replaced atomically under complete iOS file protection and
 is available through the app's About sheet.
+Ghostty source updates follow the checked
+[`Compatibility/ghostty-upgrade-procedure.md`](Compatibility/ghostty-upgrade-procedure.md):
+the source/font pins, native artifact identity, parity fixtures, release BOM,
+Apple rebuilds, performance evidence, and desktop/iOS Truffle interop are one
+reviewed change rather than an independent version bump.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
