@@ -2727,17 +2727,24 @@ product against the real sibling Apple package at locked revision
 references, generation-checked peer resolution, the shared app/service IDs,
 and byte-compatible `TSP1` connection-control framing. A typed client completes
 the nonce handshake and lists desktop sessions over Truffle's
-`MeshConnection`. Six new tests include an end-to-end loopback connection and
-a connection-control fixture consumed by both Swift and Rust; all 116 package
+`MeshConnection`. Six initial tests include an end-to-end loopback connection and
+a connection-control fixture consumed by both Swift and Rust; all initial 116 package
 tests, the Rust fixture test, and generic simulator/device builds pass. The
 desktop compact-stream listener is now also implemented on port 9421 beside
 the existing QUIC listener. It fails closed without a Tailscale WhoIs stable
 node ID, matches that ID to the current Truffle peer generation, validates the
 claimed durable device ID when Truffle has learned it, and serves the same
-nonce/session-list contract. Its in-memory success and identity-conflict tests,
-the complete crate tests, workspace check, and strict Clippy pass. Live
-attachment/replica, the production Truffle backend, and real app target remain
-open.
+nonce/session-list contract. The next slice adds the compact stream's explicit
+control/state channel tag and the complete desktop attachment loop: attach,
+initial snapshot, logical patches, control changes, input, resize, selection,
+snapshot resync, and detach all use the existing session authority and epochs.
+The Swift client now opens a dedicated demand-driven attachment connection,
+decodes the same typed logical state, and exposes control, resize, input, ACK,
+selection, resync, and detach operations. Its loopback test proves handshake,
+attachment, interleaved state, input, and graceful detach; all 117 Swift tests,
+the complete Rust crate tests, workspace checks, and strict Clippy pass. The
+local logical-state-to-TRF1 replica adapter, production Truffle backend, and
+real app target remain open.
 
 Deliverables:
 

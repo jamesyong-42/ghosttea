@@ -118,6 +118,37 @@ public actor GhostteaTrufflePeerDirectory {
       localDeviceID: localDeviceID
     )
   }
+
+  /// Opens a dedicated full-duplex stream for one terminal view. Discovery
+  /// remains on its own connection so a long-lived state pump cannot block
+  /// session listing or another attached view.
+  public func attach(
+    to candidate: GhostteaTruffleHostCandidate,
+    sessionID: String,
+    viewID: String = UUID().uuidString,
+    cols: UInt16,
+    rows: UInt16,
+    accessToken: String? = nil
+  ) async throws -> GhostteaTruffleAttachment {
+    let connection = try await node.dial(
+      to: candidate.peer,
+      port: GhostteaTruffleContract.compactTerminalPort
+    )
+    let localPeer = await node.localPeer
+    guard let localDeviceID = localPeer.deviceId else {
+      await connection.close()
+      throw GhostteaTruffleError.handshakeRejected("local Truffle device ID is unavailable")
+    }
+    return try await GhostteaTruffleAttachment.connect(
+      over: connection,
+      localDeviceID: localDeviceID,
+      sessionID: sessionID,
+      viewID: viewID,
+      cols: cols,
+      rows: rows,
+      accessToken: accessToken
+    )
+  }
 }
 
 public enum GhostteaTerminalStreamKind: String, Codable, Sendable {
@@ -382,7 +413,7 @@ public actor GhostteaTruffleHostClient {
     case .sessions(let responseID, let sessions) where responseID == requestID:
       return sessions
     case .error(let responseID, let code, let message)
-      where responseID == nil || responseID == requestID:
+    where responseID == nil || responseID == requestID:
       throw GhostteaTruffleError.handshakeRejected("\(code): \(message)")
     default:
       throw GhostteaTruffleError.mismatchedResponse
@@ -457,13 +488,13 @@ public actor GhostteaTruffleHostClient {
   }
 }
 
-private extension Data {
-  mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
+extension Data {
+  fileprivate mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
     var bigEndian = value.bigEndian
     Swift.withUnsafeBytes(of: &bigEndian) { append(contentsOf: $0) }
   }
 
-  func readBigEndianUInt32(at offset: Int) -> UInt32 {
-    self[offset ..< offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+  fileprivate func readBigEndianUInt32(at offset: Int) -> UInt32 {
+    self[offset..<offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
   }
 }

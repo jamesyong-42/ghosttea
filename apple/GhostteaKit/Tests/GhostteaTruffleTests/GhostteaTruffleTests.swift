@@ -22,8 +22,9 @@ private struct ConnectionControlFixture: Decodable {
     from: Data(contentsOf: url)
   )
 
-  guard case .clientHello(let major, let minor, let host, let device, let nonce) =
-    fixture.clientHello
+  guard
+    case .clientHello(let major, let minor, let host, let device, let nonce) =
+      fixture.clientHello
   else {
     Issue.record("expected client hello")
     return
@@ -218,6 +219,127 @@ private struct ConnectionControlFixture: Decodable {
   try await server.value
 }
 
+@Test func attachmentMultiplexesDesktopControlAndStateWithoutBufferingAStream() async throws {
+  let (clientConnection, serverConnection) = LoopbackConnection.makePair()
+  let server = Task {
+    let header = try await readExactly(16, from: serverConnection)
+    #expect(header[8] == 2)
+    let metadata = try await readExactly(Int(readUInt32(header, at: 12)), from: serverConnection)
+    let preface = try JSONDecoder().decode(GhostteaTerminalStreamPreface.self, from: metadata)
+    #expect(preface.sessionID == "session-1")
+    #expect(preface.viewID == "ios-view")
+
+    let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
+    let nonce: String
+    if case .clientHello(_, _, _, let deviceID, let value) = hello {
+      #expect(deviceID == "ios-device")
+      nonce = value
+    } else {
+      Issue.record("expected client hello")
+      return
+    }
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeFrame(
+        GhostteaConnectionMessage.serverHello(
+          protocolMajor: 1,
+          protocolMinor: 3,
+          hostInstanceID: "desktop-instance",
+          nonce: nonce
+        )
+      )
+    )
+
+    let (attachChannel, attachPayload) = try await readCompact(from: serverConnection)
+    #expect(attachChannel == .control)
+    let attach = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: attachPayload)
+    guard case .attachView(let requestID, let sessionID, let viewID, _, let cols, let rows) = attach
+    else {
+      Issue.record("expected attach-view")
+      return
+    }
+    #expect(sessionID == "session-1")
+    #expect(viewID == "ios-view")
+    #expect(cols == 100)
+    #expect(rows == 30)
+
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeCompactFrame(
+        .control,
+        GhostteaSessionControlMessage.viewAttached(
+          requestID: requestID,
+          sessionEpoch: 7,
+          layoutEpoch: 3,
+          attachmentEpoch: 11,
+          cols: 100,
+          rows: 30,
+          readWrite: true
+        )
+      )
+    )
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeCompactFrame(
+        .state,
+        GhostteaTerminalStateMessage.controlChanged(
+          controllerViewID: "desktop-view",
+          controlEpoch: 12,
+          cols: 120,
+          rows: 40,
+          layoutEpoch: 4
+        )
+      )
+    )
+
+    let (inputChannel, inputPayload) = try await readCompact(from: serverConnection)
+    #expect(inputChannel == .control)
+    let input = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: inputPayload)
+    guard case .input(let inputView, let attachmentEpoch, let sequence, let operation) = input
+    else {
+      Issue.record("expected terminal input")
+      return
+    }
+    #expect(inputView == "ios-view")
+    #expect(attachmentEpoch == 11)
+    #expect(sequence == 1)
+    #expect(operation == .text("echo shared\n"))
+
+    let (detachChannel, detachPayload) = try await readCompact(from: serverConnection)
+    #expect(detachChannel == .control)
+    let detach = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: detachPayload)
+    #expect(detach == .detach(viewID: "ios-view", attachmentEpoch: 11))
+  }
+
+  let attachment = try await GhostteaTruffleAttachment.connect(
+    over: clientConnection,
+    localDeviceID: "ios-device",
+    sessionID: "session-1",
+    viewID: "ios-view",
+    cols: 100,
+    rows: 30,
+    nonce: "fixed-attachment-nonce",
+    requestID: "fixed-attachment-request"
+  )
+  #expect(await attachment.info.hostInstanceID == "desktop-instance")
+  #expect(await attachment.info.attachmentEpoch == 11)
+  #expect(await attachment.info.readWrite)
+
+  let event = try await attachment.nextEvent()
+  #expect(
+    event
+      == .state(
+        .controlChanged(
+          controllerViewID: "desktop-view",
+          controlEpoch: 12,
+          cols: 120,
+          rows: 40,
+          layoutEpoch: 4
+        )
+      )
+  )
+  try await attachment.send(.text("echo shared\n"), sequence: 1)
+  await attachment.detach()
+  try await server.value
+}
+
 private func readExactly(
   _ count: Int,
   from connection: any MeshConnection
@@ -241,6 +363,19 @@ private func readFrame<T: Decodable>(
   return try JSONDecoder().decode(T.self, from: payload)
 }
 
+private func readCompact(
+  from connection: any MeshConnection
+) async throws -> (GhostteaCompactChannel, Data) {
+  let header = try await readExactly(4, from: connection)
+  let size = Int(readUInt32(header, at: 0))
+  guard size > 0 else { throw GhostteaTruffleError.malformedMessage }
+  let framed = try await readExactly(size, from: connection)
+  guard let channel = GhostteaCompactChannel(rawValue: framed[0]) else {
+    throw GhostteaTruffleError.malformedMessage
+  }
+  return (channel, Data(framed.dropFirst()))
+}
+
 private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
-  data[offset ..< offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+  data[offset..<offset + 4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
 }

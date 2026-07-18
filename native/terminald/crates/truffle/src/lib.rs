@@ -25,11 +25,11 @@ use ghosttea::{
     RemoteResize, RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, Session,
     SessionRegistry as Registry, SessionSummary, TerminalMesh, ViewAccess,
     tunnel_protocol::{
-        ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
+        CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
         RowReplacement, SessionControlMessage, SharedSessionSummary, StateMessage, StreamKind,
-        StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_message, decode_preface,
-        encode_message, encode_preface,
+        StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_compact_message,
+        decode_message, decode_preface, encode_compact_message, encode_message, encode_preface,
     },
 };
 
@@ -1093,7 +1093,7 @@ async fn handle_compact_connection(
         .find(|peer| peer.tailscale_id == authenticated_node_id)
         .context("compact-stream source is not a current Truffle peer")?;
     let client_id = format!("truffle:{}", peer.peer_ref);
-    handle_compact_control_protocol(
+    handle_compact_protocol(
         incoming.stream,
         registry,
         config,
@@ -1104,13 +1104,13 @@ async fn handle_compact_connection(
     .await
 }
 
-async fn handle_compact_control_protocol<S>(
+async fn handle_compact_protocol<S>(
     stream: S,
     registry: Registry,
     config: TruffleTerminalConfig,
     host_instance_id: String,
     expected_device_id: Option<String>,
-    _client_id: String,
+    client_id: String,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -1119,9 +1119,6 @@ where
     let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, control.read_preface())
         .await
         .context("timed out reading compact-stream preface")??;
-    if preface.stream_kind != StreamKind::ConnectionControl {
-        bail!("compact stream is not connection-control");
-    }
     let hello = tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
         control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
@@ -1162,37 +1159,319 @@ where
         )
         .await?;
 
-    while let Some(message) = control
-        .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
-        .await?
-    {
-        match message {
-            ConnectionMessage::ListSessions { request_id } => {
-                control
-                    .write_message(
-                        &ConnectionMessage::Sessions {
-                            request_id,
-                            sessions: shared_sessions(&registry, &config),
-                        },
-                        MAX_CONTROL_MESSAGE_BYTES,
-                    )
-                    .await?;
-            }
-            _ => {
-                control
-                    .write_message(
-                        &ConnectionMessage::Error {
-                            request_id: None,
-                            code: "unexpected-message".into(),
-                            message: "message is not valid on the connection control stream".into(),
-                        },
-                        MAX_CONTROL_MESSAGE_BYTES,
-                    )
-                    .await?;
+    match preface.stream_kind {
+        StreamKind::ConnectionControl => {
+            while let Some(message) = control
+                .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                .await?
+            {
+                match message {
+                    ConnectionMessage::ListSessions { request_id } => {
+                        control
+                            .write_message(
+                                &ConnectionMessage::Sessions {
+                                    request_id,
+                                    sessions: shared_sessions(&registry, &config),
+                                },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
+                    _ => {
+                        control
+                            .write_message(
+                                &ConnectionMessage::Error {
+                                    request_id: None,
+                                    code: "unexpected-message".into(),
+                                    message:
+                                        "message is not valid on the connection control stream"
+                                            .into(),
+                                },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
+                }
             }
         }
+        StreamKind::SessionControl => {
+            handle_compact_session_protocol(&mut control, preface, registry, config, client_id)
+                .await?;
+        }
+        _ => bail!("compact stream kind is not client-openable"),
     }
     Ok(())
+}
+
+async fn handle_compact_session_protocol<S>(
+    control: &mut CompactProtocolStream<S>,
+    preface: StreamPreface,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    client_id: String,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let session_id = preface
+        .session_id
+        .context("compact session stream lacks session id")?;
+    let attach = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        control.read_compact_message::<SessionControlMessage>(
+            CompactChannel::Control,
+            MAX_CONTROL_MESSAGE_BYTES,
+        ),
+    )
+    .await
+    .context("timed out reading compact session attach")??
+    .context("compact session stream closed before attach")?;
+    let (request_id, view_id, access_token) = match attach {
+        SessionControlMessage::AttachView {
+            request_id,
+            session_id: requested_session,
+            view_id,
+            access_token,
+            ..
+        } if requested_session == session_id => (request_id, view_id, access_token),
+        _ => bail!("expected matching compact attach-view message"),
+    };
+    let session = registry
+        .read()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+        .context("unknown shared terminal session")?;
+    let access = config.access_for(access_token.as_deref());
+    let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
+    session.refresh()?;
+    let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
+    control
+        .write_compact_message(
+            CompactChannel::Control,
+            &SessionControlMessage::ViewAttached {
+                request_id,
+                session_epoch: session.session_epoch(),
+                layout_epoch,
+                attachment_epoch,
+                cols: canonical_cols,
+                rows: canonical_rows,
+                read_write: access == ViewAccess::ReadWrite,
+            },
+            MAX_CONTROL_MESSAGE_BYTES,
+        )
+        .await?;
+
+    let result = async {
+        let mut controls = session.subscribe_control();
+        let mut snapshots = session.subscribe_logical();
+        let mut previous = session.logical_snapshot();
+        let mut patch_sequence = 0_u64;
+        if let Some(snapshot) = previous.as_ref() {
+            control
+                .write_compact_message(
+                    CompactChannel::State,
+                    &StateMessage::Snapshot(snapshot.clone()),
+                    MAX_STATE_MESSAGE_BYTES,
+                )
+                .await?;
+        }
+        let (controller, cols, rows, layout_epoch) = session.control_state();
+        if let Some(controller) = controller {
+            control
+                .write_compact_message(
+                    CompactChannel::State,
+                    &StateMessage::ControlChanged {
+                        controller_view_id: controller.view_id,
+                        control_epoch: controller.control_epoch,
+                        cols,
+                        rows,
+                        layout_epoch,
+                    },
+                    MAX_STATE_MESSAGE_BYTES,
+                )
+                .await?;
+        }
+
+        loop {
+            tokio::select! {
+                incoming = control.read_compact_message::<SessionControlMessage>(
+                    CompactChannel::Control,
+                    MAX_CONTROL_MESSAGE_BYTES,
+                ) => {
+                    let Some(message) = incoming? else { break };
+                    match message {
+                        SessionControlMessage::FocusAndResize {
+                            view_id: incoming_view,
+                            attachment_epoch: epoch,
+                            cols,
+                            rows,
+                            ..
+                        } if incoming_view == view_id && epoch == attachment_epoch => {
+                            session.claim_control(&view_id, &client_id, cols, rows)?;
+                        }
+                        SessionControlMessage::Resize {
+                            view_id: incoming_view,
+                            attachment_epoch: epoch,
+                            control_epoch,
+                            resize_sequence,
+                            cols,
+                            rows,
+                        } if incoming_view == view_id && epoch == attachment_epoch => {
+                            if session.resize_view(
+                                &view_id,
+                                &client_id,
+                                control_epoch,
+                                resize_sequence,
+                                cols,
+                                rows,
+                            ).is_err() {
+                                session.announce_control();
+                            }
+                        }
+                        SessionControlMessage::Input {
+                            view_id: incoming_view,
+                            attachment_epoch: epoch,
+                            input_sequence,
+                            operation,
+                        } if incoming_view == view_id && epoch == attachment_epoch => match operation {
+                            TunnelInput::Text(text) => session.send_text(
+                                &view_id, &client_id, attachment_epoch, input_sequence, text,
+                            )?,
+                            TunnelInput::Paste(text) => session.paste(
+                                &view_id, &client_id, attachment_epoch, input_sequence, text,
+                            )?,
+                            TunnelInput::Key(input) => session.key(
+                                &view_id, &client_id, attachment_epoch, input_sequence, input,
+                            )?,
+                            TunnelInput::Mouse(input) => session.mouse(
+                                &view_id, &client_id, attachment_epoch, input_sequence, input,
+                            )?,
+                            TunnelInput::Scroll(rows) => session.scroll(
+                                &view_id,
+                                &client_id,
+                                attachment_epoch,
+                                input_sequence,
+                                isize::try_from(rows.clamp(-10_000, 10_000))?,
+                            )?,
+                            TunnelInput::ScrollTo(row) => session.scroll_to(
+                                &view_id,
+                                &client_id,
+                                attachment_epoch,
+                                input_sequence,
+                                usize::try_from(row)?,
+                            )?,
+                            TunnelInput::Focus(focused) => session.focus(
+                                &view_id, &client_id, attachment_epoch, input_sequence, focused,
+                            )?,
+                            TunnelInput::Interrupt => session.interrupt(
+                                &view_id, &client_id, attachment_epoch, input_sequence,
+                            )?,
+                        },
+                        SessionControlMessage::RequestSnapshot => {
+                            let snapshot = session
+                                .logical_snapshot()
+                                .context("shared terminal has no logical snapshot")?;
+                            previous = Some(snapshot.clone());
+                            patch_sequence = 0;
+                            control.write_compact_message(
+                                CompactChannel::State,
+                                &StateMessage::Snapshot(snapshot),
+                                MAX_STATE_MESSAGE_BYTES,
+                            ).await?;
+                        }
+                        SessionControlMessage::StateAck { .. } => {}
+                        SessionControlMessage::SelectionText {
+                            request_id,
+                            view_id: incoming_view,
+                            attachment_epoch: epoch,
+                            start_column,
+                            start_row,
+                            end_column,
+                            end_row,
+                            select_all,
+                        } if incoming_view == view_id && epoch == attachment_epoch => {
+                            let text = session.selection_text(
+                                start_column,
+                                start_row,
+                                end_column,
+                                end_row,
+                                select_all,
+                            )?;
+                            control.write_compact_message(
+                                CompactChannel::Control,
+                                &SessionControlMessage::SelectionTextResult { request_id, text },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            ).await?;
+                        }
+                        SessionControlMessage::Detach {
+                            view_id: incoming_view,
+                            attachment_epoch: epoch,
+                        } if incoming_view == view_id && epoch == attachment_epoch => break,
+                        _ => bail!("invalid, stale, or misrouted compact session message"),
+                    }
+                }
+                snapshot = snapshots.recv() => {
+                    let message = match snapshot {
+                        Ok(snapshot) => {
+                            let next_sequence = patch_sequence.saturating_add(1);
+                            let message = previous
+                                .as_ref()
+                                .and_then(|previous| logical_patch(previous, &snapshot, next_sequence))
+                                .map(StateMessage::Patch)
+                                .unwrap_or_else(|| StateMessage::Snapshot(snapshot.clone()));
+                            if matches!(message, StateMessage::Patch(_)) {
+                                patch_sequence = next_sequence;
+                            } else {
+                                patch_sequence = 0;
+                            }
+                            previous = Some(snapshot);
+                            message
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let snapshot = session
+                                .logical_snapshot()
+                                .context("shared terminal has no logical snapshot after lag")?;
+                            previous = Some(snapshot.clone());
+                            patch_sequence = 0;
+                            StateMessage::Snapshot(snapshot)
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    control.write_compact_message(
+                        CompactChannel::State,
+                        &message,
+                        MAX_STATE_MESSAGE_BYTES,
+                    ).await?;
+                }
+                changed = controls.recv() => {
+                    let changed = match changed {
+                        Ok(changed) => changed,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            session.announce_control();
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    control.write_compact_message(
+                        CompactChannel::State,
+                        &StateMessage::ControlChanged {
+                            controller_view_id: changed.controller.view_id,
+                            control_epoch: changed.controller.control_epoch,
+                            cols: changed.cols,
+                            rows: changed.rows,
+                            layout_epoch: changed.layout_epoch,
+                        },
+                        MAX_STATE_MESSAGE_BYTES,
+                    ).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    session.detach_view(&view_id, &client_id);
+    result
 }
 
 async fn accept_loop(
@@ -1808,6 +2087,41 @@ where
         Ok(Some(decode_message(&encoded, limit)?.0))
     }
 
+    async fn write_compact_message<T: serde::Serialize>(
+        &mut self,
+        channel: CompactChannel,
+        message: &T,
+        limit: usize,
+    ) -> Result<()> {
+        self.stream
+            .write_all(&encode_compact_message(channel, message, limit)?)
+            .await?;
+        Ok(())
+    }
+
+    async fn read_compact_message<T: serde::de::DeserializeOwned>(
+        &mut self,
+        expected_channel: CompactChannel,
+        limit: usize,
+    ) -> Result<Option<T>> {
+        let Some(header) = self.read_exact_bytes(4).await? else {
+            return Ok(None);
+        };
+        let framed_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        if framed_len == 0 || framed_len - 1 > limit {
+            bail!("compact terminal message exceeds limit");
+        }
+        let payload = self
+            .read_exact_bytes(framed_len)
+            .await?
+            .context("EOF in compact terminal protocol message")?;
+        let mut encoded = header;
+        encoded.extend_from_slice(&payload);
+        Ok(Some(
+            decode_compact_message(&encoded, expected_channel, limit)?.0,
+        ))
+    }
+
     async fn read_exact_bytes(&mut self, length: usize) -> Result<Option<Vec<u8>>> {
         while self.buffered.len() < length {
             let mut chunk = vec![0; 64 * 1024];
@@ -2057,7 +2371,7 @@ mod tests {
     async fn compact_stream_handshake_and_session_listing_match_apple_client() {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let registry = Registry::default();
-        let server = tokio::spawn(handle_compact_control_protocol(
+        let server = tokio::spawn(handle_compact_protocol(
             server_io,
             registry,
             TruffleTerminalConfig::default(),
@@ -2130,7 +2444,7 @@ mod tests {
     #[tokio::test]
     async fn compact_stream_rejects_a_claim_that_conflicts_with_confirmed_peer_identity() {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-        let server = tokio::spawn(handle_compact_control_protocol(
+        let server = tokio::spawn(handle_compact_protocol(
             server_io,
             Registry::default(),
             TruffleTerminalConfig::default(),

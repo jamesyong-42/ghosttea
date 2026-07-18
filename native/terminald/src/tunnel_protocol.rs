@@ -16,6 +16,29 @@ pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: [u8; 4] = *b"TSP1";
 const PREFACE_HEADER_BYTES: usize = 16;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactChannel {
+    Control,
+    State,
+}
+
+impl CompactChannel {
+    pub fn as_byte(self) -> u8 {
+        match self {
+            Self::Control => 1,
+            Self::State => 2,
+        }
+    }
+
+    pub fn from_byte(value: u8) -> Result<Self> {
+        match value {
+            1 => Ok(Self::Control),
+            2 => Ok(Self::State),
+            _ => bail!("unknown compact terminal channel"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum StreamKind {
@@ -126,6 +149,51 @@ pub fn decode_message<T: DeserializeOwned>(bytes: &[u8], limit: usize) -> Result
     }
     let message =
         serde_json::from_slice(&bytes[4..total]).context("decode terminal protocol message")?;
+    Ok((message, total))
+}
+
+pub fn encode_compact_message<T: Serialize>(
+    channel: CompactChannel,
+    message: &T,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    let payload = serde_json::to_vec(message).context("serialize compact terminal message")?;
+    if payload.len() > limit {
+        bail!("compact terminal message exceeds limit");
+    }
+    let framed_len = payload
+        .len()
+        .checked_add(1)
+        .context("compact terminal message length overflow")?;
+    let mut encoded = Vec::with_capacity(4 + framed_len);
+    encoded.extend_from_slice(&u32::try_from(framed_len)?.to_be_bytes());
+    encoded.push(channel.as_byte());
+    encoded.extend_from_slice(&payload);
+    Ok(encoded)
+}
+
+pub fn decode_compact_message<T: DeserializeOwned>(
+    bytes: &[u8],
+    expected_channel: CompactChannel,
+    limit: usize,
+) -> Result<(T, usize)> {
+    if bytes.len() < 5 {
+        bail!("truncated compact terminal frame");
+    }
+    let framed_len = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+    if framed_len == 0 || framed_len - 1 > limit {
+        bail!("compact terminal message exceeds limit");
+    }
+    let total = 4 + framed_len;
+    if bytes.len() < total {
+        bail!("truncated compact terminal payload");
+    }
+    let channel = CompactChannel::from_byte(bytes[4])?;
+    if channel != expected_channel {
+        bail!("compact terminal channel mismatch");
+    }
+    let message = serde_json::from_slice(&bytes[5..total])
+        .context("decode compact terminal protocol message")?;
     Ok((message, total))
 }
 
@@ -342,6 +410,25 @@ mod tests {
         let mut oversized = vec![0, 0, 4, 1];
         oversized.resize(1029, 0);
         assert!(decode_message::<ConnectionMessage>(&oversized, 1024).is_err());
+    }
+
+    #[test]
+    fn compact_messages_preserve_channel_and_existing_json_contract() {
+        let message = SessionControlMessage::RequestSnapshot;
+        let encoded = encode_compact_message(CompactChannel::Control, &message, 1024).unwrap();
+        assert_eq!(encoded[4], CompactChannel::Control.as_byte());
+        let (decoded, consumed) = decode_compact_message::<SessionControlMessage>(
+            &encoded,
+            CompactChannel::Control,
+            1024,
+        )
+        .unwrap();
+        assert!(matches!(decoded, SessionControlMessage::RequestSnapshot));
+        assert_eq!(consumed, encoded.len());
+        assert!(
+            decode_compact_message::<SessionControlMessage>(&encoded, CompactChannel::State, 1024)
+                .is_err()
+        );
     }
 
     #[test]
