@@ -163,6 +163,7 @@ private struct GhostteaSSHWorkspacePane: View {
           accessibilityTitle: model.title(for: sessionID),
           accessibilityConnectionState: status,
           onGridSize: { model.updateGrid($0, sessionID: sessionID) },
+          onNeedsFullRefresh: { model.requestFullRefresh(sessionID: sessionID) },
           onHardwareInput: { model.handleHardwareKey($0, sessionID: sessionID) },
           onSoftwareInput: { model.handleSoftwareInput($0, sessionID: sessionID) },
           onMouseInput: { model.handleMouse($0, sessionID: sessionID) },

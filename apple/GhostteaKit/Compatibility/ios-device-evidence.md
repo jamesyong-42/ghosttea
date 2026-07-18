@@ -629,14 +629,23 @@ surfaces a full-refresh callback for gaps and malformed frames. Drawable
 command buffers are submitted without a main-run-loop completion wait, while
 the offscreen pixel proof retains its synchronous completion boundary.
 
-The surface observes app background and memory-warning notifications. It
-evicts reconstructible pipelines and both atlases while retaining logical rows,
-styles, glyph definitions, and sequencing state. Resume recreates those GPU
-resources lazily, so no terminal replay is required. The iPhone Simulator
-harness automatically applied full, incremental, and stale frames and proved
-two accepted frames, one stale frame, and a resource transition of 20 MiB to
-zero to 20 MiB with one eviction and two builds. Both iOS SDK destinations
-compile, and the arm64 iPhone 17 Pro Simulator again emitted:
+The surface observes app background and memory-warning notifications.
+Backgrounding evicts reconstructible pipelines and both atlases while retaining
+the decoded frame. The stronger memory-warning path now also discards CPU
+glyph/style render payloads, retains sequencing plus readable row/accessibility
+text, and requests a full snapshot before drawing can resume. This avoids
+immediately recreating the allocation that the system asked the app to release.
+The production Truffle and SSH surfaces close that callback through their
+respective snapshot authorities.
+
+The updated iPhone Simulator harness automatically applies full, incremental,
+and stale frames, posts duplicate real UIKit warning notifications, verifies a
+single coalesced refresh request, applies a full recovery frame, and requires
+three accepted
+frames, one stale frame, nonzero-to-zero-to-nonzero CPU glyph pixels, and a GPU
+resource transition of 20 MiB to zero to 20 MiB with one eviction and two
+builds. Both iOS SDK destinations compile. The arm64 iPhone 17 Pro Simulator
+runtime gate emits:
 
 ```text
 GHOSTTEA_TRF1_PASS

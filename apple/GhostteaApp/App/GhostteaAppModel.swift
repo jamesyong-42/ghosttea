@@ -329,6 +329,11 @@ final class GhostteaAppModel: ObservableObject {
     Task { try? await attachment?.requestSnapshot() }
   }
 
+  func requestFullRefresh() {
+    guard attachment != nil else { return }
+    Task { try? await attachment?.requestSnapshot() }
+  }
+
   func terminationRecorded() {
     Task { try? await diagnostics.markTerminationRecorded() }
   }

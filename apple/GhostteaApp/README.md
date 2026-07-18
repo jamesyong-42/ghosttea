@@ -96,6 +96,15 @@ no place in the schema. Users can copy the redacted JSON from the About sheet;
 `npm run check:ios-diagnostics` prevents raw error interpolation from returning
 to production app and terminal-renderer surfaces.
 
+Every production terminal surface also closes the renderer memory-pressure
+recovery loop. A UIKit memory warning releases the fixed 20 MiB glyph atlases
+and CPU glyph/style render payloads while preserving readable row text. Shared
+sessions request a full snapshot from their desktop Truffle attachment; direct
+SSH sessions request a full frame from their local core. Drawing resumes and
+GPU state rebuilds only after that full snapshot is applied. The exact contract
+and remaining whole-app budget work are documented in
+[`../GhostteaKit/Compatibility/memory-pressure.md`](../GhostteaKit/Compatibility/memory-pressure.md).
+
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second
 `WindowGroup` scene, verifies shared runtime and distinct terminal identities,

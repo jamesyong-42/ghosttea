@@ -167,6 +167,7 @@ struct GhostteaContentView: View {
           frame: frame,
           visible: scenePhase == .active,
           onGridSize: model.updateGrid,
+          onNeedsFullRefresh: model.requestFullRefresh,
           onHardwareInput: model.handleHardwareKey,
           onSoftwareInput: model.handleSoftwareInput,
           onMouseInput: model.handleMouse,

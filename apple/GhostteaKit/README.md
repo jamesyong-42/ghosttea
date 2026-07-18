@@ -49,6 +49,12 @@ reviewed change rather than an independent version bump.
 [`Compatibility/fuzzing.md`](Compatibility/fuzzing.md) records the fixed-seed
 C-ABI and Swift TRF1 mutation gates, retained hostile inputs, output/arena
 invariants, and the longer sanitizer campaign required for a release candidate.
+[`Compatibility/memory-pressure.md`](Compatibility/memory-pressure.md) defines
+the iOS presentation-cache eviction transaction: memory warnings release the
+20 MiB Metal atlases and CPU glyph/style render payloads, retain readable
+terminal text, request a full Truffle or SSH snapshot, and rebuild lazily only
+after that snapshot arrives. Aggregate session budgeting and inactive-session
+eviction remain separate release gates.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
@@ -343,9 +349,12 @@ drawable-size changes, selection/focus changes, and cursor blink
 transitions request individual draws. Full/incremental/stale classification
 stays inside the view's retained state, with a callback when the core must send
 a full refresh. Drawable submission does not wait on the main run loop. App
-backgrounding and memory warnings discard the reconstructible renderer and its
-20 MiB atlases while keeping logical terminal state; foreground drawing lazily
-rebuilds those resources. The harness embeds the surface as a visible preview
+backgrounding discards the reconstructible renderer and its 20 MiB atlases
+while keeping logical terminal state. Memory warnings additionally discard
+CPU glyph/style render payloads, retain row text and accessibility state, and
+hold drawing until the host supplies a full snapshot. Truffle and direct-SSH
+production surfaces both wire that refresh callback; GPU resources rebuild
+lazily after recovery. The harness embeds the surface as a visible preview
 after its renderer fixture runs.
 
 `GhostteaTerminalLayout` converts point-space bounds into a clamped terminal

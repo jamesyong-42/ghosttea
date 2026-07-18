@@ -352,6 +352,41 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(!state.glyphDefinitions.isEmpty)
 }
 
+@Test func retainedStateEvictsReconstructibleGlyphsAndRequiresAFullFrame() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 921, sessionEpoch: 1, columns: 80, rows: 10)
+  )
+  let full = try framePayload(await terminal.feed(Data("memory pressure ✓\r\n".utf8), render: .full))
+  let incremental = try framePayload(
+    await terminal.feed(Data("incremental\r\n".utf8), render: .damage))
+  var state = RetainedTRF1State()
+  _ = try state.apply(full)
+  let retainedText = state.rows.map(\.text)
+  let resident = state.residentGlyphPixelBytes
+
+  #expect(resident > 0)
+  #expect(state.evictReconstructibleRenderState() == resident)
+  #expect(state.residentGlyphPixelBytes == 0)
+  #expect(state.glyphDefinitions.isEmpty)
+  #expect(state.styleDefinitions.isEmpty)
+  #expect(state.rows.allSatisfy { $0.glyphs.isEmpty && $0.styles.isEmpty })
+  #expect(state.rows.map(\.text) == retainedText)
+  #expect(state.awaitingResync)
+  #expect(try state.apply(incremental) == .needsFullRefresh)
+
+  let recovery = try framePayload(await terminal.refresh(.full))
+  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery) else {
+    Issue.record("memory-pressure recovery frame was not applied")
+    return
+  }
+  #expect(fullSnapshot)
+  #expect(completedResync)
+  #expect(!state.awaitingResync)
+  #expect(state.residentGlyphPixelBytes > 0)
+}
+
 @Test func retainedStateIsAtomicOnMalformedRowsAndSkipsOlderRowRevisions() async throws {
   let runtime = try GhostteaRuntime()
   let terminal = try GhostteaTerminal(

@@ -360,6 +360,10 @@ final class GhostteaSSHAppModel: ObservableObject {
     withSession(sessionID) { try? await $0.session.scroll(rows: Int64(rows)) }
   }
 
+  func requestFullRefresh(sessionID: String) {
+    withSession(sessionID) { try? await $0.session.refresh() }
+  }
+
   func copySelection(_ selection: GhostteaTerminalSelection, sessionID: String) {
     withSession(sessionID) { resource in
       let data = try await resource.terminal.selectionTextBytes(

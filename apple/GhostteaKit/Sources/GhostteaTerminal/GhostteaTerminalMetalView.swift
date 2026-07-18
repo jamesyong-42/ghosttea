@@ -11,6 +11,8 @@
     public let resourceEvictions: Int
     public let resourceRebuilds: Int
     public let residentAtlasBytes: Int
+    public let residentGlyphBytes: Int
+    public let reconstructibleBytesEvicted: Int
     public let lastError: String?
 
     init(
@@ -21,6 +23,8 @@
       resourceEvictions: Int = 0,
       resourceRebuilds: Int = 0,
       residentAtlasBytes: Int = 0,
+      residentGlyphBytes: Int = 0,
+      reconstructibleBytesEvicted: Int = 0,
       lastError: String? = nil
     ) {
       self.acceptedFrames = acceptedFrames
@@ -30,6 +34,8 @@
       self.resourceEvictions = resourceEvictions
       self.resourceRebuilds = resourceRebuilds
       self.residentAtlasBytes = residentAtlasBytes
+      self.residentGlyphBytes = residentGlyphBytes
+      self.reconstructibleBytesEvicted = reconstructibleBytesEvicted
       self.lastError = lastError
     }
   }
@@ -125,6 +131,7 @@
 
     private let metalRuntime: GhostteaMetalRuntime
     private var terminalRenderer: GhostteaMetalRenderer?
+    private var awaitingMemoryPressureRefresh = false
     private var retainedState = RetainedTRF1State()
     private var terminalSelection: GhostteaMetalSelection?
     private var terminalFocused = true
@@ -394,7 +401,8 @@
     public func apply(frame data: Data) throws -> Bool {
       do {
         switch try retainedState.apply(data) {
-        case .applied:
+        case .applied(let fullSnapshot, _, _, _):
+          if fullSnapshot { awaitingMemoryPressureRefresh = false }
           updateAccessibilitySnapshot()
           if accessibilityPageScrollPending {
             accessibilityPageScrollPending = false
@@ -408,7 +416,10 @@
           updateCursorBlinkSurfaceVisibility()
           cursorBlinkController.updateCursor(retainedState.cursor)
           updateMarkedTextOverlay()
-          updateDiagnostics(acceptedFrames: diagnostics.acceptedFrames + 1, clearError: true)
+          updateDiagnostics(
+            acceptedFrames: diagnostics.acceptedFrames + 1,
+            residentGlyphBytes: retainedState.residentGlyphPixelBytes,
+            clearError: true)
           requestEventDrivenDraw()
           return true
         case .stale:
@@ -1041,7 +1052,7 @@
     }
 
     private func requestEventDrivenDraw() {
-      guard !gpuSuspended else { return }
+      guard !gpuSuspended, !awaitingMemoryPressureRefresh else { return }
       setNeedsDisplay()
     }
 
@@ -1104,6 +1115,8 @@
       resourceEvictions: Int? = nil,
       resourceRebuilds: Int? = nil,
       residentAtlasBytes: Int? = nil,
+      residentGlyphBytes: Int? = nil,
+      reconstructibleBytesEvicted: Int? = nil,
       lastError: String? = nil,
       clearError: Bool = false
     ) {
@@ -1115,6 +1128,9 @@
         resourceEvictions: resourceEvictions ?? diagnostics.resourceEvictions,
         resourceRebuilds: resourceRebuilds ?? diagnostics.resourceRebuilds,
         residentAtlasBytes: residentAtlasBytes ?? diagnostics.residentAtlasBytes,
+        residentGlyphBytes: residentGlyphBytes ?? diagnostics.residentGlyphBytes,
+        reconstructibleBytesEvicted: reconstructibleBytesEvicted
+          ?? diagnostics.reconstructibleBytesEvicted,
         lastError: clearError ? nil : (lastError ?? diagnostics.lastError)
       )
     }
@@ -1129,8 +1145,14 @@
     }
 
     @objc private func applicationDidReceiveMemoryWarning() {
+      let refreshAlreadyRequested = awaitingMemoryPressureRefresh
+      let released = retainedState.evictReconstructibleRenderState()
+      awaitingMemoryPressureRefresh = retainedState.awaitingResync
       evictRendererResources()
-      requestEventDrivenDraw()
+      updateDiagnostics(
+        residentGlyphBytes: 0,
+        reconstructibleBytesEvicted: diagnostics.reconstructibleBytesEvicted + released)
+      if awaitingMemoryPressureRefresh, !refreshAlreadyRequested { requestFullRefresh() }
     }
   }
 

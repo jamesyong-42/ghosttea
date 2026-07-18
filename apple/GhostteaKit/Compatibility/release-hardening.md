@@ -310,3 +310,21 @@ The smoke gates are suitable for ordinary regression runs but do not yet close
 the release item. A timed AddressSanitizer campaign against the locked release
 toolchain and release native libraries, with corpus hashes and resource limits
 recorded in evidence, remains mandatory.
+
+## Memory-pressure recovery
+
+[`memory-pressure.md`](memory-pressure.md) defines the implemented
+presentation-cache transaction. A UIKit memory warning now releases the fixed
+20 MiB Metal atlases and CPU glyph/style render payloads, preserves readable
+row and accessibility text, enters full-resync state, and suppresses redraw
+until the host supplies a valid full snapshot. The production Truffle surface
+requests that snapshot from the desktop attachment; the direct SSH surface
+requests it from the local core. Recovery does not reconnect or replay remote
+transport bytes.
+
+The retained-state test and iOS harness cover glyph release, rejection of an
+incremental frame after eviction, atomic full-frame recovery, atlas release,
+and lazy rebuild. This closes the renderer memory-pressure and atlas-eviction
+deliverable. Aggregate CPU/GPU budgets, inactive-session/scrollback eviction,
+future decoded-image accounting, compact-tier physical-device evidence, and
+jetsam restoration remain open as the separate whole-application memory item.

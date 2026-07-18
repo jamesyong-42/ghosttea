@@ -37,6 +37,27 @@ struct RetainedTRF1State: Sendable {
   private(set) var mouseTracking = false
   private(set) var awaitingResync = false
 
+  var residentGlyphPixelBytes: Int {
+    glyphDefinitions.values.reduce(into: 0) { total, definition in
+      total = total > Int.max - definition.pixels.count
+        ? Int.max
+        : total + definition.pixels.count
+    }
+  }
+
+  @discardableResult
+  mutating func evictReconstructibleRenderState() -> Int {
+    let released = residentGlyphPixelBytes
+    glyphDefinitions.removeAll(keepingCapacity: false)
+    styleDefinitions.removeAll(keepingCapacity: false)
+    for index in rows.indices {
+      rows[index].glyphs.removeAll(keepingCapacity: false)
+      rows[index].styles.removeAll(keepingCapacity: false)
+    }
+    if sessionHandle != 0 { awaitingResync = true }
+    return released
+  }
+
   mutating func apply(_ data: Data) throws -> RetainedTRF1ApplyResult {
     do {
       return try applyDecoded(try decodeTRF1Frame(data))

@@ -7,6 +7,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   var accessibilityTitle = "Shared terminal"
   var accessibilityConnectionState = "Connected through Truffle"
   let onGridSize: (GhostteaTerminalGridSize) -> Void
+  let onNeedsFullRefresh: () -> Void
   let onHardwareInput: (GhostteaHardwareKeyEvent) -> Bool
   let onSoftwareInput: (GhostteaSoftwareInputEvent) -> Void
   let onMouseInput: (GhostteaTerminalMouseEvent) -> Void
@@ -50,6 +51,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
 
   private func configure(_ view: GhostteaTerminalMetalView) {
     view.onGridSizeChange = onGridSize
+    view.onNeedsFullRefresh = onNeedsFullRefresh
     view.onHardwareKeyEvent = onHardwareInput
     view.onSoftwareInputEvent = onSoftwareInput
     view.onMouseInputEvent = onMouseInput

@@ -439,6 +439,8 @@ final class HarnessModel: ObservableObject {
         var markedTextStates: [GhostteaMarkedTextState?] = []
         surface.onSoftwareInputEvent = { softwareInputEvents.append($0) }
         surface.onMarkedTextChange = { markedTextStates.append($0) }
+        var surfaceRefreshRequests = 0
+        surface.onNeedsFullRefresh = { surfaceRefreshRequests += 1 }
         surface.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
         let markedRange = surface.markedTextRange
         let markedText = markedRange.flatMap { surface.text(in: $0) }
@@ -459,10 +461,20 @@ final class HarnessModel: ObservableObject {
             && optionLeft.code == "ArrowLeft" && optionLeft.modifiers == [.option]
         }()
         try surface.prepareGPUResources()
-        let surfaceResidentBeforeSuspend = surface.diagnostics.residentAtlasBytes
-        surface.suspendGPU()
-        let surfaceResidentWhileSuspended = surface.diagnostics.residentAtlasBytes
-        surface.resumeGPU()
+        let surfaceResidentBeforeWarning = surface.diagnostics.residentAtlasBytes
+        let surfaceGlyphBytesBeforeWarning = surface.diagnostics.residentGlyphBytes
+        NotificationCenter.default.post(
+          name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        NotificationCenter.default.post(
+          name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        let surfaceResidentAfterWarning = surface.diagnostics.residentAtlasBytes
+        let surfaceGlyphBytesAfterWarning = surface.diagnostics.residentGlyphBytes
+        let recoveryUpdate = try await terminal.refresh(.full)
+        guard
+          let recoveryFrame = recoveryUpdate.effects.first(where: { $0.kind == .frameReady })?
+            .payload
+        else { throw HarnessError.frameDecoderMismatch }
+        let surfaceAcceptedRecovery = try surface.apply(frame: recoveryFrame)
         try surface.prepareGPUResources()
         guard summary.sessionHandle == 74,
           summary.columns == 100,
@@ -497,7 +509,7 @@ final class HarnessModel: ObservableObject {
           surfaceAcceptedFull,
           surfaceAcceptedIncremental,
           !surfaceAcceptedStale,
-          surface.diagnostics.acceptedFrames == 2,
+          surface.diagnostics.acceptedFrames == 3,
           surface.diagnostics.staleFrames == 1,
           accessibilitySnapshot.rows.contains(where: { $0.text.contains("Metal proof ✓ 界") }),
           accessibilitySnapshot.rows.contains(where: { $0.text.contains("retained-state") }),
@@ -514,11 +526,18 @@ final class HarnessModel: ObservableObject {
             == ["Copy", "Select All", "Paste"],
           accessibilityScrolled,
           accessibilityScrollRows == [19],
-          surfaceResidentBeforeSuspend == 20 * 1024 * 1024,
-          surfaceResidentWhileSuspended == 0,
+          surfaceResidentBeforeWarning == 20 * 1024 * 1024,
+          surfaceGlyphBytesBeforeWarning > 0,
+          surfaceResidentAfterWarning == 0,
+          surfaceGlyphBytesAfterWarning == 0,
+          surfaceRefreshRequests == 1,
+          surfaceAcceptedRecovery,
+          surface.diagnostics.fullRefreshRequests == 1,
           surface.diagnostics.resourceEvictions == 1,
           surface.diagnostics.resourceRebuilds == 2,
           surface.diagnostics.residentAtlasBytes == 20 * 1024 * 1024,
+          surface.diagnostics.residentGlyphBytes > 0,
+          surface.diagnostics.reconstructibleBytesEvicted > 0,
           markedText == "にほん",
           markedTextStates.contains(
             GhostteaMarkedTextState(text: "にほん", selectionLocation: 3, selectionLength: 0)

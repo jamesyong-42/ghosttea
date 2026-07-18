@@ -2902,6 +2902,17 @@ run found and retained a denial-of-service regression where impossible
 selection rows entered Ghostty formatting for more than a minute. The shared
 model now validates endpoints against retained rows before formatting. Timed
 AddressSanitizer campaigns on the locked release binaries remain open.
+The ninth slice closes renderer memory-pressure recovery. A UIKit memory
+warning atomically evicts the fixed 20 MiB Metal atlases plus CPU glyph/style
+render payloads, preserves sequencing and readable row/accessibility text,
+rejects incremental rendering while awaiting resync, and suppresses redraw so
+the warning cannot immediately recreate the allocation. The production
+Truffle host requests a desktop snapshot and the SSH host requests a local-core
+full frame; the next valid full snapshot restores retained render state before
+GPU resources rebuild lazily. Deterministic retained-state tests and the iOS
+harness cover `20 MiB -> 0 -> 20 MiB`, glyph-pixel release/recovery, and exactly
+one refresh request. Aggregate CPU/GPU budgets, inactive-session eviction, and
+compact-tier physical-device qualification remain open.
 
 Deliverables:
 
