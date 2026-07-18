@@ -64,3 +64,14 @@ jobs:
             --input-format json
             --input-version v1_6
             --fail-on-errors
+
+      - name: Preserve validated iOS release metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghosttea-ios-release-metadata
+          path: |
+            apple/GhostteaApp/Resources/Ghosttea-iOS.cdx.json
+            apple/GhostteaApp/Resources/THIRD-PARTY-NOTICES.txt
+            apple/GhostteaKit/Compatibility/ios-release-resources.lock.json
+            apple/GhostteaKit/Compatibility/ios-toolchain.lock.json
+          if-no-files-found: error

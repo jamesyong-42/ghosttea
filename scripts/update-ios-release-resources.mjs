@@ -201,7 +201,10 @@ function licenseOf(component) {
 
 function normalizeText(value) {
   const lines = value.replaceAll("\r\n", "\n").split("\n");
-  return `${lines.map((line) => line.trimEnd()).join("\n").trimEnd()}\n`;
+  return `${lines
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trimEnd()}\n`;
 }
 
 function readJSON(path) {

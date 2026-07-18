@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -10,6 +10,8 @@ const archive = join(outputRoot, "Ghosttea.xcarchive");
 const app = join(archive, "Products/Applications/Ghosttea.app");
 const executable = join(app, "Ghosttea");
 const dSYM = join(archive, "dSYMs/Ghosttea.app.dSYM");
+const evidence = join(outputRoot, "Ghosttea.release-evidence.json");
+const exportRoot = join(outputRoot, "export");
 const tailscaleArtifact = resolve(root, "../p008/truffle/apple/Vendor/TailscaleKit.xcframework");
 const environment = { ...process.env, DEVELOPER_DIR: developerDirectory };
 
@@ -51,13 +53,21 @@ function plist(path, key) {
 }
 
 function requirePath(path, description) {
-  if (!existsSync(path)) throw new Error(`Archive is missing ${description}: ${path}`);
+  if (!existsSync(path)) throw new Error(`Missing ${description}: ${path}`);
 }
 
 function main() {
   if (!existsSync(tailscaleArtifact)) {
     throw new Error(`Missing ${tailscaleArtifact}; run p008/truffle/apple/scripts/materialize-tailscalekit.sh first.`);
   }
+  let exportedIPA = process.env.GHOSTTEA_IOS_IPA ? resolve(process.env.GHOSTTEA_IOS_IPA) : undefined;
+  const exportOptions = process.env.GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST
+    ? resolve(process.env.GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST)
+    : undefined;
+  if (exportedIPA && exportOptions) {
+    throw new Error("Set only one of GHOSTTEA_IOS_IPA and GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST.");
+  }
+  if (exportOptions) requirePath(exportOptions, "export options plist");
 
   execute("node", ["scripts/check-ios-release-bom.mjs"]);
   execute("node", ["scripts/check-ios-release-resources.mjs"]);
@@ -113,7 +123,37 @@ function main() {
 
   const metadata = readFileSync(join(archive, "Info.plist"));
   if (metadata.length === 0) throw new Error("Archive metadata is empty.");
+  if (exportOptions) {
+    rmSync(exportRoot, { recursive: true, force: true });
+    execute("xcodebuild", [
+      "-exportArchive",
+      "-archivePath",
+      archive,
+      "-exportPath",
+      exportRoot,
+      "-exportOptionsPlist",
+      exportOptions,
+      "-allowProvisioningUpdates",
+    ]);
+    const exportedIPAs = readdirSync(exportRoot)
+      .filter((name) => name.endsWith(".ipa"))
+      .map((name) => join(exportRoot, name));
+    if (exportedIPAs.length !== 1) {
+      throw new Error(`Expected one exported IPA, found ${exportedIPAs.length}.`);
+    }
+    [exportedIPA] = exportedIPAs;
+  }
+  const evidenceArguments = ["scripts/validate-ios-release-artifact.mjs", "--archive", archive, "--output", evidence];
+  if (exportedIPA) {
+    evidenceArguments.push("--ipa", exportedIPA);
+  }
+  if (process.env.GHOSTTEA_IOS_RELEASE === "1") {
+    evidenceArguments.push("--release");
+  }
+  execute("node", evidenceArguments);
   console.log(`Verified release archive: ${archive}`);
+  if (exportedIPA) console.log(`Verified exported IPA: ${exportedIPA}`);
+  console.log(`Release evidence: ${evidence}`);
   console.log(`Bundle ${archiveBundleID} · ${architectures.join("+")} · ${signingIdentity}`);
 }
 

@@ -2857,8 +2857,15 @@ the production app. The notice maps all 94 components to 93 deduplicated exact
 license documents and is available through an About sheet. Offline checks
 reject omitted components, local-path leakage, hash or byte drift, and missing
 bundle resources; both generic Apple builds and exact post-build bundle
-validation pass. Exported-IPA validation, signed provenance attachment, and the
-other release-hardening gates remain open.
+validation pass. The fourth slice adds deterministic archive evidence for the
+source revision, reviewed locks, content trees, app identity, signature,
+executable UUID, bundled resources, provisioning profile, and exact dSYM UUID
+match. The same command optionally validates a safely extracted IPA, requires
+archive identity/architecture/UUID/resource parity, and refuses release
+eligibility without trusted Apple Distribution signing. A signed development
+archive and IPA-shaped structural fixture pass validation while remaining
+explicitly blocked. The release-account export, signed provenance publication,
+SSH production approval, and other release-hardening gates remain open.
 
 Deliverables:
 

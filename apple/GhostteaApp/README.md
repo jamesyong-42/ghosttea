@@ -104,9 +104,37 @@ npm run archive:ios:app
 ```
 
 The archive runner verifies the application, dSYM, bundle ID, application
-path, arm64 executable, signing identity, and configured team signature at
-`native/build/ios-app/archive/Ghosttea.xcarchive`. App Store distribution export
-remains a release-account step.
+path, arm64 executable, signing identity, configured team signature, packaged
+BOM, and notices at
+`native/build/ios-app/archive/Ghosttea.xcarchive`. It also writes a deterministic
+`Ghosttea.release-evidence.json` with source/lock hashes, content-tree hashes,
+signature metadata, executable and dSYM UUIDs, and explicit policy blockers.
+
+An existing App Store export can be checked with:
+
+```bash
+npm run validate:ios:release-artifact -- \
+  --archive native/build/ios-app/archive/Ghosttea.xcarchive \
+  --ipa /path/to/Ghosttea.ipa \
+  --release
+```
+
+For one coherent build/export/validation chain, provide account-owned export
+options without checking them into the repository:
+
+```bash
+GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST=/secure/path/ExportOptions.plist \
+GHOSTTEA_IOS_RELEASE=1 \
+npm run archive:ios:app
+```
+
+The IPA must contain one safe payload app, match the archive identity and
+executable, carry the reviewed resources, have a valid trusted signature, and
+use Apple Distribution signing before the evidence can become eligible.
+Producing that distribution export remains a release-account step.
+`GHOSTTEA_IOS_RELEASE=1` makes the command exit nonzero after writing evidence
+when any eligibility blocker remains. `GHOSTTEA_IOS_IPA` is also accepted for
+an IPA already exported from the exact archive being validated.
 
 Set `GHOSTTEA_IOS_DEVELOPMENT_TEAM` or `GHOSTTEA_IOS_DEVICE_ID` only when Xcode
 has multiple teams or more than one physical iOS device is paired.

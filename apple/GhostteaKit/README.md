@@ -28,7 +28,11 @@ defines its direct/static and 83-crate Apple-target scope, exact drift check,
 reviewed compiler lock, independent CI schema validation, and fail-closed SSH
 approval gate. The production app bundles the byte-identical BOM and a
 94-component human-readable notice assembled from 93 exact license documents;
-its archive verifier checks both resources before accepting the artifact.
+its archive verifier checks both resources before accepting the artifact. It
+also emits deterministic source/lock, archive/app/dSYM, executable UUID,
+signature, and checksum evidence. The same validator safely extracts an
+optional exported IPA, requires archive parity and Apple Distribution signing,
+and records every unmet release policy instead of overstating eligibility.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
@@ -75,7 +79,8 @@ Simulator gate also creates two real `WindowGroup` scenes, verifies the shared
 runtime and distinct identities, closes one, and observes one survivor.
 Physical iPad Stage Manager terminal qualification and the periodic
 self-recovering Tailscale LocalAPI watch timeout remain release gates.
-App Store distribution export remains a release-account step.
+App Store distribution export and signed provenance publication remain
+release-account steps; their local evidence contract is implemented.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

@@ -68,7 +68,10 @@ gate.
 The dedicated `iOS release hardening` workflow repeats the drift and graph
 checks on Linux, then validates the checked-in document as CycloneDX 1.6 with
 the official CycloneDX CLI 0.32.0. This keeps schema validation independent
-from the generator that produced the document.
+from the generator that produced the document. The workflow preserves the
+validated bundled BOM, notices, resource lock, and toolchain lock together as
+`ghosttea-ios-release-metadata`; this is durable CI input evidence, not a
+substitute for the later signed archive/IPA provenance.
 
 ## Reviewed release toolchain
 
@@ -106,6 +109,55 @@ Release builds package the same reviewed bytes. Archive validation reruns the
 offline gate before building and then verifies both files inside the signed
 `.app`; a missing, stale, or substituted resource fails the archive command.
 
+## Archive and IPA evidence
+
+`npm run archive:ios:app` now writes
+`native/build/ios-app/archive/Ghosttea.release-evidence.json` after Xcode
+finishes. The deterministic evidence document records:
+
+- the source revision and whether the worktree was clean;
+- hashes for the release BOM, notices, resource lock, and toolchain lock;
+- sorted content-tree hashes for the `.xcarchive`, archived `.app`, and dSYM;
+- application identity, version, deployment target, arm64 architecture,
+  executable hash, Mach-O UUID, code-directory hashes, signing authorities,
+  signed application/team/debug entitlements, provisioning-profile hash, and
+  bundled-resource hashes; and
+- the exact dSYM UUID match.
+
+Given release-account export options, the archive runner can produce and
+validate one coherent artifact chain:
+
+```sh
+GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST=/secure/path/ExportOptions.plist \
+GHOSTTEA_IOS_RELEASE=1 \
+npm run archive:ios:app
+```
+
+The export options remain account-owned and outside the repository. To attest
+an existing archive/IPA pair instead, run:
+
+```sh
+npm run validate:ios:release-artifact -- \
+  --archive native/build/ios-app/archive/Ghosttea.xcarchive \
+  --ipa /path/to/Ghosttea.ipa \
+  --release
+```
+
+IPA validation rejects unsafe ZIP paths, requires exactly one payload app,
+repeats signature and packaged-resource validation after extraction, and
+requires its identity, version, minimum OS, architecture, executable UUID, and
+release-resource hashes to match the archive. Release eligibility also
+requires an Apple Distribution signature whose certificate chain is trusted
+on the verification host and rejects an IPA that permits debugger attachment.
+A development-signed archive may therefore provide useful build evidence, but
+a development-signed IPA-shaped ZIP cannot be mistaken for a distributable
+artifact. Evidence contains artifact names and hashes, never machine-local
+paths. Validation always writes the evidence so a blocked build can be
+audited; `--release` then exits nonzero unless every recorded policy condition
+is satisfied. The archive command applies that same fail-closed behavior when
+`GHOSTTEA_IOS_RELEASE=1`; an already exported IPA may also be supplied through
+`GHOSTTEA_IOS_IPA` when it came from the exact archive being validated.
+
 ## Fail-closed release mode
 
 Release certification additionally runs:
@@ -124,12 +176,16 @@ Changing the bit alone is not approval. The SSH lock must first move to a fixed
 source revision, incorporate the required fixes, and record successful Apple
 artifact, package, fixture, Swift, and physical-device revalidation.
 
-## Remaining provenance work
+## Remaining release work
 
-The dependency graph, compiler identity, human-readable notices, and app-bundle
-BOM are now fail-closed inputs to the archive. Before release, the export
-pipeline must repeat these checks against the exported `.ipa` and attach the
-validated BOM plus archive checksums to signed release provenance.
+The dependency graph, compiler identity, notices, app-bundle BOM, archive
+checksums, dSYM match, and optional exported-IPA inspection now form one
+fail-closed evidence contract. The release-account pipeline must still produce
+the Apple Distribution export from a clean revision, run this validator on a
+host with a trusted certificate chain, attach its JSON plus validated BOM to
+signed provenance, and retain the archive, IPA, and dSYM. The separate SSH
+production-approval blocker also remains in force.
+
 Development-only Docker fixture tools such as Zellij, htop, btop, and Claude
 Code do not ship in the iOS app and must remain outside the release component
 graph.
