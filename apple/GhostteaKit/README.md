@@ -183,6 +183,15 @@ are disabled because terminal input must preserve user intent. The harness
 preview exposes both hardware and software input callbacks and displays their
 encoded bytes after its production TRF1 proof.
 
+The terminal's configurable `inputAccessoryView` provides the default
+`` Esc Tab Ctrl Alt ← ↓ ↑ → Home End PgUp PgDn | ~ ` `` row in a horizontally
+scrollable native control. Ctrl and Alt are visible one-shot latches: the next
+supported software-keyboard character, Return, Delete, or accessory key becomes
+a normalized `GhostteaHardwareKeyEvent`, then the latch clears. Accessory
+symbols carry their physical HID identity and intrinsic Shift modifier. This
+keeps terminal modes and the Option-key policy in the shared input encoder;
+the accessory view never constructs an escape sequence.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

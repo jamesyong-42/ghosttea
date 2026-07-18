@@ -2207,6 +2207,17 @@ marked-state lifetime, caret geometry, and safe input traits. Physical CJK,
 combining-mark, emoji, dictation, and third-party-keyboard evidence remains in
 the Phase 5 interaction matrix rather than being inferred from simulator APIs.
 
+The third slice implements the configurable accessory row as a horizontally
+scrollable native `inputAccessoryView`. Its default keys are exactly
+`` Esc Tab Ctrl Alt ← ↓ ↑ → Home End PgUp PgDn | ~ ` ``. Ctrl and Alt are visible
+one-shot latches. The next supported software-keyboard character, Return,
+backward delete, or accessory key is converted to a normalized hardware-key
+event and consumes the latch; starting marked-text composition or losing focus
+clears it. Pipe, tilde, and backquote preserve their physical HID key and
+intrinsic Shift state. The row contains no terminal bytes: every action still
+passes through `GhostteaTerminalInputEncoder`, including the configured
+Option-as-terminal versus natural word-motion policy.
+
 Deliverables:
 
 - `UITextInput` integration and marked-text overlay;

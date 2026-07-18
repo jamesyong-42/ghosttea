@@ -238,6 +238,51 @@ private let blinkingCursor = TRF1CursorState(
   #expect(pasteBytes.range(of: Data("line 1\nline 2".utf8)) != nil)
 }
 
+@Test func accessoryInputLatchesModifiersAndUsesNormalizedKeyEvents() async throws {
+  var state = GhostteaAccessoryInputState()
+  #expect(state.activate(.control) == nil)
+  #expect(state.modifiers == [.control])
+
+  let controlC = state.consume(.text("c"))
+  guard case .key(let controlCKey) = controlC else {
+    Issue.record("Control plus software text did not produce a normalized key event")
+    return
+  }
+  #expect(controlCKey.code == "KeyC")
+  #expect(controlCKey.modifiers == [.control])
+  #expect(state.modifiers.isEmpty)
+
+  #expect(state.activate(.option) == nil)
+  guard case .key(let optionLeft) = state.activate(.arrowLeft) else {
+    Issue.record("Alt plus accessory arrow did not produce a normalized key event")
+    return
+  }
+  #expect(optionLeft.code == "ArrowLeft")
+  #expect(optionLeft.modifiers == [.option])
+  #expect(state.modifiers.isEmpty)
+
+  guard case .key(let pipe) = state.activate(.pipe) else {
+    Issue.record("Accessory pipe did not produce a normalized key event")
+    return
+  }
+  #expect(pipe.code == "Backslash")
+  #expect(pipe.text == "|")
+  #expect(pipe.modifiers == [.shift])
+
+  _ = state.activate(.control)
+  #expect(state.consume(.text("界")) == .text("界"))
+  #expect(state.modifiers.isEmpty)
+
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 114, columns: 80, rows: 24)
+  )
+  let encoder = GhostteaTerminalInputEncoder(terminal: terminal)
+  #expect(try await encoder.encode(controlC) == .bytes(Data([0x03])))
+  #expect(try await encoder.encode(.key(optionLeft)) == .bytes(Data([0x1b, 0x62])))
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

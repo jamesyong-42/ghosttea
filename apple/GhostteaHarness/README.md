@@ -28,8 +28,8 @@ The harness provides:
 - strict TRF1 retained-state, packaged-Metal, GPU lifecycle, grid geometry, and
   visual-golden automation using the production styled Unicode/emoji fixture;
 - a focusable TRF1 preview that exercises the production hardware-key and
-  `UITextInput` software/IME paths and reports their exact encoded bytes or
-  application action;
+  `UITextInput` software/IME paths, including the normalized terminal accessory
+  row, and reports their exact encoded bytes or application action;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a

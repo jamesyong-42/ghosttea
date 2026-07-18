@@ -300,6 +300,18 @@ final class HarnessModel: ObservableObject {
         surface.unmarkText()
         surface.insertText("界\n")
         surface.deleteBackward()
+        surface.activateAccessoryKey(.control)
+        surface.insertText("c")
+        surface.activateAccessoryKey(.option)
+        surface.activateAccessoryKey(.arrowLeft)
+        let accessoryEventsValid = {
+          guard softwareInputEvents.count == 6,
+            case .key(let controlC) = softwareInputEvents[4],
+            case .key(let optionLeft) = softwareInputEvents[5]
+          else { return false }
+          return controlC.code == "KeyC" && controlC.modifiers == [.control]
+            && optionLeft.code == "ArrowLeft" && optionLeft.modifiers == [.option]
+        }()
         try surface.prepareGPUResources()
         let surfaceResidentBeforeSuspend = surface.diagnostics.residentAtlasBytes
         surface.suspendGPU()
@@ -352,7 +364,11 @@ final class HarnessModel: ObservableObject {
           ),
           markedTextStates.last.map({ $0 == nil }) == true,
           softwareInputEvents
-            == [.text("にほん"), .text("界"), .enter, .deleteBackward],
+            .prefix(4) == [.text("にほん"), .text("界"), .enter, .deleteBackward],
+          accessoryEventsValid,
+          surface.latchedAccessoryModifiers.isEmpty,
+          surface.inputAccessoryView != nil,
+          surface.terminalAccessoryKeys == GhostteaAccessoryKey.terminalDefaults,
           compositionCaret.width > 0,
           compositionCaret.height == CGFloat(GhostteaTerminalLayout.lineHeight),
           compositionCaret.origin.x.isFinite,

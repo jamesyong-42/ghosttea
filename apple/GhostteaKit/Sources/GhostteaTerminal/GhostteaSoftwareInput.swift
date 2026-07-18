@@ -6,6 +6,7 @@ public enum GhostteaSoftwareInputEvent: Equatable, Sendable {
   case enter
   case deleteBackward
   case paste(String)
+  case key(GhostteaHardwareKeyEvent)
 }
 
 public struct GhostteaMarkedTextState: Equatable, Sendable {
@@ -32,6 +33,8 @@ extension GhostteaTerminalInputEncoder {
     case .paste(let text):
       guard !text.isEmpty else { return .ignored }
       return .bytes(try await terminal.encodePaste(text))
+    case .key(let key):
+      return try await encode(key)
     }
   }
 

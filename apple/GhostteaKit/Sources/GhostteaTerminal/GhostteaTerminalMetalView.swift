@@ -61,6 +61,18 @@
     public var enablesReturnKeyAutomatically = false
     public var isSecureTextEntry = false
     public var textContentType: UITextContentType?
+    public var showsTerminalAccessoryRow = true {
+      didSet {
+        guard showsTerminalAccessoryRow != oldValue else { return }
+        if isFirstResponder { reloadInputViews() }
+      }
+    }
+    public var terminalAccessoryKeys = GhostteaAccessoryKey.terminalDefaults {
+      didSet {
+        terminalAccessoryInputView.setKeys(terminalAccessoryKeys)
+        if isFirstResponder { reloadInputViews() }
+      }
+    }
     public var focusesInputOnTap = true {
       didSet { inputFocusTapRecognizer.isEnabled = focusesInputOnTap }
     }
@@ -91,9 +103,15 @@
     private var cursorBlinkVisible = true
     private var gpuSuspended = false
     private var compositionBuffer = GhostteaCompositionBuffer()
+    private var accessoryInputState = GhostteaAccessoryInputState()
     private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
     private let markedTextLabel = UILabel()
     private lazy var textInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    private lazy var terminalAccessoryInputView: GhostteaTerminalAccessoryView = {
+      let view = GhostteaTerminalAccessoryView(keys: terminalAccessoryKeys)
+      view.onKey = { [weak self] key in self?.activateAccessoryKey(key) }
+      return view
+    }()
     private lazy var inputFocusTapRecognizer = UITapGestureRecognizer(
       target: self,
       action: #selector(handleInputFocusTap)
@@ -173,6 +191,15 @@
 
     public override var canBecomeFirstResponder: Bool { true }
 
+    public override var inputAccessoryView: UIView? {
+      showsTerminalAccessoryRow && !terminalAccessoryKeys.isEmpty
+        ? terminalAccessoryInputView : nil
+    }
+
+    public var latchedAccessoryModifiers: GhostteaInputModifiers {
+      accessoryInputState.modifiers
+    }
+
     @discardableResult
     public func focusTerminalInput() -> Bool {
       let focused = becomeFirstResponder()
@@ -188,6 +215,7 @@
       let resigned = super.resignFirstResponder()
       if resigned {
         commitMarkedTextIfNeeded()
+        clearAccessoryModifiers()
         releaseHandledHardwareKeys()
         setTerminalFocused(false)
       }
@@ -213,6 +241,18 @@
       guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
       commitMarkedTextIfNeeded()
       emitSoftwareInputEvents([.paste(text)])
+    }
+
+    public func activateAccessoryKey(_ key: GhostteaAccessoryKey) {
+      switch key {
+      case .control, .option:
+        break
+      default:
+        commitMarkedTextIfNeeded()
+      }
+      let event = accessoryInputState.activate(key)
+      updateAccessoryModifierPresentation()
+      if let event { emitSoftwareInputEvents([event]) }
     }
 
     @discardableResult
@@ -573,6 +613,7 @@
     }
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+      if let markedText, !markedText.isEmpty { clearAccessoryModifiers() }
       inputDelegate?.textWillChange(self)
       inputDelegate?.selectionWillChange(self)
       let events = compositionBuffer.setMarkedText(markedText, selectedRange: selectedRange)
@@ -726,8 +767,19 @@
 
     private func emitSoftwareInputEvents(_ events: [GhostteaSoftwareInputEvent]) {
       guard !events.isEmpty else { return }
-      for event in events { onSoftwareInputEvent?(event) }
+      for event in events { onSoftwareInputEvent?(accessoryInputState.consume(event)) }
+      updateAccessoryModifierPresentation()
       noteCursorActivity()
+    }
+
+    private func clearAccessoryModifiers() {
+      guard !accessoryInputState.modifiers.isEmpty else { return }
+      accessoryInputState.clear()
+      updateAccessoryModifierPresentation()
+    }
+
+    private func updateAccessoryModifierPresentation() {
+      terminalAccessoryInputView.updateModifiers(accessoryInputState.modifiers)
     }
 
     private func publishCompositionChange() {

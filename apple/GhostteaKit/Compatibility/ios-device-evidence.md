@@ -827,3 +827,22 @@ keyboard traits. The package suite now contains 60 tests; both iOS SDK builds
 and the iPhone 17 Pro production TRF1/Metal marker pass. Physical-device CJK,
 combining-mark, emoji, dictation, third-party software-keyboard, and hardware
 keyboard matrix runs remain release evidence.
+
+## 2026-07-17: normalized terminal accessory row
+
+The third Phase 5 slice supplies a configurable, horizontally scrollable
+`inputAccessoryView` with Esc, Tab, one-shot Ctrl/Alt, arrows, Home, End,
+Page Up/Down, pipe, tilde, and backquote. Every non-modifier action constructs a
+normalized HID-style key event; UIKit contains no terminal escape sequences.
+Ctrl and Alt can modify the next supported software-keyboard character, Return,
+Delete, or accessory key and then clear. Marked-text composition and responder
+loss also clear them to avoid leaking a stale terminal modifier into later
+input. Symbol keys retain their underlying physical key and Shift state.
+
+The new package test proves modifier toggle/consumption, Ctrl+C, Alt+Left,
+shifted pipe, unsupported Unicode fallback, and shared Ghostty encoding. The
+simulator automation exercises the production Metal view, validates the
+ordered normalized events and latch clearing, and confirms the configurable
+accessory view is present. The package suite now contains 61 tests; both iOS
+SDK builds and the iPhone 17 Pro production TRF1/Metal marker pass. Physical
+touch ergonomics and the final device input matrix remain release evidence.
