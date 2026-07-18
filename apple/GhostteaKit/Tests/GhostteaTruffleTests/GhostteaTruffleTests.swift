@@ -92,6 +92,39 @@ private struct ConnectionControlFixture: Decodable {
   )
 }
 
+@Test func sessionControlMessagesUseDesktopCamelCaseIDKeys() throws {
+  let attach = GhostteaSessionControlMessage.attachView(
+    requestID: "request-1",
+    sessionID: "session-1",
+    viewID: "view-1",
+    accessToken: nil,
+    cols: 100,
+    rows: 30
+  )
+  let attachObject = try #require(
+    JSONSerialization.jsonObject(with: JSONEncoder().encode(attach)) as? [String: Any]
+  )
+  #expect(attachObject["requestId"] as? String == "request-1")
+  #expect(attachObject["sessionId"] as? String == "session-1")
+  #expect(attachObject["viewId"] as? String == "view-1")
+  #expect(attachObject["requestID"] == nil)
+  #expect(attachObject["sessionID"] == nil)
+  #expect(attachObject["viewID"] == nil)
+
+  let control = GhostteaTerminalStateMessage.controlChanged(
+    controllerViewID: "view-1",
+    controlEpoch: 2,
+    cols: 100,
+    rows: 30,
+    layoutEpoch: 3
+  )
+  let controlObject = try #require(
+    JSONSerialization.jsonObject(with: JSONEncoder().encode(control)) as? [String: Any]
+  )
+  #expect(controlObject["controllerViewId"] as? String == "view-1")
+  #expect(controlObject["controllerViewID"] == nil)
+}
+
 @Test func streamPrefaceMatchesTSP1HeaderAndDesktopMetadata() throws {
   let data = try GhostteaTerminalProtocolCodec.encodePreface(
     GhostteaTerminalStreamPreface(
@@ -215,6 +248,65 @@ private struct ConnectionControlFixture: Decodable {
       over: clientConnection,
       localDeviceID: "ios-device",
       nonce: "expected"
+    )
+  }
+  try await server.value
+}
+
+@Test func attachmentReportsWhetherEOFPrecedesTheSessionHello() async throws {
+  let (clientConnection, serverConnection) = LoopbackConnection.makePair()
+  await serverConnection.close()
+
+  await #expect(
+    throws: GhostteaTruffleError.handshakeRejected(
+      "session hello failed: unexpectedEndOfStream")
+  ) {
+    try await GhostteaTruffleAttachment.connect(
+      over: clientConnection,
+      localDeviceID: "ios-device",
+      sessionID: "session-1",
+      viewID: "ios-view",
+      cols: 100,
+      rows: 30
+    )
+  }
+}
+
+@Test func attachmentReportsWhetherEOFPrecedesTheAttachResponse() async throws {
+  let (clientConnection, serverConnection) = LoopbackConnection.makePair()
+  let server = Task {
+    let header = try await readExactly(16, from: serverConnection)
+    _ = try await readExactly(Int(readUInt32(header, at: 12)), from: serverConnection)
+    let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
+    guard case .clientHello(_, _, _, _, let nonce) = hello else {
+      Issue.record("expected client hello")
+      return
+    }
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeFrame(
+        GhostteaConnectionMessage.serverHello(
+          protocolMajor: 1,
+          protocolMinor: 3,
+          hostInstanceID: "desktop-instance",
+          nonce: nonce
+        )
+      )
+    )
+    _ = try await readCompact(from: serverConnection)
+    await serverConnection.close()
+  }
+
+  await #expect(
+    throws: GhostteaTruffleError.handshakeRejected(
+      "session attach failed: unexpectedEndOfStream")
+  ) {
+    try await GhostteaTruffleAttachment.connect(
+      over: clientConnection,
+      localDeviceID: "ios-device",
+      sessionID: "session-1",
+      viewID: "ios-view",
+      cols: 100,
+      rows: 30
     )
   }
   try await server.value

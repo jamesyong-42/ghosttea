@@ -1382,3 +1382,45 @@ and the runner removed its disposable SSH container and network. The harness
 deliberately validates and releases editor submissions without storing them;
 this is physical-device evidence for the reusable editor lifetime boundary,
 not evidence that diagnostic fixture credentials became user profiles.
+
+## 2026-07-18: production desktop/iPhone shared-session interop gate
+
+The signed production `Ghosttea` app on an iPhone 14 Pro joined the same
+`ghosttea-terminal` Truffle mesh as the Electron desktop demo, discovered the
+current desktop host, completed the `TSP1` nonce handshake, and listed the
+desktop's live terminal session. The first physical-device attempts exposed a
+real cross-runtime codec defect: Swift emitted `requestID`, `sessionID`, and
+`viewID`, while Rust serde requires `requestId`, `sessionId`, and `viewId`.
+The corrected codec now asserts those exact wire keys, including
+`controllerViewId`, rather than relying on a Swift-to-Swift round trip.
+
+After rebuilding both applications, the iPhone attached to the desktop-owned
+session with read-write authority at the desktop's canonical `101x29` grid.
+The operator entered the following marker through the iPhone terminal surface
+and confirmed that it appeared in the concurrently attached desktop terminal:
+
+```text
+ghosttea-shared-ios-ok
+```
+
+The device console recorded the successful boundary without embedding any
+credential or durable host secret:
+
+```text
+attached to <ephemeral session UUID>; read-write=true; grid=101x29
+```
+
+All 121 Ghosttea Swift package tests passed after the wire fix. The complete
+`ghosttea-truffle` Rust crate test run passed its six local tests; the one
+auth-key/live-control-plane test remains intentionally ignored outside its
+credentialed environment.
+
+This proves signed-device discovery, session listing, compact attachment,
+logical-state rendering, control claim, iPhone-originated input, and
+desktop-observed output against one desktop-authoritative session. It is not
+the complete release matrix: live control handoff, resize, selection,
+disconnect/foreground resynchronization, stale-generation recovery, and iPad
+multi-scene remain explicit gates. The pinned TailscaleKit runtime also still
+reports a periodic LocalAPI watch timeout and an `EBADF` inbound-listener
+failure on this device. Neither interrupted the outbound compact attachment,
+but both remain release-hardening work rather than accepted production noise.

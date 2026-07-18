@@ -105,7 +105,9 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
   )
 
   private enum CodingKeys: String, CodingKey {
-    case type, controllerViewID, controlEpoch, cols, rows, layoutEpoch
+    case type
+    case controllerViewID = "controllerViewId"
+    case controlEpoch, cols, rows, layoutEpoch
   }
 
   public init(from decoder: Decoder) throws {
@@ -294,7 +296,11 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
   case detach(viewID: String, attachmentEpoch: UInt64)
 
   private enum CodingKeys: String, CodingKey {
-    case type, requestID, sessionID, viewID, accessToken, cols, rows, sessionEpoch,
+    case type
+    case requestID = "requestId"
+    case sessionID = "sessionId"
+    case viewID = "viewId"
+    case accessToken, cols, rows, sessionEpoch,
       layoutEpoch, attachmentEpoch, readWrite, controlEpoch, clientSequence,
       resizeSequence, inputSequence, operation, patchSequence, terminalRevision,
       startColumn, startRow, endColumn, endRow, selectAll, text
@@ -484,14 +490,27 @@ public actor GhostteaTruffleAttachment {
   ) async throws -> GhostteaTruffleAttachment {
     let wire = GhostteaAttachmentHandshake(connection: connection)
     do {
-      let host = try await wire.handshake(
-        localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce)
+      let host: String
+      do {
+        host = try await wire.handshake(
+          localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce)
+      } catch {
+        throw GhostteaTruffleError.handshakeRejected(
+          "session hello failed: \(String(describing: error))")
+      }
       try await wire.writeCompact(
         .control,
         GhostteaSessionControlMessage.attachView(
           requestID: requestID, sessionID: sessionID, viewID: viewID, accessToken: accessToken,
           cols: cols, rows: rows))
-      let (channel, payload) = try await wire.readCompact()
+      let channel: GhostteaCompactChannel
+      let payload: Data
+      do {
+        (channel, payload) = try await wire.readCompact()
+      } catch {
+        throw GhostteaTruffleError.handshakeRejected(
+          "session attach failed: \(String(describing: error))")
+      }
       guard channel == .control else { throw GhostteaTruffleError.mismatchedResponse }
       let response = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: payload)
       guard

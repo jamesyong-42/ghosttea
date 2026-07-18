@@ -2723,7 +2723,7 @@ and makes cross-device session continuity a release gate. The diagnostic
 
 **Started:** 2026-07-18. The first slice adds the `GhostteaTruffle` Swift
 product against the real sibling Apple package at locked revision
-`04c2fcff8b6378706dfef511576ad86f2a2f8541`. It defines durable host/session
+`25afc540f179bab0fd5e7fe22ee056c58fb57281`. It defines durable host/session
 references, generation-checked peer resolution, the shared app/service IDs,
 and byte-compatible `TSP1` connection-control framing. A typed client completes
 the nonce handshake and lists desktop sessions over Truffle's
@@ -2776,8 +2776,21 @@ profiles into the current workspace and invokes the same tab/split/focus/resize
 command model used by hardware-keyboard shortcuts. `npm run archive:ios:app`
 now produces and validates a store-validated arm64 Release `.xcarchive`
 containing the expected application, dSYM, bundle ID, signing identity, and
-configured team signature. Live desktop/iPhone/iPad interop evidence remains
-open; App Store distribution export is deferred to the release-account gate.
+configured team signature.
+
+The first live cross-device checkpoint passed on 2026-07-18. A signed iPhone
+14 Pro discovered the Electron desktop through the production in-process
+Truffle runtime, listed its live session, completed the compact handshake, and
+attached with read-write authority at the desktop's canonical `101x29` grid.
+Input entered through the iPhone produced `ghosttea-shared-ios-ok` in the
+concurrently attached desktop terminal. The device run exposed and fixed a
+cross-runtime acronym-key mismatch (`requestID`/`sessionID`/`viewID` versus
+Rust's `requestId`/`sessionId`/`viewId`); the Swift suite now asserts the exact
+desktop JSON shape and passes all 121 tests. The live gate does not yet close
+the whole phase: control handoff, resize, selection, disconnect/foreground
+resynchronization, stale-generation recovery, iPad multi-scene, and the
+observed TailscaleKit inbound-listener failure remain open. App Store
+distribution export is deferred to the release-account gate.
 
 Deliverables:
 
@@ -2922,7 +2935,7 @@ Includes Phases 8 and 9.
 | GPU atlases exceed mobile memory                               | Termination under pressure        | Bounded atlases; LRU eviction; full refresh; memory-warning tests                 |
 | Full-libghostty community APIs look faster                     | Architectural drift               | Keep spike bounded; measure against Ghosttea parity contract                      |
 | App Store policy misunderstanding                              | Review delay                      | Remote-execution review note; no downloaded app code; documented background use   |
-| Apple Truffle backend lacks live cross-device release evidence | Shared-session release blocker    | Keep exact backend and TailscaleKit pins; gate release on signed-device desktop/iOS interop |
+| Apple Truffle backend lacks the complete live cross-device matrix | Shared-session release blocker | Preserve the passing signed-device attach/input gate; qualify handoff, lifecycle, iPad, and listener recovery before release |
 | Desktop QUIC and Apple raw-stream APIs do not match            | Duplicate or divergent protocol   | Keep Ghosttea message semantics; add a compact TCP binding with shared vectors    |
 | Stale Truffle peer generations are persisted                   | Reconnects target the wrong node  | Persist durable device ID only; resolve a fresh generation for every reconnect    |
 | Selected SSH stack lacks required authentication or algorithms | Launch-host incompatibility       | Phase 0 server matrix; fund missing work or select another stack before Phase 6   |

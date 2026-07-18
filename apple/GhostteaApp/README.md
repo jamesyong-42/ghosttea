@@ -50,6 +50,13 @@ until the app exits:
 npm run run:ios:app:console
 ```
 
+The first signed-device desktop/iPhone gate completed on 2026-07-18: the app
+discovered the Electron demo, attached read-write to its desktop-authoritative
+session, rendered its logical state locally, and sent input whose output was
+observed in the concurrent desktop view. See
+[`../GhostteaKit/Compatibility/ios-device-evidence.md`](../GhostteaKit/Compatibility/ios-device-evidence.md)
+for the evidence and the still-open release matrix.
+
 Create and verify the signed Release archive with:
 
 ```bash

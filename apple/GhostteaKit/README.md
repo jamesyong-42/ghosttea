@@ -55,9 +55,14 @@ tested tabs/splits coordinator. Secret-free multi-pane workspace state is saved
 atomically and restored demand-paused. The app also composes the shared command
 palette and routes hardware-keyboard workspace chords before terminal input.
 The automated Release archive now passes store validation and verifies its
-bundle, arm64 executable, dSYM, and team signature. Live cross-device release
-evidence remains the final Phase 8 gate; App Store distribution export remains
-a release-account step.
+bundle, arm64 executable, dSYM, and team signature. A signed iPhone 14 Pro has
+discovered the desktop demo, attached read-write to its live Truffle session,
+and driven input that appeared in the concurrently attached desktop terminal;
+the exact evidence and remaining live matrix are recorded in
+[`Compatibility/ios-device-evidence.md`](Compatibility/ios-device-evidence.md).
+Control-handoff, resize/selection/resync, stale-generation, iPad multi-scene,
+and the observed embedded-listener fault remain Phase 8 release gates. App
+Store distribution export remains a release-account step.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

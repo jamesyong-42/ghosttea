@@ -1243,8 +1243,11 @@ where
         .cloned()
         .context("unknown shared terminal session")?;
     let access = config.access_for(access_token.as_deref());
-    let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
-    session.refresh()?;
+    // Attaching already performs and publishes a full refresh; render the
+    // state once before acknowledging the new compact view.
+    let attachment_epoch = session
+        .attach_view_with_access(&view_id, &client_id, access)
+        .context("attach compact terminal view")?;
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
     control
         .write_compact_message(
@@ -1260,7 +1263,8 @@ where
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
-        .await?;
+        .await
+        .context("write compact view-attached response")?;
 
     let result = async {
         let mut controls = session.subscribe_control();

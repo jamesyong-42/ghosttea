@@ -3,7 +3,7 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/jamesyong-42/truffle.git",
-    "revision": "04c2fcff8b6378706dfef511576ad86f2a2f8541",
+    "revision": "25afc540f179bab0fd5e7fe22ee056c58fb57281",
     "packagePath": "apple",
     "license": "MIT",
     "products": [
