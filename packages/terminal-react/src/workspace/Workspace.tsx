@@ -21,6 +21,7 @@ import {
   layoutId,
   leaves,
   pane,
+  persistedWorkspace,
   removePane,
   resizeForPane,
   restoreNode,
@@ -32,6 +33,7 @@ import {
 import { ghosttyHotkey } from "./hotkeys.js";
 import { PendingPromiseCache } from "./pending-cache.js";
 import { sessionsToClaim } from "./session-scope.js";
+import { decodeWorkspaceDocument } from "./workspace-model.js";
 
 const DEFAULT_STORAGE_KEY = "ghosttea:workspace:v1";
 
@@ -105,7 +107,8 @@ async function initializeWorkspace(
   await terminalRuntime.connect();
   const sessions = await terminalRuntime.listSessions();
   const byId = new Map(sessions.map((session) => [session.id, session]));
-  let saved: { layout?: unknown; activePaneId?: unknown; zoomedPaneId?: unknown } | undefined;
+  let saved:
+    { version?: unknown; root?: unknown; layout?: unknown; activePaneId?: unknown; zoomedPaneId?: unknown } | undefined;
   let hasSavedWorkspace = false;
   try {
     const serialized = localStorage.getItem(storageKey);
@@ -116,7 +119,9 @@ async function initializeWorkspace(
   } catch (error) {
     console.warn("[terminal-runtime] ignored invalid saved workspace", error);
   }
-  let layout = restoreNode(saved?.layout, byId);
+  const decodedSaved = decodeWorkspaceDocument(saved);
+  const savedRoot = decodedSaved?.root ?? (saved?.version === undefined ? saved?.layout : undefined);
+  let layout = restoreNode(savedRoot, byId);
   const attached = new Set(leaves(layout ?? undefined).map((leaf) => leaf.session.id));
   for (const session of sessionsToClaim(sessions, attached, claimExistingSessions && !hasSavedWorkspace)) {
     const next = pane(layoutId("pane"), session);
@@ -134,9 +139,10 @@ async function initializeWorkspace(
     });
     layout = pane(layoutId("pane"), session);
   }
-  const savedActive = typeof saved?.activePaneId === "string" ? saved.activePaneId : undefined;
+  const savedActive =
+    decodedSaved?.activePaneId ?? (typeof saved?.activePaneId === "string" ? saved.activePaneId : undefined);
   const activePaneId = savedActive && containsPane(layout, savedActive) ? savedActive : leaves(layout)[0]!.id;
-  const savedZoom = typeof saved?.zoomedPaneId === "string" ? saved.zoomedPaneId : null;
+  const savedZoom = decodedSaved?.zoomedPaneId ?? (typeof saved?.zoomedPaneId === "string" ? saved.zoomedPaneId : null);
   const zoomedPaneId = savedZoom && containsPane(layout, savedZoom) ? savedZoom : null;
   return { layout, activePaneId, zoomedPaneId };
 }
@@ -316,7 +322,7 @@ export function GhostteaWorkspace({
     activePaneIdRef.current = activePaneId;
     if (!layout || !activePaneId) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ layout, activePaneId, zoomedPaneId }));
+      localStorage.setItem(storageKey, JSON.stringify(persistedWorkspace(layout, activePaneId, zoomedPaneId)));
     } catch (cause) {
       console.warn("[terminal-runtime] failed to save workspace", cause);
     }

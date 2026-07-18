@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
-import { insertPane, leaves, pane } from "./pane-layout";
+import { insertPane, leaves, pane, persistedWorkspace, restoreNode } from "./pane-layout";
 
 function session(id: string): SessionSummary {
   return {
@@ -35,5 +35,28 @@ describe("insertPane", () => {
   it("does not add the same session twice", () => {
     const first = pane("pane-1", session("one"));
     expect(insertPane(first, pane("pane-2", session("one")), first.id, "horizontal", "split-1")).toBe(first);
+  });
+
+  it("persists only opaque layout and session identities", () => {
+    const sensitive = {
+      ...session("one"),
+      executable: "/secret/bin/zsh",
+      cwd: "/Users/example/private",
+      title: "production@example.internal",
+      ownerId: "live-owner-claim",
+    };
+    const first = pane("pane-1", sensitive);
+    const document = persistedWorkspace(first, first.id, null);
+    expect(document).toEqual({
+      version: 1,
+      root: { kind: "pane", id: "pane-1", sessionId: "one" },
+      activePaneId: "pane-1",
+      zoomedPaneId: null,
+    });
+    const serialized = JSON.stringify(document);
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("private");
+    expect(serialized).not.toContain("live-owner-claim");
+    expect(restoreNode(document.root, new Map([[sensitive.id, sensitive]]))).toEqual(first);
   });
 });

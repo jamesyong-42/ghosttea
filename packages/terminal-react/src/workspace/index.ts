@@ -12,6 +12,7 @@ export {
   layoutId,
   leaves,
   pane,
+  persistedWorkspace,
   removePane,
   replacePane,
   resizeForPane,
@@ -23,4 +24,17 @@ export {
   type PaneSplit,
   type SplitAxis,
 } from "./pane-layout.js";
+export {
+  WORKSPACE_SCHEMA_VERSION,
+  applyWorkspaceAction,
+  decodeWorkspaceDocument,
+  type WorkspaceAction,
+  type WorkspaceDocumentV1,
+  type WorkspaceFocusDirection,
+  type WorkspaceNode,
+  type WorkspacePaneNode,
+  type WorkspaceSplitAxis,
+  type WorkspaceSplitNode,
+  type WorkspaceTransition,
+} from "./workspace-model.js";
 export { TERMINAL_THEMES } from "./themes.js";

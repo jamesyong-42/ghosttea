@@ -1261,6 +1261,13 @@ Define a versioned JSON model used for fixtures and optional restoration:
 Run identical mutation vectors against the TypeScript and Swift
 implementations and compare the resulting normalized tree and focused pane.
 
+The first Phase 7 slice implements and versions the per-tab payload before the
+outer tab collection. Its pane leaves contain only node `id`/opaque `sessionId`,
+and its record carries `activePaneId` and `zoomedPaneId`. The later tab-container
+slice embeds these payloads under stable tab IDs and owns `selectedTabId`; it
+does not change pane mutation semantics or add live session metadata to the
+persisted record.
+
 ### 15.3 Adaptive presentation
 
 On iPad and external displays, expose desktop-like tabs and splits. On compact
@@ -2438,6 +2445,25 @@ change, suspension, reconnection, and explicit disconnect scenarios.
 ### Phase 7: workspace parity
 
 **Estimated effort:** 2-4 weeks
+
+**Started:** 2026-07-18. The first slice adds a version-1, per-tab pane-tree
+document and pure reducers to both `@vibecook/ghosttea-react` and the new
+`GhostteaWorkspace` Swift product. The persisted shape contains only node IDs,
+opaque session IDs, axes, ratios, active pane, and zoomed pane. It cannot encode
+credentials, hosts, commands, cwd/title metadata, or a live connection claim.
+Desktop persistence now writes this identity-only shape while retaining a
+one-way reader for the previous full-`SessionSummary` format; restoration
+resolves opaque IDs only against sessions that are currently present, collapses
+stale branches, and repairs stale active/zoom references.
+
+One shared JSON fixture drives both implementations through nested horizontal
+and vertical splits, geometry-based directional focus, relative focus, deepest
+matching-axis resize, ratio clamping, equalization, zoom focus suppression,
+pane collapse, replacement focus, terminated-session output, and the final
+close-window result. All 46 React package tests and all 77 Swift package tests
+pass. This establishes the per-tab mutation/persistence boundary; the tab
+container, adaptive iPad/iPhone presentation, command routing, and connection
+profile integration remain later Phase 7 slices.
 
 Deliverables:
 

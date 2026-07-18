@@ -17,6 +17,7 @@ let package = Package(
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
     .library(name: "GhostteaSession", targets: ["GhostteaSession"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
+    .library(name: "GhostteaWorkspace", targets: ["GhostteaWorkspace"]),
     .library(name: "GhosttyVtProof", targets: ["GhosttyVtProof"]),
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
   ],
@@ -91,6 +92,7 @@ let package = Package(
       plugins: ["GhostteaMetalCompilerPlugin"]
     ),
     .target(name: "GhostteaTransport"),
+    .target(name: "GhostteaWorkspace"),
     .target(
       name: "GhostteaSSHProbe",
       dependencies: ["GhostteaTransport", "GhostteaAppleNative"]
@@ -147,6 +149,11 @@ let package = Package(
     .testTarget(
       name: "GhostteaTransportTests",
       dependencies: ["GhostteaTransport"]
+    ),
+    .testTarget(
+      name: "GhostteaWorkspaceTests",
+      dependencies: ["GhostteaWorkspace"],
+      resources: [.copy("Fixtures")]
     ),
     .testTarget(
       name: "GhosttyVtProofTests",

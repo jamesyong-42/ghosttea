@@ -1,4 +1,5 @@
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import { WORKSPACE_SCHEMA_VERSION, type WorkspaceDocumentV1, type WorkspaceNode } from "./workspace-model.js";
 
 export type SplitAxis = "horizontal" | "vertical";
 
@@ -27,8 +28,9 @@ export function restoreNode(value: unknown, sessions: Map<string, SessionSummary
   const candidate = value as Record<string, unknown>;
   if (candidate.kind === "pane" && typeof candidate.id === "string") {
     const savedSession = candidate.session as { id?: unknown } | undefined;
-    if (typeof savedSession?.id !== "string") return null;
-    const session = sessions.get(savedSession.id);
+    const sessionId = typeof candidate.sessionId === "string" ? candidate.sessionId : savedSession?.id;
+    if (typeof sessionId !== "string") return null;
+    const session = sessions.get(sessionId);
     return session ? pane(candidate.id, session) : null;
   }
   if (
@@ -137,4 +139,23 @@ export function resizeForPane(node: PaneNode, paneId: string, axis: SplitAxis, d
     return [{ ...node, ratio: Math.max(0.1, Math.min(0.9, node.ratio + delta)) }, true];
   }
   return [node, false];
+}
+
+export function persistedWorkspace(
+  root: PaneNode,
+  activePaneId: string,
+  zoomedPaneId: string | null,
+): WorkspaceDocumentV1 {
+  const persistNode = (node: PaneNode): WorkspaceNode =>
+    node.kind === "pane"
+      ? { kind: "pane", id: node.id, sessionId: node.session.id }
+      : {
+          kind: "split",
+          id: node.id,
+          axis: node.axis,
+          ratio: node.ratio,
+          first: persistNode(node.first),
+          second: persistNode(node.second),
+        };
+  return { version: WORKSPACE_SCHEMA_VERSION, root: persistNode(root), activePaneId, zoomedPaneId };
 }
