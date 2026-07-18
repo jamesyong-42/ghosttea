@@ -2773,8 +2773,11 @@ independent native terminals and transports, structural changes atomically save
 secret-free profile bindings, and process restoration recreates available panes
 without starting network demand. The adaptive command palette opens saved
 profiles into the current workspace and invokes the same tab/split/focus/resize
-command model used by hardware-keyboard shortcuts. Live desktop/iPhone/iPad
-interop evidence and the TestFlight-shaped archive remain open.
+command model used by hardware-keyboard shortcuts. `npm run archive:ios:app`
+now produces and validates a store-validated arm64 Release `.xcarchive`
+containing the expected application, dSYM, bundle ID, signing identity, and
+configured team signature. Live desktop/iPhone/iPad interop evidence remains
+open; App Store distribution export is deferred to the release-account gate.
 
 Deliverables:
 

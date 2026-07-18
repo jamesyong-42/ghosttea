@@ -48,6 +48,7 @@
     "test:ios:production-claude": "node scripts/test-ios-device-harness.mjs --production-claude",
     "run:ios:app": "node scripts/run-ios-app-device.mjs",
     "run:ios:app:console": "GHOSTTEA_IOS_CONSOLE=1 node scripts/run-ios-app-device.mjs",
+    "archive:ios:app": "node scripts/archive-ios-app.mjs",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",
     "test:ssh:fixture:candidate": "node scripts/ssh-fixture.mjs candidate",
     "test:ssh:fixture:swift": "node scripts/ssh-fixture.mjs swift",

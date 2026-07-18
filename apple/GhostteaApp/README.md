@@ -50,5 +50,16 @@ until the app exits:
 npm run run:ios:app:console
 ```
 
+Create and verify the signed Release archive with:
+
+```bash
+npm run archive:ios:app
+```
+
+The archive runner verifies the application, dSYM, bundle ID, application
+path, arm64 executable, signing identity, and configured team signature at
+`native/build/ios-app/archive/Ghosttea.xcarchive`. App Store distribution export
+remains a release-account step.
+
 Set `GHOSTTEA_IOS_DEVELOPMENT_TEAM` or `GHOSTTEA_IOS_DEVICE_ID` only when Xcode
 has multiple teams or more than one physical iOS device is paired.
