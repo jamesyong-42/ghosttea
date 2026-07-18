@@ -1474,6 +1474,7 @@ final class HarnessModel: ObservableObject {
       else {
         throw HarnessError.sessionProbeMismatch("workspace restoration secrecy")
       }
+      try await validatePersistedProductionWorkspaceRestoration(restoration)
 
       let paneClose = try await coordinator.apply(.applyToSelected(.close))
       guard paneClose.closedSessionIDs == [closedPaneSessionID] else {
@@ -1546,6 +1547,96 @@ final class HarnessModel: ObservableObject {
       workspace: productionWorkspace,
       sessionProfiles: bindings
     )
+  }
+
+  private func validatePersistedProductionWorkspaceRestoration(
+    _ restoration: GhostteaWorkspaceRestorationDocument
+  ) async throws {
+    guard
+      let profile = productionConnectionProfile,
+      let credentialStore = productionCredentialStore
+    else {
+      throw HarnessError.sessionProbeMismatch("workspace restoration dependencies")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "ghosttea-workspace-restore-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let profileStore = GhostteaSSHConnectionProfileStore(
+      fileURL: directory.appendingPathComponent("profiles.json")
+    )
+    let workspaceStore = GhostteaWorkspaceRestorationStore(
+      fileURL: directory.appendingPathComponent("workspace.json")
+    )
+    try await profileStore.save([profile])
+    try await workspaceStore.save(restoration)
+    let loadedProfiles = try await profileStore.load()
+    guard let loadedRestoration = try await workspaceStore.load() else {
+      throw HarnessError.sessionProbeMismatch("workspace restoration load")
+    }
+
+    let knownHosts = try GhostteaSSHKnownHostsFile(
+      applicationDirectoryName: "GhostteaHarness"
+    ).prepare()
+    let defaultSSH = try profile.configuration(
+      knownHostsPath: knownHosts,
+      credentialStore: credentialStore
+    )
+    let restoreFactory = try GhostteaSSHWorkspaceSessionFactory(
+      runtime: GhostteaRuntime(),
+      ssh: defaultSSH,
+      profileID: profile.id.uuidString.lowercased(),
+      sessionConfiguration: .ssh(
+        initialPath: TerminalNetworkPath(availability: .unsatisfied)
+      ),
+      initialSessionHandle: 706,
+      identityPrefix: "restored"
+    )
+    let result = try await restoreFactory.restore(
+      loadedRestoration,
+      profiles: loadedProfiles,
+      knownHostsPath: knownHosts,
+      credentialStore: credentialStore
+    )
+    guard
+      result.document == restoration.workspace,
+      result.unavailableSessionIDs.isEmpty,
+      Set(result.sessions.keys) == Set(restoration.workspace.sessionIDs),
+      Set(result.sessions.values.map(\.terminalSessionHandle)) == [706, 707, 708],
+      result.sessions.values.allSatisfy({
+        $0.profileID == profile.id.uuidString.lowercased()
+      })
+    else {
+      throw HarnessError.sessionProbeMismatch("workspace restoration allocation")
+    }
+    let restoredDocument = try requireRestoreDocument(result.document)
+    let restoredCoordinator = try GhostteaWorkspaceSessionCoordinator(
+      document: restoredDocument,
+      sessions: result.sessions,
+      allocator: { request in
+        try await restoreFactory.allocate(request, connect: false)
+      },
+      terminator: { _, resource in
+        await GhostteaSSHWorkspaceSessionFactory.disconnect(resource)
+      }
+    )
+    await restoredCoordinator.closeAll()
+    for resource in result.sessions.values {
+      guard await resource.session.snapshot().reconnectState == .idle else {
+        throw HarnessError.sessionProbeMismatch("workspace restoration teardown")
+      }
+    }
+    print("GHOSTTEA_PRODUCTION_WORKSPACE_RESTORE_PASS handles=706,707,708")
+  }
+
+  private func requireRestoreDocument(
+    _ document: GhostteaWorkspaceTabsDocument?
+  ) throws -> GhostteaWorkspaceTabsDocument {
+    guard let document else {
+      throw HarnessError.sessionProbeMismatch("workspace restoration collapse")
+    }
+    return document
   }
 
   private func sendAutomaticProductionProfileCommandIfNeeded() {

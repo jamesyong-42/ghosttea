@@ -2578,6 +2578,22 @@ secret-free three-binding restoration manifest, observes independent terminal
 output, and passes exact teardown. Product-level profile selection and loading
 the persisted documents during app launch remain later Phase 7 work.
 
+The ninth slice implements the reusable app-launch half of that remaining
+lifecycle. `GhostteaWorkspaceRestorationStore` atomically persists the versioned
+manifest with complete file protection on iOS. `GhostteaWorkspaceRestorer`
+attempts allocations sequentially in workspace order, records and collapses
+ordinary per-session failures, and terminates all completed allocations on task
+cancellation. The SSH adapter resolves each saved profile into a fresh terminal
+and transport, preserves only the stable workspace session ID, and defaults to
+demand-paused resources so restoration never silently reconnects. Its result is
+the exact live registry required by `GhostteaWorkspaceSessionCoordinator`.
+The complete Swift package passes 103 tests and both iOS SDK builds. The signed
+iPhone 14 Pro gate writes and reloads both protected documents, recreates all
+three stable IDs into paused handles 706, 707, and 708, initializes and closes a
+coordinator from that registry, then completes the existing connected
+606/607/608 output and teardown proof. Product profile-selection UI and wiring
+these stores to the eventual app scene entry point remain later Phase 7 work.
+
 Deliverables:
 
 - versioned workspace model;

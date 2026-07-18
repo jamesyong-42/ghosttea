@@ -17,6 +17,44 @@ public enum GhostteaWorkspaceRestorationError: Error, Equatable, Sendable {
   case emptyProfileID
   case duplicateSessionID(String)
   case bindingMismatch
+  case inconsistentAllocationResult
+}
+
+public actor GhostteaWorkspaceRestorationStore {
+  public let fileURL: URL
+
+  public init(fileURL: URL) {
+    self.fileURL = fileURL
+  }
+
+  public func load() throws -> GhostteaWorkspaceRestorationDocument? {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+    return try JSONDecoder().decode(
+      GhostteaWorkspaceRestorationDocument.self,
+      from: Data(contentsOf: fileURL)
+    )
+  }
+
+  public func save(_ document: GhostteaWorkspaceRestorationDocument) throws {
+    try FileManager.default.createDirectory(
+      at: fileURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    try encoder.encode(document).write(to: fileURL, options: .atomic)
+    #if os(iOS)
+      try FileManager.default.setAttributes(
+        [.protectionKey: FileProtectionType.complete],
+        ofItemAtPath: fileURL.path
+      )
+    #endif
+  }
+
+  public func remove() throws {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+    try FileManager.default.removeItem(at: fileURL)
+  }
 }
 
 /// Secret-free workspace metadata persisted across process death.
@@ -84,5 +122,83 @@ public struct GhostteaWorkspaceRestorationDocument: Equatable, Sendable, Codable
     allocatedSessionIDs: Set<String>
   ) throws -> GhostteaWorkspaceTabsDocument? {
     try workspace.restoring(liveSessionIDs: allocatedSessionIDs)
+  }
+}
+
+public struct GhostteaWorkspaceRestorationResult<Session: Sendable>: Sendable {
+  public let document: GhostteaWorkspaceTabsDocument?
+  public let sessions: [String: Session]
+  public let unavailableSessionIDs: [String]
+
+  public init(
+    document: GhostteaWorkspaceTabsDocument?,
+    sessions: [String: Session],
+    unavailableSessionIDs: [String]
+  ) {
+    self.document = document
+    self.sessions = sessions
+    self.unavailableSessionIDs = unavailableSessionIDs
+  }
+}
+
+/// Recreates persisted identities without treating persistence as live state.
+///
+/// Allocation is deliberately sequential and follows workspace order. This
+/// keeps authentication prompts deterministic and bounds simultaneous restore
+/// work. Ordinary allocation errors make only that session unavailable;
+/// cancellation terminates everything allocated by the interrupted attempt.
+public enum GhostteaWorkspaceRestorer {
+  public typealias Allocator<Session: Sendable> =
+    @Sendable (GhostteaWorkspaceSessionProfileBinding) async throws -> Session
+  public typealias Terminator<Session: Sendable> =
+    @Sendable (String, Session) async -> Void
+
+  public static func restore<Session: Sendable>(
+    _ persisted: GhostteaWorkspaceRestorationDocument,
+    allocator: Allocator<Session>,
+    terminator: Terminator<Session>
+  ) async throws -> GhostteaWorkspaceRestorationResult<Session> {
+    var sessions: [String: Session] = [:]
+    var unavailableSessionIDs: [String] = []
+
+    for binding in persisted.sessionProfiles {
+      do {
+        try Task.checkCancellation()
+        sessions[binding.sessionID] = try await allocator(binding)
+      } catch is CancellationError {
+        await terminate(sessions, in: persisted.workspace.sessionIDs, using: terminator)
+        throw CancellationError()
+      } catch {
+        unavailableSessionIDs.append(binding.sessionID)
+      }
+    }
+
+    do {
+      try Task.checkCancellation()
+      let document = try persisted.restoring(allocatedSessionIDs: Set(sessions.keys))
+      guard document != nil || sessions.isEmpty else {
+        throw GhostteaWorkspaceRestorationError.inconsistentAllocationResult
+      }
+      return GhostteaWorkspaceRestorationResult(
+        document: document,
+        sessions: sessions,
+        unavailableSessionIDs: unavailableSessionIDs
+      )
+    } catch {
+      await terminate(sessions, in: persisted.workspace.sessionIDs, using: terminator)
+      throw error
+    }
+  }
+
+  private static func terminate<Session: Sendable>(
+    _ sessions: [String: Session],
+    in orderedSessionIDs: [String],
+    using terminator: Terminator<Session>
+  ) async {
+    for sessionID in orderedSessionIDs {
+      if let session = sessions[sessionID] {
+        await terminator(sessionID, session)
+      }
+    }
   }
 }

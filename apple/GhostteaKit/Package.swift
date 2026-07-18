@@ -47,7 +47,9 @@ let package = Package(
     .target(
       name: "GhostteaSSHWorkspace",
       dependencies: [
+        "GhostteaConnectionProfiles",
         "GhostteaCore",
+        "GhostteaCredentials",
         "GhostteaSession",
         "GhostteaSSH",
         "GhostteaWorkspace",
@@ -169,7 +171,9 @@ let package = Package(
     .testTarget(
       name: "GhostteaSSHWorkspaceTests",
       dependencies: [
+        "GhostteaConnectionProfiles",
         "GhostteaCore",
+        "GhostteaCredentials",
         "GhostteaSession",
         "GhostteaSSH",
         "GhostteaSSHWorkspace",

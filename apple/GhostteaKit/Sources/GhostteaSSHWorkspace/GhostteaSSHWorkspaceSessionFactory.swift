@@ -1,5 +1,7 @@
 import Foundation
+import GhostteaConnectionProfiles
 import GhostteaCore
+import GhostteaCredentials
 import GhostteaSSH
 import GhostteaSession
 import GhostteaWorkspace
@@ -50,6 +52,8 @@ public enum GhostteaSSHWorkspaceSessionFactoryError: Error, Equatable, Sendable 
   case sessionHandleExhausted
   case invalidSessionID
   case duplicateSessionID(String)
+  case duplicateProfileID(UUID)
+  case missingProfile(String)
 }
 
 /// Creates the concrete SSH-backed resources consumed by a workspace coordinator.
@@ -182,5 +186,53 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     _ resource: GhostteaSSHWorkspaceSession
   ) async {
     await resource.session.disconnect()
+  }
+
+  /// Recreates every resolvable persisted session with a fresh native terminal
+  /// and transport. Restore defaults to demand-paused; the host decides when a
+  /// foreground scene may explicitly request connections.
+  public func restore(
+    _ persisted: GhostteaWorkspaceRestorationDocument,
+    profiles: [GhostteaSSHConnectionProfile],
+    knownHostsPath: String,
+    hostKeyPolicy: GhostteaSSHHostKeyPolicy = .strictKnownHosts,
+    credentialStore: KeychainSSHCredentialStore,
+    keyboardInteractiveResponder: GhostteaSSHKeyboardInteractiveResponder? = nil,
+    connect: Bool = false
+  ) async throws -> GhostteaWorkspaceRestorationResult<GhostteaSSHWorkspaceSession> {
+    var profilesByID: [String: GhostteaSSHConnectionProfile] = [:]
+    for profile in profiles {
+      let profileID = profile.id.uuidString.lowercased()
+      guard profilesByID[profileID] == nil else {
+        throw GhostteaSSHWorkspaceSessionFactoryError.duplicateProfileID(profile.id)
+      }
+      profilesByID[profileID] = profile
+    }
+    let resolvedProfilesByID = profilesByID
+
+    return try await GhostteaWorkspaceRestorer.restore(
+      persisted,
+      allocator: { [self] binding in
+        guard let profile = resolvedProfilesByID[binding.profileID.lowercased()] else {
+          throw GhostteaSSHWorkspaceSessionFactoryError.missingProfile(binding.profileID)
+        }
+        let ssh = try profile.configuration(
+          knownHostsPath: knownHostsPath,
+          hostKeyPolicy: hostKeyPolicy,
+          credentialStore: credentialStore,
+          keyboardInteractiveResponder: keyboardInteractiveResponder
+        )
+        return try await allocate(
+          .newTab,
+          ssh: ssh,
+          sessionID: binding.sessionID,
+          profileID: binding.profileID,
+          connect: connect
+        ).session
+      },
+      terminator: { _, resource in
+        await Self.disconnect(resource)
+      }
+    )
   }
 }

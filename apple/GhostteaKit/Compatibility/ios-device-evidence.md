@@ -1299,3 +1299,31 @@ The app exited zero and the runner removed its disposable SSH container and
 network. This validates the persistence and recreation boundary; it does not
 yet claim product UI for selecting profiles or app-launch orchestration that
 loads and reconnects a saved workspace.
+
+## 2026-07-18: durable workspace relaunch gate
+
+The following Phase 7 slice implements the reusable app-launch restoration
+path. `GhostteaWorkspaceRestorationStore` writes its versioned JSON atomically
+and applies complete iOS file protection. The generic restorer processes
+bindings sequentially in workspace order, collapses ordinary per-session
+allocation failures, and rolls back completed allocations on cancellation. The
+SSH adapter resolves each available connection profile into a fresh terminal
+and transport while preserving only its stable workspace session ID; resources
+remain demand-paused unless the host explicitly requests a connection.
+
+All 103 Swift package tests and both generic iOS builds passed. The signed
+iPhone 14 Pro gate then wrote the disposable connection profile and three-
+session workspace manifest to their protected stores, loaded both documents,
+recreated all three stable IDs with fresh paused native handles, initialized a
+coordinator only from that exact registry, and closed it cleanly:
+
+```text
+GHOSTTEA_PRODUCTION_WORKSPACE_RESTORE_PASS handles=706,707,708
+```
+
+The original live handles 606, 607, and 608 subsequently completed their
+independent output and exact pane/tab/window teardown proof, after which the app
+emitted `GHOSTTEA_PRODUCTION_WORKSPACE_PASS`, exited zero, and the runner removed
+the disposable SSH container and network. This is device evidence for durable
+restore orchestration, not a claim that the diagnostic harness is the eventual
+product scene or profile-picker UI.

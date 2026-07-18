@@ -25,6 +25,11 @@ data-protection Keychain with these invariants:
 - workspace restoration persists only session-to-profile IDs and the
   identity-only layout, not credential references or connection metadata.
 
+Connection-profile and workspace-restoration documents are written atomically
+with complete file protection on iOS. They are non-secret metadata, but receive
+the same locked-device filesystem boundary so restore cannot race ahead of the
+Keychain's `WhenUnlockedThisDeviceOnly` availability.
+
 The supported secret kinds are password, private key, and private-key
 passphrase. Empty secret data remains representable because SSH servers may
 permit an empty password; absence is represented by a missing Keychain item.
@@ -89,6 +94,9 @@ reject duplicate profile IDs, and round-trip the atomic protected JSON store.
 Workspace-restoration tests require exactly one profile binding per persisted
 session and collapse the document only after real allocations report which
 session IDs succeeded.
+The restore-host tests also cover protected-store round trips, partial profile
+failure, demand-paused fresh resources, and cancellation rollback in stable
+workspace order.
 The iOS Phase 0 harness performs a real Keychain save/load/delete round trip
 using random non-user secret data and verifies that removal returns the item to
 the missing state. A second physical-device probe authenticates to the

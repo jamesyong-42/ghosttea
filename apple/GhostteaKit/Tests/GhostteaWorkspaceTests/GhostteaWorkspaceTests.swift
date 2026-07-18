@@ -28,6 +28,14 @@ private func restorationWorkspace() throws -> GhostteaWorkspaceTabsDocument {
   )
 }
 
+private actor RestorationTerminationRecorder {
+  private(set) var sessionIDs: [String] = []
+
+  func append(_ sessionID: String) {
+    sessionIDs.append(sessionID)
+  }
+}
+
 @Test("Restoration bindings are canonical and never claim unavailable sessions")
 func restorationBindingsFilterOnlyAfterAllocation() throws {
   let document = try GhostteaWorkspaceRestorationDocument(
@@ -70,6 +78,80 @@ func restorationRejectsInvalidBindings() throws {
       }
     )
   }
+}
+
+@Test("Restoration store round trips atomically and removes idempotently")
+func restorationStoreRoundTrip() async throws {
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    "ghosttea-workspace-restore-\(UUID().uuidString)",
+    isDirectory: true
+  )
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let store = GhostteaWorkspaceRestorationStore(
+    fileURL: directory.appendingPathComponent("workspace.json")
+  )
+  let document = try GhostteaWorkspaceRestorationDocument(
+    workspace: restorationWorkspace(),
+    sessionProfiles: restorationWorkspace().sessionIDs.map {
+      GhostteaWorkspaceSessionProfileBinding(sessionID: $0, profileID: "profile")
+    }
+  )
+
+  #expect(try await store.load() == nil)
+  try await store.save(document)
+  #expect(try await store.load() == document)
+  try await store.remove()
+  try await store.remove()
+  #expect(try await store.load() == nil)
+}
+
+@Test("Restorer collapses unavailable sessions without losing stable identities")
+func restorerAllowsPartialAllocation() async throws {
+  let persisted = try GhostteaWorkspaceRestorationDocument(
+    workspace: restorationWorkspace(),
+    sessionProfiles: restorationWorkspace().sessionIDs.map {
+      GhostteaWorkspaceSessionProfileBinding(sessionID: $0, profileID: "profile")
+    }
+  )
+
+  let result = try await GhostteaWorkspaceRestorer.restore(
+    persisted,
+    allocator: { binding in
+      if binding.sessionID == "session-b" {
+        struct Unavailable: Error {}
+        throw Unavailable()
+      }
+      return "resource-\(binding.sessionID)"
+    },
+    terminator: { _, _ in }
+  )
+
+  #expect(result.document?.sessionIDs == ["session-a", "session-c"])
+  #expect(result.sessions.keys.sorted() == ["session-a", "session-c"])
+  #expect(result.unavailableSessionIDs == ["session-b"])
+}
+
+@Test("Cancelled restoration rolls back allocated sessions in workspace order")
+func restorerCancellationRollsBack() async throws {
+  let recorder = RestorationTerminationRecorder()
+  let persisted = try GhostteaWorkspaceRestorationDocument(
+    workspace: restorationWorkspace(),
+    sessionProfiles: restorationWorkspace().sessionIDs.map {
+      GhostteaWorkspaceSessionProfileBinding(sessionID: $0, profileID: "profile")
+    }
+  )
+
+  await #expect(throws: CancellationError.self) {
+    try await GhostteaWorkspaceRestorer.restore(
+      persisted,
+      allocator: { binding in
+        if binding.sessionID == "session-b" { throw CancellationError() }
+        return "resource-\(binding.sessionID)"
+      },
+      terminator: { sessionID, _ in await recorder.append(sessionID) }
+    )
+  }
+  #expect(await recorder.sessionIDs == ["session-a"])
 }
 
 private struct ConformanceFixture: Decodable {

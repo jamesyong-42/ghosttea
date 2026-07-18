@@ -56,6 +56,11 @@ allocation, never evidence of a surviving connection. The host restores stable
 workspace identities only after their profiles have produced fresh terminal and
 transport resources; failed allocations collapse through the ordinary
 restoration reducer.
+Its atomic JSON store applies complete file protection on iOS. The generic
+restorer attempts allocations sequentially in workspace order, collapses
+ordinary per-session failures, and rolls back every completed allocation if the
+task is cancelled. This makes authentication prompts deterministic and avoids
+an all-or-nothing launch when one saved server is unavailable.
 
 `GhostteaWorkspaceUI` adapts that same model without changing it. Regular iPad
 and external-display size classes show the selected tab's recursive split tree;
@@ -92,6 +97,9 @@ coordinator commits their layout identity.
 Restoration may request a persisted session ID and a per-session profile while
 still receiving a fresh native terminal handle and SSH transport. Duplicate or
 empty restored identities are rejected within a factory lifetime.
+The SSH restore convenience resolves each available saved profile, recreates
+its resource demand-paused by default, and returns the exact registry required
+to initialize `GhostteaWorkspaceSessionCoordinator`.
 
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and

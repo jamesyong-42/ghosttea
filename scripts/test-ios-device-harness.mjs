@@ -247,7 +247,7 @@ async function main() {
     if (productionSessionAutomation) {
       console.log(
         productionWorkspaceAutomation
-          ? "Production 3-session workspace allocation and teardown device gate passed."
+          ? "Production workspace persistence, 3-session allocation, and teardown device gate passed."
           : productionTmuxAutomation
             ? "Production tmux attach/input/resize device gate passed."
             : productionVimAutomation
