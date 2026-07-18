@@ -19,8 +19,12 @@ const bundleIdentifier = "com.vibecook.GhostteaHarness";
 let fixtureStarted = false;
 const productionTmuxAutomation = process.argv.includes("--production-tmux");
 const productionVimAutomation = process.argv.includes("--production-vim");
+const productionZellijAutomation = process.argv.includes("--production-zellij");
 const productionSessionAutomation =
-  process.argv.includes("--production-session") || productionTmuxAutomation || productionVimAutomation;
+  process.argv.includes("--production-session") ||
+  productionTmuxAutomation ||
+  productionVimAutomation ||
+  productionZellijAutomation;
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -216,6 +220,7 @@ async function main() {
               GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1",
               ...(productionTmuxAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "tmux" } : {}),
               ...(productionVimAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "vim" } : {}),
+              ...(productionZellijAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "zellij" } : {}),
             }
           : {
               GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
@@ -236,7 +241,9 @@ async function main() {
           ? "Production tmux attach/input/resize device gate passed."
           : productionVimAutomation
             ? "Production Vim render/input/resize device gate passed."
-            : "Production SSH → core → TRF1 device gate passed.",
+            : productionZellijAutomation
+              ? "Production Zellij attach/input/resize device gate passed."
+              : "Production SSH → core → TRF1 device gate passed.",
       );
     } else {
       await waitForCleanupRequest();

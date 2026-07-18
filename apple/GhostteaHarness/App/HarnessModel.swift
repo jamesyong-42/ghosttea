@@ -145,6 +145,14 @@ final class HarnessModel: ObservableObject {
   private var productionVimEditSent = false
   private var productionVimEditObserved = false
   private var productionVimExitSent = false
+  private var productionZellijNoEchoObserved = false
+  private var productionZellijProbeSent = false
+  private var productionZellijInitialSizeObserved = false
+  private var productionZellijResizeSent = false
+  private var productionZellijResizedSizeObserved = false
+  private var productionZellijInputSent = false
+  private var productionZellijInputObserved = false
+  private var productionZellijExitSent = false
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
   private var didAutorunProductionSession = false
@@ -776,6 +784,14 @@ final class HarnessModel: ObservableObject {
     productionVimEditSent = false
     productionVimEditObserved = false
     productionVimExitSent = false
+    productionZellijNoEchoObserved = false
+    productionZellijProbeSent = false
+    productionZellijInitialSizeObserved = false
+    productionZellijResizeSent = false
+    productionZellijResizedSizeObserved = false
+    productionZellijInputSent = false
+    productionZellijInputObserved = false
+    productionZellijExitSent = false
 
     Task {
       do {
@@ -1014,12 +1030,24 @@ final class HarnessModel: ObservableObject {
     case .vim where productionSessionAutomation:
       // Confirm echo is disabled before sending commands containing pass markers.
       command = "stty -echo; printf 'ghosttea-vim-%s\\n' noecho\n"
+    case .zellij where productionSessionAutomation:
+      // Zellij starts a real shell pane; suppress echo before its marker probe.
+      command = "stty -echo; printf 'ghosttea-zellij-%s\\n' noecho\n"
     case .tmux, .vim, .zellij:
       return
     }
     productionShellCommandSent = true
+    let waitForZellijPane =
+      productionSessionAutomation && productionSSHProfile == .zellij
     Task {
       do {
+        // The SSH channel becomes connected before Zellij has created its first
+        // shell pane. Input sent during that startup window can be consumed by
+        // Zellij instead of the pane, so give the production attach command a
+        // bounded startup interval before driving the automated shell probe.
+        if waitForZellijPane {
+          try await Task.sleep(for: .seconds(2))
+        }
         try await productionSession.send(Data(command.utf8))
         if productionSessionAutomation {
           print("GHOSTTEA_PRODUCTION_INITIAL_COMMAND_SENT profile=\(productionSSHProfile)")
@@ -1043,7 +1071,9 @@ final class HarnessModel: ObservableObject {
         advanceAutomatedTmux(text: text)
       case .vim:
         advanceAutomatedVim(text: text)
-      case .shell, .zellij:
+      case .zellij:
+        advanceAutomatedZellij(text: text)
+      case .shell:
         break
       }
     } catch {
@@ -1190,6 +1220,78 @@ final class HarnessModel: ObservableObject {
     try await productionSession.sendKey(try softwareKey(hidUsage: 0x28))
   }
 
+  private func advanceAutomatedZellij(text: String) {
+    guard let productionSession else { return }
+    if text.contains("ghosttea-zellij-noecho") {
+      if !productionZellijNoEchoObserved {
+        print("GHOSTTEA_PRODUCTION_ZELLIJ_NOECHO_OBSERVED")
+      }
+      productionZellijNoEchoObserved = true
+    }
+    if text.contains("ghosttea-zellij-ready 26 98") {
+      if !productionZellijInitialSizeObserved {
+        print("GHOSTTEA_PRODUCTION_ZELLIJ_INITIAL_SIZE_OBSERVED")
+      }
+      productionZellijInitialSizeObserved = true
+    }
+    if text.contains("ghosttea-zellij-resized 36 118") {
+      if !productionZellijResizedSizeObserved {
+        print("GHOSTTEA_PRODUCTION_ZELLIJ_RESIZED_SIZE_OBSERVED")
+      }
+      productionZellijResizedSizeObserved = true
+    }
+    if text.contains("ghosttea-zellij-input accepted") {
+      if !productionZellijInputObserved {
+        print("GHOSTTEA_PRODUCTION_ZELLIJ_INPUT_OBSERVED")
+      }
+      productionZellijInputObserved = true
+    }
+
+    if productionZellijNoEchoObserved, !productionZellijProbeSent {
+      productionZellijProbeSent = true
+      print("GHOSTTEA_PRODUCTION_ZELLIJ_PROBE_SENT")
+      Task {
+        do {
+          try await productionSession.send(
+            Data(
+              ("initial=\"$(stty size)\"; "
+                + "printf 'ghosttea-zellij-ready %s\\n' \"$initial\"; "
+                + "while [ \"$(stty size)\" = \"$initial\" ]; do sleep 1; done; "
+                + "printf 'ghosttea-zellij-resized '; stty size; "
+                + "read ghosttea_input; printf 'ghosttea-zellij-input %s\\n' "
+                + "\"$ghosttea_input\"; sleep 1; exit\n").utf8
+            )
+          )
+        } catch {
+          failAutomatedProductionAction("Zellij probe", error: error)
+        }
+      }
+    }
+    if productionZellijInitialSizeObserved, !productionZellijResizeSent {
+      productionZellijResizeSent = true
+      print("GHOSTTEA_PRODUCTION_ZELLIJ_RESIZE_SENT")
+      Task {
+        do {
+          try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+        } catch {
+          failAutomatedProductionAction("Zellij resize", error: error)
+        }
+      }
+    }
+    if productionZellijResizedSizeObserved, !productionZellijInputSent {
+      productionZellijInputSent = true
+      productionZellijExitSent = true
+      print("GHOSTTEA_PRODUCTION_ZELLIJ_INPUT_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("accepted\n".utf8))
+        } catch {
+          failAutomatedProductionAction("Zellij input", error: error)
+        }
+      }
+    }
+  }
+
   private func failAutomatedProductionAction(_ action: String, error: any Error) {
     productionSessionStatus = "\(action) failed: \(error)"
     print("GHOSTTEA_PRODUCTION_ACTION_ERROR action=\(action) error=\(error)")
@@ -1241,7 +1343,24 @@ final class HarnessModel: ObservableObject {
               + "edited=\(productionVimEditObserved) exitSent=\(productionVimExitSent)"
           )
         case .zellij:
-          markerIsValid = false
+          markerIsValid =
+            productionZellijNoEchoObserved
+            && productionZellijProbeSent
+            && productionZellijInitialSizeObserved
+            && productionZellijResizeSent
+            && productionZellijResizedSizeObserved
+            && productionZellijInputSent
+            && productionZellijInputObserved
+            && productionZellijExitSent
+          print(
+            "GHOSTTEA_PRODUCTION_ZELLIJ_FINAL exit=\(exit.description) "
+              + "noecho=\(productionZellijNoEchoObserved) probe=\(productionZellijProbeSent) "
+              + "initialSize=\(productionZellijInitialSizeObserved) "
+              + "resize=\(productionZellijResizeSent) "
+              + "resizedSize=\(productionZellijResizedSizeObserved) "
+              + "input=\(productionZellijInputSent) observed=\(productionZellijInputObserved) "
+              + "exitSent=\(productionZellijExitSent)"
+          )
         }
         guard exit == .exited(code: 0), markerIsValid else {
           throw HarnessError.sessionProbeMismatch("production terminal output")
@@ -1258,7 +1377,8 @@ final class HarnessModel: ObservableObject {
           productionSessionStatus = "Passed · Vim render, input, and resize"
           passMarker = "GHOSTTEA_PRODUCTION_VIM_PASS"
         case .zellij:
-          throw HarnessError.sessionProbeMismatch("unsupported automated profile")
+          productionSessionStatus = "Passed · Zellij attach, input, and resize"
+          passMarker = "GHOSTTEA_PRODUCTION_ZELLIJ_PASS"
         }
         productionSessionInputStatus = "Native terminal text validated"
         print(passMarker)
@@ -1716,6 +1836,8 @@ final class HarnessModel: ObservableObject {
         productionSSHProfile = .tmux
       case "vim":
         productionSSHProfile = .vim
+      case "zellij":
+        productionSSHProfile = .zellij
       default:
         productionSSHProfile = .shell
       }

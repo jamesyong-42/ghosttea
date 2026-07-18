@@ -2376,6 +2376,17 @@ under serialization. A disposable live regression starts the idle read first
 and proves the concurrent write completes; the full SSH matrix and the signed
 iPhone Vim gate pass. Live Zellij, htop/btop, and agent-TUI gates remain.
 
+The sixth slice adds `npm run test:ios:production-zellij`, a deterministic
+physical-device Zellij gate using checksum-pinned official 0.44.3 no-web
+binaries in the disposable fixture. The signed app attaches or creates the
+named session with a 100x30 outer PTY, validates Zellij's 98x26 shell pane
+through native accessibility rows, orders a PTY/core resize to 120x40, and
+requires the pane to reach 118x36. It sends an acknowledgement through the
+shared writer and requires typed exit zero. A bounded automation-only startup
+delay accounts for the SSH channel becoming connected before Zellij creates
+its first pane. The full package and SDK build matrix and the signed iPhone 14
+Pro gate pass. Live htop/btop and representative agent-TUI gates remain.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

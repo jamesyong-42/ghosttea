@@ -59,6 +59,11 @@ The Vim gate launches the fixture's minimal Vim build, obtains both the initial
 and resized dimensions from `stty` inside Vim, edits the buffer through the
 normal terminal input path, validates each marker through native accessibility
 rows, and requires Vim to exit normally.
+The Zellij gate attaches or creates a named session using a checksum-pinned
+official no-web binary in the disposable fixture. It validates the initial
+pane, propagates an outer PTY resize, sends input through the ordered session
+writer, observes every marker through native accessibility rows, and requires
+Zellij and its pane to exit cleanly.
 
 ## Build and test
 
@@ -83,6 +88,7 @@ npm run test:ssh:fixture:swift
 npm run test:ios:production-session
 npm run test:ios:production-tmux
 npm run test:ios:production-vim
+npm run test:ios:production-zellij
 npm run bench:ghostty-vt:apple:matrix
 ```
 

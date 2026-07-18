@@ -1,4 +1,24 @@
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS zellij
+
+ADD --checksum=sha256:9a92b94ba52e2b03f3a071a978d90922693221fa8ed59fd7f4819fe90e431996 \
+    https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-no-web-aarch64-unknown-linux-musl.tar.gz \
+    /tmp/zellij-aarch64.tar.gz
+ADD --checksum=sha256:f901129919b0a405ac5f278f53acd7fde5d62401324c509b6233038d5c0ad1f9 \
+    https://github.com/zellij-org/zellij/releases/download/v0.44.3/zellij-no-web-x86_64-unknown-linux-musl.tar.gz \
+    /tmp/zellij-x86_64.tar.gz
+
+RUN architecture="$(dpkg --print-architecture)" \
+    && case "$architecture" in \
+        arm64) archive=/tmp/zellij-aarch64.tar.gz ;; \
+        amd64) archive=/tmp/zellij-x86_64.tar.gz ;; \
+        *) echo "unsupported Zellij fixture architecture: $architecture" >&2; exit 1 ;; \
+    esac \
+    && tar -xzf "$archive" -C /usr/local/bin zellij \
+    && chmod 0755 /usr/local/bin/zellij
+
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+COPY --from=zellij /usr/local/bin/zellij /usr/local/bin/zellij
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -23,6 +43,11 @@ RUN gcc -Wall -Wextra -Werror -fPIC -shared \
     && useradd --create-home --shell /bin/sh ghosttea \
     && printf '%s\n' 'ghosttea:ghosttea-password' | chpasswd \
     && install -d -m 0700 -o ghosttea -g ghosttea /home/ghosttea/.ssh \
+    && install -d -m 0700 -o ghosttea -g ghosttea /home/ghosttea/.config/zellij \
+    && printf '%s\n' 'show_startup_tips false' 'show_release_notes false' \
+        > /home/ghosttea/.config/zellij/config.kdl \
+    && chown ghosttea:ghosttea /home/ghosttea/.config/zellij/config.kdl \
+    && chmod 0600 /home/ghosttea/.config/zellij/config.kdl \
     && install -d -m 0755 /run/sshd /run/ghosttea-sshd
 
 COPY pam_sshd /etc/pam.d/sshd

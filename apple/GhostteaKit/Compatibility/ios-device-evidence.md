@@ -1089,3 +1089,39 @@ The runner also passed all 73 package tests, both iOS SDK builds, and the core,
 font, TRF1, and visual prerequisites before removing the disposable fixture.
 Zellij, htop/btop, and representative agent-TUI interaction remain separate
 Phase 6 evidence.
+
+## 2026-07-17: production Zellij attach, input, and resize gate
+
+The sixth Phase 6 slice adds `npm run test:ios:production-zellij`. The
+disposable fixture installs the official Zellij 0.44.3 no-web binary in a
+multistage image, selecting the aarch64 or x86_64 archive for the Docker host.
+Both release archives are checksum-pinned, and only the resulting binary is
+copied into the runtime image. Fixture-local configuration suppresses startup
+tips and release notes so the test always reaches a real shell pane without a
+first-run interaction.
+
+The signed app attaches or creates the named `ghosttea` session with a 100x30
+outer PTY. Zellij's default chrome leaves a 98x26 shell pane, which the gate
+reads from `stty size` and validates as the exact contiguous accessibility
+marker `ghosttea-zellij-ready 26 98`. It then orders a PTY/core resize to
+120x40 and requires the pane to report 118x36. Finally it sends `accepted`
+through the normal ordered input path, observes the resulting marker through
+native terminal accessibility rows, and requires typed exit status zero.
+
+The initial physical run exposed a startup ordering race: the SSH channel can
+report connected before Zellij has created its first shell pane. The automated
+profile now waits for a bounded Zellij startup interval before sending its
+first shell command. This behavior is limited to the deterministic harness;
+interactive product input remains user-driven.
+
+The automatic runner passed on the physical iPhone 14 Pro running iOS 26.5.2.
+It emitted every Zellij synchronization marker followed by:
+
+```text
+GHOSTTEA_PRODUCTION_ZELLIJ_PASS
+```
+
+The process exited zero after passing all 73 package tests, both iOS SDK
+builds, and the core, font, TRF1, and visual prerequisites. The runner then
+removed its disposable SSH container and network. htop/btop and representative
+agent-TUI interaction remain separate Phase 6 evidence.
