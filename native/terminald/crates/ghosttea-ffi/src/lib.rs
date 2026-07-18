@@ -1405,4 +1405,252 @@ mod tests {
         ghosttea_replica_destroy(replica);
         ghosttea_runtime_destroy(runtime);
     }
+
+    #[test]
+    fn deterministic_ffi_state_machine_fuzz_smoke() {
+        struct Generator(u64);
+
+        impl Generator {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+
+            fn bytes(&mut self, maximum: usize) -> Vec<u8> {
+                let length = self.next() as usize % (maximum + 1);
+                (0..length).map(|_| self.next() as u8).collect()
+            }
+        }
+
+        fn finish_update(status: i32, update: GhostteaUpdate) {
+            assert_ne!(
+                status, GHOSTTEA_STATUS_PANIC,
+                "fuzz input crossed the panic boundary"
+            );
+            assert!(matches!(
+                status,
+                GHOSTTEA_STATUS_OK
+                    | GHOSTTEA_STATUS_INVALID_ARGUMENT
+                    | GHOSTTEA_STATUS_INVALID_STATE
+                    | GHOSTTEA_STATUS_INTERNAL
+            ));
+            if status == GHOSTTEA_STATUS_OK {
+                if update.effect_count == 0 {
+                    assert!(update.effects.is_null());
+                    assert!(update.storage.data.is_null());
+                } else {
+                    assert!(!update.effects.is_null());
+                    assert!(!update.storage.data.is_null());
+                    assert_eq!(update.storage.len, update.storage.capacity);
+                    let descriptor_bytes = update.effect_count * size_of::<GhostteaEffect>();
+                    assert!(descriptor_bytes <= update.storage.len);
+                    let effects =
+                        unsafe { slice::from_raw_parts(update.effects, update.effect_count) };
+                    for (index, effect) in effects.iter().enumerate() {
+                        assert_eq!(effect.sequence as usize, index);
+                        assert!((1..=6).contains(&effect.kind));
+                        let start = effect.payload_offset as usize;
+                        let end = start.checked_add(effect.payload_length as usize).unwrap();
+                        assert!(start >= descriptor_bytes);
+                        assert!(end <= update.storage.len);
+                    }
+                }
+            } else {
+                assert!(update.effects.is_null());
+                assert_eq!(update.effect_count, 0);
+                assert!(update.storage.data.is_null());
+            }
+            ghosttea_update_destroy(update);
+        }
+
+        fn finish_bytes(status: i32, bytes: GhostteaOwnedBytes) {
+            assert_ne!(
+                status, GHOSTTEA_STATUS_PANIC,
+                "fuzz input crossed the panic boundary"
+            );
+            assert!(matches!(
+                status,
+                GHOSTTEA_STATUS_OK
+                    | GHOSTTEA_STATUS_INVALID_ARGUMENT
+                    | GHOSTTEA_STATUS_INVALID_STATE
+                    | GHOSTTEA_STATUS_INTERNAL
+            ));
+            if status == GHOSTTEA_STATUS_OK {
+                assert!(bytes.len <= bytes.capacity);
+                assert_eq!(bytes.data.is_null(), bytes.capacity == 0);
+            } else {
+                assert!(bytes.data.is_null());
+                assert_eq!(bytes.len, 0);
+                assert_eq!(bytes.capacity, 0);
+            }
+            ghosttea_owned_bytes_free(bytes);
+        }
+
+        let mut terminal = test_terminal();
+        let terminal = terminal.as_mut() as *mut GhostteaTerminalHandle;
+        let mut generator = Generator(0x4754_4541_4646_4931);
+
+        let mut hostile_selection = GhostteaOwnedBytes::EMPTY;
+        let hostile_status = ghosttea_terminal_selection_text(
+            terminal,
+            u16::MAX,
+            u32::MAX,
+            u16::MAX,
+            u32::MAX,
+            false,
+            &mut hostile_selection,
+        );
+        assert_eq!(hostile_status, GHOSTTEA_STATUS_INTERNAL);
+        finish_bytes(hostile_status, hostile_selection);
+
+        for iteration in 0..256u64 {
+            let random = generator.next();
+            let payload = if iteration % 8 == 0 {
+                format!("fuzz-{iteration} \x1b[6n\r\n").into_bytes()
+            } else {
+                generator.bytes(512)
+            };
+            let view = GhostteaBytesView {
+                data: payload.as_ptr(),
+                len: payload.len(),
+            };
+            let render = match iteration % 16 {
+                0 => 2,
+                1 => 1,
+                2 => 4,
+                _ => 0,
+            };
+
+            match random % 10 {
+                0 => {
+                    let mut update = GhostteaUpdate::EMPTY;
+                    let status = ghosttea_terminal_feed(terminal, view, render, &mut update);
+                    finish_update(status, update);
+                }
+                1 => {
+                    let mut update = GhostteaUpdate::EMPTY;
+                    let status = ghosttea_terminal_resize(
+                        terminal,
+                        (random % 161) as u16,
+                        (random.rotate_left(11) % 81) as u16,
+                        generator.next(),
+                        render,
+                        &mut update,
+                    );
+                    finish_update(status, update);
+                }
+                2 => {
+                    let mut update = GhostteaUpdate::EMPTY;
+                    let status =
+                        ghosttea_terminal_scroll(terminal, random as i64, render, &mut update);
+                    finish_update(status, update);
+                }
+                3 => {
+                    let mut update = GhostteaUpdate::EMPTY;
+                    let status = ghosttea_terminal_scroll_to(
+                        terminal,
+                        generator.next(),
+                        render,
+                        &mut update,
+                    );
+                    finish_update(status, update);
+                }
+                4 => {
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    let status = ghosttea_terminal_encode_paste(terminal, view, &mut bytes);
+                    finish_bytes(status, bytes);
+                }
+                5 => {
+                    let code = if iteration % 2 == 0 {
+                        b"KeyA".as_slice()
+                    } else {
+                        payload.as_slice()
+                    };
+                    let event = GhostteaKeyEvent {
+                        abi_version: if iteration % 3 == 0 {
+                            GHOSTTEA_ABI_VERSION
+                        } else {
+                            random as u32
+                        },
+                        struct_size: if iteration % 3 == 0 {
+                            size_of::<GhostteaKeyEvent>() as u32
+                        } else {
+                            random.rotate_left(9) as u32
+                        },
+                        code_utf8: GhostteaBytesView {
+                            data: code.as_ptr(),
+                            len: code.len(),
+                        },
+                        text_utf8: view,
+                        unshifted_codepoint: random as u32,
+                        modifiers: random as u16,
+                        action: random.rotate_left(7) as u8,
+                        reserved: 0,
+                    };
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    let status = ghosttea_terminal_encode_key(terminal, &event, &mut bytes);
+                    finish_bytes(status, bytes);
+                }
+                6 => {
+                    let event = GhostteaMouseEvent {
+                        abi_version: GHOSTTEA_ABI_VERSION,
+                        struct_size: size_of::<GhostteaMouseEvent>() as u32,
+                        x: f32::from_bits(random as u32),
+                        y: f32::from_bits(random.rotate_left(17) as u32),
+                        screen_width: random as u32,
+                        screen_height: random.rotate_left(3) as u32,
+                        cell_width: random.rotate_left(5) as u32,
+                        cell_height: random.rotate_left(7) as u32,
+                        padding_left: random.rotate_left(9) as u32,
+                        padding_top: random.rotate_left(11) as u32,
+                        modifiers: random as u16,
+                        action: random.rotate_left(13) as u8,
+                        button: random.rotate_left(19) as u8,
+                    };
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    let status = ghosttea_terminal_encode_mouse(terminal, &event, &mut bytes);
+                    finish_bytes(status, bytes);
+                }
+                7 => {
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    let status = ghosttea_terminal_selection_text(
+                        terminal,
+                        random as u16,
+                        random.rotate_left(5) as u32,
+                        random.rotate_left(11) as u16,
+                        random.rotate_left(17) as u32,
+                        random & 1 == 0,
+                        &mut bytes,
+                    );
+                    finish_bytes(status, bytes);
+                }
+                8 => {
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    let status = ghosttea_terminal_accessibility_rows(
+                        terminal,
+                        random as u16,
+                        random.rotate_left(13) as u16,
+                        &mut bytes,
+                    );
+                    finish_bytes(status, bytes);
+                }
+                _ => {
+                    let mut bytes = GhostteaOwnedBytes::EMPTY;
+                    finish_bytes(
+                        ghosttea_terminal_encode_focus(terminal, random & 1 == 0, &mut bytes),
+                        bytes,
+                    );
+                    let mut alternate_scroll = true;
+                    assert_eq!(
+                        ghosttea_terminal_alternate_scroll(terminal, &mut alternate_scroll),
+                        GHOSTTEA_STATUS_OK
+                    );
+                }
+            }
+
+            assert!(!ghosttea_terminal_is_poisoned(terminal));
+        }
+    }
 }

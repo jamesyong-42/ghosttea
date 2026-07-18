@@ -287,3 +287,26 @@ would otherwise become stale during an upgrade. CI and the normal repository
 check both run this verifier. Runtime and human-review gates remain mandatory:
 passing the offline consistency check cannot authorize an ABI, golden,
 performance, licensing, or terminal-behavior change.
+
+## FFI and TRF1 mutation gates
+
+[`fuzzing.md`](fuzzing.md) defines reproducible mutation gates for the C ABI
+state machine and Swift TRF1 envelope/section decoders. The Rust gate performs
+256 stateful operations while checking panic/poison status, owned-output
+zeroing, arena bounds, and effect order. The Swift gate exercises 4,096
+envelopes and 4,096 independent section payloads from a fixed seed, including
+structured magic/version cases that reach beyond the outer header checks.
+
+The first run found an availability bug: impossible `u32` selection rows could
+enter Ghostty's formatter for more than a minute. The shared model now rejects
+non-select-all endpoints outside the retained terminal grid, and the exact
+maximum-coordinate call is a permanent FFI seed. Run both bounded gates with:
+
+```sh
+npm run test:fuzz:smoke
+```
+
+The smoke gates are suitable for ordinary regression runs but do not yet close
+the release item. A timed AddressSanitizer campaign against the locked release
+toolchain and release native libraries, with corpus hashes and resource limits
+recorded in evidence, remains mandatory.

@@ -2894,6 +2894,14 @@ golden or binary from being updated merely to follow a new commit. The release
 workflow now derives attestation paths from the artifact manifest instead of a
 revision literal, and normal/CI checks reject inconsistent pins or an
 incomplete upgrade procedure.
+The eighth slice adds deterministic hostile-input campaigns at both native
+boundaries. A 256-operation Rust C-ABI state machine checks panic poisoning,
+owned-buffer zeroing, effect ordering, and arena bounds; a fixed-seed Swift
+campaign mutates 4,096 TRF1 envelopes plus 4,096 section payloads. Its first
+run found and retained a denial-of-service regression where impossible
+selection rows entered Ghostty formatting for more than a minute. The shared
+model now validates endpoints against retained rows before formatting. Timed
+AddressSanitizer campaigns on the locked release binaries remain open.
 
 Deliverables:
 

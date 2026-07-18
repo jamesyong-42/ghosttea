@@ -46,6 +46,9 @@ Ghostty source updates follow the checked
 the source/font pins, native artifact identity, parity fixtures, release BOM,
 Apple rebuilds, performance evidence, and desktop/iOS Truffle interop are one
 reviewed change rather than an independent version bump.
+[`Compatibility/fuzzing.md`](Compatibility/fuzzing.md) records the fixed-seed
+C-ABI and Swift TRF1 mutation gates, retained hostile inputs, output/arena
+invariants, and the longer sanitizer campaign required for a release candidate.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

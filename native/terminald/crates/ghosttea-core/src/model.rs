@@ -183,6 +183,13 @@ impl TerminalModel {
         end: (u16, u32),
         select_all: bool,
     ) -> Result<String> {
+        if !select_all {
+            let row_count = self.terminal.selection_row_count()?;
+            anyhow::ensure!(
+                u64::from(start.1) < row_count && u64::from(end.1) < row_count,
+                "selection row is outside the retained terminal grid"
+            );
+        }
         Ok(self.terminal.selection_text(start, end, select_all)?)
     }
 
@@ -607,5 +614,33 @@ mod tests {
             attached.as_slice().last(),
             Some(TerminalEffect::FrameReady(_))
         ));
+    }
+
+    #[test]
+    fn rejects_selection_rows_outside_retained_grid_before_formatting() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut model = TerminalModel::new(
+            runtime,
+            TerminalModelOptions {
+                session_handle: 4,
+                session_epoch: 1,
+                layout_epoch: 1,
+                cols: 20,
+                rows: 4,
+                scrollback_bytes: 4096,
+            },
+        )
+        .unwrap();
+        model.feed(b"one\r\ntwo", RenderRequest::None).unwrap();
+
+        let error = model
+            .selection_text((0, u32::MAX), (u16::MAX, u32::MAX), false)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("outside the retained terminal grid")
+        );
+        assert!(model.selection_text((0, 0), (0, 0), true).is_ok());
     }
 }

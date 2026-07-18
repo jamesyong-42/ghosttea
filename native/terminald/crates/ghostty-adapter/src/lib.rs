@@ -279,6 +279,15 @@ impl GhosttyTerminalCore {
         String::from_utf8(output).map_err(|_| GhosttyError(-1))
     }
 
+    pub fn selection_row_count(&self) -> Result<u64, GhosttyError> {
+        let mut scrollbar = RawScrollbar::default();
+        if unsafe { eg_terminal_scrollbar(self.raw.as_ptr(), &mut scrollbar) } {
+            Ok(scrollbar.total)
+        } else {
+            Err(GhosttyError(-1))
+        }
+    }
+
     pub fn encode_paste(&mut self, text: &str) -> Result<Vec<u8>, GhosttyError> {
         let bytes = text.as_bytes();
         let mut output = vec![0_u8; bytes.len().saturating_add(16)];
@@ -862,6 +871,7 @@ mod tests {
         let mut terminal = GhosttyTerminalCore::new(12, 2, 100).unwrap();
         terminal.feed(b"first\r\nsecond\r\nthird");
         let scrollbar = terminal.snapshot().unwrap().scrollbar;
+        assert_eq!(terminal.selection_row_count().unwrap(), scrollbar.total);
         assert_eq!(
             terminal.selection_text((0, 1), (5, 1), false).unwrap(),
             "second"

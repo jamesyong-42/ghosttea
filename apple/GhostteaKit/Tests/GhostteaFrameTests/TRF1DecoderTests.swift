@@ -76,6 +76,46 @@ private func accessibilityFixture(_ text: String = "hello") -> Data {
   return data
 }
 
+private struct TRF1FuzzGenerator {
+  var state: UInt64 = 0x5452_4631_4655_5A5A
+
+  mutating func next() -> UInt64 {
+    state ^= state << 13
+    state ^= state >> 7
+    state ^= state << 17
+    return state
+  }
+
+  mutating func data(maximumCount: Int) -> Data {
+    let count = Int(next() % UInt64(maximumCount + 1))
+    return Data((0..<count).map { _ in UInt8(truncatingIfNeeded: next()) })
+  }
+}
+
+private func exerciseEveryTRF1Decoder(_ data: Data) {
+  guard let frame = try? decodeTRF1Frame(data) else { return }
+  for section in frame.sections {
+    switch section.kind {
+    case .glyphDefinitions:
+      _ = try? decodeTRF1GlyphDefinitions(section)
+    case .styleDefinitions:
+      _ = try? decodeTRF1StyleDefinitions(section)
+    case .rowReplacements:
+      _ = try? decodeTRF1RowReplacements(section)
+    case .cursorState:
+      _ = try? decodeTRF1CursorState(section)
+    case .scrollbarState:
+      _ = try? decodeTRF1ScrollbarState(section)
+    case .accessibilityText:
+      _ = try? decodeTRF1AccessibilityRows(section)
+    case .clipboardWrite:
+      _ = try? decodeTRF1ClipboardWrite(section)
+    default:
+      break
+    }
+  }
+}
+
 @Test func decodesTheDesktopAccessibilityFixtureShape() throws {
   let frame = try decodeTRF1Frame(accessibilityFixture())
   #expect(frame.sessionHandle == 7)
@@ -133,6 +173,47 @@ private func accessibilityFixture(_ text: String = "hello") -> Data {
 
   #expect(throws: TRF1DecodingError.self) {
     try decodeTRF1Frame(Data(repeating: 0, count: TRF1.maximumFrameBytes + 1))
+  }
+}
+
+@Test func deterministicTRF1DecoderFuzzSmoke() {
+  var generator = TRF1FuzzGenerator()
+  let seed = accessibilityFixture("fuzz ✓")
+
+  for iteration in 0..<4_096 {
+    var candidate: Data
+    if iteration.isMultiple(of: 2) {
+      candidate = seed
+      let mutations = 1 + Int(generator.next() % 8)
+      for _ in 0..<mutations {
+        let offset = Int(generator.next() % UInt64(candidate.count))
+        candidate[offset] = UInt8(truncatingIfNeeded: generator.next())
+      }
+      if iteration.isMultiple(of: 16) {
+        candidate.removeLast(Int(generator.next() % UInt64(candidate.count + 1)))
+      }
+    } else {
+      candidate = generator.data(maximumCount: 4_096)
+      if candidate.count >= TRF1.frameHeaderBytes && iteration.isMultiple(of: 3) {
+        writeUInt32(TRF1.magic, to: &candidate, at: 0)
+        writeUInt16(TRF1.protocolVersion, to: &candidate, at: 4)
+      }
+    }
+    exerciseEveryTRF1Decoder(candidate)
+
+    let section = TRF1Section(
+      kind: TRF1SectionKind(rawValue: UInt16(truncatingIfNeeded: generator.next())),
+      flags: UInt16(truncatingIfNeeded: generator.next()),
+      itemCount: UInt32(truncatingIfNeeded: generator.next()),
+      bytes: generator.data(maximumCount: 2_048)
+    )
+    _ = try? decodeTRF1GlyphDefinitions(section)
+    _ = try? decodeTRF1StyleDefinitions(section)
+    _ = try? decodeTRF1RowReplacements(section)
+    _ = try? decodeTRF1CursorState(section)
+    _ = try? decodeTRF1ScrollbarState(section)
+    _ = try? decodeTRF1AccessibilityRows(section)
+    _ = try? decodeTRF1ClipboardWrite(section)
   }
 }
 
