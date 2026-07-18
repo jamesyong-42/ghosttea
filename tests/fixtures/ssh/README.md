@@ -37,6 +37,16 @@ GHOSTTEA_SSH_KEYBOARD_METADATA_BIND_ADDRESS=192.168.1.20 npm run fixture:ssh:up
 
 Replace `192.168.1.20` with the Mac's address on the trusted test network.
 
+The same container also carries Claude Code 2.1.214 and a loopback-only mock
+Anthropic Messages API on port 22100. The image pins its Node 22 base by digest,
+installs the exact CLI version, and checks both the CLI version and mock model
+when the fixture starts. `npm run test:ios:production-claude` reaches the CLI
+through SSH but directs model traffic to that in-container server with a
+fixture-only token. Demo mode suppresses onboarding, and telemetry, updates,
+error reporting, login/logout commands, automatic memory, marketplace
+installation, bundled skills, and CLAUDE.md loading are disabled. No real
+Anthropic credential or runtime internet access is involved.
+
 Shut the fixture down immediately after the device probe with
 `npm run fixture:ssh:down`.
 
@@ -89,6 +99,8 @@ The automated matrix verifies:
   reports socket waits.
 - a peer that accepts TCP but never sends an SSH banner, proving the handshake
   deadline and task-cancellation paths without relying on external networks.
+- the exact Claude Code fixture version and its loopback model endpoint, before
+  any SSH or physical-device compatibility probe begins;
 - 32 consecutive stalled-handshake cancellations and 16 consecutive suspended
   keyboard-interactive cancellations in one client process.
 - strict known-host verification and a complete shell session using ECDSA

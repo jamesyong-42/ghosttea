@@ -21,12 +21,14 @@ const productionTmuxAutomation = process.argv.includes("--production-tmux");
 const productionVimAutomation = process.argv.includes("--production-vim");
 const productionZellijAutomation = process.argv.includes("--production-zellij");
 const productionMonitorTuisAutomation = process.argv.includes("--production-monitor-tuis");
+const productionClaudeAutomation = process.argv.includes("--production-claude");
 const productionSessionAutomation =
   process.argv.includes("--production-session") ||
   productionTmuxAutomation ||
   productionVimAutomation ||
   productionZellijAutomation ||
-  productionMonitorTuisAutomation;
+  productionMonitorTuisAutomation ||
+  productionClaudeAutomation;
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -224,6 +226,7 @@ async function main() {
               ...(productionVimAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "vim" } : {}),
               ...(productionZellijAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "zellij" } : {}),
               ...(productionMonitorTuisAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "monitor-tuis" } : {}),
+              ...(productionClaudeAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "claude" } : {}),
             }
           : {
               GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
@@ -248,7 +251,9 @@ async function main() {
               ? "Production Zellij attach/input/resize device gate passed."
               : productionMonitorTuisAutomation
                 ? "Production htop/btop render/input/resize device gate passed."
-                : "Production SSH → core → TRF1 device gate passed.",
+                : productionClaudeAutomation
+                  ? "Production Claude Code prompt/interrupt/shortcuts/resize device gate passed."
+                  : "Production SSH → core → TRF1 device gate passed.",
       );
     } else {
       await waitForCleanupRequest();

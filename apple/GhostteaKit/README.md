@@ -68,6 +68,13 @@ The monitor-TUI gate runs pinned htop and btop builds in one production SSH
 session. It validates each application's main and overlay views through native
 accessibility rows, drives their normal keyboard paths, resizes the PTY in both
 directions, and requires both applications and the shell to exit normally.
+The agent-TUI gate runs the real, pinned Claude Code CLI against a disposable
+Anthropic-compatible gateway inside the SSH fixture. It validates a streamed
+answer, interrupts a deliberately held stream, opens the shortcuts overlay,
+resizes the PTY, exits through `/exit`, and requires the final remote size and
+typed zero exit through the same production terminal path. The test uses a
+fixture-only token and never requires a developer credential or external model
+request.
 
 ## Build and test
 
@@ -94,6 +101,7 @@ npm run test:ios:production-tmux
 npm run test:ios:production-vim
 npm run test:ios:production-zellij
 npm run test:ios:production-monitor-tuis
+npm run test:ios:production-claude
 npm run bench:ghostty-vt:apple:matrix
 ```
 

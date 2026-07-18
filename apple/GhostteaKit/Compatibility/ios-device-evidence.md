@@ -1162,3 +1162,48 @@ The same run passed all 73 package tests, both iOS SDK builds, and the core,
 font, TRF1, and visual prerequisites, then removed its disposable container
 and network. Representative agent-TUI interaction remains the final planned
 Phase 6 compatibility slice.
+
+## 2026-07-18: production Claude Code agent-TUI gate
+
+The eighth Phase 6 slice adds `npm run test:ios:production-claude`. It runs the
+real Claude Code 2.1.214 terminal application from an exact-version npm install
+on a Node 22 image pinned by digest. The disposable SSH container also runs a
+loopback-only Anthropic-compatible Messages API. Claude Code is configured with
+`ANTHROPIC_BASE_URL`, a fixture-only `ANTHROPIC_AUTH_TOKEN`, and documented
+demo/traffic controls, so the gate needs no developer credential and makes no
+external model request. Fixture startup rejects a CLI-version mismatch or a
+missing/wrong mock model before the signed app is launched. The configuration
+follows Anthropic's [LLM gateway](https://docs.anthropic.com/en/docs/claude-code/llm-gateway)
+and [environment variable](https://code.claude.com/docs/en/env-vars)
+contracts.
+
+The signed app enters the real 100x30 Claude Code TUI and requires its versioned
+header and input footer through native terminal accessibility rows. It submits
+a normal prompt through the ordered session writer and observes the mock's
+streamed `ghosttea-claude-response-ok` assistant result. It then submits a
+second request whose server stream remains open, requires Claude Code to render
+`esc to interrupt`, sends Escape through the shared Ghostty key encoder, and
+requires the explicit interrupted state. This covers both successful streaming
+and in-flight cancellation rather than only CLI startup.
+
+After interruption, the app sends `?`, validates Claude Code's shortcuts
+overlay, orders a PTY/core resize to 120x40, dismisses the overlay, and sends
+`/exit`. A shell marker after the CLI returns must report `40 120`, proving the
+remote PTY received the resize. The production session then requires typed exit
+status zero and every prompt, response, interrupt, overlay, resize, and exit
+flag before it can pass.
+
+The automatic runner passed on the physical iPhone 14 Pro running iOS 26.5.2
+and emitted:
+
+```text
+GHOSTTEA_PRODUCTION_CLAUDE_PASS
+```
+
+The same run passed all 73 package tests, both iOS SDK builds, and the core,
+font, TRF1, and visual prerequisites, then removed its disposable container and
+network. This completes the planned Phase 6 representative application set:
+shell, tmux, Vim, Zellij, htop, btop, and an agent TUI. It is compatibility
+evidence, not release certification; Phase 8 still requires a broader beta
+matrix across device classes, iOS versions, production SSH servers, and updated
+application versions.

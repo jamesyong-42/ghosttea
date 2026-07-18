@@ -2397,6 +2397,23 @@ prove the remote PTY reached the requested dimensions, and typed exit zero is
 required. The full package and SSH matrices, both iOS SDK builds, and the
 signed iPhone 14 Pro gate pass. Representative agent-TUI interaction remains.
 
+The eighth slice adds `npm run test:ios:production-claude`, a deterministic
+physical-device agent-TUI gate using the real Claude Code 2.1.214 CLI. The
+disposable SSH fixture pins the CLI version and Node base, verifies both the
+binary and its loopback-only mock Anthropic endpoint at startup, and supplies a
+fixture-only token through Claude Code's documented gateway contract. Demo mode
+and nonessential-traffic controls remove onboarding, updates, telemetry, and
+credential requirements without replacing the application under test. The
+signed app validates Claude Code's versioned main view, submits and receives a
+streamed response, interrupts a deliberately held stream with Escape, opens its
+shortcuts overlay, orders a PTY/core resize from 100x30 to 120x40, and exits
+through `/exit`. Native accessibility rows and the final remote `stty size`
+marker prove each rendered state and the resize; typed exit zero is required.
+All 73 package tests, both iOS SDK builds, and the signed iPhone 14 Pro gate
+pass. This completes the planned representative application set for Phase 6;
+release certification across more devices, servers, and application versions
+remains a Phase 8 responsibility.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;
@@ -2407,6 +2424,8 @@ Deliverables:
 - connection-state UI;
 - cancellation, reconnect, and suspension behavior;
 - tmux/zellij attach profiles;
+- deterministic shell, multiplexer, editor, monitor-TUI, and agent-TUI device
+  compatibility gates;
 - network transition and background/foreground tests.
 
 Exit gate:

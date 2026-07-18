@@ -54,12 +54,13 @@ final class HarnessModel: ObservableObject {
     case vim = "Vim"
     case zellij = "Zellij"
     case monitorTuis = "htop + btop"
+    case claude = "Claude Code"
 
     var id: Self { self }
 
     func attachProfile(sessionName: String) -> GhostteaSSHAttachProfile {
       switch self {
-      case .shell, .monitorTuis: .shell
+      case .shell, .monitorTuis, .claude: .shell
       case .tmux: .tmux(sessionName: sessionName)
       case .vim: .shell
       case .zellij: .zellij(sessionName: sessionName)
@@ -168,6 +169,20 @@ final class HarnessModel: ObservableObject {
   private var productionBtopResizeSent = false
   private var productionBtopExitSent = false
   private var productionBtopExitObserved = false
+  private var productionClaudeNoEchoObserved = false
+  private var productionClaudeLaunchSent = false
+  private var productionClaudeMainObserved = false
+  private var productionClaudePromptSent = false
+  private var productionClaudeResponseObserved = false
+  private var productionClaudeInterruptPromptSent = false
+  private var productionClaudeInterruptActiveObserved = false
+  private var productionClaudeInterruptSent = false
+  private var productionClaudeInterruptedObserved = false
+  private var productionClaudeShortcutsSent = false
+  private var productionClaudeShortcutsObserved = false
+  private var productionClaudeResizeSent = false
+  private var productionClaudeExitSent = false
+  private var productionClaudeExitObserved = false
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
   private var didAutorunProductionSession = false
@@ -821,6 +836,20 @@ final class HarnessModel: ObservableObject {
     productionBtopResizeSent = false
     productionBtopExitSent = false
     productionBtopExitObserved = false
+    productionClaudeNoEchoObserved = false
+    productionClaudeLaunchSent = false
+    productionClaudeMainObserved = false
+    productionClaudePromptSent = false
+    productionClaudeResponseObserved = false
+    productionClaudeInterruptPromptSent = false
+    productionClaudeInterruptActiveObserved = false
+    productionClaudeInterruptSent = false
+    productionClaudeInterruptedObserved = false
+    productionClaudeShortcutsSent = false
+    productionClaudeShortcutsObserved = false
+    productionClaudeResizeSent = false
+    productionClaudeExitSent = false
+    productionClaudeExitObserved = false
 
     Task {
       do {
@@ -1064,7 +1093,9 @@ final class HarnessModel: ObservableObject {
       command = "stty -echo; printf 'ghosttea-zellij-%s\\n' noecho\n"
     case .monitorTuis where productionSessionAutomation:
       command = "stty -echo; printf 'ghosttea-monitor-%s\\n' noecho\n"
-    case .tmux, .vim, .zellij, .monitorTuis:
+    case .claude where productionSessionAutomation:
+      command = "stty -echo; printf 'ghosttea-claude-%s\\n' noecho\n"
+    case .tmux, .vim, .zellij, .monitorTuis, .claude:
       return
     }
     productionShellCommandSent = true
@@ -1106,6 +1137,8 @@ final class HarnessModel: ObservableObject {
         advanceAutomatedZellij(text: text)
       case .monitorTuis:
         advanceAutomatedMonitorTuis(text: text)
+      case .claude:
+        advanceAutomatedClaude(text: text)
       case .shell:
         break
       }
@@ -1456,6 +1489,147 @@ final class HarnessModel: ObservableObject {
     }
   }
 
+  private func advanceAutomatedClaude(text: String) {
+    guard let productionSession else { return }
+    if text.contains("ghosttea-claude-noecho") {
+      if !productionClaudeNoEchoObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_NOECHO_OBSERVED")
+      }
+      productionClaudeNoEchoObserved = true
+    }
+    if text.contains("Claude Code v2.1.214"), text.contains("? for shortcuts") {
+      if !productionClaudeMainObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_MAIN_OBSERVED")
+      }
+      productionClaudeMainObserved = true
+    }
+    if text.contains("ghosttea-claude-response-ok") {
+      if !productionClaudeResponseObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_RESPONSE_OBSERVED")
+      }
+      productionClaudeResponseObserved = true
+    }
+    if productionClaudeInterruptPromptSent, text.contains("esc to interrupt") {
+      if !productionClaudeInterruptActiveObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_INTERRUPT_ACTIVE_OBSERVED")
+      }
+      productionClaudeInterruptActiveObserved = true
+    }
+    if text.contains("Interrupted · What should Claude do instead?") {
+      if !productionClaudeInterruptedObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_INTERRUPTED_OBSERVED")
+      }
+      productionClaudeInterruptedObserved = true
+    }
+    if text.contains("! for shell mode"), text.contains("/ for commands"),
+      text.contains("ctrl + z to suspend")
+    {
+      if !productionClaudeShortcutsObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_SHORTCUTS_OBSERVED")
+      }
+      productionClaudeShortcutsObserved = true
+    }
+    if text.contains("ghosttea-claude-exit 40 120") {
+      if !productionClaudeExitObserved {
+        print("GHOSTTEA_PRODUCTION_CLAUDE_EXIT_OBSERVED")
+      }
+      productionClaudeExitObserved = true
+    }
+
+    if productionClaudeNoEchoObserved, !productionClaudeLaunchSent {
+      productionClaudeLaunchSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_LAUNCH_SENT")
+      Task {
+        do {
+          try await productionSession.send(
+            Data(
+              ("env HOME=/home/ghosttea TERM=xterm-256color "
+                + "ANTHROPIC_BASE_URL=http://127.0.0.1:22100 "
+                + "ANTHROPIC_AUTH_TOKEN=ghosttea-fixture-token IS_DEMO=1 "
+                + "DISABLE_TELEMETRY=1 DISABLE_UPDATES=1 DISABLE_ERROR_REPORTING=1 "
+                + "DISABLE_LOGIN_COMMAND=1 DISABLE_LOGOUT_COMMAND=1 "
+                + "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 "
+                + "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "
+                + "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1 "
+                + "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 "
+                + "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 "
+                + "claude --model claude-sonnet-4-5-20250929; "
+                + "printf 'ghosttea-claude-exit '; stty size; sleep 1; exit\n").utf8
+            )
+          )
+        } catch {
+          failAutomatedProductionAction("Claude Code launch", error: error)
+        }
+      }
+    }
+    if productionClaudeMainObserved, !productionClaudePromptSent {
+      productionClaudePromptSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_PROMPT_SENT")
+      Task {
+        do {
+          try await sendAutomatedClaudeLine("Reply with the fixture result.")
+        } catch {
+          failAutomatedProductionAction("Claude Code prompt", error: error)
+        }
+      }
+    }
+    if productionClaudeResponseObserved, !productionClaudeInterruptPromptSent {
+      productionClaudeInterruptPromptSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_INTERRUPT_PROMPT_SENT")
+      Task {
+        do {
+          try await sendAutomatedClaudeLine("ghosttea-interrupt-request")
+        } catch {
+          failAutomatedProductionAction("Claude Code interrupt prompt", error: error)
+        }
+      }
+    }
+    if productionClaudeInterruptActiveObserved, !productionClaudeInterruptSent {
+      productionClaudeInterruptSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_INTERRUPT_SENT")
+      Task {
+        do {
+          try await productionSession.sendKey(try softwareKey(hidUsage: 0x29))
+        } catch {
+          failAutomatedProductionAction("Claude Code interrupt", error: error)
+        }
+      }
+    }
+    if productionClaudeInterruptedObserved, !productionClaudeShortcutsSent {
+      productionClaudeShortcutsSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_SHORTCUTS_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("?".utf8))
+        } catch {
+          failAutomatedProductionAction("Claude Code shortcuts", error: error)
+        }
+      }
+    }
+    if productionClaudeShortcutsObserved, !productionClaudeResizeSent {
+      productionClaudeResizeSent = true
+      productionClaudeExitSent = true
+      print("GHOSTTEA_PRODUCTION_CLAUDE_RESIZE_SENT")
+      Task {
+        do {
+          try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+          try await Task.sleep(for: .milliseconds(300))
+          try await productionSession.send(Data("?".utf8))
+          try await sendAutomatedClaudeLine("/exit")
+          print("GHOSTTEA_PRODUCTION_CLAUDE_EXIT_SENT")
+        } catch {
+          failAutomatedProductionAction("Claude Code resize and exit", error: error)
+        }
+      }
+    }
+  }
+
+  private func sendAutomatedClaudeLine(_ line: String) async throws {
+    guard let productionSession else { return }
+    try await productionSession.send(Data(line.utf8))
+    try await productionSession.sendKey(try softwareKey(hidUsage: 0x28))
+  }
+
   private func failAutomatedProductionAction(_ action: String, error: any Error) {
     productionSessionStatus = "\(action) failed: \(error)"
     print("GHOSTTEA_PRODUCTION_ACTION_ERROR action=\(action) error=\(error)")
@@ -1553,6 +1727,33 @@ final class HarnessModel: ObservableObject {
               + "btopResize=\(productionBtopResizeSent) "
               + "btopExit=\(productionBtopExitObserved)"
           )
+        case .claude:
+          markerIsValid =
+            productionClaudeNoEchoObserved
+            && productionClaudeLaunchSent
+            && productionClaudeMainObserved
+            && productionClaudePromptSent
+            && productionClaudeResponseObserved
+            && productionClaudeInterruptPromptSent
+            && productionClaudeInterruptActiveObserved
+            && productionClaudeInterruptSent
+            && productionClaudeInterruptedObserved
+            && productionClaudeShortcutsSent
+            && productionClaudeShortcutsObserved
+            && productionClaudeResizeSent
+            && productionClaudeExitSent
+            && productionClaudeExitObserved
+          print(
+            "GHOSTTEA_PRODUCTION_CLAUDE_FINAL exit=\(exit.description) "
+              + "noecho=\(productionClaudeNoEchoObserved) "
+              + "main=\(productionClaudeMainObserved) "
+              + "response=\(productionClaudeResponseObserved) "
+              + "interruptActive=\(productionClaudeInterruptActiveObserved) "
+              + "interrupted=\(productionClaudeInterruptedObserved) "
+              + "shortcuts=\(productionClaudeShortcutsObserved) "
+              + "resize=\(productionClaudeResizeSent) "
+              + "exitObserved=\(productionClaudeExitObserved)"
+          )
         }
         guard exit == .exited(code: 0), markerIsValid else {
           throw HarnessError.sessionProbeMismatch("production terminal output")
@@ -1574,6 +1775,9 @@ final class HarnessModel: ObservableObject {
         case .monitorTuis:
           productionSessionStatus = "Passed · htop + btop render, input, and resize"
           passMarker = "GHOSTTEA_PRODUCTION_MONITOR_TUIS_PASS"
+        case .claude:
+          productionSessionStatus = "Passed · Claude Code prompt, interrupt, shortcuts, and resize"
+          passMarker = "GHOSTTEA_PRODUCTION_CLAUDE_PASS"
         }
         productionSessionInputStatus = "Native terminal text validated"
         print(passMarker)
@@ -2035,6 +2239,8 @@ final class HarnessModel: ObservableObject {
         productionSSHProfile = .zellij
       case "monitor-tuis":
         productionSSHProfile = .monitorTuis
+      case "claude":
+        productionSSHProfile = .claude
       default:
         productionSSHProfile = .shell
       }

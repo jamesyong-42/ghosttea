@@ -23,4 +23,5 @@ nc -lk -p 22026 >/dev/null 2>&1 &
 /usr/sbin/sshd -f /etc/ssh/sshd_config.ecdsa-aesgcm
 /usr/sbin/sshd -f /etc/ssh/sshd_config.rsa-sha2
 /usr/local/bin/ghosttea-keyboard-metadata-server &
+/usr/local/bin/ghosttea-claude-mock-server &
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config.public-key

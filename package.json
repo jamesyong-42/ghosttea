@@ -42,6 +42,7 @@
     "test:ios:production-vim": "node scripts/test-ios-device-harness.mjs --production-vim",
     "test:ios:production-zellij": "node scripts/test-ios-device-harness.mjs --production-zellij",
     "test:ios:production-monitor-tuis": "node scripts/test-ios-device-harness.mjs --production-monitor-tuis",
+    "test:ios:production-claude": "node scripts/test-ios-device-harness.mjs --production-claude",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",
     "test:ssh:fixture:candidate": "node scripts/ssh-fixture.mjs candidate",
     "test:ssh:fixture:swift": "node scripts/ssh-fixture.mjs swift",

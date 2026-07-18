@@ -127,6 +127,24 @@ function waitUntilHealthy() {
   throw new Error("SSH fixture did not become healthy within 15 seconds.");
 }
 
+function verifyAgentTuiFixture() {
+  const version = compose(["exec", "-T", "-u", "ghosttea", "sshd", "claude", "--version"]);
+  if (version !== "2.1.214 (Claude Code)") {
+    throw new Error(`Unexpected Claude Code fixture version: ${JSON.stringify(version)}`);
+  }
+  const model = compose([
+    "exec",
+    "-T",
+    "sshd",
+    "python3",
+    "-c",
+    "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:22100/v1/models'))['data'][0]['id'])",
+  ]);
+  if (model !== "claude-sonnet-4-5-20250929") {
+    throw new Error(`Unexpected Claude mock-gateway model: ${JSON.stringify(model)}`);
+  }
+}
+
 function scanKnownHosts() {
   const entries = [
     [ports.password, passwordScanHost],
@@ -290,6 +308,7 @@ function up() {
   try {
     compose(["up", "--build", "--detach"], { inherit: true });
     waitUntilHealthy();
+    verifyAgentTuiFixture();
     scanKnownHosts();
     console.log(
       `SSH fixtures ready: password=${ports.password}, keyboard-interactive=${ports.keyboard}, partial-success=${ports.partial}, public-key=${ports.publicKey}, banner-blackhole=${ports.blackhole}, ecdsa-aesgcm=${ports.ecdsaAesGcm}, rsa-sha2=${ports.rsaSha2}, keyboard-metadata=${ports.metadata}`,

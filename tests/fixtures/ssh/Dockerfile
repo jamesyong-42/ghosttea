@@ -16,9 +16,17 @@ RUN architecture="$(dpkg --print-architecture)" \
     && tar -xzf "$archive" -C /usr/local/bin zellij \
     && chmod 0755 /usr/local/bin/zellij
 
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS claude-code
+
+RUN npm install --global @anthropic-ai/claude-code@2.1.214 \
+    && npm cache clean --force
+
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
 COPY --from=zellij /usr/local/bin/zellij /usr/local/bin/zellij
+COPY --from=claude-code /usr/local/bin/node /usr/local/bin/node
+COPY --from=claude-code /usr/local/bin/claude /usr/local/bin/claude
+COPY --from=claude-code /usr/local/lib/node_modules/@anthropic-ai/claude-code /usr/local/lib/node_modules/@anthropic-ai/claude-code
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -61,9 +69,11 @@ COPY sshd_config.public-key /etc/ssh/sshd_config.public-key
 COPY sshd_config.ecdsa-aesgcm /etc/ssh/sshd_config.ecdsa-aesgcm
 COPY sshd_config.rsa-sha2 /etc/ssh/sshd_config.rsa-sha2
 COPY paramiko_metadata_server.py /usr/local/bin/ghosttea-keyboard-metadata-server
+COPY claude_mock_server.py /usr/local/bin/ghosttea-claude-mock-server
 COPY entrypoint.sh /usr/local/bin/ghosttea-ssh-fixture
 
 RUN chmod 0755 \
+        /usr/local/bin/ghosttea-claude-mock-server \
         /usr/local/bin/ghosttea-keyboard-metadata-server \
         /usr/local/bin/ghosttea-ssh-fixture
 
