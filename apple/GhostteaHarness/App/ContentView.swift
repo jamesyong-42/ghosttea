@@ -90,6 +90,60 @@ struct ContentView: View {
           }
         }
 
+        Section("Production terminal session") {
+          Text(model.productionSessionStatus)
+            .font(.footnote)
+          Picker("Profile", selection: $model.productionSSHProfile) {
+            ForEach(HarnessModel.ProductionSSHProfile.allCases) { profile in
+              Text(profile.rawValue).tag(profile)
+            }
+          }
+          if model.productionSSHProfile != .shell {
+            TextField("Remote session name", text: $model.productionProfileName)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+          }
+          if let frame = model.productionSessionFrame {
+            GhostteaTerminalPreview(
+              frame: frame,
+              visible: scenePhase == .active,
+              onHardwareInput: model.handleProductionHardwareInput,
+              onSoftwareInput: model.handleProductionSoftwareInput,
+              onMouseInput: model.handleProductionMouseInput,
+              onScrollRows: model.handleProductionScrollRows,
+              onSelectionCommit: model.handleProductionSelectionCommit,
+              onSelectAll: model.handleProductionSelectAll
+            )
+            .frame(height: 220)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(model.productionSessionInputStatus)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          HStack {
+            Button(
+              model.isRunningProductionSession
+                ? "Running…" : "Run production session"
+            ) {
+              model.runProductionSessionGate()
+            }
+            .disabled(model.isRunningProductionSession || model.isRunningSSH)
+            if model.isRunningProductionSession {
+              Spacer()
+              Button("Disconnect", role: .destructive) {
+                model.cancelProductionSession()
+              }
+            }
+          }
+          Text(
+            model.productionSSHProfile == .shell
+              ? "Automatically validates fixture SSH, the shared terminal model, TRF1, native terminal text, and the Metal surface."
+              : "Connects the selected attach-or-create profile through the production session and enables terminal input."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+
         Section("Memory matrix") {
           Text(model.memoryStatus)
             .font(.footnote)
@@ -325,7 +379,7 @@ struct ContentView: View {
           }
         }
       }
-      .navigationTitle("Ghosttea Phase 0")
+      .navigationTitle("Ghosttea iOS Harness")
       .sheet(isPresented: sshInteractionPresented) {
         SSHInteractionView()
           .environmentObject(model)

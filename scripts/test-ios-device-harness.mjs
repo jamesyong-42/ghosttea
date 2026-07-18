@@ -17,6 +17,7 @@ const derivedData = join(root, "native/build/ios-harness/signed-automated");
 const app = join(derivedData, "Build/Products/Debug-iphoneos/GhostteaHarness.app");
 const bundleIdentifier = "com.vibecook.GhostteaHarness";
 let fixtureStarted = false;
+const productionSessionAutomation = process.argv.includes("--production-session");
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -194,7 +195,7 @@ async function main() {
     fixtureStarted = true;
     execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
     await waitForUnlockedDevice(device);
-    execute("xcrun", [
+    const launchArguments = [
       "devicectl",
       "device",
       "process",
@@ -202,17 +203,29 @@ async function main() {
       "--device",
       device.identifier,
       "--terminate-existing",
+    ];
+    if (productionSessionAutomation) launchArguments.push("--console");
+    launchArguments.push(
       "--environment-variables",
       JSON.stringify({
-        GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
-        GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
+        ...(productionSessionAutomation
+          ? { GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1" }
+          : {
+              GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
+              GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
+            }),
         GHOSTTEA_FIXTURE_HOST: host,
       }),
       bundleIdentifier,
-    ]);
+    );
+    execute("xcrun", launchArguments);
 
     console.log(`\nLaunched on ${device.hardwareProperties.marketingName} with disposable fixture ${host}:22022.`);
-    await waitForCleanupRequest();
+    if (productionSessionAutomation) {
+      console.log("Production SSH → core → TRF1 device gate passed.");
+    } else {
+      await waitForCleanupRequest();
+    }
   } finally {
     stopFixture();
   }

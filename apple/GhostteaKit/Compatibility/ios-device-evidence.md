@@ -987,3 +987,28 @@ tests pass, and the full harness builds
 for arm64 iPhone Simulator and physical-device SDKs. This is build and replay
 evidence, not a live tmux/Zellij device claim; live shell/TUI runs and the
 credential-backed public-key-plus-keyboard-interactive gap remain open.
+
+## 2026-07-17: production session surface and automatic device gate
+
+The third Phase 6 slice binds `GhostteaSSHSessionFactory` to a visible iOS
+terminal surface. It does not read SSH output beside the model: the production
+session pulls transport bytes, feeds the shared core, executes ordered replies,
+and publishes immutable TRF1 frames to the Metal view. Hardware and software
+keys, paste, terminal mouse input, scrollback, and native selection route back
+through the production session/core boundary. Network path changes and
+aggregate scene suspension are forwarded to that same generation-safe actor.
+
+The harness offers shell, tmux, and Zellij profiles. Shell mode is a one-tap
+gate: after production Keychain authentication it writes styled marker output,
+exits, requires a typed zero exit, and verifies the marker through native
+terminal accessibility rows before declaring the complete SSH-to-render path
+passed. The attach profiles retain the surface for interactive input.
+
+`npm run test:ios:production-session` adds a noninteractive physical-device
+runner. It builds and installs the signed app, starts the disposable fixture,
+limits automatic host-key acceptance to the injected fixture hostname, streams
+the app console until its pass/fail exit, removes the temporary device-only
+Keychain credential, and tears down the fixture. All 73 package tests and both
+iOS SDK builds pass. The phone was not connected when this slice landed, so the
+new runner itself remains pending physical execution and no live result is
+claimed here.

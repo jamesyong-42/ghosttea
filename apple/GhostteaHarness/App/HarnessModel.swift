@@ -4,6 +4,7 @@ import GhostteaCore
 import GhostteaCredentials
 import GhostteaFontProof
 import GhostteaSSH
+import GhostteaSession
 import GhostteaTerminal
 import GhostteaTransport
 import UIKit
@@ -47,6 +48,22 @@ final class HarnessModel: ObservableObject {
     var id: Self { self }
   }
 
+  enum ProductionSSHProfile: String, CaseIterable, Identifiable {
+    case shell = "Automatic shell gate"
+    case tmux = "tmux"
+    case zellij = "Zellij"
+
+    var id: Self { self }
+
+    func attachProfile(sessionName: String) -> GhostteaSSHAttachProfile {
+      switch self {
+      case .shell: .shell
+      case .tmux: .tmux(sessionName: sessionName)
+      case .zellij: .zellij(sessionName: sessionName)
+      }
+    }
+  }
+
   struct PendingHostKey: Identifiable {
     let id = UUID()
     let challenge: SSHCandidateHostKeyChallenge
@@ -62,6 +79,11 @@ final class HarnessModel: ObservableObject {
   @Published var coreResult = "Not run"
   @Published var frameDecoderResult = "Not run"
   @Published var framePreview: Data?
+  @Published var productionSessionFrame: Data?
+  @Published var productionSessionStatus = "Not run"
+  @Published var productionSessionInputStatus = "Connect to enable input"
+  @Published var productionSSHProfile = ProductionSSHProfile.shell
+  @Published var productionProfileName = "ghosttea"
   @Published var terminalInputResult = "Run the TRF1 fixture to enable the input probe"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
@@ -96,10 +118,19 @@ final class HarnessModel: ObservableObject {
   @Published var isRunningActiveSSHMemory = false
   @Published var isRunningKeychain = false
   @Published var isRunningSSH = false
+  @Published var isRunningProductionSession = false
 
   private var hostKeyContinuation: CheckedContinuation<SSHCandidateHostKeyDecision, Never>?
   private var keyboardChallengeContinuation: CheckedContinuation<[String], Error>?
   private var sshTask: Task<Void, Never>?
+  private var productionSession: GhostteaSession?
+  private var productionTerminal: GhostteaTerminal?
+  private var productionCredentialStore: KeychainSSHCredentialStore?
+  private var productionCredential: SSHCredentialID?
+  private var productionShellCommandSent = false
+  private let productionSessionAutomation =
+    ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
+  private var didAutorunProductionSession = false
   private var sshCancellationRequestedAt: ContinuousClock.Instant?
   private var sshCancellationReason: SSHCancellationReason?
   private var sshGeneration: UInt64?
@@ -701,6 +732,320 @@ final class HarnessModel: ObservableObject {
     }
   }
 
+  func runProductionSessionGate() {
+    guard !isRunningProductionSession, !isRunningSSH else { return }
+    guard reconnectModel.path.canAttemptConnection else {
+      productionSessionStatus = "Waiting for a satisfied network path"
+      return
+    }
+
+    isRunningProductionSession = true
+    productionSessionStatus = "Preparing protected credentials and known hosts…"
+    productionSessionInputStatus = "Connecting…"
+    productionSessionFrame = nil
+    productionShellCommandSent = false
+
+    Task {
+      do {
+        let store = try KeychainSSHCredentialStore()
+        let credential = SSHCredentialID(connectionID: UUID(), kind: .password)
+        try await store.store(Data("ghosttea-password".utf8), for: credential)
+        let knownHosts = try GhostteaSSHKnownHostsFile(
+          applicationDirectoryName: "GhostteaHarness"
+        ).prepare()
+        let runtime = try GhostteaRuntime()
+        let terminal = try GhostteaTerminal(
+          runtime: runtime,
+          configuration: .init(sessionHandle: 606, columns: 100, rows: 30)
+        )
+        let profile = productionSSHProfile.attachProfile(sessionName: productionProfileName)
+        let fixtureHost = disposableFixtureHost
+        let automateTrust = productionSessionAutomation
+        let ssh = try GhostteaSSHConfiguration(
+          host: fixtureHost,
+          port: 22_022,
+          knownHostsPath: knownHosts,
+          hostKeyPolicy: .ask { [weak self] challenge in
+            guard let self else { return .reject }
+            if automateTrust, challenge.host == fixtureHost {
+              return .acceptAndStore
+            }
+            return await self.requestHostKeyDecision(challenge)
+          },
+          authentication: .password(
+            username: "ghosttea",
+            credential: credential,
+            store: store
+          ),
+          profile: profile,
+          columns: 100,
+          rows: 30,
+          connectTimeoutMilliseconds: 15_000,
+          handshakeTimeoutMilliseconds: 15_000
+        )
+        let session = GhostteaSSHSessionFactory.make(
+          terminal: terminal,
+          ssh: ssh,
+          session: .ssh(initialPath: reconnectModel.path),
+          eventHandler: { [weak self] event in
+            await self?.handleProductionSessionEvent(event)
+          }
+        )
+        productionTerminal = terminal
+        productionCredentialStore = store
+        productionCredential = credential
+        productionSession = session
+        productionSessionStatus = "Connecting through production session…"
+        await session.requestConnect()
+      } catch {
+        productionSessionStatus = "Failed: \(GhostteaSSHFailurePolicy.description(error))"
+        productionSessionInputStatus = "Unavailable"
+        isRunningProductionSession = false
+        finishProductionSessionAutomation(exitCode: 2)
+        cleanupProductionCredential()
+      }
+    }
+  }
+
+  func cancelProductionSession() {
+    guard let productionSession else { return }
+    productionSessionStatus = "Disconnecting…"
+    Task {
+      await productionSession.disconnect()
+      cleanupProductionCredential()
+      isRunningProductionSession = false
+    }
+  }
+
+  func handleProductionHardwareInput(_ event: GhostteaHardwareKeyEvent) -> Bool {
+    guard let productionSession, isRunningProductionSession else { return false }
+    guard !event.modifiers.contains(.command) else { return false }
+    Task {
+      do {
+        try await productionSession.sendKey(event.coreEvent)
+        productionSessionInputStatus = "Hardware key sent"
+      } catch {
+        productionSessionInputStatus = "Input failed: \(error)"
+      }
+    }
+    return true
+  }
+
+  func handleProductionSoftwareInput(_ event: GhostteaSoftwareInputEvent) {
+    guard let productionSession, isRunningProductionSession else { return }
+    Task {
+      do {
+        switch event {
+        case .text(let text):
+          try await productionSession.send(Data(text.utf8))
+        case .enter:
+          try await productionSession.sendKey(try softwareKey(hidUsage: 0x28))
+        case .deleteBackward:
+          try await productionSession.sendKey(try softwareKey(hidUsage: 0x2a))
+        case .paste(let text):
+          try await productionSession.sendPaste(text)
+        case .key(let key):
+          try await productionSession.sendKey(key.coreEvent)
+        }
+        productionSessionInputStatus = "Software input sent"
+      } catch {
+        productionSessionInputStatus = "Input failed: \(error)"
+      }
+    }
+  }
+
+  func handleProductionMouseInput(_ event: GhostteaTerminalMouseEvent) {
+    guard let productionSession, isRunningProductionSession else { return }
+    Task {
+      do {
+        try await productionSession.sendMouse(event.coreEvent)
+      } catch {
+        productionSessionInputStatus = "Mouse input failed: \(error)"
+      }
+    }
+  }
+
+  func handleProductionScrollRows(_ rows: Int) {
+    guard let productionSession, rows != 0 else { return }
+    Task {
+      do {
+        try await productionSession.scroll(rows: Int64(rows))
+      } catch {
+        productionSessionInputStatus = "Scroll failed: \(error)"
+      }
+    }
+  }
+
+  func handleProductionSelectionCommit(_ selection: GhostteaTerminalSelection) {
+    guard let productionTerminal else { return }
+    Task {
+      do {
+        let text = try await productionTerminal.selectionText(
+          startColumn: selection.anchor.column,
+          startRow: selection.anchor.row,
+          endColumn: selection.focus.column,
+          endRow: selection.focus.row
+        )
+        UIPasteboard.general.string = text
+        productionSessionInputStatus = "Copied \(text.utf8.count) UTF-8 bytes"
+      } catch {
+        productionSessionInputStatus = "Selection failed: \(error)"
+      }
+    }
+  }
+
+  func handleProductionSelectAll() {
+    guard let productionTerminal else { return }
+    Task {
+      do {
+        let text = try await productionTerminal.selectionText(
+          startColumn: 0,
+          startRow: 0,
+          endColumn: 0,
+          endRow: 0,
+          selectAll: true
+        )
+        UIPasteboard.general.string = text
+        productionSessionInputStatus = "Copied all · \(text.utf8.count) UTF-8 bytes"
+      } catch {
+        productionSessionInputStatus = "Select All failed: \(error)"
+      }
+    }
+  }
+
+  private func handleProductionSessionEvent(_ event: GhostteaSessionEvent) {
+    switch event {
+    case .stateChanged(let snapshot):
+      handleProductionSessionState(snapshot)
+    case .frameReady(let frame):
+      productionSessionFrame = frame
+    case .metadataChanged:
+      break
+    case .bell:
+      productionSessionInputStatus = "Bell"
+    case .clipboardWrite(let data):
+      UIPasteboard.general.string = String(decoding: data, as: UTF8.self)
+    case .logicalSnapshot:
+      break
+    }
+  }
+
+  private func handleProductionSessionState(_ snapshot: GhostteaSessionSnapshot) {
+    switch snapshot.reconnectState {
+    case .idle:
+      if let exit = snapshot.lastExitStatus {
+        validateCompletedProductionShell(exit: exit)
+      } else {
+        productionSessionStatus = "Disconnected"
+        isRunningProductionSession = false
+        cleanupProductionCredential()
+      }
+    case .waitingForNetwork:
+      productionSessionStatus = "Waiting for network"
+    case .connecting(let generation):
+      productionSessionStatus = "Connecting · generation \(generation)"
+    case .connected(let generation):
+      productionSessionStatus = "Connected · generation \(generation)"
+      productionSessionInputStatus = "Tap the terminal to type"
+      sendAutomaticProductionShellCommandIfNeeded()
+    case .reconnectAvailable:
+      productionSessionStatus = "Reconnect available"
+      isRunningProductionSession = false
+      cleanupProductionCredential()
+    case .suspended:
+      productionSessionStatus = "Suspended"
+    case .failed:
+      productionSessionStatus = snapshot.lastFailure?.message ?? "SSH session failed"
+      productionSessionInputStatus = "Unavailable"
+      isRunningProductionSession = false
+      finishProductionSessionAutomation(exitCode: 2)
+      cleanupProductionCredential()
+    }
+  }
+
+  private func sendAutomaticProductionShellCommandIfNeeded() {
+    guard productionSSHProfile == .shell,
+      !productionShellCommandSent,
+      let productionSession
+    else { return }
+    productionShellCommandSent = true
+    Task {
+      do {
+        try await productionSession.send(
+          Data("printf '\\033[31mghosttea-production-session-ok\\033[0m\\n'; exit\n".utf8)
+        )
+      } catch {
+        productionSessionStatus = "Shell gate input failed: \(error)"
+      }
+    }
+  }
+
+  private func validateCompletedProductionShell(exit: TerminalExitStatus) {
+    guard productionSSHProfile == .shell, let productionTerminal else {
+      productionSessionStatus = "Completed · \(exit.description)"
+      isRunningProductionSession = false
+      cleanupProductionCredential()
+      return
+    }
+    Task {
+      do {
+        let rows = try await productionTerminal.accessibilityRows(start: 0, count: 100)
+        let text = String(decoding: rows, as: UTF8.self)
+        guard exit == .exited(code: 0), text.contains("ghosttea-production-session-ok") else {
+          throw HarnessError.sessionProbeMismatch("production terminal output")
+        }
+        productionSessionStatus = "Passed · SSH → core → TRF1 → Metal"
+        productionSessionInputStatus = "Native terminal text validated"
+        print("GHOSTTEA_PRODUCTION_SESSION_PASS")
+        finishProductionSessionAutomation(exitCode: 0)
+      } catch {
+        productionSessionStatus = "Failed: \(error)"
+        print("GHOSTTEA_PRODUCTION_SESSION_ERROR \(error)")
+        finishProductionSessionAutomation(exitCode: 2)
+      }
+      isRunningProductionSession = false
+      cleanupProductionCredential()
+    }
+  }
+
+  private func cleanupProductionCredential() {
+    guard let store = productionCredentialStore, let credential = productionCredential else {
+      return
+    }
+    productionCredentialStore = nil
+    productionCredential = nil
+    Task { try? await store.remove(credential) }
+  }
+
+  private func finishProductionSessionAutomation(exitCode: Int32) {
+    guard productionSessionAutomation else { return }
+    let store = productionCredentialStore
+    let credential = productionCredential
+    productionCredentialStore = nil
+    productionCredential = nil
+    Task {
+      if let store, let credential {
+        try? await store.remove(credential)
+      }
+      fflush(nil)
+      Darwin.exit(exitCode)
+    }
+  }
+
+  private func softwareKey(hidUsage: UInt16) throws -> GhostteaKeyEvent {
+    guard
+      let event = GhostteaHardwareKeyEvent(
+        hidUsage: hidUsage,
+        characters: "",
+        charactersIgnoringModifiers: "",
+        action: .down
+      )
+    else {
+      throw HarnessError.sessionProbeMismatch("software key")
+    }
+    return event.coreEvent
+  }
+
   @discardableResult
   func runSSHCommand() -> Bool {
     guard !isRunningSSH else { return false }
@@ -1059,6 +1404,9 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.enteredBackground)
     applyReconnectEffects(effects, cancellationReason: .background)
     updateReconnectStateSummary()
+    if let productionSession {
+      Task { await productionSession.enteredBackground() }
+    }
   }
 
   func sceneDidBecomeActive() {
@@ -1066,6 +1414,9 @@ final class HarnessModel: ObservableObject {
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
     evaluateBackgroundLifecycleProbe()
+    if let productionSession {
+      Task { await productionSession.becameActive() }
+    }
   }
 
   private func requestSSHCancellation(_ reason: SSHCancellationReason) {
@@ -1090,6 +1441,14 @@ final class HarnessModel: ObservableObject {
     let effects = reconnectModel.update(.pathChanged(path))
     applyReconnectEffects(effects, cancellationReason: .networkChange)
     updateReconnectStateSummary()
+    if let productionSession {
+      Task { await productionSession.updateNetworkPath(path) }
+    }
+    if productionSessionAutomation, !didAutorunProductionSession, path.canAttemptConnection {
+      didAutorunProductionSession = true
+      productionSSHProfile = .shell
+      runProductionSessionGate()
+    }
   }
 
   private func didEstablishConnectionForLifecycleProbe() {
@@ -1303,19 +1662,9 @@ final class HarnessModel: ObservableObject {
   }
 
   private func knownHostsPath() throws -> String {
-    let root = try FileManager.default.url(
-      for: .applicationSupportDirectory,
-      in: .userDomainMask,
-      appropriateFor: nil,
-      create: true
-    )
-    let directory = root.appending(path: "GhostteaHarness", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true,
-      attributes: [.protectionKey: FileProtectionType.complete]
-    )
-    return directory.appending(path: "known_hosts", directoryHint: .notDirectory).path
+    try GhostteaSSHKnownHostsFile(
+      applicationDirectoryName: "GhostteaHarness"
+    ).prepare()
   }
 
   private func removeCredentials(

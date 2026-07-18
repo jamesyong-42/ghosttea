@@ -67,7 +67,7 @@ public struct GhostteaTerminalMouseEvent: Equatable, Sendable {
     self.paddingTop = paddingTop
   }
 
-  var coreEvent: GhostteaMouseEvent {
+  public var coreEvent: GhostteaMouseEvent {
     GhostteaMouseEvent(
       action: action.rawValue,
       button: button.rawValue,

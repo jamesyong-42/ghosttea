@@ -2336,6 +2336,21 @@ and physical-device SDK compilation. Production UI binding, chained
 credential-backed public-key MFA, and live TUI/device gates remain later Phase
 6 slices.
 
+The third slice binds the production factory into the iOS harness as a real
+terminal surface rather than another byte-oriented SSH diagnostic. Connection
+state and TRF1 frames flow from `GhostteaSession` into the Metal view;
+hardware/software keys, paste, mouse input, scroll, and native selection route
+back through the session/core boundary. Aggregate scene suspension and network
+path changes are forwarded to the same generation-safe actor. Shell mode is an
+automatic end-to-end gate that emits styled fixture output, waits for typed
+exit, then verifies the marker through the core's native accessibility rows.
+tmux and Zellij profiles expose the same surface as long-lived interactive
+sessions. `npm run test:ios:production-session` builds and installs the signed
+app, starts the disposable fixture, performs fixture-scoped host-key trust, and
+uses the app process exit status as the physical-device result. Package tests
+and both iOS SDK builds pass; the new physical runner remains to be executed on
+a connected device before its live evidence is recorded.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

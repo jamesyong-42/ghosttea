@@ -44,6 +44,16 @@ native store retains atomic OpenSSH-format updates. Shell, named tmux, and
 named Zellij attach profiles request a PTY and quote session names as single
 shell arguments.
 
+The iOS harness now binds that production session directly to the shared core
+and Metal terminal surface. Session state, TRF1 frames, hardware/software/mouse
+input, scrollback, selection, route changes, and app suspension all cross the
+same `GhostteaSession` actor used by product code. Its automatic shell gate
+connects to the disposable fixture, emits styled output, exits cleanly, and
+validates the marker through native terminal accessibility text before passing.
+The dedicated device runner installs a signed build, starts the fixture, waits
+for the app's process result, and removes its temporary Keychain credential
+before exit.
+
 ## Build and test
 
 From the repository root on Apple Silicon macOS:
@@ -64,6 +74,7 @@ npm run test:ghosttea-frame:apple-runtime
 npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
+npm run test:ios:production-session
 npm run bench:ghostty-vt:apple:matrix
 ```
 
