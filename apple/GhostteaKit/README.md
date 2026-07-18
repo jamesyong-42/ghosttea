@@ -64,8 +64,12 @@ The automated signed-device matrix now proves two concurrent iOS attachments,
 control handoff, exact resize, selection, snapshot resync, detach/reconnect,
 and desktop-process restart recovery against the same desktop session. The
 embedded-listener descriptor fault is fixed by the reviewed libtailscale patch
-recorded in the release lock. Physical iPad multi-scene qualification and the
-periodic self-recovering Tailscale LocalAPI watch timeout remain release gates.
+recorded in the release lock. The production `WindowGroup` now shares one
+application-owned mesh while giving each scene an independent attachment,
+replica, renderer, grid, control epoch, and stable view ID; a signed iPhone
+regression passes after that ownership split. Physical iPad Stage Manager
+qualification and the periodic self-recovering Tailscale LocalAPI watch timeout
+remain release gates.
 App Store distribution export remains a release-account step.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
@@ -341,14 +345,16 @@ visible surface. Background/GPU suspension and scene occlusion cancel the task;
 and `noteCursorActivity()` restarts the interval after local input. Each toggle
 requests one Metal draw rather than enabling a display link.
 
-`GhostteaSceneAttachmentRegistry` supplies the iOS v1 presentation boundary:
+`GhostteaSceneAttachmentRegistry` supplies the local-session presentation boundary:
 one generation-checked attachment token per session, explicit transfer to a
 new scene, stale-detach rejection, and per-scene visibility changes. Scene
 disconnection drops only presentation ownership; it never destroys the
 app-owned session. `GhostteaSceneLifecycleState` separately computes the
 aggregate app phase so one background window cannot suspend work still visible
-in another active scene. A future simultaneous multi-presentation release can
-replace this registry without changing the shared terminal model.
+in another active scene. Remote Truffle sessions use the desktop core's native
+multi-view capability instead: each production scene owns a separately rendered
+attachment with a `GhostteaSceneTerminalIdentity`, while the mesh remains
+application-owned.
 
 The first native-input slice keeps UIKit above the terminal encoding boundary.
 `GhostteaHardwareKeyEvent` maps Apple HID usages to desktop-compatible DOM codes

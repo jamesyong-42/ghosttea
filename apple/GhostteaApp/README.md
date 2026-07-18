@@ -7,6 +7,13 @@ interactive Tailscale login, peer/session browsing, logical replica, Metal
 terminal surface, keyboard/mouse/selection input, control state, and foreground
 snapshot resynchronization.
 
+The Truffle node is application-owned, but every `WindowGroup` scene owns its
+own shared-session browser, logical replica, Metal surface, attachment task,
+grid, control epoch, and stable view ID. On iPad, the New Window toolbar action
+opens another Stage Manager window without starting a second embedded
+Tailscale runtime. Closing a window cancels any in-flight attach and detaches
+only that scene's remote view; other windows and the private mesh remain live.
+
 The production app also composes saved direct-SSH connections. Non-secret
 profiles are protected application-support documents; password, private-key,
 and passphrase material is stored only behind device-only Keychain references.
@@ -70,7 +77,8 @@ discovered the Electron demo, attached read-write to its desktop-authoritative
 session, rendered its logical state locally, and sent input whose output was
 observed in the concurrent desktop view. See
 [`../GhostteaKit/Compatibility/ios-device-evidence.md`](../GhostteaKit/Compatibility/ios-device-evidence.md)
-for the complete automated evidence and the remaining iPad/release matrix.
+for the complete automated evidence and the remaining physical iPad/release
+matrix.
 
 Create and verify the signed Release archive with:
 

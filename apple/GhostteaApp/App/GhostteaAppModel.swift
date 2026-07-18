@@ -1,38 +1,29 @@
+import Combine
 import Foundation
 import GhostteaCore
 import GhostteaTerminal
 import GhostteaTruffle
 import SwiftUI
 import UIKit
-#if DEBUG
-  import Darwin
-#endif
-
-struct GhostteaLoginPage: Identifiable {
-  let url: URL
-  var id: String { url.absoluteString }
-}
 
 @MainActor
 final class GhostteaAppModel: ObservableObject {
-  @Published private(set) var phase: GhostteaTruffleRuntimePhase = .stopped
-  @Published private(set) var status = "Starting Ghosttea…"
-  @Published private(set) var hosts: [GhostteaTruffleHostCandidate] = []
   @Published private(set) var sessions: [GhostteaSharedSessionSummary] = []
   @Published private(set) var selectedHostName: String?
   @Published private(set) var selectedSession: GhostteaSharedSessionSummary?
   @Published private(set) var frame: Data?
   @Published private(set) var hasControl = false
   @Published private(set) var readWriteAllowed = false
-  @Published var authPage: GhostteaLoginPage?
-  @Published private(set) var isBusy = false
+  @Published private var localStatus: String?
+  @Published private var localBusy = false
 
-  private var mesh: GhostteaTruffleRuntime?
-  private var directory: GhostteaTrufflePeerDirectory?
+  private let sharedRuntime: GhostteaSharedRuntimeModel
+  private let sceneIdentity: GhostteaSceneTerminalIdentity
+  private var runtimeObservation: AnyCancellable?
   private var selectedHost: GhostteaTruffleHostCandidate?
   private var attachment: GhostteaTruffleAttachment?
   private var replicaPump: GhostteaTruffleReplicaPump?
-  private var eventTask: Task<Void, Never>?
+  private var pendingAttachmentTask: Task<Void, Never>?
   private var attachmentTask: Task<Void, Never>?
   private var renderRuntime: GhostteaRuntime?
   private var nextSessionHandle: UInt64 = 1
@@ -41,87 +32,60 @@ final class GhostteaAppModel: ObservableObject {
   private var claimSequence: UInt64 = 0
   private var controlEpoch: UInt64?
   private var grid = GhostteaTerminalGridSize(columns: 80, rows: 24)
-  #if DEBUG
-    private var sharedAutomationProbeStarted = false
-  #endif
 
-  func start() {
-    guard mesh == nil, !isBusy else { return }
-    trace("starting private mesh")
-    isBusy = true
-    status = "Starting private mesh…"
-    phase = .starting
-    Task {
-      do {
-        if renderRuntime == nil { renderRuntime = try GhostteaRuntime() }
-        let runtime = try await GhostteaTruffleRuntime.start(
-          deviceName: UIDevice.current.name,
-          onAuthRequired: { [weak self] url in
-            self?.authPage = GhostteaLoginPage(url: url)
-          })
-        mesh = runtime
-        directory = await runtime.directory
-        trace("private mesh runtime started")
-        let events = await runtime.events()
-        eventTask = Task { [weak self] in
-          for await event in events {
-            guard let self else { return }
-            await self.handle(event)
-          }
-        }
-        phase = await runtime.phase
-        isBusy = false
-        await refreshHosts()
-      } catch {
-        trace("private mesh startup failed: \(error)")
-        fail("Could not start Truffle: \(error)")
-      }
+  var phase: GhostteaTruffleRuntimePhase { sharedRuntime.phase }
+  var status: String { localStatus ?? sharedRuntime.status }
+  var hosts: [GhostteaTruffleHostCandidate] { sharedRuntime.hosts }
+  var isBusy: Bool { localBusy || sharedRuntime.isBusy }
+  var terminalViewID: String { sceneIdentity.viewID }
+  var authPage: GhostteaLoginPage? {
+    get { sharedRuntime.authPage }
+    set { sharedRuntime.authPage = newValue }
+  }
+
+  init(sharedRuntime: GhostteaSharedRuntimeModel, sceneID: UUID = UUID()) {
+    self.sharedRuntime = sharedRuntime
+    sceneIdentity = GhostteaSceneTerminalIdentity(sceneID: sceneID)
+    runtimeObservation = sharedRuntime.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
     }
   }
 
+  func start() {
+    if renderRuntime == nil {
+      do { renderRuntime = try GhostteaRuntime() }
+      catch {
+        fail("Could not start terminal renderer: \(error)")
+        return
+      }
+    }
+    sharedRuntime.start()
+  }
+
   func stop() {
-    let runtime = mesh
     Task {
       await disconnectAttachment(clearSelection: true)
-      eventTask?.cancel()
-      eventTask = nil
-      await runtime?.stop()
-      mesh = nil
-      directory = nil
-      hosts = []
+      await sharedRuntime.stop()
       sessions = []
-      phase = .stopped
-      status = "Disconnected"
+      localStatus = nil
     }
   }
 
   func loginSheetDismissed() {
-    authPage = nil
-    Task {
-      do { try await mesh?.refresh() }
-      catch { status = "Login refresh failed: \(error)" }
-    }
+    sharedRuntime.loginSheetDismissed()
   }
 
   func refreshHosts() async {
-    guard let mesh else { return }
-    hosts = await mesh.candidates()
-    trace("discovered \(hosts.count) online Ghosttea host(s)")
-    if phase == .running {
-      status = hosts.isEmpty
-        ? "Connected. Start the Ghosttea desktop demo to share a session."
-        : "\(hosts.count) Ghosttea host\(hosts.count == 1 ? "" : "s") available"
-    }
-    startSharedAutomationProbeIfRequested()
+    await sharedRuntime.refreshHosts()
   }
 
   func loadSessions(from candidate: GhostteaTruffleHostCandidate) {
-    guard let directory, !isBusy else { return }
-    isBusy = true
+    guard let directory = sharedRuntime.directory, !isBusy else { return }
+    localBusy = true
     selectedHost = candidate
     selectedHostName = candidate.displayName
     sessions = []
-    status = "Loading sessions from \(candidate.displayName)…"
+    localStatus = "Loading sessions from \(candidate.displayName)…"
     Task {
       do {
         let client = try await directory.connect(to: candidate)
@@ -133,10 +97,10 @@ final class GhostteaAppModel: ObservableObject {
           await client.close()
           throw error
         }
-        status = sessions.isEmpty
+        localStatus = sessions.isEmpty
           ? "This host has no attachable sessions."
           : "Choose a desktop session"
-        isBusy = false
+        localBusy = false
       } catch {
         fail("Could not list shared sessions: \(error)")
       }
@@ -144,19 +108,33 @@ final class GhostteaAppModel: ObservableObject {
   }
 
   func attach(to session: GhostteaSharedSessionSummary) {
-    guard let directory, let selectedHost, let renderRuntime, !isBusy else { return }
-    isBusy = true
-    status = "Attaching to \(session.title)…"
-    Task {
-      await disconnectAttachment(clearSelection: false)
+    guard
+      let directory = sharedRuntime.directory,
+      let selectedHost,
+      let renderRuntime,
+      !isBusy
+    else { return }
+    localBusy = true
+    localStatus = "Attaching to \(session.title)…"
+    pendingAttachmentTask?.cancel()
+    pendingAttachmentTask = Task { [weak self] in
+      guard let self else { return }
+      await disconnectAttachment(clearSelection: false, cancelPending: false)
       do {
         let handle = nextSessionHandle
         nextSessionHandle = handle == UInt64.max ? 1 : handle + 1
         let attached = try await directory.attach(
           to: selectedHost,
           sessionID: session.sessionID,
+          viewID: terminalViewID,
           cols: grid.columns,
           rows: grid.rows)
+        guard !Task.isCancelled else {
+          await attached.detach()
+          localBusy = false
+          pendingAttachmentTask = nil
+          return
+        }
         let pump = try GhostteaTruffleReplicaPump(
           attachment: attached,
           runtime: renderRuntime,
@@ -192,17 +170,28 @@ final class GhostteaAppModel: ObservableObject {
           try await attached.claimControl(
             cols: grid.columns, rows: grid.rows, sequence: claimSequence)
         }
-        status = attachmentInfo.readWrite
+        localStatus = attachmentInfo.readWrite
           ? "Attached · requesting keyboard control"
           : "Attached read-only"
-        isBusy = false
+        localBusy = false
+        pendingAttachmentTask = nil
       } catch {
+        pendingAttachmentTask = nil
+        await disconnectAttachment(clearSelection: false, cancelPending: false)
+        if Task.isCancelled || error is CancellationError {
+          localBusy = false
+          return
+        }
         fail("Could not attach to session: \(error)")
       }
     }
   }
 
   func disconnect() {
+    Task { await disconnectAttachment(clearSelection: true) }
+  }
+
+  func sceneDisconnected() {
     Task { await disconnectAttachment(clearSelection: true) }
   }
 
@@ -296,7 +285,7 @@ final class GhostteaAppModel: ObservableObject {
             startRow: selection.anchor.row,
             endColumn: selection.focus.column,
             endRow: selection.focus.row))
-      } catch { status = "Copy failed: \(error)" }
+      } catch { localStatus = "Copy failed: \(error)" }
     }
   }
 
@@ -306,7 +295,7 @@ final class GhostteaAppModel: ObservableObject {
       do {
         _ = try await attachment.requestSelectionText(
           GhostteaSelectionRequest(selectAll: true))
-      } catch { status = "Copy all failed: \(error)" }
+      } catch { localStatus = "Copy all failed: \(error)" }
     }
   }
 
@@ -321,34 +310,7 @@ final class GhostteaAppModel: ObservableObject {
     let sequence = inputSequence
     Task {
       do { try await attachment.send(operation, sequence: sequence) }
-      catch { status = "Input failed: \(error)" }
-    }
-  }
-
-  private func handle(_ event: GhostteaTruffleRuntimeEvent) async {
-    switch event {
-    case .phase(let newPhase):
-      trace("private mesh phase: \(newPhase.rawValue)")
-      phase = newPhase
-      switch newPhase {
-      case .running:
-        authPage = nil
-        await refreshHosts()
-      case .needsLogin: status = "Sign in to Tailscale to find your desktop"
-      case .needsMachineAuth: status = "Waiting for Tailscale device approval"
-      case .starting: status = "Connecting private mesh…"
-      case .failed: status = "The private mesh stopped unexpectedly"
-      case .stopping, .stopped: status = "Disconnected"
-      }
-    case .authRequired(let url):
-      trace("interactive authentication required at \(url.host ?? "Tailscale")")
-      authPage = GhostteaLoginPage(url: url)
-    case .peersChanged:
-      trace("private mesh peer set changed")
-      await refreshHosts()
-    case .health(let message):
-      trace("private mesh health: \(message)")
-      status = message
+      catch { localStatus = "Input failed: \(error)" }
     }
   }
 
@@ -366,22 +328,29 @@ final class GhostteaAppModel: ObservableObject {
       controlEpoch = epoch
       hasControl = controller == (await expectedAttachment.viewID)
       grid = GhostteaTerminalGridSize(columns: cols, rows: rows)
-      status = hasControl ? "Read-write control" : "Read-only · another view has control"
+      localStatus = hasControl ? "Read-write control" : "Read-only · another view has control"
     case .selectionText(_, let text):
       UIPasteboard.general.string = text
-      status = "Copied \(text.utf8.count) bytes"
+      localStatus = "Copied \(text.utf8.count) bytes"
     case .resynchronizing:
-      status = "Resynchronizing terminal state…"
+      localStatus = "Resynchronizing terminal state…"
     }
   }
 
   private func attachmentFailed(_ error: Error) async {
     trace("shared-session attachment failed: \(error)")
-    status = "Shared session ended: \(error)"
+    localStatus = "Shared session ended: \(error)"
     await disconnectAttachment(clearSelection: false)
   }
 
-  private func disconnectAttachment(clearSelection: Bool) async {
+  private func disconnectAttachment(
+    clearSelection: Bool,
+    cancelPending: Bool = true
+  ) async {
+    if cancelPending {
+      pendingAttachmentTask?.cancel()
+      pendingAttachmentTask = nil
+    }
     attachmentTask?.cancel()
     attachmentTask = nil
     let current = attachment
@@ -389,6 +358,7 @@ final class GhostteaAppModel: ObservableObject {
     replicaPump = nil
     await current?.detach()
     frame = nil
+    localBusy = false
     hasControl = false
     readWriteAllowed = false
     controlEpoch = nil
@@ -397,15 +367,14 @@ final class GhostteaAppModel: ObservableObject {
       selectedHost = nil
       selectedHostName = nil
       sessions = []
-      status = phase == .running ? "Choose a Ghosttea desktop" : status
+      localStatus = phase == .running ? "Choose a Ghosttea desktop" : nil
     }
   }
 
   private func fail(_ message: String) {
     trace(message)
-    isBusy = false
-    status = message
-    if mesh == nil { phase = .failed }
+    localBusy = false
+    localStatus = message
   }
 
   private func trace(_ message: String) {
@@ -414,59 +383,4 @@ final class GhostteaAppModel: ObservableObject {
     #endif
   }
 
-  private func startSharedAutomationProbeIfRequested() {
-    #if DEBUG
-      guard
-        !sharedAutomationProbeStarted,
-        phase == .running,
-        let directory
-      else { return }
-      let environment = ProcessInfo.processInfo.environment
-      let runInterop = environment["GHOSTTEA_AUTORUN_SHARED_INTEROP"] == "1"
-      let runRestart = environment["GHOSTTEA_AUTORUN_SHARED_RESTART"] == "1"
-      guard runInterop != runRestart else { return }
-      let host = runRestart
-        ? hosts.first(where: { $0.persistentReference != nil })
-        : hosts.first
-      guard let host else { return }
-      sharedAutomationProbeStarted = true
-      isBusy = true
-      status = runRestart
-        ? "Waiting for desktop restart…"
-        : "Running shared-session interop probe…"
-      Task {
-        do {
-          if runRestart {
-            let result = try await GhostteaSharedRestartProbe.run(
-              directory: directory, host: host)
-            print(result.marker)
-            Darwin.exit(EXIT_SUCCESS)
-          }
-          let client = try await directory.connect(to: host)
-          let advertised: [GhostteaSharedSessionSummary]
-          do {
-            advertised = try await client.listSessions().filter(\.attachable)
-            await client.close()
-          } catch {
-            await client.close()
-            throw error
-          }
-          guard let session = advertised.first else {
-            throw GhostteaTruffleError.handshakeRejected(
-              "desktop advertised no attachable session")
-          }
-          let result = try await GhostteaSharedInteropProbe.run(
-            directory: directory, host: host, session: session)
-          print(result.marker)
-          Darwin.exit(EXIT_SUCCESS)
-        } catch {
-          let marker = runRestart
-            ? "GHOSTTEA_SHARED_RESTART_FAIL"
-            : "GHOSTTEA_SHARED_INTEROP_FAIL"
-          print("\(marker) \(error)")
-          Darwin.exit(EXIT_FAILURE)
-        }
-      }
-    #endif
-  }
 }

@@ -59,6 +59,21 @@ public struct GhostteaSceneAttachmentToken: Hashable, Codable, Sendable {
   public let generation: UInt64
 }
 
+/// Stable identity for one WindowGroup presentation. It is deliberately
+/// independent of a terminal session so reconnects from the same scene retain
+/// their view identity while separate Stage Manager windows never collide.
+public struct GhostteaSceneTerminalIdentity: Hashable, Codable, Sendable {
+  public let sceneID: UUID
+
+  public init(sceneID: UUID = UUID()) {
+    self.sceneID = sceneID
+  }
+
+  public var viewID: String {
+    "ios-scene-\(sceneID.uuidString.lowercased())"
+  }
+}
+
 public struct GhostteaSceneAttachmentTransition: Equatable, Sendable {
   public let detached: GhostteaSceneAttachmentToken?
   public let attached: GhostteaSceneAttachmentToken

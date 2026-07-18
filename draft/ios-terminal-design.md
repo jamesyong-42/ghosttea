@@ -2793,10 +2793,15 @@ fresh reconnect. A restart gate proves that a changed desktop `hostInstanceID`
 rejects the old session and permits a fresh attachment even when the tailnet
 peer generation remains stable. The TailscaleKit inbound-listener `EBADF` was
 traced to `SCM_RIGHTS` descriptor renumbering and fixed by the reviewed, hashed
-libtailscale patch in the Truffle lock/BOM. All 68 sibling Truffle and 121
-Ghosttea Swift tests pass. Physical iPad multi-scene qualification and the
-separately observed, self-recovering LocalAPI watch timeout remain open. App
-Store distribution export is deferred to the release-account gate.
+libtailscale patch in the Truffle lock/BOM. The production app now separates
+one application-owned mesh runtime from scene-owned attachment, replica,
+renderer, grid, control, and stable view-ID state, exposes an iPad New Window
+action, and cancels/detaches only the closing scene. The generated manifest
+advertises multiple scenes and both Apple builds pass. All 68 sibling Truffle
+and 122 Ghosttea Swift tests pass, followed by the signed iPhone interop
+regression. Physical iPad Stage Manager qualification and the separately
+observed, self-recovering LocalAPI watch timeout remain open. App Store
+distribution export is deferred to the release-account gate.
 
 Deliverables:
 

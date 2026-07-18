@@ -423,6 +423,18 @@ private let blinkingCursor = TRF1CursorState(
   #expect(await registry.attachment(for: sessionID) == nil)
 }
 
+@Test func sceneTerminalIdentityIsStableAndUniquePerWindow() {
+  let firstScene = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+  let secondScene = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+  let first = GhostteaSceneTerminalIdentity(sceneID: firstScene)
+  let restored = GhostteaSceneTerminalIdentity(sceneID: firstScene)
+  let second = GhostteaSceneTerminalIdentity(sceneID: secondScene)
+
+  #expect(first == restored)
+  #expect(first.viewID == "ios-scene-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+  #expect(first.viewID != second.viewID)
+}
+
 @Test func scenePhasesAffectOnlyCurrentAttachmentsAndDisconnectPreservesSessions() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let firstSessionID = UUID()

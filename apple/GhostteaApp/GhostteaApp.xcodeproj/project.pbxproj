@@ -26,6 +26,7 @@
 		100000000000000000000012 /* GhostteaWorkspaceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000C /* GhostteaWorkspaceUI */; };
 		100000000000000000000013 /* GhostteaSharedInteropProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* GhostteaSharedInteropProbe.swift */; };
 		100000000000000000000014 /* GhostteaSharedRestartProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* GhostteaSharedRestartProbe.swift */; };
+		100000000000000000000015 /* GhostteaSharedRuntimeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* GhostteaSharedRuntimeModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		200000000000000000000007 /* GhostteaSSHView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSSHView.swift; sourceTree = "<group>"; };
 		200000000000000000000008 /* GhostteaSharedInteropProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSharedInteropProbe.swift; sourceTree = "<group>"; };
 		200000000000000000000009 /* GhostteaSharedRestartProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSharedRestartProbe.swift; sourceTree = "<group>"; };
+		20000000000000000000000A /* GhostteaSharedRuntimeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSharedRuntimeModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -82,6 +84,7 @@
 				200000000000000000000007 /* GhostteaSSHView.swift */,
 				200000000000000000000008 /* GhostteaSharedInteropProbe.swift */,
 				200000000000000000000009 /* GhostteaSharedRestartProbe.swift */,
+				20000000000000000000000A /* GhostteaSharedRuntimeModel.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -177,6 +180,7 @@
 				100000000000000000000009 /* GhostteaSSHView.swift in Sources */,
 				100000000000000000000013 /* GhostteaSharedInteropProbe.swift in Sources */,
 				100000000000000000000014 /* GhostteaSharedRestartProbe.swift in Sources */,
+				100000000000000000000015 /* GhostteaSharedRuntimeModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

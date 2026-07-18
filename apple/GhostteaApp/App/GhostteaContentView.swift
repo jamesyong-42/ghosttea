@@ -4,6 +4,7 @@ import SwiftUI
 struct GhostteaContentView: View {
   @EnvironmentObject private var model: GhostteaAppModel
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     TabView {
@@ -26,6 +27,15 @@ struct GhostteaContentView: View {
       .navigationTitle(model.selectedSession?.title ?? "Ghosttea")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              openWindow(id: "terminal")
+            } label: {
+              Label("New Window", systemImage: "plus.rectangle.on.rectangle")
+            }
+          }
+        }
         if model.selectedSession != nil {
           ToolbarItem(placement: .topBarLeading) {
             Button("Done") { model.disconnect() }

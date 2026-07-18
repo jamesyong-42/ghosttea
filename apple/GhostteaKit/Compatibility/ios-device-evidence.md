@@ -1473,3 +1473,38 @@ Physical iPad multi-scene qualification remains the Phase 8 device gate. The
 Tailscale LocalAPI watch may still time out periodically and restart itself;
 that did not interrupt either gate but remains explicit release-hardening work,
 not accepted production noise.
+
+## 2026-07-18: production multi-scene ownership boundary
+
+The production app previously injected one `GhostteaAppModel` above its
+`WindowGroup`. Multiple iPad windows therefore shared one selected session,
+attachment, replica, frame, grid, and control epoch, which was not a valid
+multi-scene implementation even though the generated scene manifest advertised
+multiple-window support.
+
+The app now has an explicit ownership split. `GhostteaSharedRuntimeModel` owns
+the single in-process Truffle/Tailscale runtime, authentication state, peer
+directory, and host catalog for the application. Every `WindowGroup` scene
+constructs a separate `GhostteaAppModel` with its own browser state, attachment,
+replica pump, renderer runtime, frame, input sequences, grid, and control epoch.
+`GhostteaSceneTerminalIdentity` derives a stable protocol view ID from the
+scene UUID, so concurrent Stage Manager windows cannot collide. Closing a
+window cancels an in-flight dial, detaches its live remote view, and leaves the
+shared mesh and other scenes intact. The iPad toolbar exposes an explicit New
+Window action.
+
+The built application manifest was inspected and contains
+`UIApplicationSupportsMultipleScenes = true` with both iPhone and iPad device
+families. Generic device and arm64 simulator builds pass, the package suite now
+passes all 122 tests including stable/unique scene identity coverage, and the
+signed iPhone regression still emits:
+
+```text
+GHOSTTEA_SHARED_INTEROP_PASS handoff=a,b,a resize=97x31,113x37,101x29 snapshot=1 selectionBytes=6 reconnect=1
+```
+
+This closes the code-ownership prerequisite, not the physical-device gate. A
+real iPad must still open two Stage Manager windows, attach both to one desktop
+session, hand control between them, resize each independently, close one while
+the other remains live, and foreground-resynchronize the survivor before
+release certification.
