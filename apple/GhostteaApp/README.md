@@ -72,6 +72,18 @@ npm run test:ios:app:restart
 For ordinary signed-device debugging with streaming console output, use
 `npm run run:ios:app:console`.
 
+The deterministic iPad gate selects an available iPad Simulator, boots it when
+needed, builds and installs the production app target, opens a real second
+`WindowGroup` scene, verifies shared runtime and distinct terminal identities,
+closes that exact scene, and verifies one survivor:
+
+```bash
+npm run test:ios:app:multiscene
+```
+
+Set `GHOSTTEA_IOS_SIMULATOR_ID` only when a specific installed iPad simulator
+must be used. The probe and its environment trigger are compiled only in DEBUG.
+
 The first signed-device desktop/iPhone gate completed on 2026-07-18: the app
 discovered the Electron demo, attached read-write to its desktop-authoritative
 session, rendered its logical state locally, and sent input whose output was

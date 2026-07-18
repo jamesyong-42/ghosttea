@@ -1508,3 +1508,22 @@ real iPad must still open two Stage Manager windows, attach both to one desktop
 session, hand control between them, resize each independently, close one while
 the other remains live, and foreground-resynchronize the survivor before
 release certification.
+
+The code-ownership prerequisite is now executable rather than inspection-only.
+`npm run test:ios:app:multiscene` selected the installed iPad Pro 13-inch (M5)
+simulator, built and installed the production target, and launched it with a
+DEBUG-only trigger. The first real `WindowGroup` scene requested a second scene
+with an explicit UUID value. The app verified two distinct protocol view IDs
+and one shared runtime object, dismissed the exact second scene by value, then
+observed the surviving scene:
+
+```text
+GHOSTTEA_MULTISCENE_READY scenes=2 runtime=shared viewIDs=distinct
+GHOSTTEA_MULTISCENE_PASS scenes=2 closed=1 survivor=1 runtime=shared viewIDs=distinct
+```
+
+The runner uninstalls any previous app state before the test, captures the app
+console, requires the pass marker, times out fail-closed, and shuts down a
+simulator it booted. This is strong structural and lifecycle evidence, but it
+does not replace the physical iPad test of two live Metal/Truffle terminal
+attachments under Stage Manager.

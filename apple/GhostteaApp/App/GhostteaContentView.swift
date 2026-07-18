@@ -30,7 +30,7 @@ struct GhostteaContentView: View {
         if UIDevice.current.userInterfaceIdiom == .pad {
           ToolbarItem(placement: .topBarTrailing) {
             Button {
-              openWindow(id: "terminal")
+              openWindow(id: "terminal", value: UUID())
             } label: {
               Label("New Window", systemImage: "plus.rectangle.on.rectangle")
             }

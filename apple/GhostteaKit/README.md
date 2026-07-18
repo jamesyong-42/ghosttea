@@ -67,9 +67,11 @@ embedded-listener descriptor fault is fixed by the reviewed libtailscale patch
 recorded in the release lock. The production `WindowGroup` now shares one
 application-owned mesh while giving each scene an independent attachment,
 replica, renderer, grid, control epoch, and stable view ID; a signed iPhone
-regression passes after that ownership split. Physical iPad Stage Manager
-qualification and the periodic self-recovering Tailscale LocalAPI watch timeout
-remain release gates.
+regression passes after that ownership split. A deterministic iPad Pro
+Simulator gate also creates two real `WindowGroup` scenes, verifies the shared
+runtime and distinct identities, closes one, and observes one survivor.
+Physical iPad Stage Manager terminal qualification and the periodic
+self-recovering Tailscale LocalAPI watch timeout remain release gates.
 App Store distribution export remains a release-account step.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to

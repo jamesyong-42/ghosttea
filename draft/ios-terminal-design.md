@@ -2799,7 +2799,10 @@ renderer, grid, control, and stable view-ID state, exposes an iPad New Window
 action, and cancels/detaches only the closing scene. The generated manifest
 advertises multiple scenes and both Apple builds pass. All 68 sibling Truffle
 and 122 Ghosttea Swift tests pass, followed by the signed iPhone interop
-regression. Physical iPad Stage Manager qualification and the separately
+regression. A deterministic iPad Pro Simulator gate now opens two actual
+`WindowGroup` scenes, verifies shared runtime/distinct view identities, closes
+the requested second scene, and observes one survivor. Physical iPad Stage
+Manager qualification with two live terminal attachments and the separately
 observed, self-recovering LocalAPI watch timeout remain open. App Store
 distribution export is deferred to the release-account gate.
 

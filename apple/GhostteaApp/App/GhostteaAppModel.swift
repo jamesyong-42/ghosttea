@@ -52,6 +52,11 @@ final class GhostteaAppModel: ObservableObject {
   }
 
   func start() {
+    #if DEBUG
+      if ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_MULTISCENE"] == "1" {
+        return
+      }
+    #endif
     if renderRuntime == nil {
       do { renderRuntime = try GhostteaRuntime() }
       catch {
