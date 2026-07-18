@@ -20,9 +20,13 @@ authoritative repository pins:
 
 The BOM records the shared Rust FFI runtime, pinned Ghostty source, OpenSSL,
 libssh2, the exact sibling Truffle Swift revision, the exact TailscaleKit source
-revision and binary/license hashes, and each of the five exact bundled font
-files. Relationships describe the static native/runtime inputs, and every font
-carries its locked SHA-256.
+revision, reviewed source-patch path/hash/purpose, binary/license hashes, and
+each of the five exact bundled font files. Relationships describe the static
+native/runtime inputs, and every font carries its locked SHA-256. The carried
+libtailscale patch fixes authenticated listener address lookup after
+`SCM_RIGHTS` duplicates the accepted descriptor; it has passed the signed
+iPhone shared-session and desktop-restart gates. The separately observed
+self-recovering LocalAPI watch timeout remains a release-hardening item.
 The BOM timestamp and serial are fixed so identical repository inputs produce
 byte-identical JSON.
 

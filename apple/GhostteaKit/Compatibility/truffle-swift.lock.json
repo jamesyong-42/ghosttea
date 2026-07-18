@@ -3,7 +3,7 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/jamesyong-42/truffle.git",
-    "revision": "25afc540f179bab0fd5e7fe22ee056c58fb57281",
+    "revision": "071264b02a2ee81bac3fb4255e40842e7af464fe",
     "packagePath": "apple",
     "license": "MIT",
     "products": [
@@ -16,16 +16,23 @@
     "repository": "https://github.com/tailscale/libtailscale.git",
     "revision": "5e89501def80a6579ca5d0f9a02f336be62b8f2e",
     "license": "BSD-3-Clause",
-    "licenseSha256": "eed0e0d782d1b71165527831cc954a530f10ca34631af27baac70e947b1001c8",
+    "licenseSha256": "d6e14a92f27cd6c82f8914041c1bb43819fcf3167b827b9198c2c803d4dff5d3",
     "minimumIOS": "18.1",
+    "patches": [
+      {
+        "path": "apple/patches/libtailscale-remote-address-fd.patch",
+        "sha256": "71423557bd0f0a901c31fb4cbee90c8cbaa5ab5588e1d8e87024fcfa887cad8a",
+        "purpose": "Remap accepted SCM_RIGHTS descriptors before authenticated remote-address lookup."
+      }
+    ],
     "artifacts": {
       "iosArm64": {
         "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64/TailscaleKit.framework/TailscaleKit",
-        "sha256": "e00e8239c576df7ccb88fde16263c19090c9c77aa07bb1b77596d0bbf3f627de"
+        "sha256": "94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e"
       },
       "iosSimulatorUniversal": {
         "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64_x86_64-simulator/TailscaleKit.framework/TailscaleKit",
-        "sha256": "388d316956946b4bfa8e4965c3508496087e800fbd1977073d022e806374c451"
+        "sha256": "d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41"
       }
     }
   },

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const developerDirectory = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
@@ -29,6 +29,41 @@ function execute(program, args, options = {}) {
     );
   }
   return result;
+}
+
+function executeStreaming(program, args, options = {}) {
+  return new Promise((resolveExecution, rejectExecution) => {
+    const child = spawn(program, args, {
+      cwd: root,
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      process.stdout.write(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+    });
+    const timer = options.timeout ? setTimeout(() => child.kill("SIGTERM"), options.timeout) : undefined;
+    child.once("error", (error) => {
+      if (timer) clearTimeout(timer);
+      rejectExecution(error);
+    });
+    child.once("close", (status, signal) => {
+      if (timer) clearTimeout(timer);
+      if (status !== 0) {
+        rejectExecution(new Error(`${program} ${args.join(" ")} failed with status ${status ?? `signal ${signal}`}`));
+        return;
+      }
+      resolveExecution({ status, stdout, stderr });
+    });
+  });
 }
 
 function developmentTeam() {
@@ -139,7 +174,8 @@ async function main() {
   await waitForUnlockedDevice(device);
   execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
   await waitForUnlockedDevice(device);
-  execute("xcrun", [
+  const expectedMarker = process.env.GHOSTTEA_IOS_EXPECT_MARKER;
+  const launchArguments = [
     "devicectl",
     "device",
     "process",
@@ -149,7 +185,17 @@ async function main() {
     "--terminate-existing",
     ...(process.env.GHOSTTEA_IOS_CONSOLE === "1" ? ["--console"] : []),
     bundleIdentifier,
-  ]);
+  ];
+  const launched = expectedMarker
+    ? await executeStreaming("xcrun", launchArguments, { timeout: 180_000 })
+    : execute("xcrun", launchArguments);
+  if (expectedMarker) {
+    const output = `${launched.stdout}${launched.stderr}`;
+    if (!output.includes(expectedMarker)) {
+      throw new Error(`Signed iOS app exited without required marker ${expectedMarker}.`);
+    }
+    console.log(`Verified signed iOS app marker ${expectedMarker}.`);
+  }
   console.log(
     `${process.env.GHOSTTEA_IOS_CONSOLE === "1" ? "Ghosttea exited on" : "Launched Ghosttea on"} ${device.hardwareProperties.marketingName}.`,
   );

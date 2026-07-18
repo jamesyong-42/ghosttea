@@ -187,9 +187,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:github/jamesyong-42/truffle@25afc540f179bab0fd5e7fe22ee056c58fb57281",
+      "bom-ref": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
       "name": "Truffle Swift",
-      "version": "25afc540f179bab0fd5e7fe22ee056c58fb57281",
+      "version": "071264b02a2ee81bac3fb4255e40842e7af464fe",
       "licenses": [
         {
           "license": {
@@ -197,7 +197,7 @@
           }
         }
       ],
-      "purl": "pkg:github/jamesyong-42/truffle@25afc540f179bab0fd5e7fe22ee056c58fb57281",
+      "purl": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
       "externalReferences": [
         {
           "type": "vcs",
@@ -235,7 +235,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "e00e8239c576df7ccb88fde16263c19090c9c77aa07bb1b77596d0bbf3f627de"
+          "content": "94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e"
         }
       ],
       "externalReferences": [
@@ -251,7 +251,19 @@
         },
         {
           "name": "ghosttea:license:sha256",
-          "value": "eed0e0d782d1b71165527831cc954a530f10ca34631af27baac70e947b1001c8"
+          "value": "d6e14a92f27cd6c82f8914041c1bb43819fcf3167b827b9198c2c803d4dff5d3"
+        },
+        {
+          "name": "ghosttea:source-patch",
+          "value": "apple/patches/libtailscale-remote-address-fd.patch"
+        },
+        {
+          "name": "ghosttea:source-patch:sha256",
+          "value": "71423557bd0f0a901c31fb4cbee90c8cbaa5ab5588e1d8e87024fcfa887cad8a"
+        },
+        {
+          "name": "ghosttea:source-patch:purpose",
+          "value": "Remap accepted SCM_RIGHTS descriptors before authenticated remote-address lookup."
         },
         {
           "name": "ghosttea:ios-device-artifact",
@@ -263,7 +275,7 @@
         },
         {
           "name": "ghosttea:ios-simulator-artifact:sha256",
-          "value": "388d316956946b4bfa8e4965c3508496087e800fbd1977073d022e806374c451"
+          "value": "d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41"
         }
       ]
     },
@@ -450,7 +462,7 @@
         "pkg:cargo/ghosttea-ffi@0.1.0",
         "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
-        "pkg:github/jamesyong-42/truffle@25afc540f179bab0fd5e7fe22ee056c58fb57281",
+        "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
         "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
@@ -479,7 +491,7 @@
       ]
     },
     {
-      "ref": "pkg:github/jamesyong-42/truffle@25afc540f179bab0fd5e7fe22ee056c58fb57281",
+      "ref": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
       "dependsOn": [
         "pkg:github/tailscale/libtailscale@5e89501def80a6579ca5d0f9a02f336be62b8f2e"
       ]

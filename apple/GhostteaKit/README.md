@@ -60,9 +60,13 @@ discovered the desktop demo, attached read-write to its live Truffle session,
 and driven input that appeared in the concurrently attached desktop terminal;
 the exact evidence and remaining live matrix are recorded in
 [`Compatibility/ios-device-evidence.md`](Compatibility/ios-device-evidence.md).
-Control-handoff, resize/selection/resync, stale-generation, iPad multi-scene,
-and the observed embedded-listener fault remain Phase 8 release gates. App
-Store distribution export remains a release-account step.
+The automated signed-device matrix now proves two concurrent iOS attachments,
+control handoff, exact resize, selection, snapshot resync, detach/reconnect,
+and desktop-process restart recovery against the same desktop session. The
+embedded-listener descriptor fault is fixed by the reviewed libtailscale patch
+recorded in the release lock. Physical iPad multi-scene qualification and the
+periodic self-recovering Tailscale LocalAPI watch timeout remain release gates.
+App Store distribution export remains a release-account step.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

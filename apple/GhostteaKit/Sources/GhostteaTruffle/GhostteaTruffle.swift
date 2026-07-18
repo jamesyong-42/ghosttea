@@ -84,8 +84,17 @@ public actor GhostteaTrufflePeerDirectory {
   }
 
   public func candidates() async -> [GhostteaTruffleHostCandidate] {
-    await node.peers()
-      .filter(\.online)
+    let peers = await node.peers().filter(\.online)
+    var confirmed: [Peer] = []
+    confirmed.reserveCapacity(peers.count)
+    for peer in peers {
+      if peer.deviceId == nil, let value = try? await node.confirmIdentity(of: peer) {
+        confirmed.append(value)
+      } else {
+        confirmed.append(peer)
+      }
+    }
+    return confirmed
       .map(GhostteaTruffleHostCandidate.init(peer:))
       .sorted {
         $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending

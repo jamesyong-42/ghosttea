@@ -43,19 +43,34 @@ configured Xcode team, signs, installs, and launches the app:
 npm run run:ios:app
 ```
 
-For a signed-device interoperability run, keep the app's debug console attached
-until the app exits:
+The DEBUG build contains deterministic, opt-in signed-device gates; neither is
+reachable from the production UI or a Release build. With the desktop demo
+running, the shared-session gate creates two simultaneous iOS attachments and
+proves control handoff, exact resize, snapshot, selection, detach, and fresh
+reconnect:
 
 ```bash
-npm run run:ios:app:console
+npm run test:ios:app:interop
 ```
+
+The restart gate attaches, prints a ready marker, and waits while the desktop
+demo process is restarted. It then proves the old session is rejected and a
+fresh attachment and snapshot succeed. Tailnet peer generation may remain
+stable across this restart; the desktop `hostInstanceID` must change.
+
+```bash
+npm run test:ios:app:restart
+```
+
+For ordinary signed-device debugging with streaming console output, use
+`npm run run:ios:app:console`.
 
 The first signed-device desktop/iPhone gate completed on 2026-07-18: the app
 discovered the Electron demo, attached read-write to its desktop-authoritative
 session, rendered its logical state locally, and sent input whose output was
 observed in the concurrent desktop view. See
 [`../GhostteaKit/Compatibility/ios-device-evidence.md`](../GhostteaKit/Compatibility/ios-device-evidence.md)
-for the evidence and the still-open release matrix.
+for the complete automated evidence and the remaining iPad/release matrix.
 
 Create and verify the signed Release archive with:
 

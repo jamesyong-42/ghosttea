@@ -1415,12 +1415,61 @@ All 121 Ghosttea Swift package tests passed after the wire fix. The complete
 auth-key/live-control-plane test remains intentionally ignored outside its
 credentialed environment.
 
-This proves signed-device discovery, session listing, compact attachment,
+This proved signed-device discovery, session listing, compact attachment,
 logical-state rendering, control claim, iPhone-originated input, and
-desktop-observed output against one desktop-authoritative session. It is not
-the complete release matrix: live control handoff, resize, selection,
-disconnect/foreground resynchronization, stale-generation recovery, and iPad
-multi-scene remain explicit gates. The pinned TailscaleKit runtime also still
-reports a periodic LocalAPI watch timeout and an `EBADF` inbound-listener
-failure on this device. Neither interrupted the outbound compact attachment,
-but both remain release-hardening work rather than accepted production noise.
+desktop-observed output against one desktop-authoritative session. The
+automated matrix below supersedes the initially open handoff, resize,
+selection, resync, reconnect, stale-session, and listener items.
+
+## 2026-07-18: automated shared-session matrix and restart recovery
+
+A DEBUG-only deterministic probe attached two independent iOS clients to the
+same desktop-authoritative session. It handed control A to B and back to A,
+applied exact grids `97x31`, `113x37`, and `101x29`, requested an authoritative
+snapshot, extracted selected text, detached, and established a fresh
+attachment. The signed iPhone emitted:
+
+```text
+GHOSTTEA_SHARED_INTEROP_PASS handoff=a,b,a resize=97x31,113x37,101x29 snapshot=1 selectionBytes=6 reconnect=1
+```
+
+A separate restart probe attached to the live desktop, recorded both the
+tailnet peer generation and desktop `hostInstanceID`, and waited for a desktop
+process restart. The same Tailscale node remained present, so the peer
+generation correctly stayed stable; the process-owned `hostInstanceID`
+changed. The old session was rejected, while fresh discovery, attachment, and
+snapshot succeeded:
+
+```text
+GHOSTTEA_SHARED_RESTART_PASS peerGeneration=stable-1 hostInstance=changed stalePeer=not-stale staleSession=rejected freshAttach=1 snapshot=1
+```
+
+This establishes the required distinction: durable device identity resolves a
+current peer, but `hostInstanceID` is the authoritative desktop-process and
+session-generation boundary. A Layer-3 generation change must still invalidate
+the old peer when one occurs; a quick process restart does not require such a
+change.
+
+The run also exposed a pinned libtailscale listener defect. `TsnetListen`
+stored the authenticated remote address under the sender-side file descriptor,
+but Unix `SCM_RIGHTS` produced a distinct receiver-side descriptor number.
+`TsnetAccept` then asked `TsnetGetRemoteAddr` for the receiver number and could
+fail with `EBADF`. Truffle revision
+`071264b02a2ee81bac3fb4255e40842e7af464fe` carries a reviewed patch that sends
+the source descriptor as payload and remaps the address to the received
+descriptor before lookup. The exact upstream revision, patch SHA-256, license,
+and rebuilt device/simulator binary hashes are pinned in
+`truffle-swift.lock.json` and the release BOM. No listener `EBADF` occurred in
+the signed interop or restart validation after rebuilding.
+
+Because Truffle sessions are lazy, peer listing alone may not yet expose a
+durable device ID. The Apple API now provides an authenticated,
+generation-checked `confirmIdentity(of:)` handshake without application
+traffic; Ghosttea discovery invokes it for online candidates that need
+identity confirmation. All 68 sibling Truffle tests and all 121 Ghosttea Swift
+package tests pass with these changes.
+
+Physical iPad multi-scene qualification remains the Phase 8 device gate. The
+Tailscale LocalAPI watch may still time out periodically and restart itself;
+that did not interrupt either gate but remains explicit release-hardening work,
+not accepted production noise.

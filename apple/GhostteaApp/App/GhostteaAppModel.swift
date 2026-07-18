@@ -4,6 +4,9 @@ import GhostteaTerminal
 import GhostteaTruffle
 import SwiftUI
 import UIKit
+#if DEBUG
+  import Darwin
+#endif
 
 struct GhostteaLoginPage: Identifiable {
   let url: URL
@@ -38,6 +41,9 @@ final class GhostteaAppModel: ObservableObject {
   private var claimSequence: UInt64 = 0
   private var controlEpoch: UInt64?
   private var grid = GhostteaTerminalGridSize(columns: 80, rows: 24)
+  #if DEBUG
+    private var sharedAutomationProbeStarted = false
+  #endif
 
   func start() {
     guard mesh == nil, !isBusy else { return }
@@ -106,6 +112,7 @@ final class GhostteaAppModel: ObservableObject {
         ? "Connected. Start the Ghosttea desktop demo to share a session."
         : "\(hosts.count) Ghosttea host\(hosts.count == 1 ? "" : "s") available"
     }
+    startSharedAutomationProbeIfRequested()
   }
 
   func loadSessions(from candidate: GhostteaTruffleHostCandidate) {
@@ -404,6 +411,62 @@ final class GhostteaAppModel: ObservableObject {
   private func trace(_ message: String) {
     #if DEBUG
       print("[Ghosttea] \(message)")
+    #endif
+  }
+
+  private func startSharedAutomationProbeIfRequested() {
+    #if DEBUG
+      guard
+        !sharedAutomationProbeStarted,
+        phase == .running,
+        let directory
+      else { return }
+      let environment = ProcessInfo.processInfo.environment
+      let runInterop = environment["GHOSTTEA_AUTORUN_SHARED_INTEROP"] == "1"
+      let runRestart = environment["GHOSTTEA_AUTORUN_SHARED_RESTART"] == "1"
+      guard runInterop != runRestart else { return }
+      let host = runRestart
+        ? hosts.first(where: { $0.persistentReference != nil })
+        : hosts.first
+      guard let host else { return }
+      sharedAutomationProbeStarted = true
+      isBusy = true
+      status = runRestart
+        ? "Waiting for desktop restart…"
+        : "Running shared-session interop probe…"
+      Task {
+        do {
+          if runRestart {
+            let result = try await GhostteaSharedRestartProbe.run(
+              directory: directory, host: host)
+            print(result.marker)
+            Darwin.exit(EXIT_SUCCESS)
+          }
+          let client = try await directory.connect(to: host)
+          let advertised: [GhostteaSharedSessionSummary]
+          do {
+            advertised = try await client.listSessions().filter(\.attachable)
+            await client.close()
+          } catch {
+            await client.close()
+            throw error
+          }
+          guard let session = advertised.first else {
+            throw GhostteaTruffleError.handshakeRejected(
+              "desktop advertised no attachable session")
+          }
+          let result = try await GhostteaSharedInteropProbe.run(
+            directory: directory, host: host, session: session)
+          print(result.marker)
+          Darwin.exit(EXIT_SUCCESS)
+        } catch {
+          let marker = runRestart
+            ? "GHOSTTEA_SHARED_RESTART_FAIL"
+            : "GHOSTTEA_SHARED_INTEROP_FAIL"
+          print("\(marker) \(error)")
+          Darwin.exit(EXIT_FAILURE)
+        }
+      }
     #endif
   }
 }

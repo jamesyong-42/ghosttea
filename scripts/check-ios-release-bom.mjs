@@ -171,6 +171,11 @@ const expected = {
           name: "ghosttea:license:sha256",
           value: truffle.tailscaleKit.licenseSha256,
         },
+        ...truffle.tailscaleKit.patches.flatMap((patch) => [
+          { name: "ghosttea:source-patch", value: patch.path },
+          { name: "ghosttea:source-patch:sha256", value: patch.sha256 },
+          { name: "ghosttea:source-patch:purpose", value: patch.purpose },
+        ]),
         {
           name: "ghosttea:ios-device-artifact",
           value: truffle.tailscaleKit.artifacts.iosArm64.path,
