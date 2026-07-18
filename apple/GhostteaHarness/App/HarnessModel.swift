@@ -128,6 +128,10 @@ final class HarnessModel: ObservableObject {
   private var productionCredentialStore: KeychainSSHCredentialStore?
   private var productionCredential: SSHCredentialID?
   private var productionShellCommandSent = false
+  private var productionTmuxResizeSent = false
+  private var productionTmuxInitialSizeObserved = false
+  private var productionTmuxResizedSizeObserved = false
+  private var productionTmuxExitSent = false
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
   private var didAutorunProductionSession = false
@@ -744,6 +748,10 @@ final class HarnessModel: ObservableObject {
     productionSessionInputStatus = "Connecting…"
     productionSessionFrame = nil
     productionShellCommandSent = false
+    productionTmuxResizeSent = false
+    productionTmuxInitialSizeObserved = false
+    productionTmuxResizedSizeObserved = false
+    productionTmuxExitSent = false
 
     Task {
       do {
@@ -913,12 +921,13 @@ final class HarnessModel: ObservableObject {
     }
   }
 
-  private func handleProductionSessionEvent(_ event: GhostteaSessionEvent) {
+  private func handleProductionSessionEvent(_ event: GhostteaSessionEvent) async {
     switch event {
     case .stateChanged(let snapshot):
       handleProductionSessionState(snapshot)
     case .frameReady(let frame):
       productionSessionFrame = frame
+      await observeAutomatedTmuxFrame()
     case .metadataChanged:
       break
     case .bell:
@@ -947,7 +956,7 @@ final class HarnessModel: ObservableObject {
     case .connected(let generation):
       productionSessionStatus = "Connected · generation \(generation)"
       productionSessionInputStatus = "Tap the terminal to type"
-      sendAutomaticProductionShellCommandIfNeeded()
+      sendAutomaticProductionProfileCommandIfNeeded()
     case .reconnectAvailable:
       productionSessionStatus = "Reconnect available"
       isRunningProductionSession = false
@@ -963,25 +972,76 @@ final class HarnessModel: ObservableObject {
     }
   }
 
-  private func sendAutomaticProductionShellCommandIfNeeded() {
-    guard productionSSHProfile == .shell,
-      !productionShellCommandSent,
-      let productionSession
-    else { return }
+  private func sendAutomaticProductionProfileCommandIfNeeded() {
+    guard !productionShellCommandSent, let productionSession else { return }
+    let command: String
+    switch productionSSHProfile {
+    case .shell:
+      command = "printf '\\033[31mghosttea-production-session-ok\\033[0m\\n'; exit\n"
+    case .tmux where productionSessionAutomation:
+      // tmux's default status line consumes one row of the allocated PTY.
+      command =
+        "printf '\\033[32mghosttea-tmux-ready\\033[0m '; stty size; "
+        + "while [ \"$(stty size)\" = '29 100' ]; do sleep 1; done; "
+        + "printf 'ghosttea-tmux-resized '; stty size; read ghosttea_continue; exit\n"
+    case .tmux, .zellij:
+      return
+    }
     productionShellCommandSent = true
     Task {
       do {
-        try await productionSession.send(
-          Data("printf '\\033[31mghosttea-production-session-ok\\033[0m\\n'; exit\n".utf8)
-        )
+        try await productionSession.send(Data(command.utf8))
       } catch {
-        productionSessionStatus = "Shell gate input failed: \(error)"
+        productionSessionStatus = "Profile gate input failed: \(error)"
       }
     }
   }
 
+  private func observeAutomatedTmuxFrame() async {
+    guard productionSessionAutomation,
+      productionSSHProfile == .tmux,
+      let productionSession,
+      let productionTerminal
+    else { return }
+    do {
+      let rows = try await productionTerminal.accessibilityRows(start: 0, count: 100)
+      let text = String(decoding: rows, as: UTF8.self)
+      if text.contains("ghosttea-tmux-ready 29 100") {
+        productionTmuxInitialSizeObserved = true
+      }
+      if text.contains("ghosttea-tmux-resized 39 120") {
+        productionTmuxResizedSizeObserved = true
+      }
+      if productionTmuxInitialSizeObserved, !productionTmuxResizeSent {
+        productionTmuxResizeSent = true
+        Task {
+          do {
+            try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+          } catch {
+            productionSessionStatus = "tmux resize failed: \(error)"
+            finishProductionSessionAutomation(exitCode: 2)
+          }
+        }
+      }
+      if productionTmuxResizedSizeObserved, !productionTmuxExitSent {
+        productionTmuxExitSent = true
+        Task {
+          do {
+            try await productionSession.send(Data("\n".utf8))
+          } catch {
+            productionSessionStatus = "tmux exit handshake failed: \(error)"
+            finishProductionSessionAutomation(exitCode: 2)
+          }
+        }
+      }
+    } catch {
+      productionSessionStatus = "tmux frame validation failed: \(error)"
+      finishProductionSessionAutomation(exitCode: 2)
+    }
+  }
+
   private func validateCompletedProductionShell(exit: TerminalExitStatus) {
-    guard productionSSHProfile == .shell, let productionTerminal else {
+    guard productionSessionAutomation, let productionTerminal else {
       productionSessionStatus = "Completed · \(exit.description)"
       isRunningProductionSession = false
       cleanupProductionCredential()
@@ -991,12 +1051,32 @@ final class HarnessModel: ObservableObject {
       do {
         let rows = try await productionTerminal.accessibilityRows(start: 0, count: 100)
         let text = String(decoding: rows, as: UTF8.self)
-        guard exit == .exited(code: 0), text.contains("ghosttea-production-session-ok") else {
+        let markerIsValid: Bool
+        switch productionSSHProfile {
+        case .shell:
+          markerIsValid = text.contains("ghosttea-production-session-ok")
+        case .tmux:
+          markerIsValid =
+            productionTmuxResizeSent
+            && productionTmuxInitialSizeObserved
+            && productionTmuxResizedSizeObserved
+            && productionTmuxExitSent
+        case .zellij:
+          markerIsValid = false
+        }
+        guard exit == .exited(code: 0), markerIsValid else {
           throw HarnessError.sessionProbeMismatch("production terminal output")
         }
-        productionSessionStatus = "Passed · SSH → core → TRF1 → Metal"
+        productionSessionStatus =
+          productionSSHProfile == .tmux
+          ? "Passed · tmux attach, input, and resize"
+          : "Passed · SSH → core → TRF1 → Metal"
         productionSessionInputStatus = "Native terminal text validated"
-        print("GHOSTTEA_PRODUCTION_SESSION_PASS")
+        print(
+          productionSSHProfile == .tmux
+            ? "GHOSTTEA_PRODUCTION_TMUX_PASS"
+            : "GHOSTTEA_PRODUCTION_SESSION_PASS"
+        )
         finishProductionSessionAutomation(exitCode: 0)
       } catch {
         productionSessionStatus = "Failed: \(error)"
@@ -1446,7 +1526,9 @@ final class HarnessModel: ObservableObject {
     }
     if productionSessionAutomation, !didAutorunProductionSession, path.canAttemptConnection {
       didAutorunProductionSession = true
-      productionSSHProfile = .shell
+      productionSSHProfile =
+        ProcessInfo.processInfo.environment["GHOSTTEA_PRODUCTION_PROFILE"] == "tmux"
+        ? .tmux : .shell
       runProductionSessionGate()
     }
   }

@@ -52,7 +52,9 @@ connects to the disposable fixture, emits styled output, exits cleanly, and
 validates the marker through native terminal accessibility text before passing.
 The dedicated device runner installs a signed build, starts the fixture, waits
 for the app's process result, and removes its temporary Keychain credential
-before exit.
+before exit. A second automatic gate attaches a named tmux session, observes
+its initial pane through native accessibility text, propagates a PTY resize,
+injects an exit acknowledgement, and requires a typed zero exit.
 
 ## Build and test
 
@@ -75,6 +77,7 @@ npm run test:ssh:fixture
 npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
 npm run test:ios:production-session
+npm run test:ios:production-tmux
 npm run bench:ghostty-vt:apple:matrix
 ```
 

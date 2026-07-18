@@ -17,7 +17,9 @@ const derivedData = join(root, "native/build/ios-harness/signed-automated");
 const app = join(derivedData, "Build/Products/Debug-iphoneos/GhostteaHarness.app");
 const bundleIdentifier = "com.vibecook.GhostteaHarness";
 let fixtureStarted = false;
-const productionSessionAutomation = process.argv.includes("--production-session");
+const productionTmuxAutomation = process.argv.includes("--production-tmux");
+const productionSessionAutomation =
+  process.argv.includes("--production-session") || productionTmuxAutomation;
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -25,6 +27,7 @@ function execute(program, args, options = {}) {
     env: { ...environment, ...options.environment },
     encoding: "utf8",
     stdio: options.capture ? "pipe" : "inherit",
+    timeout: options.timeout,
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && !options.allowFailure) {
@@ -208,7 +211,10 @@ async function main() {
       "--environment-variables",
       JSON.stringify({
         ...(productionSessionAutomation
-          ? { GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1" }
+          ? {
+              GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1",
+              ...(productionTmuxAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "tmux" } : {}),
+            }
           : {
               GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
               GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
@@ -217,11 +223,17 @@ async function main() {
       }),
       bundleIdentifier,
     );
-    execute("xcrun", launchArguments);
+    execute("xcrun", launchArguments, {
+      timeout: productionSessionAutomation ? 120_000 : undefined,
+    });
 
     console.log(`\nLaunched on ${device.hardwareProperties.marketingName} with disposable fixture ${host}:22022.`);
     if (productionSessionAutomation) {
-      console.log("Production SSH → core → TRF1 device gate passed.");
+      console.log(
+        productionTmuxAutomation
+          ? "Production tmux attach/input/resize device gate passed."
+          : "Production SSH → core → TRF1 device gate passed.",
+      );
     } else {
       await waitForCleanupRequest();
     }

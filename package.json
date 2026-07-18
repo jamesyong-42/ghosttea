@@ -38,6 +38,7 @@
     "test:ios:harness": "node scripts/test-ios-harness.mjs",
     "test:ios:device": "node scripts/test-ios-device-harness.mjs",
     "test:ios:production-session": "node scripts/test-ios-device-harness.mjs --production-session",
+    "test:ios:production-tmux": "node scripts/test-ios-device-harness.mjs --production-tmux",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",
     "test:ssh:fixture:candidate": "node scripts/ssh-fixture.mjs candidate",
     "test:ssh:fixture:swift": "node scripts/ssh-fixture.mjs swift",

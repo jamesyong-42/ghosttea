@@ -8,6 +8,7 @@ RUN apt-get update \
         netcat-openbsd \
         openssh-server \
         python3-paramiko \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pam_ghosttea_fixture.c /tmp/pam_ghosttea_fixture.c

@@ -2353,6 +2353,16 @@ iPhone 14 Pro: the signed app reports the production-session marker after
 native accessibility validation and exits zero, after which the runner removes
 the fixture. Interactive tmux/Zellij and representative TUI gates remain.
 
+The fourth slice adds `npm run test:ios:production-tmux`, a deterministic
+physical-device tmux gate over the same production path. The signed app attaches
+or creates a named session with a 100x30 PTY, observes the default tmux pane at
+100x29 through native accessibility rows, orders a PTY/core resize to 120x40,
+observes the pane at 120x39, injects an acknowledgement through the shared
+writer, and requires typed exit zero. Exact contiguous markers avoid treating
+the echoed probe command as output. The gate passes on the physical iPhone 14
+Pro and cleans up its disposable fixture. Live Zellij and representative
+Vim/Neovim, htop/btop, and agent-TUI gates remain.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

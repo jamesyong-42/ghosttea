@@ -1019,3 +1019,28 @@ with an exact visual hash and zero recorded edge, channel, or content delta.
 The runner removed the disposable SSH container and network after termination.
 This proves the automatic shell path on device; live tmux, Zellij, Vim, htop,
 and agent-TUI interaction remain separate Phase 6 evidence.
+
+## 2026-07-17: production tmux attach, input, and resize gate
+
+The fourth Phase 6 slice turns tmux from a build-tested attach profile into a
+noninteractive physical-device gate. `npm run test:ios:production-tmux` uses
+the same signed production surface, Keychain credential, fixture-scoped host
+key decision, session actor, shared core, TRF1 renderer, and disposable SSH
+fixture as the shell gate. The fixture image now includes tmux.
+
+The app attaches or creates the named `ghosttea` session with an allocated
+100x30 PTY. It observes the shell's `29 100` size through native terminal
+accessibility text, accounting for tmux's default one-row status line. It then
+requests a 120x40 PTY through `GhostteaSession.resize`, waits until the tmux
+pane reports `39 120`, and sends a newline acknowledgement through the normal
+ordered input path. Exact contiguous output markers prevent the echoed probe
+command from satisfying either observation. The remote shell and tmux session
+then exit normally, and the app requires typed exit status zero.
+
+The automatic runner passed on the physical iPhone 14 Pro running iOS 26.5.2.
+The signed process emitted `GHOSTTEA_PRODUCTION_TMUX_PASS` and exited with
+status zero after the attach/input/resize handshake. The same run passed all
+73 package tests, both iOS SDK builds, and the core, font, TRF1, and visual
+prerequisite markers, then removed the disposable container and network.
+Zellij, Vim/Neovim, htop/btop, and agent-TUI interaction remain separate Phase
+6 evidence.
