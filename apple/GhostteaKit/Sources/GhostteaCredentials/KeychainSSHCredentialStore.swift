@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-public enum SSHCredentialKind: String, CaseIterable, Sendable {
+public enum SSHCredentialKind: String, CaseIterable, Codable, Sendable {
   case password
   case privateKey
   case privateKeyPassphrase
@@ -11,7 +11,7 @@ public enum SSHCredentialKind: String, CaseIterable, Sendable {
 ///
 /// The connection UUID may be persisted with workspace metadata. Hostnames,
 /// usernames, and secret values must not be encoded into this identifier.
-public struct SSHCredentialID: Hashable, Sendable {
+public struct SSHCredentialID: Hashable, Codable, Sendable {
   public let connectionID: UUID
   public let kind: SSHCredentialKind
 
@@ -67,7 +67,9 @@ public actor KeychainSSHCredentialStore {
       return
     case errSecItemNotFound:
       var item = baseQuery(for: credential)
-      values.forEach { item[$0.key] = $0.value }
+      for (key, value) in values {
+        item[key] = value
+      }
       let addStatus = SecItemAdd(item as CFDictionary, nil)
       if addStatus == errSecDuplicateItem {
         let retryStatus = SecItemUpdate(

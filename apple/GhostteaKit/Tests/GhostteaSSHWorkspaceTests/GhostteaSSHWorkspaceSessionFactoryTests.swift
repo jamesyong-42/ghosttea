@@ -98,3 +98,40 @@ private func testSSHConfiguration() throws -> GhostteaSSHConfiguration {
     )
   }
 }
+
+@Test func factoryRestoresStableIdentityWithFreshHandleAndRejectsDuplicate() async throws {
+  let factory = try GhostteaSSHWorkspaceSessionFactory(
+    runtime: GhostteaRuntime(),
+    ssh: testSSHConfiguration(),
+    sessionConfiguration: .ssh(
+      initialPath: TerminalNetworkPath(availability: .unsatisfied)
+    ),
+    initialSessionHandle: 900,
+    identityPrefix: "fresh"
+  )
+
+  let restored = try await factory.allocate(
+    .newTab,
+    ssh: testSSHConfiguration(),
+    sessionID: "persisted-session",
+    profileID: "profile-a",
+    connect: false
+  )
+
+  #expect(restored.sessionID == "persisted-session")
+  #expect(restored.session.profileID == "profile-a")
+  #expect(restored.session.terminalSessionHandle == 900)
+  await #expect(
+    throws: GhostteaSSHWorkspaceSessionFactoryError.duplicateSessionID(
+      "persisted-session"
+    )
+  ) {
+    try await factory.allocate(
+      .newTab,
+      ssh: testSSHConfiguration(),
+      sessionID: "persisted-session",
+      profileID: "profile-a",
+      connect: false
+    )
+  }
+}

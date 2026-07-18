@@ -20,8 +20,10 @@ data-protection Keychain with these invariants:
   and the secret kind;
 - hostnames, ports, usernames, fingerprints, passwords, private keys, and
   passphrases never appear in the Keychain account or label;
-- workspace restoration persists only the opaque credential reference, never
-  secret bytes.
+- connection profiles persist ordinary host/user/port and attach metadata plus
+  only typed opaque credential references, never secret bytes;
+- workspace restoration persists only session-to-profile IDs and the
+  identity-only layout, not credential references or connection metadata.
 
 The supported secret kinds are password, private key, and private-key
 passphrase. Empty secret data remains representable because SSH servers may
@@ -80,6 +82,13 @@ tests and must not silently change existing credential accessibility.
 
 Package tests lock the opaque account format, reject an empty service name, and
 validate credential kinds.
+Connection-profile tests additionally lock the versioned, secret-free encoding,
+reject credential-kind confusion and cross-connection private-key/passphrase
+references, require a fresh runtime responder for keyboard-interactive auth,
+reject duplicate profile IDs, and round-trip the atomic protected JSON store.
+Workspace-restoration tests require exactly one profile binding per persisted
+session and collapse the document only after real allocations report which
+session IDs succeeded.
 The iOS Phase 0 harness performs a real Keychain save/load/delete round trip
 using random non-user secret data and verifies that removal returns the item to
 the missing state. A second physical-device probe authenticates to the

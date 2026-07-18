@@ -100,7 +100,10 @@ npm run test:ios:device
 
 The Phase 7 multi-session gate is fully automatic: it creates a second tab,
 splits that tab into a third SSH session, validates distinct native-terminal
-markers, and then proves pane, tab, and whole-window teardown ordering:
+markers, verifies a secret-free session-to-profile restoration manifest, and
+then proves pane, tab, and whole-window teardown ordering. Every session is
+constructed from the validated disposable connection profile while receiving
+its own native terminal and SSH transport:
 
 ```sh
 npm run test:ios:production-workspace

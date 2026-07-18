@@ -22,6 +22,14 @@ libssh2's in-memory API without a filesystem path. The policy and
 remaining product integration work are recorded in
 [`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
 
+`GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
+recreate an SSH connection. A profile may persist ordinary connection metadata,
+terminal dimensions, and a shell/tmux/Zellij attach choice, but authentication
+contains only typed opaque Keychain references. Its actor-backed JSON store
+validates versions and duplicate IDs, writes atomically, and applies complete
+file protection on iOS. Keyboard-interactive responses remain runtime-only and
+must be supplied afresh when a profile is resolved.
+
 `GhostteaSession` owns generation-checked connection and read tasks above the
 transport-neutral reconnect policy. Inbound data is pulled in bounded chunks,
 so a slow terminal or awaited host event naturally withholds further SSH window
@@ -42,6 +50,12 @@ last-pane close closes its tab when possible and only the sole remaining tab
 requests window closure. Swift and TypeScript consume the same JSON vectors.
 Restoration filters both trees and tabs against sessions that are actually live
 and repairs stale active, zoom, and selected-tab references.
+`GhostteaWorkspaceRestorationDocument` adds an exact session-to-profile-ID
+manifest without changing that rule: a binding is permission to attempt a new
+allocation, never evidence of a surviving connection. The host restores stable
+workspace identities only after their profiles have produced fresh terminal and
+transport resources; failed allocations collapse through the ordinary
+restoration reducer.
 
 `GhostteaWorkspaceUI` adapts that same model without changing it. Regular iPad
 and external-display size classes show the selected tab's recursive split tree;
@@ -75,6 +89,9 @@ terminal handle, `GhostteaTerminal`, `GhostteaSession`, ordered event identity,
 and disconnect lifecycle. Allocation can remain demand-paused for restoration,
 while ordinary new-tab and split requests start a fresh transport before the
 coordinator commits their layout identity.
+Restoration may request a persisted session ID and a per-session profile while
+still receiving a fresh native terminal handle and SSH transport. Duplicate or
+empty restored identities are rejected within a factory lifetime.
 
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and

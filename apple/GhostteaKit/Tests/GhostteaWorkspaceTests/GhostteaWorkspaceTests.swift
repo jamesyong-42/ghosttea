@@ -2,6 +2,76 @@ import Foundation
 import GhostteaWorkspace
 import Testing
 
+private func restorationWorkspace() throws -> GhostteaWorkspaceTabsDocument {
+  let first = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-a", sessionID: "session-a")),
+    activePaneID: "pane-a"
+  )
+  let second = try GhostteaWorkspaceDocument(
+    root: .split(
+      GhostteaWorkspaceSplit(
+        id: "split-b",
+        axis: .horizontal,
+        ratio: 0.5,
+        first: .pane(GhostteaWorkspacePane(id: "pane-b", sessionID: "session-b")),
+        second: .pane(GhostteaWorkspacePane(id: "pane-c", sessionID: "session-c"))
+      )
+    ),
+    activePaneID: "pane-c"
+  )
+  return try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-b",
+    tabs: [
+      GhostteaWorkspaceTab(id: "tab-a", workspace: first),
+      GhostteaWorkspaceTab(id: "tab-b", workspace: second),
+    ]
+  )
+}
+
+@Test("Restoration bindings are canonical and never claim unavailable sessions")
+func restorationBindingsFilterOnlyAfterAllocation() throws {
+  let document = try GhostteaWorkspaceRestorationDocument(
+    workspace: restorationWorkspace(),
+    sessionProfiles: [
+      GhostteaWorkspaceSessionProfileBinding(sessionID: "session-c", profileID: "profile-2"),
+      GhostteaWorkspaceSessionProfileBinding(sessionID: "session-a", profileID: "profile-1"),
+      GhostteaWorkspaceSessionProfileBinding(sessionID: "session-b", profileID: "profile-2"),
+    ]
+  )
+
+  #expect(document.sessionProfiles.map(\.sessionID) == ["session-a", "session-b", "session-c"])
+  #expect(document.profileIDBySessionID["session-b"] == "profile-2")
+
+  let candidate = try document.restoring(allocatedSessionIDs: ["session-a", "session-c"])
+  let restored = try #require(candidate)
+  #expect(restored.sessionIDs == ["session-a", "session-c"])
+  #expect(restored.selectedTabID == "tab-b")
+}
+
+@Test("Restoration requires exactly one nonempty profile binding per session")
+func restorationRejectsInvalidBindings() throws {
+  let workspace = try restorationWorkspace()
+  #expect(throws: GhostteaWorkspaceRestorationError.bindingMismatch) {
+    try GhostteaWorkspaceRestorationDocument(
+      workspace: workspace,
+      sessionProfiles: [
+        GhostteaWorkspaceSessionProfileBinding(sessionID: "session-a", profileID: "profile-1")
+      ]
+    )
+  }
+  #expect(throws: GhostteaWorkspaceRestorationError.emptyProfileID) {
+    try GhostteaWorkspaceRestorationDocument(
+      workspace: workspace,
+      sessionProfiles: workspace.sessionIDs.map {
+        GhostteaWorkspaceSessionProfileBinding(
+          sessionID: $0,
+          profileID: $0 == "session-b" ? "" : "profile"
+        )
+      }
+    )
+  }
+}
+
 private struct ConformanceFixture: Decodable {
   let schemaVersion: Int
   let scenarios: [Scenario]

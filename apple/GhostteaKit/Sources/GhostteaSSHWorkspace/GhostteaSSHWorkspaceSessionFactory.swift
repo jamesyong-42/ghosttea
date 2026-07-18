@@ -11,6 +11,7 @@ import GhostteaWorkspace
 /// teardown independent of the currently selected tab or pane.
 public struct GhostteaSSHWorkspaceSession: Sendable {
   public let id: String
+  public let profileID: String?
   public let terminalSessionHandle: UInt64
   public let request: GhostteaWorkspaceSessionRequest
   public let terminal: GhostteaTerminal
@@ -18,12 +19,14 @@ public struct GhostteaSSHWorkspaceSession: Sendable {
 
   public init(
     id: String,
+    profileID: String? = nil,
     terminalSessionHandle: UInt64,
     request: GhostteaWorkspaceSessionRequest,
     terminal: GhostteaTerminal,
     session: GhostteaSession
   ) {
     self.id = id
+    self.profileID = profileID
     self.terminalSessionHandle = terminalSessionHandle
     self.request = request
     self.terminal = terminal
@@ -45,6 +48,8 @@ public enum GhostteaSSHWorkspaceSessionFactoryError: Error, Equatable, Sendable 
   case invalidInitialSessionHandle
   case terminalSizeOutOfRange(columns: Int, rows: Int)
   case sessionHandleExhausted
+  case invalidSessionID
+  case duplicateSessionID(String)
 }
 
 /// Creates the concrete SSH-backed resources consumed by a workspace coordinator.
@@ -59,15 +64,18 @@ public actor GhostteaSSHWorkspaceSessionFactory {
 
   private let runtime: GhostteaRuntime
   private let ssh: GhostteaSSHConfiguration
+  private let defaultProfileID: String?
   private let sessionConfiguration: GhostteaSessionConfiguration
   private let scrollbackBytes: UInt64
   private let identityPrefix: String
   private let eventHandler: EventHandler
   private var nextSessionHandle: UInt64?
+  private var allocatedSessionIDs: Set<String> = []
 
   public init(
     runtime: GhostteaRuntime,
     ssh: GhostteaSSHConfiguration,
+    profileID: String? = nil,
     sessionConfiguration: GhostteaSessionConfiguration = .ssh(),
     initialSessionHandle: UInt64 = 1,
     scrollbackBytes: UInt64 = 5_000_000,
@@ -79,6 +87,7 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     }
     self.runtime = runtime
     self.ssh = ssh
+    self.defaultProfileID = profileID
     self.sessionConfiguration = sessionConfiguration
     self.nextSessionHandle = initialSessionHandle
     self.scrollbackBytes = scrollbackBytes
@@ -94,6 +103,24 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     _ request: GhostteaWorkspaceSessionRequest,
     connect: Bool = true
   ) async throws -> GhostteaWorkspaceSessionAllocation<GhostteaSSHWorkspaceSession> {
+    try await allocate(
+      request,
+      ssh: ssh,
+      sessionID: nil,
+      profileID: defaultProfileID,
+      connect: connect
+    )
+  }
+
+  /// Recreates a persisted workspace identity with a fresh native handle and
+  /// transport. Callers may also select a different saved profile per session.
+  public func allocate(
+    _ request: GhostteaWorkspaceSessionRequest,
+    ssh: GhostteaSSHConfiguration,
+    sessionID requestedSessionID: String?,
+    profileID: String?,
+    connect: Bool = true
+  ) async throws -> GhostteaWorkspaceSessionAllocation<GhostteaSSHWorkspaceSession> {
     guard let handle = nextSessionHandle else {
       throw GhostteaSSHWorkspaceSessionFactoryError.sessionHandleExhausted
     }
@@ -107,7 +134,13 @@ public actor GhostteaSSHWorkspaceSessionFactory {
       )
     }
 
-    let sessionID = "\(identityPrefix)-session-\(handle)"
+    let sessionID = requestedSessionID ?? "\(identityPrefix)-session-\(handle)"
+    guard !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw GhostteaSSHWorkspaceSessionFactoryError.invalidSessionID
+    }
+    guard !allocatedSessionIDs.contains(sessionID) else {
+      throw GhostteaSSHWorkspaceSessionFactoryError.duplicateSessionID(sessionID)
+    }
     let terminal = try GhostteaTerminal(
       runtime: runtime,
       configuration: GhostteaTerminalConfiguration(
@@ -130,12 +163,14 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     )
     let resource = GhostteaSSHWorkspaceSession(
       id: sessionID,
+      profileID: profileID,
       terminalSessionHandle: handle,
       request: request,
       terminal: terminal,
       session: session
     )
 
+    allocatedSessionIDs.insert(sessionID)
     nextSessionHandle = handle == UInt64.max ? nil : handle + 1
     if connect {
       await session.requestConnect()

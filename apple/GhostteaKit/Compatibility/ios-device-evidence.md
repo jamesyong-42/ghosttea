@@ -1268,3 +1268,34 @@ GHOSTTEA_PRODUCTION_WORKSPACE_PASS
 The app exited zero and the runner removed its disposable SSH container and
 network. New-tab and split are also exposed as touch controls, so the same host
 requests are available on an iPhone without a hardware keyboard.
+
+## 2026-07-18: connection-profile restoration gate
+
+The next Phase 7 slice adds the versioned `GhostteaConnectionProfiles` package
+and `GhostteaWorkspaceRestorationDocument`. An SSH profile persists ordinary
+connection and attach metadata, but its authentication payload contains only a
+typed opaque Keychain reference. The workspace manifest is narrower still: it
+contains the identity-only layout and an exact session-ID-to-profile-ID binding,
+not host/user metadata, credential references, secret bytes, or a live-session
+claim. Restoration retains stable workspace IDs only after allocating fresh
+native terminals and SSH transports; unavailable profiles are removed through
+the existing workspace-collapse rules.
+
+`npm run test:ios:production-workspace` passed all 99 Swift package tests, both
+iOS SDK builds, and the signed iPhone 14 Pro run. The production harness built
+its fixture configuration from a validated connection profile, allocated three
+profile-bound sessions, encoded and inspected the three-binding secret-free
+restoration manifest, and then observed distinct native-terminal markers for
+fresh handles 606, 607, and 608:
+
+```text
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=606
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=608
+GHOSTTEA_PRODUCTION_WORKSPACE_MARKER_OBSERVED handle=607
+GHOSTTEA_PRODUCTION_WORKSPACE_PASS
+```
+
+The app exited zero and the runner removed its disposable SSH container and
+network. This validates the persistence and recreation boundary; it does not
+yet claim product UI for selecting profiles or app-launch orchestration that
+loads and reconnects a saved workspace.

@@ -2559,6 +2559,25 @@ iPhone 14 Pro gate creates three concurrent SSH sessions, validates distinct
 native-terminal output for handles 606, 607, and 608, then passes exact pane,
 tab, and window teardown checks.
 
+The eighth slice adds `GhostteaConnectionProfiles`, a versioned SSH connection
+recipe and atomic protected JSON store. Profiles contain ordinary connection
+metadata and shell/tmux/Zellij attach intent, while password, private-key, and
+passphrase cases contain only typed opaque Keychain references. Credential-kind
+confusion and cross-connection key/passphrase references are rejected, and a
+keyboard-interactive profile requires a fresh runtime responder rather than
+persisting challenge answers. `GhostteaWorkspaceRestorationDocument` binds each
+persisted session ID to exactly one opaque profile ID; it contains neither
+secrets nor connection metadata and does not claim that any session is live.
+The restore path allocates a new terminal and SSH transport for each available
+profile, retains the stable workspace session ID, assigns a fresh native handle,
+then collapses failed allocations through the existing restoration reducer.
+The complete Swift package passes 99 tests and both iOS SDK builds. The signed
+iPhone 14 Pro gate resolves the fixture through a profile, creates three
+profile-bound sessions with fresh handles 606, 607, and 608, verifies a
+secret-free three-binding restoration manifest, observes independent terminal
+output, and passes exact teardown. Product-level profile selection and loading
+the persisted documents during app launch remain later Phase 7 work.
+
 Deliverables:
 
 - versioned workspace model;

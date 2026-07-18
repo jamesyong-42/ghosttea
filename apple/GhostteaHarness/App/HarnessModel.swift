@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import GhostteaConnectionProfiles
 import GhostteaCore
 import GhostteaCredentials
 import GhostteaFontProof
@@ -60,7 +61,7 @@ final class HarnessModel: ObservableObject {
 
     var id: Self { self }
 
-    func attachProfile(sessionName: String) -> GhostteaSSHAttachProfile {
+    func connectionProfileAttach(sessionName: String) -> GhostteaSSHProfileAttach {
       switch self {
       case .shell, .monitorTuis, .claude: .shell
       case .tmux: .tmux(sessionName: sessionName)
@@ -141,6 +142,7 @@ final class HarnessModel: ObservableObject {
   private var productionWorkspaceGeneration: String?
   private var productionCredentialStore: KeychainSSHCredentialStore?
   private var productionCredential: SSHCredentialID?
+  private var productionConnectionProfile: GhostteaSSHConnectionProfile?
   private var productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
   private var productionShellCommandSent = false
   private var productionTmuxResizeSent = false
@@ -892,12 +894,21 @@ final class HarnessModel: ObservableObject {
           runtime: runtime,
           configuration: .init(sessionHandle: 606, columns: 100, rows: 30)
         )
-        let profile = productionSSHProfile.attachProfile(sessionName: productionProfileName)
         let fixtureHost = disposableFixtureHost
-        let automateTrust = productionSessionAutomation
-        let ssh = try GhostteaSSHConfiguration(
+        let connectionProfile = try GhostteaSSHConnectionProfile(
+          name: productionSSHProfile.rawValue,
           host: fixtureHost,
           port: 22_022,
+          username: "ghosttea",
+          authentication: .password(credential: credential),
+          attach: productionSSHProfile.connectionProfileAttach(
+            sessionName: productionProfileName
+          ),
+          columns: 100,
+          rows: 30
+        )
+        let automateTrust = productionSessionAutomation
+        let ssh = try connectionProfile.configuration(
           knownHostsPath: knownHosts,
           hostKeyPolicy: .ask { [weak self] challenge in
             guard let self else { return .reject }
@@ -906,16 +917,7 @@ final class HarnessModel: ObservableObject {
             }
             return await self.requestHostKeyDecision(challenge)
           },
-          authentication: .password(
-            username: "ghosttea",
-            credential: credential,
-            store: store
-          ),
-          profile: profile,
-          columns: 100,
-          rows: 30,
-          connectTimeoutMilliseconds: 15_000,
-          handshakeTimeoutMilliseconds: 15_000
+          credentialStore: store
         )
         let session = GhostteaSSHSessionFactory.make(
           terminal: terminal,
@@ -932,6 +934,7 @@ final class HarnessModel: ObservableObject {
         let primarySessionID = "primary-\(workspaceGeneration)"
         let primaryResource = GhostteaSSHWorkspaceSession(
           id: primarySessionID,
+          profileID: connectionProfile.id.uuidString.lowercased(),
           terminalSessionHandle: 606,
           request: .newTab,
           terminal: terminal,
@@ -941,6 +944,7 @@ final class HarnessModel: ObservableObject {
         let factory = try GhostteaSSHWorkspaceSessionFactory(
           runtime: runtime,
           ssh: ssh,
+          profileID: connectionProfile.id.uuidString.lowercased(),
           sessionConfiguration: .ssh(initialPath: reconnectModel.path),
           initialSessionHandle: 607,
           eventHandler: { [weak self] routedEvent in
@@ -964,6 +968,7 @@ final class HarnessModel: ObservableObject {
         productionTerminal = terminal
         productionCredentialStore = store
         productionCredential = credential
+        productionConnectionProfile = connectionProfile
         productionSession = session
         productionPrimarySessionID = primarySessionID
         productionWorkspaceResources = [primarySessionID: primaryResource]
@@ -1454,6 +1459,21 @@ final class HarnessModel: ObservableObject {
       else {
         throw HarnessError.sessionProbeMismatch("workspace independent resources")
       }
+      let restoration = try productionWorkspaceRestorationDocument()
+      let restorationJSON = String(
+        decoding: try JSONEncoder().encode(restoration),
+        as: UTF8.self
+      )
+      guard
+        restoration.sessionProfiles.count == 3,
+        Set(restoration.sessionProfiles.map(\.profileID)).count == 1,
+        !restorationJSON.contains("ghosttea-password"),
+        !restorationJSON.contains("\"host\""),
+        !restorationJSON.contains("\"username\""),
+        !restorationJSON.contains("\"authentication\"")
+      else {
+        throw HarnessError.sessionProbeMismatch("workspace restoration secrecy")
+      }
 
       let paneClose = try await coordinator.apply(.applyToSelected(.close))
       guard paneClose.closedSessionIDs == [closedPaneSessionID] else {
@@ -1505,6 +1525,27 @@ final class HarnessModel: ObservableObject {
     for resource: GhostteaSSHWorkspaceSession
   ) -> String {
     "ghosttea-workspace-\(resource.terminalSessionHandle)-ok"
+  }
+
+  private func productionWorkspaceRestorationDocument()
+    throws -> GhostteaWorkspaceRestorationDocument
+  {
+    guard let productionWorkspace else {
+      throw HarnessError.sessionProbeMismatch("workspace restoration document")
+    }
+    let bindings = try productionWorkspace.sessionIDs.map { sessionID in
+      guard let profileID = productionWorkspaceResources[sessionID]?.profileID else {
+        throw HarnessError.sessionProbeMismatch("workspace restoration profile")
+      }
+      return GhostteaWorkspaceSessionProfileBinding(
+        sessionID: sessionID,
+        profileID: profileID
+      )
+    }
+    return try GhostteaWorkspaceRestorationDocument(
+      workspace: productionWorkspace,
+      sessionProfiles: bindings
+    )
   }
 
   private func sendAutomaticProductionProfileCommandIfNeeded() {
@@ -2237,6 +2278,7 @@ final class HarnessModel: ObservableObject {
     productionWorkspaceGeneration = nil
     productionSession = nil
     productionTerminal = nil
+    productionConnectionProfile = nil
     guard let store = productionCredentialStore, let credential = productionCredential else {
       return
     }
