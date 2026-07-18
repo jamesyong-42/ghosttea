@@ -105,7 +105,12 @@ GPU state rebuilds only after that full snapshot is applied. The exact contract
 and remaining whole-app budget work are documented in
 [`../GhostteaKit/Compatibility/memory-pressure.md`](../GhostteaKit/Compatibility/memory-pressure.md).
 The application also compresses Ghostty scrollback for hidden SSH tabs in
-stable workspace order while protecting every pane in the selected tab.
+stable workspace order while protecting every pane in the selected tab. If the
+live registry still exceeds the compact/standard four/eight-session target, it
+disconnects and evicts the least-recently-used hidden terminals while retaining
+their secret-free pane and profile identities. Selecting or reconnecting a cold
+pane creates a fresh terminal and transport under the same workspace session ID
+but leaves SSH demand-paused until the user explicitly reconnects.
 
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second

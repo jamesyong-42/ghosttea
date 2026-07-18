@@ -20,6 +20,8 @@ public enum GhostteaWorkspaceSessionCoordinatorError: Error, Equatable, Sendable
   case registryMismatch
   case invalidSessionID
   case duplicateSessionID(String)
+  case missingResidentSession(String)
+  case sessionNotInDocument(String)
   case missingSelectedSession
   case rejectedTransition
 }
@@ -59,6 +61,31 @@ public actor GhostteaWorkspaceSessionCoordinator<Session: Sendable> {
   public var sessionIDs: Set<String> { Set(sessions.keys) }
 
   public func session(for id: String) -> Session? { sessions[id] }
+
+  /// Removes a live resource without changing its pane or stable session identity.
+  /// The caller owns transport teardown and may later install a fresh resource.
+  public func evictSession(_ id: String) throws -> Session {
+    try requireOpen()
+    guard document.sessionIDs.contains(id) else {
+      throw GhostteaWorkspaceSessionCoordinatorError.sessionNotInDocument(id)
+    }
+    guard let session = sessions.removeValue(forKey: id) else {
+      throw GhostteaWorkspaceSessionCoordinatorError.missingResidentSession(id)
+    }
+    return session
+  }
+
+  /// Installs a freshly allocated resource behind an existing cold pane identity.
+  public func rehydrateSession(_ id: String, session: Session) throws {
+    try requireOpen()
+    guard document.sessionIDs.contains(id) else {
+      throw GhostteaWorkspaceSessionCoordinatorError.sessionNotInDocument(id)
+    }
+    guard sessions[id] == nil else {
+      throw GhostteaWorkspaceSessionCoordinatorError.duplicateSessionID(id)
+    }
+    sessions[id] = session
+  }
 
   @discardableResult
   public func createTab() async throws -> GhostteaWorkspaceTabsTransition {

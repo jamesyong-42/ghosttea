@@ -781,6 +781,77 @@ func workspaceSessionCoordinatorRollsBackDuplicate() async throws {
   #expect(await probe.terminated.map(\.1) == ["duplicate-resource"])
 }
 
+@Test("Session coordinator evicts and rehydrates a stable pane identity")
+func workspaceSessionCoordinatorColdResidency() async throws {
+  let probe = WorkspaceAllocationProbe([])
+  let initial = try singleSessionTabsDocument()
+  let coordinator = try GhostteaWorkspaceSessionCoordinator(
+    document: initial,
+    sessions: ["session-a": "resource-a"],
+    allocator: { try await probe.allocate($0) },
+    terminator: { await probe.terminate(id: $0, session: $1) }
+  )
+
+  let evicted = try await coordinator.evictSession("session-a")
+  #expect(evicted == "resource-a")
+  #expect(await coordinator.document == initial)
+  #expect(await coordinator.sessionIDs.isEmpty)
+
+  try await coordinator.rehydrateSession("session-a", session: "resource-b")
+  #expect(await coordinator.session(for: "session-a") == "resource-b")
+  #expect(await coordinator.document == initial)
+  await #expect(
+    throws: GhostteaWorkspaceSessionCoordinatorError.duplicateSessionID("session-a")
+  ) {
+    try await coordinator.rehydrateSession("session-a", session: "duplicate")
+  }
+}
+
+@Test("Workspace residency evicts hidden sessions in deterministic LRU order")
+func workspaceSessionResidencyUsesDetachedLRU() throws {
+  let selected = try GhostteaWorkspaceDocument(
+    root: .split(
+      GhostteaWorkspaceSplit(
+        id: "split-selected",
+        axis: .vertical,
+        ratio: 0.5,
+        first: .pane(GhostteaWorkspacePane(id: "pane-c", sessionID: "session-c")),
+        second: .pane(GhostteaWorkspacePane(id: "pane-d", sessionID: "session-d"))
+      )
+    ),
+    activePaneID: "pane-c"
+  )
+  let hiddenA = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-a", sessionID: "session-a")),
+    activePaneID: "pane-a"
+  )
+  let hiddenB = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane-b", sessionID: "session-b")),
+    activePaneID: "pane-b"
+  )
+  let document = try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-selected",
+    tabs: [
+      GhostteaWorkspaceTab(id: "tab-a", workspace: hiddenA),
+      GhostteaWorkspaceTab(id: "tab-b", workspace: hiddenB),
+      GhostteaWorkspaceTab(id: "tab-selected", workspace: selected),
+    ]
+  )
+  var residency = GhostteaWorkspaceSessionResidency(
+    sessionIDs: ["session-a", "session-b", "session-c", "session-d"]
+  )
+  residency.touch("session-a")
+
+  let candidates = residency.evictionCandidates(
+    in: document,
+    residentSessionIDs: Set(document.sessionIDs),
+    maximumResidentSessions: 2
+  )
+  #expect(candidates == ["session-b", "session-a"])
+  #expect(!candidates.contains("session-c"))
+  #expect(!candidates.contains("session-d"))
+}
+
 @Test("Session coordinator rejects a registry that does not match the document")
 func workspaceSessionCoordinatorRejectsRegistryMismatch() throws {
   #expect(throws: GhostteaWorkspaceSessionCoordinatorError.registryMismatch) {

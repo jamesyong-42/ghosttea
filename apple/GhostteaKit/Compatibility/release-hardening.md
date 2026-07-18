@@ -329,7 +329,12 @@ deliverable. The next memory slice surfaces Ghostty's full scrollback
 compression through the serialized production C/Rust/Swift boundary and has
 the application compress hidden-tab SSH terminals on a warning while every
 selected-tab pane remains protected. Cross-layer tests require 2,000 lines and
-scrollbar state to remain unchanged. Aggregate CPU/GPU enforcement,
-least-recently-used cold-session eviction/rehydration, future decoded-image
-accounting, compact-tier physical-device evidence, and jetsam restoration
-remain open as the separate whole-application memory item.
+scrollbar state to remain unchanged. The following slice enforces the Phase 0
+four/eight-session device-tier target with deterministic detached-session LRU
+eviction. Layout identity and secret-free profile bindings survive while the
+terminal, transport, frame, and scrollback are released; selecting or
+reconnecting the cold pane recreates fresh native resources under the same
+session ID without silently starting a remote shell. Aggregate CPU/GPU byte
+enforcement, future decoded-image accounting, compact-tier physical-device
+evidence, and jetsam restoration remain open as the separate whole-application
+memory item.

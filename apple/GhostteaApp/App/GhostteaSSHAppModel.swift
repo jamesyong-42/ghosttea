@@ -45,6 +45,11 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var sessionProfileIDs: [String: String] = [:]
   private var grids: [String: GhostteaTerminalGridSize] = [:]
   private var layoutEpochs: [String: UInt64] = [:]
+  private var coldSessionRequests: [String: GhostteaWorkspaceSessionRequest] = [:]
+  private var coldSessionIDs: Set<String> = []
+  private var evictionTasks: [String: Task<Void, Never>] = [:]
+  private var rehydrationTasks: [String: Task<GhostteaSSHWorkspaceSession, Error>] = [:]
+  private var residency = GhostteaWorkspaceSessionResidency()
   private var shortcutState = GhostteaWorkspaceShortcutState()
   private var requestedProfileID: String?
   private var networkTask: Task<Void, Never>?
@@ -54,9 +59,12 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var keyboardContinuation: CheckedContinuation<[String], Error>?
   private var nextFactoryHandle: UInt64 = 10_000
   private var started = false
+  private let maximumResidentSessions: Int
 
   init(diagnostics: GhostteaDiagnosticRecorder) {
     self.diagnostics = diagnostics
+    maximumResidentSessions =
+      ProcessInfo.processInfo.physicalMemory <= 4 * 1_073_741_824 ? 4 : 8
   }
 
   deinit {
@@ -97,7 +105,7 @@ final class GhostteaSSHAppModel: ObservableObject {
         named: UIApplication.didReceiveMemoryWarningNotification)
       {
         guard let self else { return }
-        await self.compressInactiveScrollback()
+        await self.handleMemoryWarning()
       }
     }
     Task {
@@ -153,6 +161,8 @@ final class GhostteaSSHAppModel: ObservableObject {
           sessions: [allocation.sessionID: allocation.session],
           factory: factory)
         workspace = document
+        residency = GhostteaWorkspaceSessionResidency(sessionIDs: document.sessionIDs)
+        residency.touch(document.selectedTabSessionIDs)
         status = "Workspace ready"
         isBusy = false
         try await persistWorkspace()
@@ -176,6 +186,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       do {
         let transition = try await coordinator.createTab()
         workspace = transition.document
+        residency.touch(transition.document.selectedTabSessionIDs)
         try await persistWorkspace()
       } catch {
         record(.sshTabCreateFailed)
@@ -191,6 +202,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       do {
         let transition = try await coordinator.splitSelected(axis: axis)
         workspace = transition.document
+        residency.touch(transition.document.selectedTabSessionIDs)
         try await persistWorkspace()
       } catch {
         record(.sshSplitFailed)
@@ -210,6 +222,11 @@ final class GhostteaSSHAppModel: ObservableObject {
           return
         }
         workspace = transition.document
+        for sessionID in transition.closedSessionIDs where coldSessionIDs.contains(sessionID) {
+          sessionTerminated(sessionID)
+        }
+        residency.touch(transition.document.selectedTabSessionIDs)
+        await rehydrateSelectedSessions(in: transition.document)
         try await persistWorkspace()
       } catch {
         record(.sshWorkspaceUpdateFailed)
@@ -235,8 +252,13 @@ final class GhostteaSSHAppModel: ObservableObject {
     guard let target else { return }
     sessionStatuses[target] = "Connecting…"
     Task {
-      guard let resource = await coordinator.session(for: target) else { return }
-      await resource.session.requestConnect()
+      do {
+        let resource = try await ensureResident(target, coordinator: coordinator)
+        await resource.session.requestConnect()
+      } catch {
+        record(.terminalSessionRehydrationFailed)
+        sessionStatuses[target] = "Could not restore terminal"
+      }
     }
   }
 
@@ -458,6 +480,8 @@ final class GhostteaSSHAppModel: ObservableObject {
     coordinator = try makeCoordinator(
       document: document, sessions: result.sessions, factory: factory)
     workspace = document
+    residency = GhostteaWorkspaceSessionResidency(sessionIDs: document.sessionIDs)
+    residency.touch(document.selectedTabSessionIDs)
     status =
       result.unavailableSessionIDs.isEmpty
       ? "Workspace restored · reconnect when ready"
@@ -599,7 +623,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     await forEachSession { await $0.session.updateNetworkPath(path) }
   }
 
-  private func compressInactiveScrollback() async {
+  private func handleMemoryWarning() async {
     guard let workspace, let coordinator else { return }
     for sessionID in workspace.inactiveSessionIDs {
       guard let resource = await coordinator.session(for: sessionID) else { continue }
@@ -609,10 +633,113 @@ final class GhostteaSSHAppModel: ObservableObject {
         record(.terminalMemoryCompressionFailed, severity: .warning)
       }
     }
+    await enforceResidentSessionCap(workspace: workspace, coordinator: coordinator)
+  }
+
+  private func enforceResidentSessionCap(
+    workspace: GhostteaWorkspaceTabsDocument,
+    coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async {
+    guard let factory else { return }
+    let candidates = residency.evictionCandidates(
+      in: workspace,
+      residentSessionIDs: await coordinator.sessionIDs,
+      maximumResidentSessions: maximumResidentSessions)
+    for sessionID in candidates {
+      do {
+        let resource = try await coordinator.evictSession(sessionID)
+        coldSessionRequests[sessionID] = resource.request
+        coldSessionIDs.insert(sessionID)
+        frames[sessionID] = nil
+        sessionStatuses[sessionID] = "Evicted · reconnect available"
+        let eviction = Task { await factory.evict(resource) }
+        evictionTasks[sessionID] = eviction
+        await eviction.value
+        evictionTasks[sessionID] = nil
+        record(.terminalSessionEvicted, severity: .info)
+      } catch {
+        record(.terminalSessionEvictionFailed)
+      }
+    }
+  }
+
+  private func rehydrateSelectedSessions(
+    in workspace: GhostteaWorkspaceTabsDocument
+  ) async {
+    guard let coordinator else { return }
+    for sessionID in workspace.selectedTabSessionIDs where coldSessionIDs.contains(sessionID) {
+      do {
+        _ = try await ensureResident(sessionID, coordinator: coordinator)
+      } catch {
+        record(.terminalSessionRehydrationFailed)
+        sessionStatuses[sessionID] = "Could not restore terminal"
+      }
+    }
+  }
+
+  private func ensureResident(
+    _ sessionID: String,
+    coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async throws -> GhostteaSSHWorkspaceSession {
+    if let eviction = evictionTasks[sessionID] {
+      await eviction.value
+    }
+    if let resident = await coordinator.session(for: sessionID) {
+      residency.touch(sessionID)
+      return resident
+    }
+    if let task = rehydrationTasks[sessionID] {
+      return try await task.value
+    }
+    guard coldSessionIDs.contains(sessionID) else {
+      throw GhostteaSSHAppError.missingResidentSession
+    }
+    let task = Task { @MainActor [weak self] () throws -> GhostteaSSHWorkspaceSession in
+      guard let self else { throw CancellationError() }
+      return try await self.performRehydration(sessionID, coordinator: coordinator)
+    }
+    rehydrationTasks[sessionID] = task
+    do {
+      let resource = try await task.value
+      rehydrationTasks[sessionID] = nil
+      return resource
+    } catch {
+      rehydrationTasks[sessionID] = nil
+      throw error
+    }
+  }
+
+  private func performRehydration(
+    _ sessionID: String,
+    coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async throws -> GhostteaSSHWorkspaceSession {
+    guard
+      let factory,
+      let profileID = sessionProfileIDs[sessionID],
+      let profile = profile(id: profileID)
+    else { throw GhostteaSSHAppError.missingResidentSession }
+    let allocation = try await factory.allocate(
+      coldSessionRequests[sessionID] ?? .newTab,
+      ssh: try configuration(for: profile),
+      sessionID: sessionID,
+      profileID: profileID,
+      connect: false)
+    do {
+      try await coordinator.rehydrateSession(sessionID, session: allocation.session)
+    } catch {
+      await factory.evict(allocation.session)
+      throw error
+    }
+    coldSessionRequests[sessionID] = nil
+    coldSessionIDs.remove(sessionID)
+    residency.touch(sessionID)
+    sessionStatuses[sessionID] = "Reconnect available"
+    return allocation.session
   }
 
   private func handle(_ routed: GhostteaSSHWorkspaceSessionEvent) async {
     let sessionID = routed.sessionID
+    guard !coldSessionIDs.contains(sessionID) else { return }
     switch routed.event {
     case .stateChanged(let snapshot):
       switch snapshot.reconnectState {
@@ -648,6 +775,13 @@ final class GhostteaSSHAppModel: ObservableObject {
     grids = [:]
     layoutEpochs = [:]
     requestedProfileID = nil
+    for task in rehydrationTasks.values { task.cancel() }
+    for task in evictionTasks.values { task.cancel() }
+    rehydrationTasks = [:]
+    evictionTasks = [:]
+    coldSessionRequests = [:]
+    coldSessionIDs = []
+    residency = GhostteaWorkspaceSessionResidency()
     shortcutState = GhostteaWorkspaceShortcutState()
     if clearPersistence { try? await restorationStore?.remove() }
     status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
@@ -659,6 +793,13 @@ final class GhostteaSSHAppModel: ObservableObject {
     sessionProfileIDs[sessionID] = nil
     grids[sessionID] = nil
     layoutEpochs[sessionID] = nil
+    coldSessionRequests[sessionID] = nil
+    coldSessionIDs.remove(sessionID)
+    rehydrationTasks[sessionID]?.cancel()
+    rehydrationTasks[sessionID] = nil
+    evictionTasks[sessionID]?.cancel()
+    evictionTasks[sessionID] = nil
+    residency.remove(sessionID)
   }
 
   private func withSession(
@@ -668,7 +809,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     guard let coordinator else { return }
     Task {
       do {
-        guard let resource = await coordinator.session(for: sessionID) else { return }
+        let resource = try await ensureResident(sessionID, coordinator: coordinator)
         try await operation(resource)
       } catch {
         record(.sshSessionOperationFailed)
@@ -748,5 +889,6 @@ final class GhostteaSSHAppModel: ObservableObject {
 private enum GhostteaSSHAppError: Error {
   case notReady
   case missingProfile
+  case missingResidentSession
   case applicationSupportUnavailable
 }

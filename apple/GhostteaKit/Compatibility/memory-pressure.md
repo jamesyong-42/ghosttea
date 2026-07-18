@@ -1,7 +1,8 @@
 # iOS terminal memory-pressure contract
 
-**Status:** renderer eviction, full-snapshot recovery, and inactive scrollback
-compression implemented; whole-app session budgeting remains open
+**Status:** renderer recovery, inactive scrollback compression, and bounded
+cold-session eviction/rehydration implemented; aggregate byte budgeting remains
+open
 
 **Implemented:** 2026-07-18
 
@@ -77,6 +78,35 @@ This implements the compression step before whole-session eviction. Ghostty
 still has no runtime trim operation, so compression cannot enforce the resident
 session cap by itself.
 
+## Resident-session cap and cold rehydration
+
+The SSH workspace now separates durable layout identity from its live resource
+registry. A pane may retain its session ID, profile binding, grid, and workspace
+position while its native terminal, transport actor, last frame, and scrollback
+are absent. The coordinator exposes explicit eviction and rehydration operations
+that never mutate the workspace document.
+
+After compressing hidden terminals, a warning applies the Phase 0 device-tier
+target: four resident sessions on devices with at most 4 GiB of physical
+memory, and eight on larger devices. `GhostteaWorkspaceSessionResidency`
+selects only hidden-tab sessions, oldest access generation first with workspace
+order as a stable tie-breaker. Every pane in the selected tab remains protected
+even when that tab alone exceeds the target.
+
+Eviction disconnects the SSH transport, releases the factory's stable-ID claim,
+drops the terminal and cached frame, and retains only secret-free reconstruction
+metadata. Selecting the cold tab or explicitly reconnecting its pane allocates a
+fresh terminal and transport under the same session ID and a fresh native
+handle. Rehydration is demand-paused and reports `Reconnect available`; it never
+silently opens a new remote shell. Concurrent callers share one rehydration task,
+and rehydration waits for eviction teardown to complete before reusing the
+stable identity.
+
+Package tests require the coordinator document to remain byte-for-byte equal
+across eviction and rehydration, selected panes to be excluded from LRU output,
+deterministic oldest-first candidates, and a rehydrated factory resource to use
+the original workspace identity with new terminal and session actors.
+
 ## Diagnostics and invariants
 
 `GhostteaTerminalSurfaceDiagnostics` exposes presentation-only counters:
@@ -123,9 +153,8 @@ It does not close the separate whole-application memory-budget deliverable.
 Before release, the application still needs:
 
 - an explicit aggregate CPU/GPU budget across all scenes and SSH/shared
-  sessions;
-- deterministic least-recently-used cold-session eviction and rehydration when
-  compression alone cannot satisfy the resident-session cap;
+  sessions, including enforcement based on measured process footprint rather
+  than the resident-count cap alone;
 - accounting for future decoded images and any shared shaping caches;
 - compact-tier physical-device measurements for multiple active and background
   sessions; and

@@ -138,6 +138,40 @@ private func testSSHConfiguration() throws -> GhostteaSSHConfiguration {
   }
 }
 
+@Test func factoryRehydratesEvictedIdentityWithFreshNativeResources() async throws {
+  let factory = try GhostteaSSHWorkspaceSessionFactory(
+    runtime: GhostteaRuntime(),
+    ssh: testSSHConfiguration(),
+    sessionConfiguration: .ssh(
+      initialPath: TerminalNetworkPath(availability: .unsatisfied)
+    ),
+    initialSessionHandle: 950,
+    identityPrefix: "cold"
+  )
+  let original = try await factory.allocate(
+    .newTab,
+    ssh: testSSHConfiguration(),
+    sessionID: "stable-session",
+    profileID: "profile-a",
+    connect: false
+  )
+
+  await factory.evict(original.session)
+  let rehydrated = try await factory.allocate(
+    original.session.request,
+    ssh: testSSHConfiguration(),
+    sessionID: original.sessionID,
+    profileID: original.session.profileID,
+    connect: false
+  )
+
+  #expect(rehydrated.sessionID == original.sessionID)
+  #expect(rehydrated.session.terminalSessionHandle == 951)
+  #expect(rehydrated.session.terminal !== original.session.terminal)
+  #expect(rehydrated.session.session !== original.session.session)
+  #expect(await rehydrated.session.session.snapshot().reconnectState == .idle)
+}
+
 @Test func factoryRestoresAvailableProfilesAndCollapsesMissingBindings() async throws {
   let profileID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
   let profile = try GhostteaSSHConnectionProfile(

@@ -188,6 +188,13 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     await resource.session.disconnect()
   }
 
+  /// Tears down an evicted resource and releases its stable identity so a later
+  /// allocation can rehydrate the same workspace pane with a fresh native handle.
+  public func evict(_ resource: GhostteaSSHWorkspaceSession) async {
+    await resource.session.disconnect()
+    allocatedSessionIDs.remove(resource.id)
+  }
+
   /// Recreates every resolvable persisted session with a fresh native terminal
   /// and transport. Restore defaults to demand-paused; the host decides when a
   /// foreground scene may explicitly request connections.

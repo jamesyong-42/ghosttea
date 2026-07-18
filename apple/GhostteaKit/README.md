@@ -55,8 +55,11 @@ the iOS presentation-cache eviction transaction: memory warnings release the
 terminal text, request a full Truffle or SSH snapshot, and rebuild lazily only
 after that snapshot arrives. The same contract routes Ghostty's logical-content
 preserving full scrollback compression through the production FFI and applies
-it to hidden SSH tabs on a warning. Aggregate session budgeting and cold-session
-eviction remain separate release gates.
+it to hidden SSH tabs on a warning. Hidden terminals beyond the physical-device
+tier's four/eight-session cap are then evicted by deterministic LRU; selecting
+or reconnecting a cold pane recreates fresh native resources under its stable
+workspace identity without an automatic SSH connection. Aggregate byte-budget
+enforcement remains a separate release gate.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

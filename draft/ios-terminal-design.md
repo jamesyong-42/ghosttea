@@ -2920,8 +2920,18 @@ no effects and cross-layer tests require 2,000 deterministic lines and
 scrollbar state to remain logically identical. The application observes one
 warning regardless of scene count, protects every selected-tab pane, and
 compresses hidden SSH tabs in stable workspace order. Runtime trimming remains
-unavailable, so resident-session cap enforcement and least-recently-used cold
-session eviction/rehydration are still open.
+unavailable, so compression alone cannot enforce the resident cap.
+The eleventh slice adds that target at the workspace resource boundary. The
+compact and standard tiers target four and eight live sessions after a warning;
+a deterministic access-generation LRU chooses only hidden tabs and protects
+every pane in the selected tab even when those panes alone exceed the target.
+Eviction preserves the pane's stable
+session ID, profile binding, grid, and persisted layout but releases its SSH
+transport, native terminal, frame, and scrollback. Selecting or reconnecting a
+cold pane serializes rehydration behind teardown, recreates fresh native
+resources under the same session ID, and remains demand-paused until explicit
+reconnect. Aggregate footprint-driven CPU/GPU enforcement, compact-device
+evidence, and jetsam restoration qualification remain open.
 
 Deliverables:
 
