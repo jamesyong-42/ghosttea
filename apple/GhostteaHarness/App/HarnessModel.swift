@@ -276,6 +276,10 @@ final class HarnessModel: ObservableObject {
         let metal = try GhostteaMetalProof.run(frame: frame)
         let visualDifference = try GhostteaVisualGolden.evaluate(metal.visualFingerprint)
         let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+        surface.accessibilityTerminalTitle = "Ghosttea preview"
+        surface.accessibilityConnectionState = "Connected"
+        surface.terminalAccessibilitySelectionText = "proof selection"
+        surface.onAccessibilityReconnect = {}
         var gridChanges: [GhostteaTerminalGridSize] = []
         surface.onGridSizeChange = { gridChanges.append($0) }
         surface.terminalContentInsets = UIEdgeInsets(top: 59, left: 0, bottom: 34, right: 0)
@@ -289,6 +293,11 @@ final class HarnessModel: ObservableObject {
         let surfaceAcceptedFull = try surface.apply(frame: frame)
         let surfaceAcceptedIncremental = try surface.apply(frame: incremental)
         let surfaceAcceptedStale = try surface.apply(frame: incremental)
+        let accessibilitySnapshot = surface.accessibilitySnapshot
+        let accessibilityElements = surface.accessibilityElements as? [UIAccessibilityElement]
+        var accessibilityScrollRows: [Int] = []
+        surface.onScrollRows = { accessibilityScrollRows.append($0) }
+        let accessibilityScrolled = surface.accessibilityScroll(.up)
         let pointerCell = surface.viewportCell(
           at: CGPoint(
             x: 61 + CGFloat(GhostteaTerminalLayout.cellWidth) * 2 + 1,
@@ -379,6 +388,21 @@ final class HarnessModel: ObservableObject {
           !surfaceAcceptedStale,
           surface.diagnostics.acceptedFrames == 2,
           surface.diagnostics.staleFrames == 1,
+          accessibilitySnapshot.rows.contains(where: { $0.text.contains("Metal proof ✓ 界") }),
+          accessibilitySnapshot.rows.contains(where: { $0.text.contains("retained-state") }),
+          accessibilitySnapshot.visibleRangeDescription == "Rows 1 through 30 of 30",
+          accessibilityElements?.count == 31,
+          accessibilityElements?.first?.accessibilityIdentifier == "ghosttea.terminal.summary",
+          accessibilityElements?.first?.accessibilityLabel == "Ghosttea preview",
+          accessibilityElements?.first?.accessibilityValue
+            == "Connected. Rows 1 through 30 of 30. Selected text: proof selection",
+          accessibilityElements?.first?.accessibilityCustomActions?.map(\.name)
+            == ["Focus Terminal", "Reconnect"],
+          accessibilityElements?[1].accessibilityIdentifier == "ghosttea.terminal.row.0",
+          accessibilityElements?[1].accessibilityCustomActions?.map(\.name)
+            == ["Copy", "Select All", "Paste"],
+          accessibilityScrolled,
+          accessibilityScrollRows == [19],
           surfaceResidentBeforeSuspend == 20 * 1024 * 1024,
           surfaceResidentWhileSuspended == 0,
           surface.diagnostics.resourceEvictions == 1,

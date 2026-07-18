@@ -56,6 +56,18 @@
     public var onSelectionChange: ((GhostteaTerminalSelection?) -> Void)?
     public var onSelectionCommit: ((GhostteaTerminalSelection) -> Void)?
     public var onSelectAll: (() -> Void)?
+    public var onAccessibilityReconnect: (() -> Void)? {
+      didSet { scheduleAccessibilityElementUpdate(force: true) }
+    }
+    public var accessibilityTerminalTitle = "Terminal" {
+      didSet { scheduleAccessibilityElementUpdate(force: true) }
+    }
+    public var accessibilityConnectionState: String? {
+      didSet { scheduleAccessibilityElementUpdate(force: true) }
+    }
+    public var terminalAccessibilitySelectionText: String? {
+      didSet { scheduleAccessibilityElementUpdate(force: true) }
+    }
     public var forceLocalSelection = false
     public weak var inputDelegate: UITextInputDelegate?
     public var markedTextStyle: [NSAttributedString.Key: Any]? {
@@ -105,6 +117,11 @@
     }
     public private(set) var diagnostics = GhostteaTerminalMetalDiagnostics()
     public private(set) var currentGridSize: GhostteaTerminalGridSize?
+    public private(set) var accessibilitySnapshot = GhostteaTerminalAccessibilitySnapshot(
+      rows: [],
+      viewportOffset: 0,
+      totalRows: 0
+    )
 
     private let metalRuntime: GhostteaMetalRuntime
     private var terminalRenderer: GhostteaMetalRenderer?
@@ -123,6 +140,8 @@
     private var selectionAutoScrollDirection = 0
     private var selectionAutoScrollColumn: UInt16 = 0
     private var selectionAutoScrollTask: Task<Void, Never>?
+    private var accessibilityElementUpdateTask: Task<Void, Never>?
+    private var accessibilityPageScrollPending = false
     private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
     private let markedTextLabel = UILabel()
     private lazy var textInputTokenizer = UITextInputStringTokenizer(textInput: self)
@@ -190,6 +209,8 @@
       addGestureRecognizer(pointerHoverRecognizer)
       addGestureRecognizer(contextMenuTapRecognizer)
       addInteraction(editMenuInteraction)
+      isAccessibilityElement = false
+      accessibilityContainerType = .semanticGroup
       markedTextLabel.backgroundColor = UIColor(
         red: 40 / 255,
         green: 44 / 255,
@@ -229,6 +250,7 @@
 
     deinit {
       selectionAutoScrollTask?.cancel()
+      accessibilityElementUpdateTask?.cancel()
       NotificationCenter.default.removeObserver(self)
     }
 
@@ -373,6 +395,14 @@
       do {
         switch try retainedState.apply(data) {
         case .applied:
+          updateAccessibilitySnapshot()
+          if accessibilityPageScrollPending {
+            accessibilityPageScrollPending = false
+            UIAccessibility.post(
+              notification: .pageScrolled,
+              argument: accessibilitySnapshot.visibleRangeDescription
+            )
+          }
           updateAutoScrollSelectionAfterFrame()
           updateRenderedSelection()
           updateCursorBlinkSurfaceVisibility()
@@ -420,6 +450,7 @@
       absoluteSelection = nil
       terminalSelection = nil
       onSelectionChange?(nil)
+      updateAccessibilitySnapshot()
       requestEventDrivenDraw()
     }
 
@@ -429,6 +460,7 @@
       absoluteSelection = selection
       updateRenderedSelection()
       onSelectionChange?(selection)
+      updateAccessibilitySnapshot()
     }
 
     public func selectAllTerminal() {
@@ -442,6 +474,167 @@
       else { return }
       setSelection(selection)
       onSelectAll?()
+    }
+
+    public override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+      guard let onScrollRows else { return false }
+      let pageRows = max(1, Int(currentGridSize?.rows ?? UInt16(retainedState.rows.count)))
+      let delta: Int
+      switch direction {
+      case .up, .next:
+        delta = pageRows
+      case .down, .previous:
+        delta = -pageRows
+      default:
+        return false
+      }
+      accessibilityPageScrollPending = true
+      onScrollRows(delta)
+      return true
+    }
+
+    public override func accessibilityPerformEscape() -> Bool {
+      resignFirstResponder()
+    }
+
+    private func updateAccessibilitySnapshot() {
+      let next = GhostteaTerminalAccessibilitySnapshot(
+        retainedState: retainedState,
+        selection: absoluteSelection
+      )
+      guard next != accessibilitySnapshot else { return }
+      accessibilitySnapshot = next
+      scheduleAccessibilityElementUpdate()
+    }
+
+    private func scheduleAccessibilityElementUpdate(force: Bool = false) {
+      guard retainedState.sessionHandle != 0 else { return }
+      accessibilityElementUpdateTask?.cancel()
+      guard UIAccessibility.isVoiceOverRunning && !force else {
+        rebuildAccessibilityElements()
+        return
+      }
+      accessibilityElementUpdateTask = Task { [weak self] in
+        try? await Task.sleep(for: .milliseconds(100))
+        guard !Task.isCancelled else { return }
+        self?.rebuildAccessibilityElements()
+      }
+    }
+
+    private func rebuildAccessibilityElements() {
+      accessibilityElementUpdateTask?.cancel()
+      accessibilityElementUpdateTask = nil
+      let insets = effectiveContentInsets()
+      let rowActions = accessibilityRowActions()
+      var elements: [UIAccessibilityElement] = [accessibilitySummaryElement()]
+      elements += accessibilitySnapshot.rows.map { row in
+        let element = UIAccessibilityElement(accessibilityContainer: self)
+        element.accessibilityIdentifier = "ghosttea.terminal.row.\(row.absoluteRow)"
+        element.accessibilityLabel = row.text.isEmpty ? "Blank" : row.text
+        var values = ["Row \(row.absoluteRow + 1) of \(accessibilitySnapshot.totalRows)"]
+        if let cursorColumn = row.cursorColumn {
+          values.append("Cursor column \(cursorColumn + 1)")
+        }
+        if row.isSelected { values.append("Selected") }
+        element.accessibilityValue = values.joined(separator: ", ")
+        element.accessibilityTraits =
+          row.isSelected
+          ? [.staticText, .updatesFrequently, .selected] : [.staticText, .updatesFrequently]
+        element.accessibilityFrameInContainerSpace = CGRect(
+          x: CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding),
+          y: CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding)
+            + CGFloat(row.viewportRow) * CGFloat(GhostteaTerminalLayout.lineHeight),
+          width: max(
+            0,
+            bounds.width
+              - CGFloat(insets.left + insets.right + 2 * GhostteaTerminalLayout.horizontalPadding)
+          ),
+          height: CGFloat(GhostteaTerminalLayout.lineHeight)
+        )
+        element.accessibilityCustomActions = rowActions
+        return element
+      }
+      accessibilityElements = elements
+    }
+
+    private func accessibilitySummaryElement() -> UIAccessibilityElement {
+      let element = UIAccessibilityElement(accessibilityContainer: self)
+      element.accessibilityIdentifier = "ghosttea.terminal.summary"
+      element.accessibilityLabel = accessibilityTerminalTitle
+      var values = [accessibilitySnapshot.visibleRangeDescription]
+      if let accessibilityConnectionState, !accessibilityConnectionState.isEmpty {
+        values.insert(accessibilityConnectionState, at: 0)
+      }
+      if let terminalAccessibilitySelectionText, !terminalAccessibilitySelectionText.isEmpty {
+        values.append("Selected text: \(terminalAccessibilitySelectionText)")
+      }
+      element.accessibilityValue = values.joined(separator: ". ")
+      element.accessibilityTraits = .header
+      var actions = [
+        UIAccessibilityCustomAction(
+          name: "Focus Terminal",
+          target: self,
+          selector: #selector(accessibilityFocusTerminal)
+        )
+      ]
+      if onAccessibilityReconnect != nil {
+        actions.append(
+          UIAccessibilityCustomAction(
+            name: "Reconnect",
+            target: self,
+            selector: #selector(accessibilityReconnect)
+          )
+        )
+      }
+      element.accessibilityCustomActions = actions
+      return element
+    }
+
+    private func accessibilityRowActions() -> [UIAccessibilityCustomAction] {
+      [
+        UIAccessibilityCustomAction(
+          name: "Copy",
+          target: self,
+          selector: #selector(accessibilityCopySelection)
+        ),
+        UIAccessibilityCustomAction(
+          name: "Select All",
+          target: self,
+          selector: #selector(accessibilitySelectAllTerminal)
+        ),
+        UIAccessibilityCustomAction(
+          name: "Paste",
+          target: self,
+          selector: #selector(accessibilityPaste)
+        ),
+      ]
+    }
+
+    @objc private func accessibilityCopySelection() -> Bool {
+      guard let selection = absoluteSelection else { return false }
+      onSelectionCommit?(selection)
+      return true
+    }
+
+    @objc private func accessibilitySelectAllTerminal() -> Bool {
+      selectAllTerminal()
+      return absoluteSelection != nil
+    }
+
+    @objc private func accessibilityPaste() -> Bool {
+      guard UIPasteboard.general.hasStrings else { return false }
+      paste(nil)
+      return true
+    }
+
+    @objc private func accessibilityFocusTerminal() -> Bool {
+      focusTerminalInput()
+    }
+
+    @objc private func accessibilityReconnect() -> Bool {
+      guard let onAccessibilityReconnect else { return false }
+      onAccessibilityReconnect()
+      return true
     }
 
     public func setTerminalFocused(_ focused: Bool) {
@@ -655,6 +848,7 @@
       absoluteSelection = selection
       updateRenderedSelection()
       onSelectionChange?(selection)
+      updateAccessibilitySnapshot()
     }
 
     private func finishPointerInteraction(
@@ -671,10 +865,12 @@
           absoluteSelection = nil
           updateRenderedSelection()
           onSelectionChange?(nil)
+          updateAccessibilitySnapshot()
         } else {
           absoluteSelection = selection
           updateRenderedSelection()
           onSelectionChange?(selection)
+          updateAccessibilitySnapshot()
           onSelectionCommit?(selection)
         }
       case .none:
@@ -857,6 +1053,7 @@
     private func geometryDidChange() {
       updateGridSize()
       updateMarkedTextOverlay()
+      scheduleAccessibilityElementUpdate(force: true)
       requestEventDrivenDraw()
     }
 

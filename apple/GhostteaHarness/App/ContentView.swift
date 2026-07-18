@@ -84,7 +84,6 @@ struct ContentView: View {
             )
             .frame(height: 160)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .accessibilityLabel("Rendered Ghosttea terminal preview")
             Text(model.terminalInputResult)
               .font(.caption)
               .foregroundStyle(.secondary)

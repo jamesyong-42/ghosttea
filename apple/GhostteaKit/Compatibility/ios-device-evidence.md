@@ -906,3 +906,29 @@ edit-menu delegate annotation. The complete 63-test suite and iPhone 17 Pro
 simulator marker pass. Physical secondary-click, edge-hold timing, clipboard
 confirmation, and touch ergonomics remain device evidence; word/line expansion
 is not a parity claim because it is absent from the desktop demo.
+
+## 2026-07-17: native terminal accessibility surface
+
+The seventh Phase 5 slice retains the producer's dedicated TRF1 accessibility
+rows alongside rendered row state. Its public snapshot assigns every visible
+row an absolute scrollback coordinate and a deterministic visible-range
+description. The production Metal view exposes those rows as native
+`UIAccessibilityElement` static text with safe-area-aware frames and stable
+identifiers. It does not scrape shaped glyphs and does not make scrollback an
+editable UIKit document.
+
+The accessibility container returns page-scroll deltas sized to the current
+live grid and exposes Escape-to-unfocus plus Copy, Select All, and Paste actions.
+Copy and selection still route through native model extraction; page scrolling
+still routes through the host's terminal actor. The SwiftUI harness no longer
+adds a wrapper label that could flatten the native row tree.
+
+The new package test proves native row text, absolute coordinates, visible-range
+descriptions, and empty-terminal behavior. The iPhone 17 Pro simulator drives
+the production view and verifies a summary element plus 30 native row elements,
+stable identifiers, title/connection/selection context, focus/reconnect and
+row-action catalogs, and a 19-row page callback after landscape layout.
+The complete package suite now contains 64 tests, and both iOS SDK builds pass.
+Physical VoiceOver row navigation, output-announcement pacing, rotor behavior,
+and action confirmation remain release evidence before the Phase 5 exit gate is
+declared complete.

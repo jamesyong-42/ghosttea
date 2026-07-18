@@ -36,6 +36,8 @@ The harness provides:
   selection, and native-model selection extraction on the TRF1 preview;
 - secondary-click Copy/Select All/Paste plus cancellable edge autoscroll, with
   clipboard writes performed only after native selection extraction;
+- native TRF1 accessibility rows exposed as per-line VoiceOver elements, with
+  absolute row metadata, page scrolling, Copy, Select All, and Paste actions;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a

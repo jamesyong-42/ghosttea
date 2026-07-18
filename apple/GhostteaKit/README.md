@@ -215,8 +215,8 @@ to the current viewport for Metal rendering, and retained across scroll frames.
 The host receives change and commit callbacks; committed extraction goes to
 `GhostteaTerminal.selectionText` so wrapped rows, wide cells, and graphemes stay
 native-model decisions. Zero-length clicks clear selection. Word/line expansion,
-selection-edge autoscroll, secondary-button menus, and device ergonomics remain
-follow-up interaction work.
+which is absent from the desktop demo, is not added as an iOS-only behavior.
+Physical pointer and touch ergonomics remain release evidence.
 
 Selection now also matches the desktop demo at viewport edges and in its edit
 menu. While a local drag remains above or below the surface, a cancellable
@@ -227,6 +227,16 @@ UIKit's Copy, Select All, and Paste menu. Copy and completed non-empty drags ask
 the host to extract native selection text; Select All highlights the entire
 absolute row range and invokes the native `selectAll` extraction path. The
 diagnostic harness writes only those user-invoked results to `UIPasteboard`.
+
+The accessibility surface consumes TRF1's dedicated native accessibility rows,
+not glyph geometry or an editable UIKit mirror. Each visible terminal row is a
+stable `UIAccessibilityElement` with its absolute scrollback row, screen frame,
+and frequently-updating static-text traits. The container supports VoiceOver
+page scrolling through the host's native scroll callback, Escape-to-unfocus,
+and Copy, Select All, and Paste custom actions. The public accessibility
+snapshot keeps this row model inspectable without exposing renderer internals.
+Automated simulator coverage proves the element tree and actions; physical
+VoiceOver navigation and announcement pacing remain release evidence.
 
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and

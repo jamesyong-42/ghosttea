@@ -363,6 +363,45 @@ private let blinkingCursor = TRF1CursorState(
   #expect(GhostteaSelectionAutoScroll.direction(y: 101, minimum: 0, maximum: 100) == 1)
 }
 
+@Test func accessibilitySnapshotUsesNativeRowsAndAbsoluteScrollbackCoordinates() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 116, columns: 20, rows: 3)
+  )
+  let update = try await terminal.feed(Data("first\r\nsecond".utf8), render: .full)
+  var frame = try #require(update.effects.first { $0.kind == .frameReady }?.payload)
+  let nativeAccessibilityRange = try #require(
+    frame.range(of: Data("first".utf8), options: .backwards)
+  )
+  frame.replaceSubrange(nativeAccessibilityRange, with: Data("voice".utf8))
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+
+  let snapshot = GhostteaTerminalAccessibilitySnapshot(retainedState: state, selection: nil)
+  #expect(snapshot.rows.count == 3)
+  #expect(state.rows[0].text == "first")
+  #expect(snapshot.rows[0].text == "voice")
+  #expect(snapshot.rows[1].text == "second")
+  #expect(snapshot.rows.map(\.absoluteRow) == [0, 1, 2])
+  #expect(snapshot.rows[1].cursorColumn == 6)
+  #expect(snapshot.rows.allSatisfy { !$0.isSelected })
+  #expect(snapshot.visibleRangeDescription == "Rows 1 through 3 of 3")
+
+  let selected = GhostteaTerminalAccessibilitySnapshot(
+    retainedState: state,
+    selection: GhostteaTerminalSelection(
+      anchor: .init(column: 2, row: 0),
+      focus: .init(column: 4, row: 1)
+    )
+  )
+  #expect(selected.rows.map(\.isSelected) == [true, true, false])
+  #expect(
+    GhostteaTerminalAccessibilitySnapshot(rows: [], viewportOffset: 0, totalRows: 0)
+      .visibleRangeDescription == "Terminal is empty"
+  )
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

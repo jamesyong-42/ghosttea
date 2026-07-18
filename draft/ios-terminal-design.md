@@ -2164,7 +2164,8 @@ sequencing, resize, cursor, colors, Unicode, and device lifecycle working.
 
 **Estimated effort:** 2-4 weeks
 
-**Started:** 2026-07-17. The first slice establishes the hardware-key parity
+**Implementation complete:** 2026-07-17. Device-matrix evidence remains open.
+The first slice establishes the hardware-key parity
 boundary without putting terminal escape sequences in UIKit.
 `GhostteaHardwareKeyEvent` converts Apple USB HID usages to the same DOM-style
 physical codes used by the desktop client, preserves the unmodified layout
@@ -2259,6 +2260,25 @@ extraction. Select All constructs the full absolute range for rendering and
 invokes the native `select_all` extraction path. The diagnostic host alone owns
 the resulting clipboard write. Word/line expansion is not claimed here because
 the current desktop demo does not implement it either.
+
+The seventh slice completes the planned accessibility implementation. Retained
+TRF1 state now consumes the producer's dedicated accessibility-text rows and
+publishes a platform-neutral snapshot containing viewport and absolute
+scrollback coordinates. The Metal surface exposes one frequently-updating
+static-text `UIAccessibilityElement` per visible row instead of asking VoiceOver
+to infer text from glyphs or presenting terminal scrollback as an editable
+UIKit document. Row frames follow the same safe-area-aware cell geometry as
+rendering. Container page-scroll actions return live-grid row deltas to the
+host, Escape releases terminal focus, and Copy, Select All, and Paste remain
+explicit host-mediated actions. SwiftUI does not flatten the native row tree.
+
+The complete 64-test package suite, both iOS SDK builds, and iPhone 17 Pro
+simulator automation pass, including native accessibility text, stable absolute
+row identifiers, live-grid paging, and the action catalog. This completes the
+Phase 5 code deliverables and shared conformance vectors. The exit gate remains
+open until physical VoiceOver navigation, announcement pacing under output,
+IME/software keyboards, hardware keyboards, pointer ergonomics, and mouse-aware
+TUIs complete the agreed device matrix.
 
 Deliverables:
 

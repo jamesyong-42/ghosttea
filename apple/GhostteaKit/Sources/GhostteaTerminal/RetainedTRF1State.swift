@@ -3,6 +3,7 @@ import GhostteaFrame
 
 struct RetainedTRF1Row: Equatable, Sendable {
   var text = ""
+  var accessibilityText = ""
   var revision: UInt64 = 0
   var glyphs: [TRF1GlyphInstance] = []
   var styles: [TRF1StyleRun] = []
@@ -72,6 +73,9 @@ struct RetainedTRF1State: Sendable {
     }
 
     let replacements = try decodeTRF1RowReplacements(rowSection)
+    let accessibilityRows =
+      try frame.sections.first(where: { $0.kind == .accessibilityText }).map(
+        decodeTRF1AccessibilityRows) ?? []
     let nextCursor = try decodeTRF1CursorState(cursorSection)
     let glyphs =
       try frame.sections.first(where: { $0.kind == .glyphDefinitions }).map(
@@ -107,6 +111,16 @@ struct RetainedTRF1State: Sendable {
 
     var changedRows: [UInt16] = []
     changedRows.reserveCapacity(replacements.count)
+    var accessibilityByRow: [UInt16: String] = [:]
+    accessibilityByRow.reserveCapacity(accessibilityRows.count)
+    for row in accessibilityRows {
+      guard Int(row.row) < next.rows.count else {
+        throw TRF1DecodingError("accessibility row exceeds viewport")
+      }
+      guard accessibilityByRow.updateValue(row.text, forKey: row.row) == nil else {
+        throw TRF1DecodingError("duplicate accessibility row")
+      }
+    }
     for replacement in replacements {
       guard Int(replacement.row) < next.rows.count else {
         throw TRF1DecodingError("row replacement exceeds viewport")
@@ -116,11 +130,15 @@ struct RetainedTRF1State: Sendable {
       }
       next.rows[Int(replacement.row)] = RetainedTRF1Row(
         text: replacement.text,
+        accessibilityText: accessibilityByRow[replacement.row] ?? replacement.text,
         revision: replacement.revision,
         glyphs: replacement.glyphs,
         styles: replacement.styles
       )
       changedRows.append(replacement.row)
+    }
+    for (row, text) in accessibilityByRow where !changedRows.contains(row) {
+      next.rows[Int(row)].accessibilityText = text
     }
 
     next.sessionHandle = frame.sessionHandle
