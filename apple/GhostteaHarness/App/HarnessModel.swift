@@ -51,6 +51,7 @@ final class HarnessModel: ObservableObject {
   enum ProductionSSHProfile: String, CaseIterable, Identifiable {
     case shell = "Automatic shell gate"
     case tmux = "tmux"
+    case vim = "Vim"
     case zellij = "Zellij"
 
     var id: Self { self }
@@ -59,6 +60,7 @@ final class HarnessModel: ObservableObject {
       switch self {
       case .shell: .shell
       case .tmux: .tmux(sessionName: sessionName)
+      case .vim: .shell
       case .zellij: .zellij(sessionName: sessionName)
       }
     }
@@ -132,6 +134,17 @@ final class HarnessModel: ObservableObject {
   private var productionTmuxInitialSizeObserved = false
   private var productionTmuxResizedSizeObserved = false
   private var productionTmuxExitSent = false
+  private var productionVimNoEchoObserved = false
+  private var productionVimLaunchSent = false
+  private var productionVimBufferObserved = false
+  private var productionVimInitialProbeSent = false
+  private var productionVimInitialSizeObserved = false
+  private var productionVimResizeSent = false
+  private var productionVimResizedProbeSent = false
+  private var productionVimResizedSizeObserved = false
+  private var productionVimEditSent = false
+  private var productionVimEditObserved = false
+  private var productionVimExitSent = false
   private let productionSessionAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PRODUCTION_SESSION"] == "1"
   private var didAutorunProductionSession = false
@@ -752,6 +765,17 @@ final class HarnessModel: ObservableObject {
     productionTmuxInitialSizeObserved = false
     productionTmuxResizedSizeObserved = false
     productionTmuxExitSent = false
+    productionVimNoEchoObserved = false
+    productionVimLaunchSent = false
+    productionVimBufferObserved = false
+    productionVimInitialProbeSent = false
+    productionVimInitialSizeObserved = false
+    productionVimResizeSent = false
+    productionVimResizedProbeSent = false
+    productionVimResizedSizeObserved = false
+    productionVimEditSent = false
+    productionVimEditObserved = false
+    productionVimExitSent = false
 
     Task {
       do {
@@ -927,7 +951,7 @@ final class HarnessModel: ObservableObject {
       handleProductionSessionState(snapshot)
     case .frameReady(let frame):
       productionSessionFrame = frame
-      await observeAutomatedTmuxFrame()
+      await observeAutomatedProductionProfileFrame()
     case .metadataChanged:
       break
     case .bell:
@@ -956,6 +980,9 @@ final class HarnessModel: ObservableObject {
     case .connected(let generation):
       productionSessionStatus = "Connected · generation \(generation)"
       productionSessionInputStatus = "Tap the terminal to type"
+      if productionSessionAutomation {
+        print("GHOSTTEA_PRODUCTION_CONNECTED profile=\(productionSSHProfile)")
+      }
       sendAutomaticProductionProfileCommandIfNeeded()
     case .reconnectAvailable:
       productionSessionStatus = "Reconnect available"
@@ -984,60 +1011,189 @@ final class HarnessModel: ObservableObject {
         "printf '\\033[32mghosttea-tmux-ready\\033[0m '; stty size; "
         + "while [ \"$(stty size)\" = '29 100' ]; do sleep 1; done; "
         + "printf 'ghosttea-tmux-resized '; stty size; read ghosttea_continue; exit\n"
-    case .tmux, .zellij:
+    case .vim where productionSessionAutomation:
+      // Confirm echo is disabled before sending commands containing pass markers.
+      command = "stty -echo; printf 'ghosttea-vim-%s\\n' noecho\n"
+    case .tmux, .vim, .zellij:
       return
     }
     productionShellCommandSent = true
     Task {
       do {
         try await productionSession.send(Data(command.utf8))
+        if productionSessionAutomation {
+          print("GHOSTTEA_PRODUCTION_INITIAL_COMMAND_SENT profile=\(productionSSHProfile)")
+        }
       } catch {
         productionSessionStatus = "Profile gate input failed: \(error)"
+        if productionSessionAutomation {
+          print("GHOSTTEA_PRODUCTION_INITIAL_COMMAND_ERROR \(error)")
+        }
       }
     }
   }
 
-  private func observeAutomatedTmuxFrame() async {
-    guard productionSessionAutomation,
-      productionSSHProfile == .tmux,
-      let productionSession,
-      let productionTerminal
-    else { return }
+  private func observeAutomatedProductionProfileFrame() async {
+    guard productionSessionAutomation, let productionTerminal else { return }
     do {
       let rows = try await productionTerminal.accessibilityRows(start: 0, count: 100)
       let text = String(decoding: rows, as: UTF8.self)
-      if text.contains("ghosttea-tmux-ready 29 100") {
-        productionTmuxInitialSizeObserved = true
-      }
-      if text.contains("ghosttea-tmux-resized 39 120") {
-        productionTmuxResizedSizeObserved = true
-      }
-      if productionTmuxInitialSizeObserved, !productionTmuxResizeSent {
-        productionTmuxResizeSent = true
-        Task {
-          do {
-            try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
-          } catch {
-            productionSessionStatus = "tmux resize failed: \(error)"
-            finishProductionSessionAutomation(exitCode: 2)
-          }
-        }
-      }
-      if productionTmuxResizedSizeObserved, !productionTmuxExitSent {
-        productionTmuxExitSent = true
-        Task {
-          do {
-            try await productionSession.send(Data("\n".utf8))
-          } catch {
-            productionSessionStatus = "tmux exit handshake failed: \(error)"
-            finishProductionSessionAutomation(exitCode: 2)
-          }
-        }
+      switch productionSSHProfile {
+      case .tmux:
+        advanceAutomatedTmux(text: text)
+      case .vim:
+        advanceAutomatedVim(text: text)
+      case .shell, .zellij:
+        break
       }
     } catch {
-      productionSessionStatus = "tmux frame validation failed: \(error)"
+      productionSessionStatus = "Profile frame validation failed: \(error)"
       finishProductionSessionAutomation(exitCode: 2)
     }
+  }
+
+  private func advanceAutomatedTmux(text: String) {
+    guard let productionSession else { return }
+    if text.contains("ghosttea-tmux-ready 29 100") {
+      productionTmuxInitialSizeObserved = true
+    }
+    if text.contains("ghosttea-tmux-resized 39 120") {
+      productionTmuxResizedSizeObserved = true
+    }
+    if productionTmuxInitialSizeObserved, !productionTmuxResizeSent {
+      productionTmuxResizeSent = true
+      Task {
+        do {
+          try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+        } catch {
+          failAutomatedProductionAction("tmux resize", error: error)
+        }
+      }
+    }
+    if productionTmuxResizedSizeObserved, !productionTmuxExitSent {
+      productionTmuxExitSent = true
+      Task {
+        do {
+          try await productionSession.send(Data("\n".utf8))
+        } catch {
+          failAutomatedProductionAction("tmux exit handshake", error: error)
+        }
+      }
+    }
+  }
+
+  private func advanceAutomatedVim(text: String) {
+    guard let productionSession else { return }
+    if text.contains("ghosttea-vim-noecho") {
+      if !productionVimNoEchoObserved {
+        print("GHOSTTEA_PRODUCTION_VIM_NOECHO_OBSERVED")
+      }
+      productionVimNoEchoObserved = true
+    }
+    if text.contains("ghosttea-vim-buffer") {
+      if !productionVimBufferObserved {
+        print("GHOSTTEA_PRODUCTION_VIM_BUFFER_OBSERVED")
+      }
+      productionVimBufferObserved = true
+    }
+    if text.contains("ghosttea-vim-initial 30 100") {
+      if !productionVimInitialSizeObserved {
+        print("GHOSTTEA_PRODUCTION_VIM_INITIAL_SIZE_OBSERVED")
+      }
+      productionVimInitialSizeObserved = true
+    }
+    if text.contains("ghosttea-vim-resized 40 120") {
+      if !productionVimResizedSizeObserved {
+        print("GHOSTTEA_PRODUCTION_VIM_RESIZED_SIZE_OBSERVED")
+      }
+      productionVimResizedSizeObserved = true
+    }
+    if text.contains("ghosttea-vim-edited ghosttea-vim-input") {
+      if !productionVimEditObserved {
+        print("GHOSTTEA_PRODUCTION_VIM_EDIT_OBSERVED")
+      }
+      productionVimEditObserved = true
+    }
+
+    if productionVimNoEchoObserved, !productionVimLaunchSent {
+      productionVimLaunchSent = true
+      Task {
+        do {
+          try await productionSession.send(
+            Data(
+              "printf 'ghosttea-vim-buffer\\n' > /tmp/ghosttea-vim-buffer; "
+                .appending("exec vim.tiny -Nu NONE -n -i NONE /tmp/ghosttea-vim-buffer\n")
+                .utf8
+            )
+          )
+        } catch {
+          failAutomatedProductionAction("Vim launch", error: error)
+        }
+      }
+    }
+    if productionVimBufferObserved, !productionVimInitialProbeSent {
+      productionVimInitialProbeSent = true
+      print("GHOSTTEA_PRODUCTION_VIM_INITIAL_PROBE_SENT")
+      Task {
+        do {
+          try await sendAutomatedVimCommand(
+            ":0read !printf 'ghosttea-vim-initial '; stty size"
+          )
+        } catch {
+          failAutomatedProductionAction("Vim initial-size probe", error: error)
+        }
+      }
+    }
+    if productionVimInitialSizeObserved, !productionVimResizeSent {
+      productionVimResizeSent = true
+      productionVimResizedProbeSent = true
+      print("GHOSTTEA_PRODUCTION_VIM_RESIZE_SENT")
+      Task {
+        do {
+          try await productionSession.resize(columns: 120, rows: 40, layoutEpoch: 1)
+          try await sendAutomatedVimCommand(
+            ":0read !printf 'ghosttea-vim-resized '; stty size"
+          )
+        } catch {
+          failAutomatedProductionAction("Vim resize", error: error)
+        }
+      }
+    }
+    if productionVimResizedSizeObserved, !productionVimEditSent {
+      productionVimEditSent = true
+      print("GHOSTTEA_PRODUCTION_VIM_EDIT_SENT")
+      Task {
+        do {
+          try await productionSession.send(Data("Goghosttea-vim-edited ghosttea-vim-input".utf8))
+          try await productionSession.sendKey(try softwareKey(hidUsage: 0x29))
+        } catch {
+          failAutomatedProductionAction("Vim edit", error: error)
+        }
+      }
+    }
+    if productionVimEditObserved, !productionVimExitSent {
+      productionVimExitSent = true
+      print("GHOSTTEA_PRODUCTION_VIM_EXIT_SENT")
+      Task {
+        do {
+          try await sendAutomatedVimCommand(":qa!")
+        } catch {
+          failAutomatedProductionAction("Vim exit", error: error)
+        }
+      }
+    }
+  }
+
+  private func sendAutomatedVimCommand(_ command: String) async throws {
+    guard let productionSession else { return }
+    try await productionSession.send(Data(command.utf8))
+    try await productionSession.sendKey(try softwareKey(hidUsage: 0x28))
+  }
+
+  private func failAutomatedProductionAction(_ action: String, error: any Error) {
+    productionSessionStatus = "\(action) failed: \(error)"
+    print("GHOSTTEA_PRODUCTION_ACTION_ERROR action=\(action) error=\(error)")
+    finishProductionSessionAutomation(exitCode: 2)
   }
 
   private func validateCompletedProductionShell(exit: TerminalExitStatus) {
@@ -1061,22 +1217,51 @@ final class HarnessModel: ObservableObject {
             && productionTmuxInitialSizeObserved
             && productionTmuxResizedSizeObserved
             && productionTmuxExitSent
+        case .vim:
+          markerIsValid =
+            productionVimNoEchoObserved
+            && productionVimLaunchSent
+            && productionVimBufferObserved
+            && productionVimInitialProbeSent
+            && productionVimInitialSizeObserved
+            && productionVimResizeSent
+            && productionVimResizedProbeSent
+            && productionVimResizedSizeObserved
+            && productionVimEditSent
+            && productionVimEditObserved
+            && productionVimExitSent
+          print(
+            "GHOSTTEA_PRODUCTION_VIM_FINAL exit=\(exit.description) "
+              + "noecho=\(productionVimNoEchoObserved) "
+              + "launch=\(productionVimLaunchSent) buffer=\(productionVimBufferObserved) "
+              + "initialProbe=\(productionVimInitialProbeSent) "
+              + "initialSize=\(productionVimInitialSizeObserved) "
+              + "resize=\(productionVimResizeSent) resizedProbe=\(productionVimResizedProbeSent) "
+              + "resizedSize=\(productionVimResizedSizeObserved) edit=\(productionVimEditSent) "
+              + "edited=\(productionVimEditObserved) exitSent=\(productionVimExitSent)"
+          )
         case .zellij:
           markerIsValid = false
         }
         guard exit == .exited(code: 0), markerIsValid else {
           throw HarnessError.sessionProbeMismatch("production terminal output")
         }
-        productionSessionStatus =
-          productionSSHProfile == .tmux
-          ? "Passed · tmux attach, input, and resize"
-          : "Passed · SSH → core → TRF1 → Metal"
+        let passMarker: String
+        switch productionSSHProfile {
+        case .shell:
+          productionSessionStatus = "Passed · SSH → core → TRF1 → Metal"
+          passMarker = "GHOSTTEA_PRODUCTION_SESSION_PASS"
+        case .tmux:
+          productionSessionStatus = "Passed · tmux attach, input, and resize"
+          passMarker = "GHOSTTEA_PRODUCTION_TMUX_PASS"
+        case .vim:
+          productionSessionStatus = "Passed · Vim render, input, and resize"
+          passMarker = "GHOSTTEA_PRODUCTION_VIM_PASS"
+        case .zellij:
+          throw HarnessError.sessionProbeMismatch("unsupported automated profile")
+        }
         productionSessionInputStatus = "Native terminal text validated"
-        print(
-          productionSSHProfile == .tmux
-            ? "GHOSTTEA_PRODUCTION_TMUX_PASS"
-            : "GHOSTTEA_PRODUCTION_SESSION_PASS"
-        )
+        print(passMarker)
         finishProductionSessionAutomation(exitCode: 0)
       } catch {
         productionSessionStatus = "Failed: \(error)"
@@ -1526,9 +1711,15 @@ final class HarnessModel: ObservableObject {
     }
     if productionSessionAutomation, !didAutorunProductionSession, path.canAttemptConnection {
       didAutorunProductionSession = true
-      productionSSHProfile =
-        ProcessInfo.processInfo.environment["GHOSTTEA_PRODUCTION_PROFILE"] == "tmux"
-        ? .tmux : .shell
+      switch ProcessInfo.processInfo.environment["GHOSTTEA_PRODUCTION_PROFILE"] {
+      case "tmux":
+        productionSSHProfile = .tmux
+      case "vim":
+        productionSSHProfile = .vim
+      default:
+        productionSSHProfile = .shell
+      }
+      print("GHOSTTEA_PRODUCTION_PROFILE_SELECTED profile=\(productionSSHProfile)")
       runProductionSessionGate()
     }
   }

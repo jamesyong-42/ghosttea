@@ -55,6 +55,10 @@ for the app's process result, and removes its temporary Keychain credential
 before exit. A second automatic gate attaches a named tmux session, observes
 its initial pane through native accessibility text, propagates a PTY resize,
 injects an exit acknowledgement, and requires a typed zero exit.
+The Vim gate launches the fixture's minimal Vim build, obtains both the initial
+and resized dimensions from `stty` inside Vim, edits the buffer through the
+normal terminal input path, validates each marker through native accessibility
+rows, and requires Vim to exit normally.
 
 ## Build and test
 
@@ -78,6 +82,7 @@ npm run test:ssh:fixture:candidate
 npm run test:ssh:fixture:swift
 npm run test:ios:production-session
 npm run test:ios:production-tmux
+npm run test:ios:production-vim
 npm run bench:ghostty-vt:apple:matrix
 ```
 
@@ -330,6 +335,11 @@ live flood gate requires its delivered-byte counters to remain unchanged while
 terminal demand is paused. It applies the same invariant to raw encrypted
 socket receives, then verifies exact delivery while reporting the libssh2
 receive window and socket-wait count.
+Interactive reads serialize each libssh2 call, but they release that operation
+gate before polling the raw socket for readiness. This permits a user write to
+proceed while the channel's read side is idle without calling libssh2
+concurrently. The live fixture starts an idle read before writing its marker and
+requires that full-duplex exchange to complete within two seconds.
 Strict known-host verification is the default. An opt-in async responder may
 make an explicit accept-once decision for unknown or changed keys after showing
 the host, port, algorithm, and SHA-256 fingerprint. It may instead atomically

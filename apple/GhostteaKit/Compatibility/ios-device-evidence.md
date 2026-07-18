@@ -1044,3 +1044,48 @@ status zero after the attach/input/resize handshake. The same run passed all
 prerequisite markers, then removed the disposable container and network.
 Zellij, Vim/Neovim, htop/btop, and agent-TUI interaction remain separate Phase
 6 evidence.
+
+## 2026-07-17: production Vim render, input, and resize gate
+
+The fifth Phase 6 slice adds `npm run test:ios:production-vim`. It uses the
+same signed production surface and disposable fixture as the shell and tmux
+gates, with `vim-tiny` installed only in the fixture image. The app disables
+shell echo before emitting its synchronization marker, launches Vim with no
+user configuration or persistent history, and waits until the seed buffer is
+visible through native terminal accessibility rows.
+
+The first device attempt exposed a real transport scheduling defect rather
+than a Vim issue. `SSHCandidateConnection.read` serialized libssh2 access with
+the connection operation gate but retained that gate while polling an idle
+socket. The session's background reader therefore prevented the first user
+write from reaching an otherwise idle interactive shell. The connection now
+performs one libssh2 read while serialized, captures its requested block
+directions, releases the operation gate while polling the raw socket, and then
+retries under the gate. No libssh2 call is made concurrently, but inbound
+idleness no longer blocks outbound input.
+
+The disposable macOS matrix now contains an explicit regression: it starts an
+idle read before attempting a write and requires the returned marker within two
+seconds. The write-and-read exchange completed in approximately 2.6 ms. The
+same run retained all existing authentication, algorithm, command, PTY resize,
+cancellation, half-close, and 32 MiB lossless stalled-reader checks.
+
+Debian's minimal Vim is compiled without the `eval` feature, so the gate avoids
+Vimscript functions. It uses Vim's supported `:read !` command to run `stty
+size` inside the allocated PTY. The physical iPhone observed `30 100`, ordered
+a session/core resize to 120x40, then observed `40 120`. It inserted
+`ghosttea-vim-edited ghosttea-vim-input` through normal terminal key input,
+validated the edited buffer through native accessibility text, sent `:qa!`,
+and required typed exit status zero.
+
+The signed iPhone 14 Pro process emitted the following final marker and exited
+zero:
+
+```text
+GHOSTTEA_PRODUCTION_VIM_PASS
+```
+
+The runner also passed all 73 package tests, both iOS SDK builds, and the core,
+font, TRF1, and visual prerequisites before removing the disposable fixture.
+Zellij, htop/btop, and representative agent-TUI interaction remain separate
+Phase 6 evidence.

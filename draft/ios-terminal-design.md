@@ -2363,6 +2363,19 @@ the echoed probe command as output. The gate passes on the physical iPhone 14
 Pro and cleans up its disposable fixture. Live Zellij and representative
 Vim/Neovim, htop/btop, and agent-TUI gates remain.
 
+The fifth slice adds `npm run test:ios:production-vim`, a deterministic
+physical-device Vim gate over the production interactive session. It launches
+the fixture's configuration-free minimal Vim, validates its seed buffer through
+native accessibility rows, reads the remote PTY dimensions from inside Vim,
+orders a resize from 100x30 to 120x40, edits the buffer through terminal key
+input, and requires typed exit zero. Building this gate exposed and fixed an
+interactive full-duplex defect: an idle read had held the connection operation
+gate across socket polling and starved outbound input. Reads now serialize only
+the libssh2 attempt, release the gate while polling the raw socket, and retry
+under serialization. A disposable live regression starts the idle read first
+and proves the concurrent write completes; the full SSH matrix and the signed
+iPhone Vim gate pass. Live Zellij, htop/btop, and agent-TUI gates remain.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

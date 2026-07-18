@@ -708,13 +708,24 @@ int ghosttea_ssh_session_handshake(ghosttea_ssh_session_t *session) {
     return libssh2_session_handshake(session->session, session->socket_fd);
 }
 
-int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milliseconds) {
-    int directions = libssh2_session_block_directions(session->session);
+int ghosttea_ssh_session_block_directions(ghosttea_ssh_session_t *session) {
+    int libssh2_directions = libssh2_session_block_directions(session->session);
+    int directions = 0;
+    if ((libssh2_directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0) {
+        directions |= GHOSTTEA_SSH_BLOCK_INBOUND;
+    }
+    if ((libssh2_directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0) {
+        directions |= GHOSTTEA_SSH_BLOCK_OUTBOUND;
+    }
+    return directions;
+}
+
+int ghosttea_ssh_socket_wait(int socket_fd, int directions, int timeout_milliseconds) {
     short events = 0;
-    if ((directions & LIBSSH2_SESSION_BLOCK_INBOUND) != 0) {
+    if ((directions & GHOSTTEA_SSH_BLOCK_INBOUND) != 0) {
         events |= POLLIN;
     }
-    if ((directions & LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0) {
+    if ((directions & GHOSTTEA_SSH_BLOCK_OUTBOUND) != 0) {
         events |= POLLOUT;
     }
     if (events == 0) {
@@ -722,7 +733,7 @@ int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milli
     }
 
     struct pollfd descriptor = {
-        .fd = session->socket_fd,
+        .fd = socket_fd,
         .events = events,
         .revents = 0,
     };
@@ -737,6 +748,14 @@ int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milli
         return 1;
     }
     return (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) == 0 ? 0 : -1;
+}
+
+int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milliseconds) {
+    return ghosttea_ssh_socket_wait(
+        session->socket_fd,
+        ghosttea_ssh_session_block_directions(session),
+        timeout_milliseconds
+    );
 }
 
 static int session_host_key(

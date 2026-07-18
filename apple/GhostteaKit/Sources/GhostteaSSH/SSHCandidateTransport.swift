@@ -458,15 +458,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     guard maxBytes > 0 else {
       throw TerminalTransportError.invalidReadSize(maxBytes)
     }
-    await gate.acquire()
-    do {
-      let result = try await readLocked(maxBytes: maxBytes)
-      await gate.release()
-      return result
-    } catch {
-      await gate.release()
-      throw error
-    }
+    return try await readStream(maxBytes: maxBytes, stream: .standardOutput)
   }
 
   public func write(_ bytes: Data) async throws {
@@ -521,15 +513,7 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     guard maxBytes > 0 else {
       throw TerminalTransportError.invalidReadSize(maxBytes)
     }
-    await gate.acquire()
-    do {
-      let result = try await readLocked(maxBytes: maxBytes, stream: .standardError)
-      await gate.release()
-      return result
-    } catch {
-      await gate.release()
-      throw error
-    }
+    return try await readStream(maxBytes: maxBytes, stream: .standardError)
   }
 
   public func readCommandOutput(maxBytes: Int) async throws -> SSHCandidateOutputChunk? {
@@ -678,50 +662,74 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
     await gate.release()
   }
 
-  private func readLocked(
+  private func readStream(
     maxBytes: Int,
-    stream: SSHReadStream = .standardOutput
+    stream: SSHReadStream
   ) async throws -> Data? {
-    try requireConnected()
-    var data = Data(count: maxBytes)
     while true {
       try Task.checkCancellation()
-      let status = data.withUnsafeMutableBytes { rawBuffer in
-        let buffer = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
-        switch stream {
-        case .standardOutput:
-          return ghosttea_ssh_session_read(
-            driver.requiredHandle,
-            buffer,
-            maxBytes
-          )
-        case .standardError:
-          return ghosttea_ssh_session_read_stderr(
-            driver.requiredHandle,
-            buffer,
-            maxBytes
-          )
-        }
+      await gate.acquire()
+      let attempt: SSHReadAttempt
+      do {
+        attempt = try readOnceLocked(maxBytes: maxBytes, stream: stream)
+        await gate.release()
+      } catch {
+        await gate.release()
+        throw error
       }
-      if status > 0 {
-        data.removeSubrange(Int(status)..<data.count)
-        recordDeliveredBytes(Int(status), stream: stream)
+      switch attempt {
+      case .bytes(let data):
         return data
-      }
-      if status == 0,
-        ghosttea_ssh_session_is_eof(driver.requiredHandle) == 1
-      {
+      case .endOfFile:
         return nil
+      case .wouldBlock(let directions):
+        try await driver.waitUntilReady(directions: directions)
       }
-      if status == 0 || status == GHOSTTEA_SSH_EAGAIN {
-        try await driver.waitUntilReady()
-        continue
+    }
+  }
+
+  private func readOnceLocked(
+    maxBytes: Int,
+    stream: SSHReadStream
+  ) throws -> SSHReadAttempt {
+    try requireConnected()
+    var data = Data(count: maxBytes)
+    let status = data.withUnsafeMutableBytes { rawBuffer in
+      let buffer = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+      switch stream {
+      case .standardOutput:
+        return ghosttea_ssh_session_read(
+          driver.requiredHandle,
+          buffer,
+          maxBytes
+        )
+      case .standardError:
+        return ghosttea_ssh_session_read_stderr(
+          driver.requiredHandle,
+          buffer,
+          maxBytes
+        )
       }
-      throw driver.error(
-        operation: "read channel",
-        status: Int32(clamping: status)
+    }
+    if status > 0 {
+      data.removeSubrange(Int(status)..<data.count)
+      recordDeliveredBytes(Int(status), stream: stream)
+      return .bytes(data)
+    }
+    if status == 0,
+      ghosttea_ssh_session_is_eof(driver.requiredHandle) == 1
+    {
+      return .endOfFile
+    }
+    if status == 0 || status == GHOSTTEA_SSH_EAGAIN {
+      return .wouldBlock(
+        directions: ghosttea_ssh_session_block_directions(driver.requiredHandle)
       )
     }
+    throw driver.error(
+      operation: "read channel",
+      status: Int32(clamping: status)
+    )
   }
 
   private func readAvailableLocked(
@@ -771,6 +779,12 @@ public final class SSHCandidateConnection: TerminalConnection, @unchecked Sendab
 private enum SSHReadStream {
   case standardOutput
   case standardError
+}
+
+private enum SSHReadAttempt {
+  case bytes(Data)
+  case endOfFile
+  case wouldBlock(directions: Int32)
 }
 
 private struct SSHConnectResult: Sendable {
@@ -881,6 +895,7 @@ private final class SSHDriver: @unchecked Sendable {
   )
 
   private let stateLock = NSLock()
+  private let socketFD: Int32
   private var handle: OpaquePointer?
   private var _socketWaitCalls: UInt64 = 0
 
@@ -899,6 +914,7 @@ private final class SSHDriver: @unchecked Sendable {
     guard let handle = ghosttea_ssh_session_create(socket) else {
       return nil
     }
+    socketFD = socket
     self.handle = handle
   }
 
@@ -960,6 +976,38 @@ private final class SSHDriver: @unchecked Sendable {
         return
       }
     }
+  }
+
+  func waitUntilReady(directions: Int32) async throws {
+    while true {
+      if try await waitSocketOnce(directions: directions) {
+        return
+      }
+    }
+  }
+
+  private func waitSocketOnce(directions: Int32) async throws -> Bool {
+    try Task.checkCancellation()
+    stateLock.withLock {
+      _socketWaitCalls &+= 1
+    }
+    let socketFD = self.socketFD
+    let status = await withTaskCancellationHandler {
+      await withCheckedContinuation { continuation in
+        Self.socketQueue.async {
+          continuation.resume(
+            returning: ghosttea_ssh_socket_wait(socketFD, directions, 100)
+          )
+        }
+      }
+    } onCancel: {
+      requestShutdown()
+    }
+    try Task.checkCancellation()
+    if status < 0 {
+      throw error(operation: "wait for socket readiness", status: status)
+    }
+    return status > 0
   }
 
   private func waitOnce() async throws -> Bool {

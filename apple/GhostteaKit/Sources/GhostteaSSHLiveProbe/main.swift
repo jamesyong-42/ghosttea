@@ -35,6 +35,7 @@ private enum LiveProbeError: Error, CustomStringConvertible {
   case unexpectedHandshakeControlError(String)
   case unexpectedCommandStream(stream: String, expected: Data, actual: Data)
   case unexpectedExitStatus(expected: TerminalExitStatus, actual: TerminalExitStatus)
+  case fullDuplexWriteTooSlow(Duration)
 
   var description: String {
     switch self {
@@ -95,6 +96,8 @@ private enum LiveProbeError: Error, CustomStringConvertible {
         "unexpected \(stream): expected \(String(reflecting: expected)), received \(String(reflecting: actual))"
     case .unexpectedExitStatus(let expected, let actual):
       return "unexpected exit status: expected \(expected), received \(actual)"
+    case .fullDuplexWriteTooSlow(let duration):
+      return "SSH write took \(duration) while an idle read was pending"
     }
   }
 }
@@ -408,6 +411,7 @@ private func runProbe() async throws {
     _ = try await reader.readThrough(marker: "GHOSTTEA_READY")
 
     if mode == "publickey" {
+      try await verifyFullDuplexIdleRead(connection: connection)
       try await verifyTerminalSize(
         expected: "41 132",
         connection: connection,
@@ -429,6 +433,41 @@ private func runProbe() async throws {
     await connection.disconnect()
     throw error
   }
+}
+
+private func verifyFullDuplexIdleRead(
+  connection: any TerminalConnection
+) async throws {
+  let marker = Data("GHOSTTEA_FULL_DUPLEX_READY".utf8)
+  let readTask = Task {
+    var received = Data()
+    while received.range(of: marker) == nil {
+      guard let bytes = try await connection.read(maxBytes: 4_096) else {
+        throw LiveProbeError.unexpectedEOF
+      }
+      received.append(bytes)
+      guard received.count <= 1_048_576 else {
+        throw LiveProbeError.markerBufferExceeded("GHOSTTEA_FULL_DUPLEX_READY")
+      }
+    }
+  }
+
+  // Ensure the reader has entered its no-data wait before attempting output.
+  try await Task.sleep(for: .milliseconds(150))
+  let clock = ContinuousClock()
+  let start = clock.now
+  do {
+    try await connection.write(Data("printf 'GHOSTTEA_FULL_DUPLEX_%s' READY\n".utf8))
+    try await readTask.value
+  } catch {
+    readTask.cancel()
+    throw error
+  }
+  let duration = start.duration(to: clock.now)
+  guard duration < .seconds(2) else {
+    throw LiveProbeError.fullDuplexWriteTooSlow(duration)
+  }
+  print("Swift idle-read/full-duplex write passed in \(duration)")
 }
 
 private func verifyHandshakeTimeout(

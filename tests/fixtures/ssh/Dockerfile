@@ -9,6 +9,7 @@ RUN apt-get update \
         openssh-server \
         python3-paramiko \
         tmux \
+        vim-tiny \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pam_ghosttea_fixture.c /tmp/pam_ghosttea_fixture.c

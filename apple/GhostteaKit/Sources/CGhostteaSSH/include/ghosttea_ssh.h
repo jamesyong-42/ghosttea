@@ -15,6 +15,8 @@ extern "C" {
 #define GHOSTTEA_SSH_KNOWN_HOST_UNKNOWN 2
 #define GHOSTTEA_SSH_CONNECT_TIMEOUT (-2)
 #define GHOSTTEA_SSH_CONNECT_CANCELLED (-3)
+#define GHOSTTEA_SSH_BLOCK_INBOUND 1
+#define GHOSTTEA_SSH_BLOCK_OUTBOUND 2
 
 typedef struct ghosttea_ssh_session ghosttea_ssh_session_t;
 typedef struct ghosttea_ssh_connector ghosttea_ssh_connector_t;
@@ -38,6 +40,12 @@ void ghosttea_ssh_session_shutdown_socket(ghosttea_ssh_session_t *session);
 void ghosttea_ssh_session_destroy(ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_handshake(ghosttea_ssh_session_t *session);
 int ghosttea_ssh_session_wait(ghosttea_ssh_session_t *session, int timeout_milliseconds);
+int ghosttea_ssh_session_block_directions(ghosttea_ssh_session_t *session);
+int ghosttea_ssh_socket_wait(
+    int socket_fd,
+    int directions,
+    int timeout_milliseconds
+);
 int ghosttea_ssh_session_verify_known_host(
     ghosttea_ssh_session_t *session,
     const char *host,
