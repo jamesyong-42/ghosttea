@@ -60,6 +60,7 @@ function main() {
   }
 
   execute("node", ["scripts/check-ios-release-bom.mjs"]);
+  execute("node", ["scripts/check-ios-release-resources.mjs"]);
   execute("node", ["scripts/check-ios-release-toolchain.mjs"]);
 
   const team = developmentTeam();
@@ -85,6 +86,7 @@ function main() {
   requirePath(app, "application");
   requirePath(executable, "application executable");
   requirePath(dSYM, "application dSYM");
+  execute("node", ["scripts/check-ios-release-resources.mjs", "--app-bundle", app]);
 
   const archiveBundleID = plist(join(archive, "Info.plist"), "ApplicationProperties:CFBundleIdentifier");
   const appBundleID = plist(join(app, "Info.plist"), "CFBundleIdentifier");

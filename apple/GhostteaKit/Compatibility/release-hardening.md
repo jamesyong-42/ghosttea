@@ -50,7 +50,9 @@ with:
 ```sh
 npm run update:ios-rust-components
 node scripts/check-ios-release-bom.mjs --write
+npm run update:ios-release-resources
 npm run check:ios-release-bom
+npm run check:ios-release-resources
 ```
 
 The Rust updater is the only step that asks Cargo to resolve the locked graph.
@@ -83,6 +85,27 @@ before invoking Xcode. A release archive therefore cannot silently move to a
 new compiler. Updating the toolchain lock is an explicit review operation and
 must be followed by the complete release validation matrix.
 
+## Packaged notices and release BOM
+
+The production application resource phase embeds two reviewed files:
+
+- `THIRD-PARTY-NOTICES.txt`, a human-readable index for all 94 BOM components
+  followed by 93 deduplicated exact license and notice documents; and
+- `Ghosttea-iOS.cdx.json`, a byte-identical copy of the checked-in CycloneDX
+  release BOM.
+
+The explicit `npm run update:ios-release-resources` command reads license files
+from the locked native sources and Cargo package sources, removes machine-local
+paths, deduplicates documents by SHA-256, and writes
+`ios-release-resources.lock.json`. Ordinary verification does not need Cargo's
+source cache. It checks the source and bundled BOM hashes and bytes, notice
+hash, every component label, license-section count, and absence of local paths.
+
+The production app exposes the notice through its About sheet. Both Debug and
+Release builds package the same reviewed bytes. Archive validation reruns the
+offline gate before building and then verifies both files inside the signed
+`.app`; a missing, stale, or substituted resource fails the archive command.
+
 ## Fail-closed release mode
 
 Release certification additionally runs:
@@ -101,11 +124,12 @@ Changing the bit alone is not approval. The SSH lock must first move to a fixed
 source revision, incorporate the required fixes, and record successful Apple
 artifact, package, fixture, Swift, and physical-device revalidation.
 
-## Remaining packaging work
+## Remaining provenance work
 
-The dependency and toolchain graph is now complete for the shared Rust archive.
-Before release, the archive/export pipeline must embed the human-readable
-third-party notices, validate their presence in the exported `.ipa`, and attach
-the validated BOM to release provenance. Development-only Docker fixture tools
-such as Zellij, htop, btop, and Claude Code do not ship in the iOS app and must
-remain outside the release component graph.
+The dependency graph, compiler identity, human-readable notices, and app-bundle
+BOM are now fail-closed inputs to the archive. Before release, the export
+pipeline must repeat these checks against the exported `.ipa` and attach the
+validated BOM plus archive checksums to signed release provenance.
+Development-only Docker fixture tools such as Zellij, htop, btop, and Claude
+Code do not ship in the iOS app and must remain outside the release component
+graph.

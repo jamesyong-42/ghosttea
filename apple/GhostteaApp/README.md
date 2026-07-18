@@ -72,6 +72,11 @@ npm run test:ios:app:restart
 For ordinary signed-device debugging with streaming console output, use
 `npm run run:ios:app:console`.
 
+The browser's About button opens the human-readable third-party notices bundled
+with the application. `npm run check:ios-release-resources` verifies those
+notices and the bundled CycloneDX BOM against the reviewed release-resource
+lock. `npm run archive:ios:app` repeats the check against the built `.app`.
+
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second
 `WindowGroup` scene, verifies shared runtime and distinct terminal identities,

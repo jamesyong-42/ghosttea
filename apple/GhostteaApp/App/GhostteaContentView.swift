@@ -5,6 +5,7 @@ struct GhostteaContentView: View {
   @EnvironmentObject private var model: GhostteaAppModel
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.openWindow) private var openWindow
+  @State private var presentsAbout = false
 
   var body: some View {
     TabView {
@@ -46,6 +47,13 @@ struct GhostteaContentView: View {
               .foregroundStyle(model.hasControl ? .green : .secondary)
           }
         } else {
+          ToolbarItem(placement: .topBarLeading) {
+            Button {
+              presentsAbout = true
+            } label: {
+              Label("About Ghosttea", systemImage: "info.circle")
+            }
+          }
           ToolbarItem(placement: .topBarTrailing) {
             Button {
               Task { await model.refreshHosts() }
@@ -63,6 +71,7 @@ struct GhostteaContentView: View {
       GhostteaLoginView(url: page.url, onDismiss: model.loginSheetDismissed)
         .ignoresSafeArea()
     }
+    .sheet(isPresented: $presentsAbout) { GhostteaAboutView() }
   }
 
   private var browser: some View {

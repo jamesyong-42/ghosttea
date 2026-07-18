@@ -1,0 +1,3360 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:2d610210-754c-4eed-a3c6-8f798651d2e9",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-18T00:00:00Z",
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:npm/ghosttea@0.1.0",
+      "name": "Ghosttea iOS",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/ghosttea@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:scope",
+          "value": "iOS release direct, transitive Rust, bundled, and build inputs"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/ghostty.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/ssh.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "native/fonts.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
+        },
+        {
+          "name": "ghosttea:source-lock",
+          "value": "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+        }
+      ]
+    },
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "bom-ref": "ghosttea:toolchain/xcode@26.1+17B55",
+          "name": "Xcode",
+          "version": "26.1 (17B55)",
+          "properties": [
+            {
+              "name": "ghosttea:developer-directory",
+              "value": "/Applications/Xcode.app/Contents/Developer"
+            },
+            {
+              "name": "ghosttea:clang-version",
+              "value": "17.0.0"
+            },
+            {
+              "name": "ghosttea:clang-build",
+              "value": "clang-1700.4.4.1"
+            }
+          ]
+        },
+        {
+          "type": "framework",
+          "bom-ref": "ghosttea:toolchain/swift@6.2.1",
+          "name": "Apple Swift",
+          "version": "6.2.1",
+          "properties": [
+            {
+              "name": "ghosttea:compiler-build",
+              "value": "swiftlang-6.2.1.4.8"
+            }
+          ]
+        },
+        {
+          "type": "application",
+          "bom-ref": "ghosttea:toolchain/rustc@1.95.0",
+          "name": "Rust compiler",
+          "version": "1.95.0",
+          "properties": [
+            {
+              "name": "ghosttea:rustc-commit",
+              "value": "59807616e1fa2540724bfbac14d7976d7e4a3860"
+            },
+            {
+              "name": "ghosttea:cargo-version",
+              "value": "1.95.0"
+            },
+            {
+              "name": "ghosttea:cargo-commit",
+              "value": "f2d3ce0bd"
+            },
+            {
+              "name": "ghosttea:llvm-version",
+              "value": "22.1.2"
+            },
+            {
+              "name": "ghosttea:apple-target",
+              "value": "aarch64-apple-ios"
+            },
+            {
+              "name": "ghosttea:apple-target",
+              "value": "aarch64-apple-ios-sim"
+            },
+            {
+              "name": "ghosttea:apple-target",
+              "value": "x86_64-apple-ios"
+            }
+          ]
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "ghosttea:reproducible",
+        "value": "true"
+      },
+      {
+        "name": "ghosttea:cargo-lock:sha256",
+        "value": "426ae335d4a1f928b5da03b7387bb03344a6a3b9a590924bffcdf6e0a764fa16"
+      },
+      {
+        "name": "ghosttea:rust-target",
+        "value": "aarch64-apple-ios"
+      },
+      {
+        "name": "ghosttea:license-file:MIT:sha256",
+        "value": "d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0"
+      },
+      {
+        "name": "ghosttea:license-file:OFL-1.1:sha256",
+        "value": "fb755fa3280d1d215a20df2e64fe6a0f75f8208439b11671978214aae60d2997"
+      },
+      {
+        "name": "ghosttea:font-notices:sha256",
+        "value": "b3177ac25cc57c976ae9e2a458a23cf840b7d4c919e4f87fdc8cab7875c3ea17"
+      },
+      {
+        "name": "ghosttea:ssh-production-approved",
+        "value": "false"
+      },
+      {
+        "name": "ghosttea:ssh-security-reviewed-at",
+        "value": "2026-07-17"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-ffi@0.1.0",
+      "name": "ghosttea-ffi",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-ffi@0.1.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "Ghostty VT",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "name": "OpenSSL",
+      "version": "openssl-3.5.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/openssl/openssl.git"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "name": "libssh2",
+      "version": "libssh2-1.11.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/libssh2/libssh2.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:production-approved",
+          "value": "false"
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "The pinned libssh2 release is affected by newly disclosed pre-authentication vulnerabilities and no fixed upstream release has been tagged."
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "SSH security fixes not incorporated: 256d04b60d80bf1190e96b0ad1e91b2174d744b1, 2dae3024897e1898d389835151f4e9606227721d, 17626857d20b3c9a1addfa45979dadcee1cd84a4, 97acf3dfda80c91c3a8c9f2372546301d4a1a7a8, 34497525929b9a47f03dfb81887ac896202b7e12, a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+        },
+        {
+          "name": "ghosttea:release-blocker",
+          "value": "SSH revalidation incomplete: apple-xcframework, package-tests, ssh-fixture-candidate, ssh-fixture-swift, ios-device-harness"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "256d04b60d80bf1190e96b0ad1e91b2174d744b1"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "2dae3024897e1898d389835151f4e9606227721d"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "17626857d20b3c9a1addfa45979dadcee1cd84a4"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "97acf3dfda80c91c3a8c9f2372546301d4a1a7a8"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "34497525929b9a47f03dfb81887ac896202b7e12"
+        },
+        {
+          "name": "ghosttea:required-fix-commit",
+          "value": "a9758da45a52bc8c630ec9493804d0c6ea30b24a"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
+      "name": "Truffle Swift",
+      "version": "071264b02a2ee81bac3fb4255e40842e7af464fe",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/jamesyong-42/truffle.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:package-path",
+          "value": "apple"
+        },
+        {
+          "name": "ghosttea:truffle-app-id",
+          "value": "ghosttea-terminal"
+        },
+        {
+          "name": "ghosttea:production-tailscale-backend-required",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:github/tailscale/libtailscale@5e89501def80a6579ca5d0f9a02f336be62b8f2e",
+      "name": "TailscaleKit",
+      "version": "5e89501def80a6579ca5d0f9a02f336be62b8f2e",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/tailscale/libtailscale@5e89501def80a6579ca5d0f9a02f336be62b8f2e",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/tailscale/libtailscale.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:minimum-ios",
+          "value": "18.1"
+        },
+        {
+          "name": "ghosttea:license:sha256",
+          "value": "d6e14a92f27cd6c82f8914041c1bb43819fcf3167b827b9198c2c803d4dff5d3"
+        },
+        {
+          "name": "ghosttea:source-patch",
+          "value": "apple/patches/libtailscale-remote-address-fd.patch"
+        },
+        {
+          "name": "ghosttea:source-patch:sha256",
+          "value": "71423557bd0f0a901c31fb4cbee90c8cbaa5ab5588e1d8e87024fcfa887cad8a"
+        },
+        {
+          "name": "ghosttea:source-patch:purpose",
+          "value": "Remap accepted SCM_RIGHTS descriptors before authenticated remote-address lookup."
+        },
+        {
+          "name": "ghosttea:ios-device-artifact",
+          "value": "apple/Vendor/TailscaleKit.xcframework/ios-arm64/TailscaleKit.framework/TailscaleKit"
+        },
+        {
+          "name": "ghosttea:ios-simulator-artifact",
+          "value": "apple/Vendor/TailscaleKit.xcframework/ios-arm64_x86_64-simulator/TailscaleKit.framework/TailscaleKit"
+        },
+        {
+          "name": "ghosttea:ios-simulator-artifact:sha256",
+          "value": "d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/anyhow@1.0.103",
+      "name": "anyhow",
+      "version": "1.0.103",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/anyhow@1.0.103",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/base64@0.22.1",
+      "name": "base64",
+      "version": "0.22.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/base64@0.22.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bitflags@1.3.2",
+      "name": "bitflags",
+      "version": "1.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bitflags@1.3.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/block-buffer@0.10.4",
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/block-buffer@0.10.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bytemuck_derive@1.11.0",
+      "name": "bytemuck_derive",
+      "version": "1.11.0",
+      "licenses": [
+        {
+          "expression": "Zlib OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/bytemuck_derive@1.11.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f65693059b6b9c588b9f62fed1cedbf0a8b805631457ea162d68f0de186f3de5"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bytemuck@1.25.1",
+      "name": "bytemuck",
+      "version": "1.25.1",
+      "licenses": [
+        {
+          "expression": "Zlib OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/bytemuck@1.25.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d6aedf8ae72766347502cf3cb4f41cf5e9cc37d28bee90f1fdaaae15f9cf9424"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bytes@1.12.1",
+      "name": "bytes",
+      "version": "1.12.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/bytes@1.12.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cc@1.2.67",
+      "name": "cc",
+      "version": "1.2.67",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cc@1.2.67",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cfg-if@1.0.4",
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cfg-if@1.0.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core_maths@0.1.1",
+      "name": "core_maths",
+      "version": "0.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/core_maths@0.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core-foundation-sys@0.8.7",
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/core-foundation-sys@0.8.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core-foundation@0.9.4",
+      "name": "core-foundation",
+      "version": "0.9.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/core-foundation@0.9.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core-graphics-types@0.1.3",
+      "name": "core-graphics-types",
+      "version": "0.1.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/core-graphics-types@0.1.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "45390e6114f68f718cc7a830514a96f903cccd70d02a8f6d9f643ac4ba45afaf"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core-graphics@0.22.3",
+      "name": "core-graphics",
+      "version": "0.22.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/core-graphics@0.22.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2581bbab3b8ffc6fcbd550bf46c355135d16e9ff2a6ea032ad6b9bf1d7efe4fb"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/core-text@19.2.0",
+      "name": "core-text",
+      "version": "19.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/core-text@19.2.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "99d74ada66e07c1cefa18f8abfba765b486f250de2e4a999e5727fc0dd4b4a25"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/cpufeatures@0.2.17",
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cpufeatures@0.2.17",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/crypto-common@0.1.7",
+      "name": "crypto-common",
+      "version": "0.1.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/crypto-common@0.1.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/digest@0.10.7",
+      "name": "digest",
+      "version": "0.10.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/digest@0.10.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/filetime@0.2.27",
+      "name": "filetime",
+      "version": "0.2.27",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/filetime@0.2.27",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f98844151eee8917efc50bd9e8318cb963ae8b297431495d3f758616ea5c57db"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/find-msvc-tools@0.1.9",
+      "name": "find-msvc-tools",
+      "version": "0.1.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/find-msvc-tools@0.1.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/font-types@0.11.3",
+      "name": "font-types",
+      "version": "0.11.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/font-types@0.11.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5b38ad915f6dadd993ced50848a8291a543bd41ca62bc10740d5e64e2ab4cfd7"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fontconfig-parser@0.5.8",
+      "name": "fontconfig-parser",
+      "version": "0.5.8",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/fontconfig-parser@0.5.8",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bbc773e24e02d4ddd8395fd30dc147524273a83e54e0f312d986ea30de5f5646"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fontdb@0.23.0",
+      "name": "fontdb",
+      "version": "0.23.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/fontdb@0.23.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/foreign-types-shared@0.1.1",
+      "name": "foreign-types-shared",
+      "version": "0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/foreign-types-shared@0.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/foreign-types@0.3.2",
+      "name": "foreign-types",
+      "version": "0.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/foreign-types@0.3.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/generic-array@0.14.7",
+      "name": "generic-array",
+      "version": "0.14.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/generic-array@0.14.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/getrandom@0.2.17",
+      "name": "getrandom",
+      "version": "0.2.17",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/getrandom@0.2.17",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-core@0.1.0",
+      "name": "ghosttea-core",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-core@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "workspace"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-text@0.1.0",
+      "name": "ghosttea-text",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-text@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "workspace"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-vt-sys@0.1.0",
+      "name": "ghosttea-vt-sys",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-vt-sys@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "workspace"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-vt@0.1.0",
+      "name": "ghosttea-vt",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-vt@0.1.0",
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "workspace"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/harfbuzz_rs@2.0.1",
+      "name": "harfbuzz_rs",
+      "version": "2.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/harfbuzz_rs@2.0.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "58c18cfc23920d010f7637b86240a5f8892dfdbcb4f0e60828f8a9dc6ff5521d"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/harfbuzz-sys@0.5.0",
+      "name": "harfbuzz-sys",
+      "version": "0.5.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/harfbuzz-sys@0.5.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bf8c27ca13930dc4ffe474880040fe9e0f03c2121600dc9c95423624cab3e467"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/http@1.4.2",
+      "name": "http",
+      "version": "1.4.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/http@1.4.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/httparse@1.10.1",
+      "name": "httparse",
+      "version": "1.10.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/httparse@1.10.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/itoa@1.0.18",
+      "name": "itoa",
+      "version": "1.0.18",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/itoa@1.0.18",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libc@0.2.186",
+      "name": "libc",
+      "version": "0.2.186",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.186",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libm@0.2.16",
+      "name": "libm",
+      "version": "0.2.16",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/libm@0.2.16",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/log@0.4.33",
+      "name": "log",
+      "version": "0.4.33",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/log@0.4.33",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/memchr@2.8.3",
+      "name": "memchr",
+      "version": "2.8.3",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/memchr@2.8.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/memmap2@0.9.11",
+      "name": "memmap2",
+      "version": "0.9.11",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/memmap2@0.9.11",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/once_cell@1.21.4",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/once_cell@1.21.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/percent-encoding@2.3.2",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/percent-encoding@2.3.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pkg-config@0.3.33",
+      "name": "pkg-config",
+      "version": "0.3.33",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pkg-config@0.3.33",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/proc-macro2@1.0.106",
+      "name": "proc-macro2",
+      "version": "1.0.106",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/proc-macro2@1.0.106",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/quote@1.0.46",
+      "name": "quote",
+      "version": "1.0.46",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/quote@1.0.46",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/read-fonts@0.39.2",
+      "name": "read-fonts",
+      "version": "0.39.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/read-fonts@0.39.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ring@0.17.14",
+      "name": "ring",
+      "version": "0.17.14",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND ISC"
+        }
+      ],
+      "purl": "pkg:cargo/ring@0.17.14",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/roxmltree@0.20.0",
+      "name": "roxmltree",
+      "version": "0.20.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/roxmltree@0.20.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustls-pki-types@1.15.0",
+      "name": "rustls-pki-types",
+      "version": "1.15.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rustls-pki-types@1.15.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustls-webpki@0.103.13",
+      "name": "rustls-webpki",
+      "version": "0.103.13",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/rustls-webpki@0.103.13",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustls@0.23.42",
+      "name": "rustls",
+      "version": "0.23.42",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR ISC OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rustls@0.23.42",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_core@1.0.228",
+      "name": "serde_core",
+      "version": "1.0.228",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_core@1.0.228",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_derive@1.0.228",
+      "name": "serde_derive",
+      "version": "1.0.228",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_derive@1.0.228",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_json@1.0.150",
+      "name": "serde_json",
+      "version": "1.0.150",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_json@1.0.150",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde@1.0.228",
+      "name": "serde",
+      "version": "1.0.228",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde@1.0.228",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/sha2@0.10.9",
+      "name": "sha2",
+      "version": "0.10.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/sha2@0.10.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/shlex@2.0.1",
+      "name": "shlex",
+      "version": "2.0.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/shlex@2.0.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/skrifa@0.42.1",
+      "name": "skrifa",
+      "version": "0.42.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/skrifa@0.42.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/slotmap@1.1.1",
+      "name": "slotmap",
+      "version": "1.1.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/slotmap@1.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/smallvec@1.15.2",
+      "name": "smallvec",
+      "version": "1.15.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/smallvec@1.15.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/subtle@2.6.1",
+      "name": "subtle",
+      "version": "2.6.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/subtle@2.6.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/swash@0.2.9",
+      "name": "swash",
+      "version": "0.2.9",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/swash@0.2.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0811b01ca2c4e8718760713911feaf4675c24f94e50530a015ec646cfb622f7c"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/syn@2.0.119",
+      "name": "syn",
+      "version": "2.0.119",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/syn@2.0.119",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tar@0.4.45",
+      "name": "tar",
+      "version": "0.4.45",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/tar@0.4.45",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tinyvec_macros@0.1.1",
+      "name": "tinyvec_macros",
+      "version": "0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR Zlib"
+        }
+      ],
+      "purl": "pkg:cargo/tinyvec_macros@0.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/tinyvec@1.12.0",
+      "name": "tinyvec",
+      "version": "1.12.0",
+      "licenses": [
+        {
+          "expression": "Zlib OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/tinyvec@1.12.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ttf-parser@0.25.1",
+      "name": "ttf-parser",
+      "version": "0.25.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ttf-parser@0.25.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/typenum@1.20.1",
+      "name": "typenum",
+      "version": "1.20.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/typenum@1.20.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-ident@1.0.24",
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0) AND Unicode-3.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-ident@1.0.24",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-segmentation@1.13.3",
+      "name": "unicode-segmentation",
+      "version": "1.13.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-segmentation@1.13.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/unicode-width@0.2.2",
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/unicode-width@0.2.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/untrusted@0.9.0",
+      "name": "untrusted",
+      "version": "0.9.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/untrusted@0.9.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ureq-proto@0.6.0",
+      "name": "ureq-proto",
+      "version": "0.6.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ureq-proto@0.6.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e994ba84b0bd1b1b0cf92878b7ef898a5c1760108fe7b6010327e274917a808c"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ureq@3.3.0",
+      "name": "ureq",
+      "version": "3.3.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ureq@3.3.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/utf8-zero@0.8.1",
+      "name": "utf8-zero",
+      "version": "0.8.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/utf8-zero@0.8.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/version_check@0.9.5",
+      "name": "version_check",
+      "version": "0.9.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/version_check@0.9.5",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/webpki-roots@1.0.8",
+      "name": "webpki-roots",
+      "version": "1.0.8",
+      "licenses": [
+        {
+          "license": {
+            "id": "CDLA-Permissive-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/webpki-roots@1.0.8",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/xattr@1.6.1",
+      "name": "xattr",
+      "version": "1.6.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/xattr@1.6.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/yazi@0.2.1",
+      "name": "yazi",
+      "version": "0.2.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/yazi@0.2.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e01738255b5a16e78bbb83e7fbba0a1e7dd506905cfc53f4622d89015a03fbb5"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zeno@0.3.3",
+      "name": "zeno",
+      "version": "0.3.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zeno@0.3.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zeroize@1.9.0",
+      "name": "zeroize",
+      "version": "1.9.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zeroize@1.9.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zmij@1.0.23",
+      "name": "zmij",
+      "version": "1.0.23",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/zmij@1.0.23",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Regular.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a2f4268a1719b95d1f1448376173a42317919cb598423f18ea327eaca13dd916"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "regular"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Regular.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Bold.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ece02baa478a98f3b6ea0c276c1a9207c6bbdcbde04b8010542f2b0671432438"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "bold"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Bold.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-Italic.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7fab948d4bea3441d6dbff7f726b4fa1e27087e98286902b53ddf523be7a20fc"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "italic"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-Italic.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "JetBrainsMonoNerdFont-BoldItalic.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a70e3862b5d186548b8cc0badc65016ac8040205cc9753f31329c4b51dd131e3"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "bold-italic"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/JetBrainsMonoNerdFont-BoldItalic.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "NotoColorEmoji.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "bf2a8506b80614ba190a34c7b037af1269a7d614fe9f3b613cc15cdeec6f814b"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "fallback-emoji"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/NotoColorEmoji.ttf"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/ghosttea@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ghosttea-ffi@0.1.0",
+        "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+        "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+        "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
+        "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-ffi@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ghosttea-core@0.1.0",
+        "pkg:cargo/ghosttea-text@0.1.0",
+        "pkg:cargo/serde_json@1.0.150",
+        "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+      ]
+    },
+    {
+      "ref": "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
+      "dependsOn": ["pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"]
+    },
+    {
+      "ref": "pkg:github/jamesyong-42/truffle@071264b02a2ee81bac3fb4255e40842e7af464fe",
+      "dependsOn": ["pkg:github/tailscale/libtailscale@5e89501def80a6579ca5d0f9a02f336be62b8f2e"]
+    },
+    {
+      "ref": "pkg:github/tailscale/libtailscale@5e89501def80a6579ca5d0f9a02f336be62b8f2e",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/anyhow@1.0.103",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/base64@0.22.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/bitflags@1.3.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/block-buffer@0.10.4",
+      "dependsOn": ["pkg:cargo/generic-array@0.14.7"]
+    },
+    {
+      "ref": "pkg:cargo/bytemuck_derive@1.11.0",
+      "dependsOn": ["pkg:cargo/proc-macro2@1.0.106", "pkg:cargo/quote@1.0.46", "pkg:cargo/syn@2.0.119"]
+    },
+    {
+      "ref": "pkg:cargo/bytemuck@1.25.1",
+      "dependsOn": ["pkg:cargo/bytemuck_derive@1.11.0"]
+    },
+    {
+      "ref": "pkg:cargo/bytes@1.12.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/cc@1.2.67",
+      "dependsOn": ["pkg:cargo/find-msvc-tools@0.1.9", "pkg:cargo/shlex@2.0.1"]
+    },
+    {
+      "ref": "pkg:cargo/cfg-if@1.0.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/core_maths@0.1.1",
+      "dependsOn": ["pkg:cargo/libm@0.2.16"]
+    },
+    {
+      "ref": "pkg:cargo/core-foundation-sys@0.8.7",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/core-foundation@0.9.4",
+      "dependsOn": ["pkg:cargo/core-foundation-sys@0.8.7", "pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/core-graphics-types@0.1.3",
+      "dependsOn": ["pkg:cargo/bitflags@1.3.2", "pkg:cargo/core-foundation@0.9.4", "pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/core-graphics@0.22.3",
+      "dependsOn": [
+        "pkg:cargo/bitflags@1.3.2",
+        "pkg:cargo/core-foundation@0.9.4",
+        "pkg:cargo/core-graphics-types@0.1.3",
+        "pkg:cargo/foreign-types@0.3.2",
+        "pkg:cargo/libc@0.2.186"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/core-text@19.2.0",
+      "dependsOn": [
+        "pkg:cargo/core-foundation@0.9.4",
+        "pkg:cargo/core-graphics@0.22.3",
+        "pkg:cargo/foreign-types@0.3.2",
+        "pkg:cargo/libc@0.2.186"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/cpufeatures@0.2.17",
+      "dependsOn": ["pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/crypto-common@0.1.7",
+      "dependsOn": ["pkg:cargo/generic-array@0.14.7", "pkg:cargo/typenum@1.20.1"]
+    },
+    {
+      "ref": "pkg:cargo/digest@0.10.7",
+      "dependsOn": ["pkg:cargo/block-buffer@0.10.4", "pkg:cargo/crypto-common@0.1.7"]
+    },
+    {
+      "ref": "pkg:cargo/filetime@0.2.27",
+      "dependsOn": ["pkg:cargo/cfg-if@1.0.4", "pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/find-msvc-tools@0.1.9",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/font-types@0.11.3",
+      "dependsOn": ["pkg:cargo/bytemuck@1.25.1"]
+    },
+    {
+      "ref": "pkg:cargo/fontconfig-parser@0.5.8",
+      "dependsOn": ["pkg:cargo/roxmltree@0.20.0"]
+    },
+    {
+      "ref": "pkg:cargo/fontdb@0.23.0",
+      "dependsOn": [
+        "pkg:cargo/fontconfig-parser@0.5.8",
+        "pkg:cargo/log@0.4.33",
+        "pkg:cargo/memmap2@0.9.11",
+        "pkg:cargo/slotmap@1.1.1",
+        "pkg:cargo/tinyvec@1.12.0",
+        "pkg:cargo/ttf-parser@0.25.1"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/foreign-types-shared@0.1.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/foreign-types@0.3.2",
+      "dependsOn": ["pkg:cargo/foreign-types-shared@0.1.1"]
+    },
+    {
+      "ref": "pkg:cargo/generic-array@0.14.7",
+      "dependsOn": ["pkg:cargo/typenum@1.20.1", "pkg:cargo/version_check@0.9.5"]
+    },
+    {
+      "ref": "pkg:cargo/getrandom@0.2.17",
+      "dependsOn": ["pkg:cargo/cfg-if@1.0.4", "pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-core@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.103",
+        "pkg:cargo/ghosttea-text@0.1.0",
+        "pkg:cargo/ghosttea-vt@0.1.0",
+        "pkg:cargo/serde@1.0.228",
+        "pkg:cargo/smallvec@1.15.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-text@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/anyhow@1.0.103",
+        "pkg:cargo/fontdb@0.23.0",
+        "pkg:cargo/harfbuzz_rs@2.0.1",
+        "pkg:cargo/serde@1.0.228",
+        "pkg:cargo/serde_json@1.0.150",
+        "pkg:cargo/sha2@0.10.9",
+        "pkg:cargo/swash@0.2.9",
+        "pkg:cargo/unicode-segmentation@1.13.3",
+        "pkg:cargo/unicode-width@0.2.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-vt-sys@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/cc@1.2.67",
+        "pkg:cargo/serde@1.0.228",
+        "pkg:cargo/serde_json@1.0.150",
+        "pkg:cargo/sha2@0.10.9",
+        "pkg:cargo/tar@0.4.45",
+        "pkg:cargo/ureq@3.3.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-vt@0.1.0",
+      "dependsOn": ["pkg:cargo/ghosttea-vt-sys@0.1.0"]
+    },
+    {
+      "ref": "pkg:cargo/harfbuzz_rs@2.0.1",
+      "dependsOn": ["pkg:cargo/bitflags@1.3.2", "pkg:cargo/harfbuzz-sys@0.5.0"]
+    },
+    {
+      "ref": "pkg:cargo/harfbuzz-sys@0.5.0",
+      "dependsOn": [
+        "pkg:cargo/cc@1.2.67",
+        "pkg:cargo/core-graphics@0.22.3",
+        "pkg:cargo/core-text@19.2.0",
+        "pkg:cargo/foreign-types@0.3.2",
+        "pkg:cargo/pkg-config@0.3.33"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/http@1.4.2",
+      "dependsOn": ["pkg:cargo/bytes@1.12.1", "pkg:cargo/itoa@1.0.18"]
+    },
+    {
+      "ref": "pkg:cargo/httparse@1.10.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/itoa@1.0.18",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/libc@0.2.186",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/libm@0.2.16",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/log@0.4.33",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/memchr@2.8.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/memmap2@0.9.11",
+      "dependsOn": ["pkg:cargo/libc@0.2.186"]
+    },
+    {
+      "ref": "pkg:cargo/once_cell@1.21.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/percent-encoding@2.3.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/pkg-config@0.3.33",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/proc-macro2@1.0.106",
+      "dependsOn": ["pkg:cargo/unicode-ident@1.0.24"]
+    },
+    {
+      "ref": "pkg:cargo/quote@1.0.46",
+      "dependsOn": ["pkg:cargo/proc-macro2@1.0.106"]
+    },
+    {
+      "ref": "pkg:cargo/read-fonts@0.39.2",
+      "dependsOn": ["pkg:cargo/bytemuck@1.25.1", "pkg:cargo/font-types@0.11.3"]
+    },
+    {
+      "ref": "pkg:cargo/ring@0.17.14",
+      "dependsOn": [
+        "pkg:cargo/cc@1.2.67",
+        "pkg:cargo/cfg-if@1.0.4",
+        "pkg:cargo/getrandom@0.2.17",
+        "pkg:cargo/libc@0.2.186",
+        "pkg:cargo/untrusted@0.9.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/roxmltree@0.20.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/rustls-pki-types@1.15.0",
+      "dependsOn": ["pkg:cargo/zeroize@1.9.0"]
+    },
+    {
+      "ref": "pkg:cargo/rustls-webpki@0.103.13",
+      "dependsOn": ["pkg:cargo/ring@0.17.14", "pkg:cargo/rustls-pki-types@1.15.0", "pkg:cargo/untrusted@0.9.0"]
+    },
+    {
+      "ref": "pkg:cargo/rustls@0.23.42",
+      "dependsOn": [
+        "pkg:cargo/log@0.4.33",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rustls-pki-types@1.15.0",
+        "pkg:cargo/rustls-webpki@0.103.13",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde_core@1.0.228",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/serde_derive@1.0.228",
+      "dependsOn": ["pkg:cargo/proc-macro2@1.0.106", "pkg:cargo/quote@1.0.46", "pkg:cargo/syn@2.0.119"]
+    },
+    {
+      "ref": "pkg:cargo/serde_json@1.0.150",
+      "dependsOn": [
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/serde_core@1.0.228",
+        "pkg:cargo/zmij@1.0.23"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/serde@1.0.228",
+      "dependsOn": ["pkg:cargo/serde_core@1.0.228", "pkg:cargo/serde_derive@1.0.228"]
+    },
+    {
+      "ref": "pkg:cargo/sha2@0.10.9",
+      "dependsOn": ["pkg:cargo/cfg-if@1.0.4", "pkg:cargo/cpufeatures@0.2.17", "pkg:cargo/digest@0.10.7"]
+    },
+    {
+      "ref": "pkg:cargo/shlex@2.0.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/skrifa@0.42.1",
+      "dependsOn": ["pkg:cargo/bytemuck@1.25.1", "pkg:cargo/read-fonts@0.39.2"]
+    },
+    {
+      "ref": "pkg:cargo/slotmap@1.1.1",
+      "dependsOn": ["pkg:cargo/version_check@0.9.5"]
+    },
+    {
+      "ref": "pkg:cargo/smallvec@1.15.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/subtle@2.6.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/swash@0.2.9",
+      "dependsOn": ["pkg:cargo/skrifa@0.42.1", "pkg:cargo/yazi@0.2.1", "pkg:cargo/zeno@0.3.3"]
+    },
+    {
+      "ref": "pkg:cargo/syn@2.0.119",
+      "dependsOn": ["pkg:cargo/proc-macro2@1.0.106", "pkg:cargo/quote@1.0.46", "pkg:cargo/unicode-ident@1.0.24"]
+    },
+    {
+      "ref": "pkg:cargo/tar@0.4.45",
+      "dependsOn": ["pkg:cargo/filetime@0.2.27", "pkg:cargo/libc@0.2.186", "pkg:cargo/xattr@1.6.1"]
+    },
+    {
+      "ref": "pkg:cargo/tinyvec_macros@0.1.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/tinyvec@1.12.0",
+      "dependsOn": ["pkg:cargo/tinyvec_macros@0.1.1"]
+    },
+    {
+      "ref": "pkg:cargo/ttf-parser@0.25.1",
+      "dependsOn": ["pkg:cargo/core_maths@0.1.1"]
+    },
+    {
+      "ref": "pkg:cargo/typenum@1.20.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/unicode-ident@1.0.24",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/unicode-segmentation@1.13.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/unicode-width@0.2.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/untrusted@0.9.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/ureq-proto@0.6.0",
+      "dependsOn": [
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/http@1.4.2",
+        "pkg:cargo/httparse@1.10.1",
+        "pkg:cargo/log@0.4.33"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ureq@3.3.0",
+      "dependsOn": [
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/log@0.4.33",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/rustls-pki-types@1.15.0",
+        "pkg:cargo/rustls@0.23.42",
+        "pkg:cargo/ureq-proto@0.6.0",
+        "pkg:cargo/utf8-zero@0.8.1",
+        "pkg:cargo/webpki-roots@1.0.8"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/utf8-zero@0.8.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/version_check@0.9.5",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/webpki-roots@1.0.8",
+      "dependsOn": ["pkg:cargo/rustls-pki-types@1.15.0"]
+    },
+    {
+      "ref": "pkg:cargo/xattr@1.6.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/yazi@0.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/zeno@0.3.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/zeroize@1.9.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:cargo/zmij@1.0.23",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/regular@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    }
+  ]
+}

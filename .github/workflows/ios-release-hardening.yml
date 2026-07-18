@@ -7,13 +7,17 @@ on:
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
+      - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
       - "native/ssh.lock.json"
       - "scripts/check-ios-release-bom.mjs"
+      - "scripts/check-ios-release-resources.mjs"
+      - "scripts/update-ios-release-resources.mjs"
   push:
     branches:
       - main
@@ -21,13 +25,17 @@ on:
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
+      - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
+      - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
       - "native/fonts.lock.json"
       - "native/ghostty.lock.json"
       - "native/ssh.lock.json"
       - "scripts/check-ios-release-bom.mjs"
+      - "scripts/check-ios-release-resources.mjs"
+      - "scripts/update-ios-release-resources.mjs"
 
 permissions:
   contents: read
@@ -45,6 +53,7 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: npm run check:ios-release-bom
+      - run: npm run check:ios-release-resources
 
       - name: Validate with the official CycloneDX CLI
         uses: docker://cyclonedx/cyclonedx-cli:0.32.0

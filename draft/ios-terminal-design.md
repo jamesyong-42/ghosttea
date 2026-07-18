@@ -2851,9 +2851,14 @@ the `aarch64-apple-ios` Rust archive, the exact `Cargo.lock` hash and dependency
 graph, and the existing native/bundled inputs. It also locks the Xcode, Swift,
 Clang, Rust, Cargo, and LLVM identities. Release archives fail before Xcode
 when either the BOM or toolchain drifts, while a dedicated CI workflow validates
-the document with the official CycloneDX CLI. Human-readable notice packaging,
-release provenance attachment, and the other release-hardening gates remain
-open.
+the document with the official CycloneDX CLI. The third slice embeds a
+byte-identical copy of that BOM and a deterministic human-readable notice in
+the production app. The notice maps all 94 components to 93 deduplicated exact
+license documents and is available through an About sheet. Offline checks
+reject omitted components, local-path leakage, hash or byte drift, and missing
+bundle resources; both generic Apple builds and exact post-build bundle
+validation pass. Exported-IPA validation, signed provenance attachment, and the
+other release-hardening gates remain open.
 
 Deliverables:
 
