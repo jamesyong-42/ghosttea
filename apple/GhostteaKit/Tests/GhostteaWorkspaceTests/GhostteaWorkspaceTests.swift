@@ -36,6 +36,51 @@ private actor RestorationTerminationRecorder {
   }
 }
 
+@Test("Command palette ranks token matches and removes duplicate identities")
+func commandPaletteFilteringIsDeterministic() {
+  let connection = GhostteaWorkspacePaletteEntry.connectionProfile(
+    profileID: "profile-a",
+    name: "Production Shell",
+    subtitle: "james@terminal.example.com:22 · Shell",
+    keywords: ["ssh", "remote"]
+  )
+  let entries = [connection, connection] + GhostteaWorkspacePaletteEntry.workspaceCommands()
+
+  let hostMatch = GhostteaWorkspacePaletteSnapshot(
+    entries: entries,
+    query: "terminal shell"
+  )
+  #expect(hostMatch.entries == [connection])
+  #expect(hostMatch.selectedEntryID == connection.id)
+
+  let splitMatch = GhostteaWorkspacePaletteSnapshot(entries: entries, query: "split vertical")
+  #expect(splitMatch.entries.map(\.title) == ["Split Top and Bottom"])
+  #expect(entries.count == 11)
+  #expect(GhostteaWorkspacePaletteSnapshot(entries: entries, query: "").entries.count == 10)
+}
+
+@Test("Command palette navigation wraps and preserves typed invocations")
+func commandPaletteNavigationWraps() {
+  let entries = GhostteaWorkspacePaletteEntry.workspaceCommands()
+  let first = GhostteaWorkspacePaletteSnapshot(entries: entries, query: "")
+  #expect(first.selectedEntry?.invocation == .command(.newTab))
+  #expect(first.movingSelection(by: -1) == entries.last?.id)
+
+  let last = GhostteaWorkspacePaletteSnapshot(
+    entries: entries,
+    query: "",
+    preferredSelectionID: entries.last?.id
+  )
+  #expect(last.movingSelection(by: 1) == entries.first?.id)
+
+  let profile = GhostteaWorkspacePaletteEntry.connectionProfile(
+    profileID: "profile-a",
+    name: "Production",
+    subtitle: "james@example.com"
+  )
+  #expect(profile.invocation == .connectionProfile(profileID: "profile-a"))
+}
+
 @Test("Restoration bindings are canonical and never claim unavailable sessions")
 func restorationBindingsFilterOnlyAfterAllocation() throws {
   let document = try GhostteaWorkspaceRestorationDocument(

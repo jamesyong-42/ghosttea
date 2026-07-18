@@ -112,7 +112,8 @@ struct ContentView: View {
               paneTitle: { _ in "Terminal" },
               onAction: model.handleProductionWorkspaceAction,
               onNewTab: model.handleProductionNewTabRequest,
-              onSplit: model.handleProductionSplitRequest
+              onSplit: model.handleProductionSplitRequest,
+              onCommandPalette: model.presentProductionCommandPalette
             ) { _, pane, isActive in
               Group {
                 if let frame = model.productionSessionFrames[pane.sessionID] {
@@ -161,6 +162,14 @@ struct ContentView: View {
             }
             .frame(height: 260)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .sheet(isPresented: $model.isProductionCommandPalettePresented) {
+              GhostteaWorkspacePaletteView(
+                entries: model.productionCommandPaletteEntries,
+                onDismiss: model.dismissProductionCommandPalette,
+                onInvoke: model.handleProductionPaletteInvocation
+              )
+              .presentationDetents([.medium, .large])
+            }
             Text(model.productionSessionInputStatus)
               .font(.caption)
               .foregroundStyle(.secondary)

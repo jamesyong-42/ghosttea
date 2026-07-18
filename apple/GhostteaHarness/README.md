@@ -114,6 +114,9 @@ documents under iOS file protection, recreates all three stable session IDs as
 demand-paused handles 706–708, initializes a coordinator only from that exact
 registry, and tears the restored resources down before validating the original
 connected handles 606–608.
+The tab strip also exposes the same searchable commands-and-connections palette
+opened by Command-Shift-O. The device automation requires its saved fixture
+profile to win a tokenized search before the second tab may be allocated.
 
 Set `GHOSTTEA_IOS_DEVICE_ID` when more than one physical iOS device is connected,
 `GHOSTTEA_IOS_DEVELOPMENT_TEAM` when Xcode has zero or multiple teams, or

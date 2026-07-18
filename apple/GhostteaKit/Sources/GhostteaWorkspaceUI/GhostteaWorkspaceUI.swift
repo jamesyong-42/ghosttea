@@ -44,6 +44,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
   private let onAction: (GhostteaWorkspaceTabsAction) -> Void
   private let onNewTab: (() -> Void)?
   private let onSplit: ((GhostteaWorkspaceSplitAxis) -> Void)?
+  private let onCommandPalette: (() -> Void)?
   private let paneContent: (String, GhostteaWorkspacePane, Bool) -> PaneContent
 
   public init(
@@ -53,6 +54,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
     onAction: @escaping (GhostteaWorkspaceTabsAction) -> Void,
     onNewTab: (() -> Void)? = nil,
     onSplit: ((GhostteaWorkspaceSplitAxis) -> Void)? = nil,
+    onCommandPalette: (() -> Void)? = nil,
     @ViewBuilder paneContent: @escaping (String, GhostteaWorkspacePane, Bool) -> PaneContent
   ) {
     self.document = document
@@ -61,6 +63,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
     self.onAction = onAction
     self.onNewTab = onNewTab
     self.onSplit = onSplit
+    self.onCommandPalette = onCommandPalette
     self.paneContent = paneContent
   }
 
@@ -140,6 +143,16 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
           }
           .accessibilityLabel("Split terminal")
           .accessibilityIdentifier("ghosttea.pane.split")
+        }
+
+        if let onCommandPalette {
+          Button(action: onCommandPalette) {
+            Image(systemName: "command")
+              .padding(8)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Commands and connections")
+          .accessibilityIdentifier("ghosttea.palette.open")
         }
       }
       .padding(.horizontal, 6)

@@ -2594,6 +2594,22 @@ coordinator from that registry, then completes the existing connected
 606/607/608 output and teardown proof. Product profile-selection UI and wiring
 these stores to the eventual app scene entry point remain later Phase 7 work.
 
+The tenth slice adds the product-facing commands-and-connections palette. Its
+portable snapshot model deduplicates stable entry IDs, tokenizes and folds
+queries, ranks title matches ahead of subtitle and keyword matches, preserves a
+valid selection across filtering, and wraps keyboard navigation. Typed
+invocations distinguish existing workspace commands from opaque saved-profile
+requests, keeping transport allocation and credentials in the host. The SwiftUI
+surface mirrors the desktop remote-session palette with immediate search,
+selected-row feedback, touch activation, Up/Down navigation, Return activation,
+and Escape or Command-Shift-O dismissal. Command-Shift-O now toggles the sheet,
+and a touch button makes it available without a hardware keyboard. The complete
+Swift package passes 105 tests and both iOS SDK builds. The signed iPhone 14 Pro
+gate requires the disposable saved profile to win a multi-token search before
+creating its second live tab, then passes the durable 706/707/708 restoration
+and connected 606/607/608 output/teardown gates. A real product scene and profile
+editing UI remain later work; the reusable Phase 7 palette boundary is complete.
+
 Deliverables:
 
 - versioned workspace model;

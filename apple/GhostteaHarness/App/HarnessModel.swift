@@ -93,6 +93,7 @@ final class HarnessModel: ObservableObject {
   @Published var productionSessionInputStatus = "Connect to enable input"
   @Published var productionSSHProfile = ProductionSSHProfile.shell
   @Published var productionProfileName = "ghosttea"
+  @Published var isProductionCommandPalettePresented = false
   @Published var terminalInputResult = "Run the TRF1 fixture to enable the input probe"
   @Published var keychainResult = "Not run"
   @Published var networkPathSummary = "Starting monitor…"
@@ -1049,6 +1050,59 @@ final class HarnessModel: ObservableObject {
     applyProductionWorkspaceRoute(.requestSplit(axis))
   }
 
+  var productionCommandPaletteEntries: [GhostteaWorkspacePaletteEntry] {
+    let profiles: [GhostteaWorkspacePaletteEntry]
+    if let profile = productionConnectionProfile {
+      let attach: String
+      switch profile.attach {
+      case .shell: attach = "Shell"
+      case .tmux(let sessionName): attach = "tmux · \(sessionName)"
+      case .zellij(let sessionName): attach = "Zellij · \(sessionName)"
+      }
+      profiles = [
+        .connectionProfile(
+          profileID: profile.id.uuidString.lowercased(),
+          name: profile.name,
+          subtitle: "\(profile.username)@\(profile.host):\(profile.port) · \(attach)",
+          keywords: ["ssh", "remote", attach]
+        )
+      ]
+    } else {
+      profiles = []
+    }
+    return profiles + GhostteaWorkspacePaletteEntry.workspaceCommands()
+  }
+
+  func presentProductionCommandPalette() {
+    guard productionWorkspace != nil else { return }
+    isProductionCommandPalettePresented = true
+  }
+
+  func dismissProductionCommandPalette() {
+    isProductionCommandPalettePresented = false
+  }
+
+  private func toggleProductionCommandPalette() {
+    guard productionWorkspace != nil else { return }
+    isProductionCommandPalettePresented.toggle()
+  }
+
+  func handleProductionPaletteInvocation(
+    _ invocation: GhostteaWorkspacePaletteInvocation
+  ) {
+    dismissProductionCommandPalette()
+    switch invocation {
+    case .command(let command):
+      handleProductionWorkspaceCommand(command)
+    case .connectionProfile(let profileID):
+      guard profileID == productionConnectionProfile?.id.uuidString.lowercased() else {
+        productionSessionInputStatus = "Saved connection is unavailable"
+        return
+      }
+      handleProductionNewTabRequest()
+    }
+  }
+
   private func handleProductionWorkspaceCommand(_ command: GhostteaWorkspaceCommand) {
     guard let productionWorkspace, let route = command.route(in: productionWorkspace) else {
       return
@@ -1094,7 +1148,7 @@ final class HarnessModel: ObservableObject {
         }
       }
     case .openRemoteSessions:
-      productionSessionInputStatus = "Remote-session picker is not installed in the harness"
+      toggleProductionCommandPalette()
     }
   }
 
@@ -1386,6 +1440,24 @@ final class HarnessModel: ObservableObject {
     productionWorkspaceCreatedAdditionalSessions = true
     Task {
       do {
+        toggleProductionCommandPalette()
+        guard isProductionCommandPalettePresented else {
+          throw HarnessError.sessionProbeMismatch("workspace command palette open")
+        }
+        toggleProductionCommandPalette()
+        guard !isProductionCommandPalettePresented else {
+          throw HarnessError.sessionProbeMismatch("workspace command palette close")
+        }
+        guard
+          let profileID = productionConnectionProfile?.id.uuidString.lowercased(),
+          GhostteaWorkspacePaletteSnapshot(
+            entries: productionCommandPaletteEntries,
+            query: "ghosttea shell"
+          ).selectedEntry?.invocation == .connectionProfile(profileID: profileID)
+        else {
+          throw HarnessError.sessionProbeMismatch("workspace command palette profile")
+        }
+        print("GHOSTTEA_PRODUCTION_WORKSPACE_PALETTE_PASS profile=\(profileID)")
         _ = try await coordinator.createTab()
         await synchronizeProductionWorkspace(from: coordinator)
         _ = try await coordinator.splitSelected(axis: .horizontal)
@@ -2360,6 +2432,7 @@ final class HarnessModel: ObservableObject {
 
   private func cleanupProductionCredential() {
     productionWorkspace = nil
+    isProductionCommandPalettePresented = false
     productionSessionFrames = [:]
     productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
     productionWorkspaceCoordinator = nil

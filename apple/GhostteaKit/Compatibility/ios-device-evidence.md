@@ -1327,3 +1327,26 @@ emitted `GHOSTTEA_PRODUCTION_WORKSPACE_PASS`, exited zero, and the runner remove
 the disposable SSH container and network. This is device evidence for durable
 restore orchestration, not a claim that the diagnostic harness is the eventual
 product scene or profile-picker UI.
+
+## 2026-07-18: commands-and-connections palette gate
+
+The next Phase 7 slice adds a reusable palette model and SwiftUI surface over
+typed workspace-command and saved-connection-profile invocations. Filtering is
+case/width/diacritic folded, tokenized, deduplicated by stable entry ID, and
+ranked deterministically. Selection survives compatible filtering and wraps for
+hardware Up/Down navigation; Return invokes, while Escape or Command-Shift-O
+dismisses. The existing shared shortcut route toggles the palette before a key
+can reach terminal encoding, and the tab strip adds an equivalent touch button.
+
+All 105 Swift package tests and both generic iOS builds passed. On the signed
+iPhone 14 Pro, automation opened and closed the palette route, required the
+disposable saved SSH profile to win the `ghosttea shell` query, and emitted:
+
+```text
+GHOSTTEA_PRODUCTION_WORKSPACE_PALETTE_PASS profile=<opaque UUID>
+```
+
+Only then could the host allocate the second tab. The run subsequently passed
+independent connected handles 606–608, protected restoration handles 706–708,
+exact teardown, and process exit zero before removing the disposable fixture.
+The marker records only an opaque profile UUID and no connection secret.

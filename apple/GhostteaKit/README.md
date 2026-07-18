@@ -79,6 +79,14 @@ terminal key encoding and forward only unmatched chords to the terminal core.
 down, repeat, and up events so a claimed application shortcut dispatches once
 and cannot leak its release into the terminal.
 
+`GhostteaWorkspacePaletteSnapshot` provides deterministic, tokenized filtering,
+deduplication, ranking, and wraparound selection over typed saved-connection and
+workspace-command invocations. `GhostteaWorkspacePaletteView` presents the same
+search-first interaction as the desktop remote-session palette: touch rows plus
+hardware Up/Down, Return, Escape, and Command-Shift-O dismissal. It receives
+ordinary profile display metadata and an opaque profile ID; credentials and
+session allocation remain host-owned.
+
 `GhostteaWorkspaceSessionCoordinator` is the transport-neutral multi-session
 host boundary. It allocates a real session before committing a new tab or
 split, rolls invalid allocations back through the supplied terminator, removes
