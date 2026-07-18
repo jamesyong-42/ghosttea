@@ -31,6 +31,7 @@
 		100000000000000000000017 /* GhostteaAboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* GhostteaAboutView.swift */; };
 		100000000000000000000018 /* THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* THIRD-PARTY-NOTICES.txt */; };
 		100000000000000000000019 /* Ghosttea-iOS.cdx.json in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* Ghosttea-iOS.cdx.json */; };
+		10000000000000000000001A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 		20000000000000000000000C /* GhostteaAboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaAboutView.swift; sourceTree = "<group>"; };
 		20000000000000000000000D /* THIRD-PARTY-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "THIRD-PARTY-NOTICES.txt"; sourceTree = "<group>"; };
 		20000000000000000000000E /* Ghosttea-iOS.cdx.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Ghosttea-iOS.cdx.json"; sourceTree = "<group>"; };
+		20000000000000000000000F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -113,6 +115,7 @@
 			children = (
 				20000000000000000000000D /* THIRD-PARTY-NOTICES.txt */,
 				20000000000000000000000E /* Ghosttea-iOS.cdx.json */,
+				20000000000000000000000F /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -185,6 +188,7 @@
 			files = (
 				100000000000000000000018 /* THIRD-PARTY-NOTICES.txt in Resources */,
 				100000000000000000000019 /* Ghosttea-iOS.cdx.json in Resources */,
+				10000000000000000000001A /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -254,6 +258,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Ghosttea;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Ghosttea connects to your desktops and SSH servers over your private network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -281,6 +286,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Ghosttea;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Ghosttea connects to your desktops and SSH servers over your private network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

@@ -37,6 +37,7 @@ requirePath(archiveDSYM, "application dSYM");
 const source = sourceIdentity();
 const resourceLock = readJSON("apple/GhostteaKit/Compatibility/ios-release-resources.lock.json");
 const sshLock = readJSON("native/ssh.lock.json");
+const appStoreLock = readJSON("apple/GhostteaKit/Compatibility/ios-app-store.lock.json");
 const archiveEvidence = inspectArchive(archiveApp, archiveDSYM);
 let ipaEvidence;
 if (ipa) ipaEvidence = inspectIPA(ipa);
@@ -66,6 +67,7 @@ if (ipaEvidence) {
 
 const policyBlockers = [];
 if (!source.clean) policyBlockers.push("source worktree is not clean");
+if (!source.truffle.clean) policyBlockers.push("Truffle source worktree is not clean");
 if (!ipaEvidence) policyBlockers.push("exported IPA was not supplied");
 if (ipaEvidence && ipaEvidence.application.signature.signingClass !== "apple-distribution") {
   policyBlockers.push("IPA is not signed with an Apple Distribution certificate");
@@ -84,6 +86,18 @@ for (const [kind, application] of [
 if (!sshLock.candidateStatus.productionApproved) {
   policyBlockers.push(sshLock.securityReview.blockedReason);
 }
+if (
+  !appStoreLock.privacy.dataCollectionReview.approved ||
+  !appStoreLock.privacy.dataCollectionReview.privacyPolicyURL
+) {
+  policyBlockers.push(appStoreLock.privacy.dataCollectionReview.blockedReason);
+}
+if (!appStoreLock.exportCompliance.approved) {
+  policyBlockers.push(appStoreLock.exportCompliance.blockedReason);
+}
+if (!appStoreLock.appReview.notesApproved || !appStoreLock.appReview.reviewAccessPrepared) {
+  policyBlockers.push(appStoreLock.appReview.blockedReason);
+}
 const evidence = {
   schemaVersion: 1,
   subject: {
@@ -97,6 +111,7 @@ const evidence = {
     noticesSha256: resourceLock.notices.sha256,
     releaseResourcesSha256: hashFile(resolve(root, "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json")),
     toolchainSha256: hashFile(resolve(root, "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json")),
+    appStoreReadinessSha256: hashFile(resolve(root, "apple/GhostteaKit/Compatibility/ios-app-store.lock.json")),
   },
   archive: archiveEvidence,
   ...(ipaEvidence ? { ipa: ipaEvidence } : {}),
@@ -184,6 +199,7 @@ function inspectApplication(app) {
   const executable = join(app, "Ghosttea");
   requirePath(info, "application Info.plist");
   requirePath(executable, "application executable");
+  execute("node", ["scripts/check-ios-app-store-readiness.mjs", "--app-bundle", app]);
   const verification = verifyCodeSignature(app);
   const signatureText = execute("codesign", ["-d", "--verbose=4", app], { capture: true }).combined;
   const entitlementsText = execute("codesign", ["-d", "--entitlements", "-", app], { capture: true }).stdout;
@@ -302,6 +318,19 @@ function sourceIdentity() {
     repository: "https://github.com/jamesyong-42/ghosttea",
     revision,
     clean: status.length === 0,
+    truffle: truffleSourceIdentity(),
+  };
+}
+
+function truffleSourceIdentity() {
+  const checkout = resolve(root, "../p008/truffle");
+  requirePath(resolve(checkout, ".git"), "Truffle source checkout");
+  return {
+    repository: "https://github.com/jamesyong-42/truffle",
+    revision: execute("git", ["-C", checkout, "rev-parse", "HEAD"], { capture: true }).stdout.trim(),
+    clean:
+      execute("git", ["-C", checkout, "status", "--porcelain=v1", "--untracked-files=all"], { capture: true }).stdout
+        .length === 0,
   };
 }
 

@@ -33,6 +33,10 @@ also emits deterministic source/lock, archive/app/dSYM, executable UUID,
 signature, and checksum evidence. The same validator safely extracts an
 optional exported IPA, requires archive parity and Apple Distribution signing,
 and records every unmet release policy instead of overstating eligibility.
+The App Store gate separately pins the app and TailscaleKit privacy manifests,
+audits required-reason symbols in the built bundles, declares embedded
+non-Apple cryptography honestly, and keeps privacy-label, export-documentation,
+and reviewer-access decisions fail closed.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

@@ -8,6 +8,7 @@ on:
       - "Cargo.lock"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
       - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
+      - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaApp/Resources/**"
@@ -17,6 +18,8 @@ on:
       - "native/ssh.lock.json"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
+      - "scripts/check-ios-app-store-readiness.mjs"
+      - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
   push:
     branches:
@@ -26,6 +29,7 @@ on:
       - "Cargo.lock"
       - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
       - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
+      - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaApp/Resources/**"
@@ -35,6 +39,8 @@ on:
       - "native/ssh.lock.json"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
+      - "scripts/check-ios-app-store-readiness.mjs"
+      - "scripts/check-ios-release-ready.mjs"
       - "scripts/update-ios-release-resources.mjs"
 
 permissions:
@@ -54,6 +60,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check:ios-release-bom
       - run: npm run check:ios-release-resources
+      - run: npm run check:ios-app-store
 
       - name: Validate with the official CycloneDX CLI
         uses: docker://cyclonedx/cyclonedx-cli:0.32.0
@@ -74,4 +81,8 @@ jobs:
             apple/GhostteaApp/Resources/THIRD-PARTY-NOTICES.txt
             apple/GhostteaKit/Compatibility/ios-release-resources.lock.json
             apple/GhostteaKit/Compatibility/ios-toolchain.lock.json
+            apple/GhostteaKit/Compatibility/ios-app-store.lock.json
+            apple/GhostteaKit/Compatibility/TailscaleKit-PrivacyInfo.xcprivacy
+            apple/GhostteaKit/Compatibility/app-store-review-notes.md
+            apple/GhostteaApp/Resources/PrivacyInfo.xcprivacy
           if-no-files-found: error

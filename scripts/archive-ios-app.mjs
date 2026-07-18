@@ -72,6 +72,7 @@ function main() {
   execute("node", ["scripts/check-ios-release-bom.mjs"]);
   execute("node", ["scripts/check-ios-release-resources.mjs"]);
   execute("node", ["scripts/check-ios-release-toolchain.mjs"]);
+  execute("node", ["scripts/check-ios-app-store-readiness.mjs"]);
 
   const team = developmentTeam();
   rmSync(archive, { recursive: true, force: true });
@@ -97,6 +98,7 @@ function main() {
   requirePath(executable, "application executable");
   requirePath(dSYM, "application dSYM");
   execute("node", ["scripts/check-ios-release-resources.mjs", "--app-bundle", app]);
+  execute("node", ["scripts/check-ios-app-store-readiness.mjs", "--app-bundle", app]);
 
   const archiveBundleID = plist(join(archive, "Info.plist"), "ApplicationProperties:CFBundleIdentifier");
   const appBundleID = plist(join(app, "Info.plist"), "CFBundleIdentifier");

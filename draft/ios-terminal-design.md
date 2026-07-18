@@ -2865,7 +2865,15 @@ archive identity/architecture/UUID/resource parity, and refuses release
 eligibility without trusted Apple Distribution signing. A signed development
 archive and IPA-shaped structural fixture pass validation while remaining
 explicitly blocked. The release-account export, signed provenance publication,
-SSH production approval, and other release-hardening gates remain open.
+SSH production approval, and other release-hardening gates remain open. The
+fifth slice adds independent, hash-locked privacy manifests to the application
+and embedded TailscaleKit framework, including final-binary required-reason
+symbol auditing. Both app configurations honestly declare non-exempt
+cryptography, and draft review notes explain that commands execute only on the
+user's SSH host or desktop session. A deterministic App Store gate passes in
+input-audit mode and remains release-blocked until the account owner approves
+the Tailscale privacy label and in-app privacy-policy URL, Apple's encryption
+determination, and working SSH/desktop reviewer access.
 
 Deliverables:
 

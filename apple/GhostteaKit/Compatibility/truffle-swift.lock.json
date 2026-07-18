@@ -3,14 +3,10 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/jamesyong-42/truffle.git",
-    "revision": "071264b02a2ee81bac3fb4255e40842e7af464fe",
+    "revision": "797986b2a26be18a8e11ed6cea5917fb356b3ec1",
     "packagePath": "apple",
     "license": "MIT",
-    "products": [
-      "Truffle",
-      "TruffleSwiftUI",
-      "TruffleTailscale"
-    ]
+    "products": ["Truffle", "TruffleSwiftUI", "TruffleTailscale"]
   },
   "tailscaleKit": {
     "repository": "https://github.com/tailscale/libtailscale.git",
@@ -18,6 +14,10 @@
     "license": "BSD-3-Clause",
     "licenseSha256": "d6e14a92f27cd6c82f8914041c1bb43819fcf3167b827b9198c2c803d4dff5d3",
     "minimumIOS": "18.1",
+    "privacyManifest": {
+      "path": "apple/Vendor/TailscaleKit-PrivacyInfo.xcprivacy",
+      "sha256": "55ce7aa9ef2ee1e2e86f25ed2914a6868bd2a12f51602a09abf16b3e004c0f39"
+    },
     "patches": [
       {
         "path": "apple/patches/libtailscale-remote-address-fd.patch",

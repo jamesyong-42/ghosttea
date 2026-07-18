@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "policyReviewed": "2026-07-18",
+  "privacy": {
+    "appManifest": {
+      "path": "apple/GhostteaApp/Resources/PrivacyInfo.xcprivacy",
+      "sha256": "8aaecac1b7364601e59329e0e6a64cc49dca4c83aeb713ba28184f7008ac2f81",
+      "requiredReasonSymbols": ["_fstat", "_stat"]
+    },
+    "tailscaleKitManifest": {
+      "path": "apple/GhostteaKit/Compatibility/TailscaleKit-PrivacyInfo.xcprivacy",
+      "sha256": "55ce7aa9ef2ee1e2e86f25ed2914a6868bd2a12f51602a09abf16b3e004c0f39",
+      "requiredReasonSymbols": ["_fstat", "_lstat", "_mach_absolute_time", "_stat"]
+    },
+    "dataCollectionReview": {
+      "approved": false,
+      "privacyPolicyURL": null,
+      "blockedReason": "Reconcile Tailscale control-plane collection with the App Store privacy label and publish the in-app privacy policy URL."
+    }
+  },
+  "exportCompliance": {
+    "usesNonAppleCryptography": true,
+    "infoPlistDeclaration": true,
+    "embeddedImplementations": ["OpenSSL", "libssh2", "TailscaleKit"],
+    "approved": false,
+    "complianceCode": null,
+    "blockedReason": "The account owner must complete Apple's encryption determination and any required US/French documentation before distribution."
+  },
+  "appReview": {
+    "category": "public.app-category.developer-tools",
+    "notesPath": "apple/GhostteaKit/Compatibility/app-store-review-notes.md",
+    "notesApproved": false,
+    "reviewAccessPrepared": false,
+    "blockedReason": "Finalize review notes and provide a reviewable user-owned SSH host plus paired Ghosttea desktop session."
+  }
+}

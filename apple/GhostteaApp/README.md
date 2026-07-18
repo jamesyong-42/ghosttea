@@ -77,6 +77,17 @@ with the application. `npm run check:ios-release-resources` verifies those
 notices and the bundled CycloneDX BOM against the reviewed release-resource
 lock. `npm run archive:ios:app` repeats the check against the built `.app`.
 
+The app bundle also contains its reviewed privacy manifest, while the embedded
+TailscaleKit framework contains a separate manifest installed by the pinned
+Truffle materializer. `npm run check:ios-app-store` verifies their hashes,
+required-reason API contract, project resources, and the explicit
+`ITSAppUsesNonExemptEncryption=YES` declaration. The `--app-bundle` gate audits
+the exact linked symbols and semantically compares Xcode's packaged plists.
+`npm run check:ios-app-store-ready` additionally fails until the privacy label
+and in-app policy URL, encryption determination, and reviewer fixture access
+are approved. See
+[`../GhostteaKit/Compatibility/app-store-review-notes.md`](../GhostteaKit/Compatibility/app-store-review-notes.md).
+
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second
 `WindowGroup` scene, verifies shared runtime and distinct terminal identities,

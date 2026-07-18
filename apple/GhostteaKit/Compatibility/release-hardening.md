@@ -116,6 +116,7 @@ offline gate before building and then verifies both files inside the signed
 finishes. The deterministic evidence document records:
 
 - the source revision and whether the worktree was clean;
+- the exact Truffle source revision and whether its worktree was clean;
 - hashes for the release BOM, notices, resource lock, and toolchain lock;
 - sorted content-tree hashes for the `.xcarchive`, archived `.app`, and dSYM;
 - application identity, version, deployment target, arm64 architecture,
@@ -166,11 +167,12 @@ Release certification additionally runs:
 npm run check:ios-release-ready
 ```
 
-This mode currently fails by design because `native/ssh.lock.json` records
-`productionApproved: false` for the pinned libssh2 release and names the
-required upstream security fixes and revalidation matrix. Development and
-parity work may continue, but a release artifact cannot pass while that policy
-bit remains false.
+The aggregator always runs the BOM/SSH policy, resource, toolchain, and App
+Store gates so one failure cannot hide the other blockers. It currently fails
+by design because `native/ssh.lock.json` records `productionApproved: false`
+for the pinned libssh2 release and because the three account-owned App Store
+decisions below remain open. Development and parity work may continue, but a
+release artifact cannot pass while any policy condition is false.
 
 Changing the bit alone is not approval. The SSH lock must first move to a fixed
 source revision, incorporate the required fixes, and record successful Apple
@@ -189,3 +191,41 @@ production-approval blocker also remains in force.
 Development-only Docker fixture tools such as Zellij, htop, btop, and Claude
 Code do not ship in the iOS app and must remain outside the release component
 graph.
+
+## App Store privacy, encryption, and review gate
+
+`ios-app-store.lock.json` records the reviewed submission inputs independently
+from the binary provenance. Run its ordinary drift check with:
+
+```sh
+npm run check:ios-app-store
+```
+
+The production application now carries an app-owned `PrivacyInfo.xcprivacy`
+for the `_stat`/`_fstat` file-metadata use inside its container. The pinned
+Truffle materializer places a separate manifest inside every TailscaleKit
+framework slice for its file-metadata and elapsed-time APIs. The bundle gate
+compares both manifests semantically after Xcode's binary-plist conversion,
+audits the final app and framework undefined-symbol sets, and fails if a newly
+linked required-reason API has not been reviewed. The sibling manifest,
+compatibility copy, hash lock, and exact Truffle revision must agree.
+
+Because the app embeds OpenSSL, libssh2, and TailscaleKit, both configurations
+set `ITSAppUsesNonExemptEncryption=YES`. This deliberately sends the account
+owner through Apple's export-compliance determination instead of claiming an
+unreviewed exemption. `app-store-review-notes.md` documents the remote-terminal
+execution boundary, credentials, background behavior, and the review fixtures
+that must be supplied outside the repository.
+
+The fail-closed form is:
+
+```sh
+npm run check:ios-app-store-ready
+```
+
+It currently reports three owner/account blockers: reconcile Tailscale
+control-plane data with the privacy label and publish an in-app privacy-policy
+link; complete encryption export review and documentation; and approve final
+review notes with working SSH and desktop-session access. These are not safe to
+infer from code, so development builds remain possible while release evidence
+stays ineligible.
