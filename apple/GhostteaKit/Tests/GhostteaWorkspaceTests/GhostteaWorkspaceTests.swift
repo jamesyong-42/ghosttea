@@ -337,3 +337,132 @@ func workspaceTabsSchemaValidation() throws {
     try GhostteaWorkspaceTabsDocument(selectedTabID: "missing", tabs: [tab])
   }
 }
+
+private struct CommandConformanceFixture: Decodable {
+  let vectors: [Vector]
+
+  struct Vector: Decodable {
+    let key: String
+    let meta: Bool?
+    let shift: Bool?
+    let alt: Bool?
+    let control: Bool?
+    let expected: Expected?
+    let commandID: GhostteaWorkspaceCommandID?
+
+    private enum CodingKeys: String, CodingKey {
+      case key
+      case meta
+      case shift
+      case alt
+      case control
+      case expected
+      case commandID = "commandId"
+    }
+  }
+
+  struct Expected: Decodable {
+    let type: String
+    let target: Target?
+    let axis: GhostteaWorkspaceSplitAxis?
+    let direction: GhostteaWorkspaceFocusDirection?
+    let delta: Double?
+    let offset: Int?
+
+    enum Target: Decodable {
+      case previous
+      case next
+      case index(Int)
+
+      init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let index = try? container.decode(Int.self) {
+          self = .index(index)
+        } else {
+          switch try container.decode(String.self) {
+          case "previous": self = .previous
+          case "next": self = .next
+          default:
+            throw DecodingError.dataCorruptedError(
+              in: container,
+              debugDescription: "Unknown tab target"
+            )
+          }
+        }
+      }
+    }
+
+    var command: GhostteaWorkspaceCommand {
+      get throws {
+        switch type {
+        case "remote-sessions": return .remoteSessions
+        case "new-tab": return .newTab
+        case "select-tab":
+          switch try #require(target) {
+          case .previous: return .selectTab(.previous)
+          case .next: return .selectTab(.next)
+          case .index(let index): return .selectTab(.index(index))
+          }
+        case "close-tab": return .closeTab
+        case "split": return .split(try #require(axis))
+        case "focus-relative":
+          return .focusRelative(offset: try #require(offset))
+        case "focus-direction": return .focusDirection(try #require(direction))
+        case "resize": return .resize(axis: try #require(axis), delta: try #require(delta))
+        case "equalize": return .equalize
+        case "toggle-zoom": return .toggleZoom
+        case "close-pane": return .closePane
+        default: throw CocoaError(.coderReadCorrupt)
+        }
+      }
+    }
+  }
+}
+
+@Test("Swift command shortcuts match every shared desktop vector")
+func workspaceCommandConformance() throws {
+  let url = try #require(
+    Bundle.module.url(
+      forResource: "workspace-command-conformance-v1",
+      withExtension: "json",
+      subdirectory: "Fixtures"
+    )
+  )
+  let fixture = try JSONDecoder().decode(
+    CommandConformanceFixture.self,
+    from: Data(contentsOf: url)
+  )
+  for vector in fixture.vectors {
+    let command = GhostteaWorkspaceKeyChord(
+      key: vector.key,
+      command: vector.meta ?? false,
+      shift: vector.shift ?? false,
+      option: vector.alt ?? false,
+      control: vector.control ?? false
+    ).workspaceCommand
+    #expect(command == (try vector.expected?.command), "key \(vector.key)")
+    #expect(command?.id == vector.commandID, "key \(vector.key) command ID")
+  }
+}
+
+@Test("Workspace commands route before terminal encoding")
+func workspaceCommandsRouteToReducerOrHost() throws {
+  let workspace = try GhostteaWorkspaceDocument(
+    root: .pane(GhostteaWorkspacePane(id: "pane", sessionID: "session")),
+    activePaneID: "pane"
+  )
+  let document = try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab",
+    tabs: [GhostteaWorkspaceTab(id: "tab", workspace: workspace)]
+  )
+  #expect(GhostteaWorkspaceCommand.newTab.route(in: document) == .requestNewTab)
+  #expect(
+    GhostteaWorkspaceCommand.split(.horizontal).route(in: document)
+      == .requestSplit(.horizontal)
+  )
+  #expect(
+    GhostteaWorkspaceCommand.closePane.route(in: document)
+      == .reducer(.applyToSelected(.close))
+  )
+  #expect(GhostteaWorkspaceCommand.selectTab(.index(2)).route(in: document) == nil)
+}

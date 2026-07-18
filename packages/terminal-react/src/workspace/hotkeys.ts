@@ -13,6 +13,23 @@ export type GhosttyHotkey =
   | { type: "toggle-zoom" }
   | { type: "close-pane" };
 
+export type WorkspaceCommandId =
+  | "ghosttea.workspace.remote-sessions"
+  | "ghosttea.workspace.new-tab"
+  | "ghosttea.workspace.select-tab"
+  | "ghosttea.workspace.close-tab"
+  | "ghosttea.workspace.split"
+  | "ghosttea.workspace.focus-relative"
+  | "ghosttea.workspace.focus-direction"
+  | "ghosttea.workspace.resize"
+  | "ghosttea.workspace.equalize"
+  | "ghosttea.workspace.toggle-zoom"
+  | "ghosttea.workspace.close-pane";
+
+export function workspaceCommandId(command: GhosttyHotkey): WorkspaceCommandId {
+  return `ghosttea.workspace.${command.type}`;
+}
+
 type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "shiftKey" | "altKey" | "ctrlKey">;
 
 export function ghosttyHotkey(event: KeyLike): GhosttyHotkey | null {

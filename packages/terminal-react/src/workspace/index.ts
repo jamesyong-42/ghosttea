@@ -4,7 +4,7 @@ export {
   type GhostteaWorkspacePlatform,
   type GhostteaWorkspaceProps,
 } from "./Workspace.js";
-export { ghosttyHotkey, type GhosttyHotkey } from "./hotkeys.js";
+export { ghosttyHotkey, workspaceCommandId, type GhosttyHotkey, type WorkspaceCommandId } from "./hotkeys.js";
 export {
   appendPane,
   containsPane,

@@ -50,6 +50,13 @@ switcher. Zoom presents one pane in either mode. The caller supplies pane views
 and handles emitted reducer actions, keeping terminal/session ownership outside
 the SwiftUI layout product.
 
+`GhostteaWorkspaceKeyChord` resolves the same Ghostty-style application
+shortcuts as the desktop package and assigns stable `ghosttea.workspace.*`
+command IDs. `GhostteaWorkspaceCommand.route(in:)` turns mutations into outer
+reducer actions while leaving new-tab, split-session, and remote-picker work as
+explicit host requests. Product input code should try this resolver before
+terminal key encoding and forward only unmatched chords to the terminal core.
+
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and
 the device harness. `GhostteaSSHSessionFactory` installs SSH-specific, redacted

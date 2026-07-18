@@ -1,0 +1,163 @@
+import Foundation
+
+public enum GhostteaWorkspaceCommandID: String, Codable, Sendable {
+  case remoteSessions = "ghosttea.workspace.remote-sessions"
+  case newTab = "ghosttea.workspace.new-tab"
+  case selectTab = "ghosttea.workspace.select-tab"
+  case closeTab = "ghosttea.workspace.close-tab"
+  case split = "ghosttea.workspace.split"
+  case focusRelative = "ghosttea.workspace.focus-relative"
+  case focusDirection = "ghosttea.workspace.focus-direction"
+  case resize = "ghosttea.workspace.resize"
+  case equalize = "ghosttea.workspace.equalize"
+  case toggleZoom = "ghosttea.workspace.toggle-zoom"
+  case closePane = "ghosttea.workspace.close-pane"
+}
+
+public enum GhostteaWorkspaceTabTarget: Equatable, Sendable {
+  case previous
+  case next
+  case index(Int)
+}
+
+public enum GhostteaWorkspaceCommand: Equatable, Sendable {
+  case remoteSessions
+  case newTab
+  case selectTab(GhostteaWorkspaceTabTarget)
+  case closeTab
+  case split(GhostteaWorkspaceSplitAxis)
+  case focusRelative(offset: Int)
+  case focusDirection(GhostteaWorkspaceFocusDirection)
+  case resize(axis: GhostteaWorkspaceSplitAxis, delta: Double)
+  case equalize
+  case toggleZoom
+  case closePane
+
+  public var id: GhostteaWorkspaceCommandID {
+    switch self {
+    case .remoteSessions: .remoteSessions
+    case .newTab: .newTab
+    case .selectTab: .selectTab
+    case .closeTab: .closeTab
+    case .split: .split
+    case .focusRelative: .focusRelative
+    case .focusDirection: .focusDirection
+    case .resize: .resize
+    case .equalize: .equalize
+    case .toggleZoom: .toggleZoom
+    case .closePane: .closePane
+    }
+  }
+}
+
+public struct GhostteaWorkspaceKeyChord: Equatable, Sendable {
+  public let key: String
+  public let command: Bool
+  public let shift: Bool
+  public let option: Bool
+  public let control: Bool
+
+  public init(
+    key: String,
+    command: Bool = false,
+    shift: Bool = false,
+    option: Bool = false,
+    control: Bool = false
+  ) {
+    self.key = key
+    self.command = command
+    self.shift = shift
+    self.option = option
+    self.control = control
+  }
+
+  public var workspaceCommand: GhostteaWorkspaceCommand? {
+    let key = key.lowercased()
+    if !command, control, !option, key == "tab" {
+      return .selectTab(shift ? .previous : .next)
+    }
+    guard command else { return nil }
+    if key == "t", !shift, !option, !control { return .newTab }
+    if shift, !option, !control, key == "[" || key == "{" {
+      return .selectTab(.previous)
+    }
+    if shift, !option, !control, key == "]" || key == "}" {
+      return .selectTab(.next)
+    }
+    if let index = Int(key), (1...9).contains(index), !shift, !option, !control {
+      return .selectTab(.index(index))
+    }
+    if key == "w", !shift, option, !control { return .closeTab }
+    if key == "o", shift, !option, !control { return .remoteSessions }
+    if key == "d", !option, !control { return .split(shift ? .vertical : .horizontal) }
+    if key == "[", !shift, !option, !control { return .focusRelative(offset: -1) }
+    if key == "]", !shift, !option, !control { return .focusRelative(offset: 1) }
+    if option, let direction = Self.direction(for: key) {
+      return .focusDirection(direction)
+    }
+    if control, let direction = Self.direction(for: key) {
+      let axis: GhostteaWorkspaceSplitAxis =
+        direction == .left || direction == .right ? .horizontal : .vertical
+      let delta = direction == .left || direction == .up ? -0.05 : 0.05
+      return .resize(axis: axis, delta: delta)
+    }
+    if control, key == "=" || key == "+" { return .equalize }
+    if key == "enter", shift, !option, !control { return .toggleZoom }
+    if key == "w", !shift, !option, !control { return .closePane }
+    return nil
+  }
+
+  private static func direction(for key: String) -> GhostteaWorkspaceFocusDirection? {
+    switch key {
+    case "arrowleft": .left
+    case "arrowright": .right
+    case "arrowup": .up
+    case "arrowdown": .down
+    default: nil
+    }
+  }
+}
+
+public enum GhostteaWorkspaceCommandRoute: Equatable, Sendable {
+  case reducer(GhostteaWorkspaceTabsAction)
+  case requestNewTab
+  case requestSplit(GhostteaWorkspaceSplitAxis)
+  case openRemoteSessions
+}
+
+extension GhostteaWorkspaceCommand {
+  public func route(in document: GhostteaWorkspaceTabsDocument) -> GhostteaWorkspaceCommandRoute? {
+    switch self {
+    case .remoteSessions:
+      return .openRemoteSessions
+    case .newTab:
+      return .requestNewTab
+    case .selectTab(let target):
+      switch target {
+      case .previous:
+        return .reducer(.selectRelative(offset: -1))
+      case .next:
+        return .reducer(.selectRelative(offset: 1))
+      case .index(let index):
+        guard document.tabs.indices.contains(index - 1) else { return nil }
+        return .reducer(.selectTab(id: document.tabs[index - 1].id))
+      }
+    case .closeTab:
+      return .reducer(.closeTab(id: document.selectedTabID))
+    case .split(let axis):
+      return .requestSplit(axis)
+    case .focusRelative(let offset):
+      return .reducer(.applyToSelected(.focusRelative(offset: offset)))
+    case .focusDirection(let direction):
+      return .reducer(.applyToSelected(.focusDirection(direction)))
+    case .resize(let axis, let delta):
+      return .reducer(.applyToSelected(.resize(axis: axis, delta: delta)))
+    case .equalize:
+      return .reducer(.applyToSelected(.equalize))
+    case .toggleZoom:
+      return .reducer(.applyToSelected(.toggleZoom))
+    case .closePane:
+      return .reducer(.applyToSelected(.close))
+    }
+  }
+}

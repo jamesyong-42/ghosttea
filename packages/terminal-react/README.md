@@ -22,3 +22,7 @@ tab reducers used for cross-platform restoration and conformance. Their JSON
 documents contain only stable layout IDs and opaque session IDs; resolve those
 IDs against live sessions in the host rather than persisting transport or
 credential state.
+
+Ghostty-style application shortcuts expose stable `ghosttea.workspace.*`
+command IDs through `workspaceCommandId`. These IDs are shared with the Swift
+workspace package even where platform-default key bindings eventually differ.

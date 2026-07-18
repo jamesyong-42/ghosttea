@@ -1,0 +1,98 @@
+{
+  "vectors": [
+    {
+      "key": "t",
+      "meta": true,
+      "expected": { "type": "new-tab" },
+      "commandId": "ghosttea.workspace.new-tab"
+    },
+    {
+      "key": "Tab",
+      "control": true,
+      "expected": { "type": "select-tab", "target": "next" },
+      "commandId": "ghosttea.workspace.select-tab"
+    },
+    {
+      "key": "Tab",
+      "control": true,
+      "shift": true,
+      "expected": { "type": "select-tab", "target": "previous" },
+      "commandId": "ghosttea.workspace.select-tab"
+    },
+    {
+      "key": "3",
+      "meta": true,
+      "expected": { "type": "select-tab", "target": 3 },
+      "commandId": "ghosttea.workspace.select-tab"
+    },
+    {
+      "key": "w",
+      "meta": true,
+      "alt": true,
+      "expected": { "type": "close-tab" },
+      "commandId": "ghosttea.workspace.close-tab"
+    },
+    {
+      "key": "o",
+      "meta": true,
+      "shift": true,
+      "expected": { "type": "remote-sessions" },
+      "commandId": "ghosttea.workspace.remote-sessions"
+    },
+    {
+      "key": "d",
+      "meta": true,
+      "expected": { "type": "split", "axis": "horizontal" },
+      "commandId": "ghosttea.workspace.split"
+    },
+    {
+      "key": "D",
+      "meta": true,
+      "shift": true,
+      "expected": { "type": "split", "axis": "vertical" },
+      "commandId": "ghosttea.workspace.split"
+    },
+    {
+      "key": "[",
+      "meta": true,
+      "expected": { "type": "focus-relative", "offset": -1 },
+      "commandId": "ghosttea.workspace.focus-relative"
+    },
+    {
+      "key": "ArrowLeft",
+      "meta": true,
+      "alt": true,
+      "expected": { "type": "focus-direction", "direction": "left" },
+      "commandId": "ghosttea.workspace.focus-direction"
+    },
+    {
+      "key": "ArrowRight",
+      "meta": true,
+      "control": true,
+      "expected": { "type": "resize", "axis": "horizontal", "delta": 0.05 },
+      "commandId": "ghosttea.workspace.resize"
+    },
+    {
+      "key": "=",
+      "meta": true,
+      "control": true,
+      "expected": { "type": "equalize" },
+      "commandId": "ghosttea.workspace.equalize"
+    },
+    {
+      "key": "Enter",
+      "meta": true,
+      "shift": true,
+      "expected": { "type": "toggle-zoom" },
+      "commandId": "ghosttea.workspace.toggle-zoom"
+    },
+    {
+      "key": "w",
+      "meta": true,
+      "expected": { "type": "close-pane" },
+      "commandId": "ghosttea.workspace.close-pane"
+    },
+    { "key": "x", "meta": true, "expected": null, "commandId": null },
+    { "key": "d", "expected": null, "commandId": null }
+  ]
+}

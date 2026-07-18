@@ -1295,6 +1295,14 @@ application command matches, the event enters the terminal core.
 The command identifiers should remain stable across desktop and iOS even when
 their default key bindings differ.
 
+The fourth Phase 7 slice assigns `ghosttea.workspace.*` identifiers to the
+desktop command set and adds a platform-neutral Swift key-chord resolver with
+the same semantics. Commands either become an atomic workspace reducer action
+or an explicit host request for a new tab, split session, or remote-session
+picker. The host must consult this resolver before passing an unmatched key to
+the terminal encoder. A shared JSON fixture covers command/control/option/shift
+combinations, payloads, and non-matches in both TypeScript and Swift.
+
 ---
 
 ## 16. SSH transport
@@ -2496,6 +2504,17 @@ pane, focus, compact, and zoom behavior testable without UI introspection.
 The complete Swift package now passes 83 tests, and the UI product builds for
 generic physical iOS and iOS Simulator destinations. Application command
 routing and connection-profile integration remain later Phase 7 slices.
+
+The fourth slice adds stable `ghosttea.workspace.*` command IDs plus matching
+TypeScript and Swift shortcut resolution. Swift routes commands either to the
+outer reducer or to explicit host requests for session-producing operations,
+keeping new-tab and split identity allocation out of the pure model. Shared
+vectors verify that application shortcuts are claimed consistently and that
+unmatched keys remain available for terminal encoding. The resulting totals
+are 51 React tests and 85 Swift tests, with physical-iOS and simulator builds
+passing. Wiring this resolver to the production iOS input host,
+connection-profile integration, and the command palette remain later Phase 7
+slices.
 
 Deliverables:
 
