@@ -965,6 +965,32 @@ pub extern "C" fn ghosttea_terminal_scroll_to(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_terminal_compress_scrollback_full(
+    terminal: *mut GhostteaTerminalHandle,
+    out_supported: *mut bool,
+) -> i32 {
+    clear_error();
+    if out_supported.is_null() {
+        set_error("compression support output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out_supported.write(false) };
+    match terminal_operation(terminal, PanicScope::Terminal, |model| {
+        model
+            .compress_scrollback_full()
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(supported) => {
+            // SAFETY: The output pointer remains writable for this call.
+            unsafe { out_supported.write(supported) };
+            GHOSTTEA_STATUS_OK
+        }
+        Err(status) => status,
+    }
+}
+
 fn bytes_operation(
     terminal: *mut GhostteaTerminalHandle,
     out: *mut GhostteaOwnedBytes,
@@ -1332,6 +1358,49 @@ mod tests {
         assert!(update.storage.data.is_null());
         assert!(update.effects.is_null());
         assert_eq!(update.effect_count, 0);
+    }
+
+    #[test]
+    fn full_scrollback_compression_preserves_content_and_initializes_output() {
+        let mut terminal = test_terminal();
+        let pointer = terminal.as_mut() as *mut GhostteaTerminalHandle;
+        terminal_operation(pointer, PanicScope::Terminal, |model| {
+            for line in 0..2_000 {
+                model
+                    .feed(
+                        format!("line-{line:04}\r\n").as_bytes(),
+                        RenderRequest::None,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let before = terminal_operation(pointer, PanicScope::Terminal, |model| {
+            model
+                .selection_text((0, 0), (0, 0), true)
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+
+        let mut supported = false;
+        assert_eq!(
+            ghosttea_terminal_compress_scrollback_full(pointer, &mut supported),
+            GHOSTTEA_STATUS_OK
+        );
+        assert!(supported);
+        let after = terminal_operation(pointer, PanicScope::Terminal, |model| {
+            model
+                .selection_text((0, 0), (0, 0), true)
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+        assert_eq!(after, before);
+
+        assert_eq!(
+            ghosttea_terminal_compress_scrollback_full(pointer, ptr::null_mut()),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
     }
 
     #[test]

@@ -29,6 +29,10 @@ return the same ordered update arena, normally containing one TRF1 frame.
 Runtime handles may back multiple terminals and replicas concurrently, but
 each terminal or replica handle is single-owner and must be externally
 serialized. The Swift wrappers enforce this with actors.
+Full scrollback compression follows that same serialization boundary. It
+changes only Ghostty's storage representation, emits no effects, and leaves
+logical content, viewport position, and the configured scrollback limit
+unchanged.
 
 ## Errors and poison
 

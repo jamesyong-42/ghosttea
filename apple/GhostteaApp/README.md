@@ -104,6 +104,8 @@ SSH sessions request a full frame from their local core. Drawing resumes and
 GPU state rebuilds only after that full snapshot is applied. The exact contract
 and remaining whole-app budget work are documented in
 [`../GhostteaKit/Compatibility/memory-pressure.md`](../GhostteaKit/Compatibility/memory-pressure.md).
+The application also compresses Ghostty scrollback for hidden SSH tabs in
+stable workspace order while protecting every pane in the selected tab.
 
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second

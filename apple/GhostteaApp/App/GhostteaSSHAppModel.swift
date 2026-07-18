@@ -48,6 +48,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var shortcutState = GhostteaWorkspaceShortcutState()
   private var requestedProfileID: String?
   private var networkTask: Task<Void, Never>?
+  private var memoryWarningTask: Task<Void, Never>?
   private var networkPath = TerminalNetworkPath.unknown
   private var hostKeyContinuation: CheckedContinuation<GhostteaSSHHostKeyDecision, Never>?
   private var keyboardContinuation: CheckedContinuation<[String], Error>?
@@ -56,6 +57,11 @@ final class GhostteaSSHAppModel: ObservableObject {
 
   init(diagnostics: GhostteaDiagnosticRecorder) {
     self.diagnostics = diagnostics
+  }
+
+  deinit {
+    networkTask?.cancel()
+    memoryWarningTask?.cancel()
   }
 
   var selectedSessionID: String? {
@@ -84,6 +90,14 @@ final class GhostteaSSHAppModel: ObservableObject {
       for await path in AppleTerminalNetworkPathMonitor().updates() {
         guard let self else { return }
         await self.networkChanged(path)
+      }
+    }
+    memoryWarningTask = Task { [weak self] in
+      for await _ in NotificationCenter.default.notifications(
+        named: UIApplication.didReceiveMemoryWarningNotification)
+      {
+        guard let self else { return }
+        await self.compressInactiveScrollback()
       }
     }
     Task {
@@ -585,6 +599,18 @@ final class GhostteaSSHAppModel: ObservableObject {
     await forEachSession { await $0.session.updateNetworkPath(path) }
   }
 
+  private func compressInactiveScrollback() async {
+    guard let workspace, let coordinator else { return }
+    for sessionID in workspace.inactiveSessionIDs {
+      guard let resource = await coordinator.session(for: sessionID) else { continue }
+      do {
+        _ = try await resource.terminal.compressScrollbackFull()
+      } catch {
+        record(.terminalMemoryCompressionFailed, severity: .warning)
+      }
+    }
+  }
+
   private func handle(_ routed: GhostteaSSHWorkspaceSessionEvent) async {
     let sessionID = routed.sessionID
     switch routed.event {
@@ -696,8 +722,11 @@ final class GhostteaSSHAppModel: ObservableObject {
     "ios-\(kind)-\(UUID().uuidString.lowercased())"
   }
 
-  private func record(_ code: GhostteaDiagnosticCode) {
-    Task { try? await diagnostics.record(code, severity: .error) }
+  private func record(
+    _ code: GhostteaDiagnosticCode,
+    severity: GhostteaDiagnosticSeverity = .error
+  ) {
+    Task { try? await diagnostics.record(code, severity: severity) }
   }
 
   private static func softwareKey(hidUsage: UInt16) -> GhostteaKeyEvent {

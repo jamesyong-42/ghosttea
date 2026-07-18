@@ -186,6 +186,11 @@ ghosttea_status_t ghosttea_terminal_scroll_to(ghosttea_terminal_t *terminal,
                                               uint64_t row,
                                               uint32_t render_request,
                                               ghosttea_update_t *out_update);
+/* Synchronously compresses eligible scrollback without changing logical
+ * contents. out_supported is false only when the linked Ghostty build does not
+ * provide compression. */
+ghosttea_status_t ghosttea_terminal_compress_scrollback_full(
+    ghosttea_terminal_t *terminal, bool *out_supported);
 
 ghosttea_status_t ghosttea_terminal_encode_paste(ghosttea_terminal_t *terminal,
                                                  ghosttea_bytes_view_t text_utf8,

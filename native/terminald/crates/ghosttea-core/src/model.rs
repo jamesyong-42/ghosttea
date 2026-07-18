@@ -281,6 +281,10 @@ impl TerminalModel {
         self.snapshot_update(render)
     }
 
+    pub fn compress_scrollback_full(&mut self) -> Result<bool> {
+        Ok(self.terminal.compress_scrollback_full()?)
+    }
+
     fn snapshot_update(&mut self, render: RenderRequest) -> Result<TerminalUpdate> {
         let snapshot = self.terminal.snapshot()?;
         self.effects_for_snapshot(snapshot, render)

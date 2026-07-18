@@ -2913,6 +2913,15 @@ GPU resources rebuild lazily. Deterministic retained-state tests and the iOS
 harness cover `20 MiB -> 0 -> 20 MiB`, glyph-pixel release/recovery, and exactly
 one refresh request. Aggregate CPU/GPU budgets, inactive-session eviction, and
 compact-tier physical-device qualification remain open.
+The tenth slice implements the next step in the whole-app warning order:
+Ghostty full scrollback compression is now a serialized production operation
+from the C shim through the Rust model/FFI to the Swift terminal actor. It emits
+no effects and cross-layer tests require 2,000 deterministic lines and
+scrollbar state to remain logically identical. The application observes one
+warning regardless of scene count, protects every selected-tab pane, and
+compresses hidden SSH tabs in stable workspace order. Runtime trimming remains
+unavailable, so resident-session cap enforcement and least-recently-used cold
+session eviction/rehydration are still open.
 
 Deliverables:
 

@@ -42,6 +42,33 @@ import Testing
   }
 }
 
+@Test func productionScrollbackCompressionPreservesLogicalContent() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 43, scrollbackBytes: 1_000_000, columns: 40, rows: 8)
+  )
+  let lines = (0..<2_000).map { String(format: "line-%04d", $0) }.joined(separator: "\r\n")
+  _ = try await terminal.feed(Data(lines.utf8), render: .none)
+  let before = try await terminal.selectionTextBytes(
+    startColumn: 0,
+    startRow: 0,
+    endColumn: 0,
+    endRow: 0,
+    selectAll: true)
+
+  #expect(try await terminal.compressScrollbackFull())
+
+  let after = try await terminal.selectionTextBytes(
+    startColumn: 0,
+    startRow: 0,
+    endColumn: 0,
+    endRow: 0,
+    selectAll: true)
+  #expect(after == before)
+  #expect(!(await terminal.isPoisoned))
+}
+
 @Test func logicalReplicaRendersRemoteSnapshotsAndPatchesToLocalTRF1() async throws {
   let runtime = try GhostteaRuntime()
   let replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: 91)

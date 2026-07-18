@@ -325,6 +325,11 @@ transport bytes.
 The retained-state test and iOS harness cover glyph release, rejection of an
 incremental frame after eviction, atomic full-frame recovery, atlas release,
 and lazy rebuild. This closes the renderer memory-pressure and atlas-eviction
-deliverable. Aggregate CPU/GPU budgets, inactive-session/scrollback eviction,
-future decoded-image accounting, compact-tier physical-device evidence, and
-jetsam restoration remain open as the separate whole-application memory item.
+deliverable. The next memory slice surfaces Ghostty's full scrollback
+compression through the serialized production C/Rust/Swift boundary and has
+the application compress hidden-tab SSH terminals on a warning while every
+selected-tab pane remains protected. Cross-layer tests require 2,000 lines and
+scrollbar state to remain unchanged. Aggregate CPU/GPU enforcement,
+least-recently-used cold-session eviction/rehydration, future decoded-image
+accounting, compact-tier physical-device evidence, and jetsam restoration
+remain open as the separate whole-application memory item.

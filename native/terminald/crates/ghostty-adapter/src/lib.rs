@@ -72,6 +72,7 @@ unsafe extern "C" {
     ) -> i32;
     fn eg_terminal_scroll(terminal: *mut RawTerminal, rows: isize);
     fn eg_terminal_scroll_to(terminal: *mut RawTerminal, row: usize);
+    fn eg_terminal_compress_scrollback_full(terminal: *mut RawTerminal) -> i32;
     fn eg_terminal_scrollbar(terminal: *mut RawTerminal, scrollbar: *mut RawScrollbar) -> bool;
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_alternate_scroll(terminal: *mut RawTerminal) -> bool;
@@ -338,6 +339,14 @@ impl GhosttyTerminalCore {
 
     pub fn scroll_to(&mut self, row: usize) {
         unsafe { eg_terminal_scroll_to(self.raw.as_ptr(), row) };
+    }
+
+    pub fn compress_scrollback_full(&mut self) -> Result<bool, GhosttyError> {
+        match unsafe { eg_terminal_compress_scrollback_full(self.raw.as_ptr()) } {
+            0 => Ok(false),
+            1 => Ok(true),
+            status => Err(GhosttyError(status)),
+        }
     }
 
     pub fn alternate_scroll(&self) -> bool {
@@ -864,6 +873,23 @@ mod tests {
         let restored = terminal.snapshot().unwrap();
         assert_eq!(restored.rows, bottom.rows);
         assert_eq!(restored.scrollbar, bottom.scrollbar);
+    }
+
+    #[test]
+    fn full_scrollback_compression_preserves_logical_content() {
+        let mut terminal = GhosttyTerminalCore::new(20, 3, 1_000_000).unwrap();
+        for line in 0..2_000 {
+            terminal.feed(format!("line-{line:04}\r\n").as_bytes());
+        }
+        let before = terminal.selection_text((0, 0), (0, 0), true).unwrap();
+        let before_scrollbar = terminal.snapshot().unwrap().scrollbar;
+
+        assert!(terminal.compress_scrollback_full().unwrap());
+
+        let after = terminal.selection_text((0, 0), (0, 0), true).unwrap();
+        let after_scrollbar = terminal.snapshot().unwrap().scrollbar;
+        assert_eq!(after, before);
+        assert_eq!(after_scrollbar, before_scrollbar);
     }
 
     #[test]

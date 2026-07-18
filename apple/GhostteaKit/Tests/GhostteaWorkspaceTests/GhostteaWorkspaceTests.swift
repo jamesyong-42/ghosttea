@@ -36,6 +36,13 @@ private actor RestorationTerminationRecorder {
   }
 }
 
+@Test("Selected-tab sessions are protected from inactive memory work")
+func selectedTabSessionsDefineMemoryActivity() throws {
+  let document = try restorationWorkspace()
+  #expect(document.selectedTabSessionIDs == ["session-b", "session-c"])
+  #expect(document.inactiveSessionIDs == ["session-a"])
+}
+
 @Test("Command palette ranks token matches and removes duplicate identities")
 func commandPaletteFilteringIsDeterministic() {
   let connection = GhostteaWorkspacePaletteEntry.connectionProfile(

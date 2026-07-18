@@ -69,6 +69,7 @@ int eg_terminal_set_colors(EgTerminal* terminal,
                            uint8_t cursor_r, uint8_t cursor_g, uint8_t cursor_b);
 void eg_terminal_scroll(EgTerminal* terminal, intptr_t rows);
 void eg_terminal_scroll_to(EgTerminal* terminal, size_t row);
+int eg_terminal_compress_scrollback_full(EgTerminal* terminal);
 bool eg_terminal_scrollbar(EgTerminal* terminal, EgScrollbar* scrollbar);
 bool eg_terminal_mouse_tracking(EgTerminal* terminal);
 bool eg_terminal_alternate_scroll(EgTerminal* terminal);

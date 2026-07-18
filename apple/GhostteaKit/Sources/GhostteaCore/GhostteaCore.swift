@@ -384,6 +384,14 @@ public actor GhostteaTerminal {
     }
   }
 
+  /// Synchronously compresses eligible Ghostty scrollback without changing
+  /// terminal contents. Hosts should call this only for inactive sessions.
+  public func compressScrollbackFull() throws -> Bool {
+    var supported = false
+    try check(ghosttea_terminal_compress_scrollback_full(handle, &supported))
+    return supported
+  }
+
   public func encodePaste(_ text: String) throws -> Data {
     try withUTF8(text) { view in
       try performBytes { output in ghosttea_terminal_encode_paste(handle, view, &output) }

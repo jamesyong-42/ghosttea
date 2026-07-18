@@ -53,7 +53,9 @@ invariants, and the longer sanitizer campaign required for a release candidate.
 the iOS presentation-cache eviction transaction: memory warnings release the
 20 MiB Metal atlases and CPU glyph/style render payloads, retain readable
 terminal text, request a full Truffle or SSH snapshot, and rebuild lazily only
-after that snapshot arrives. Aggregate session budgeting and inactive-session
+after that snapshot arrives. The same contract routes Ghostty's logical-content
+preserving full scrollback compression through the production FFI and applies
+it to hidden SSH tabs on a warning. Aggregate session budgeting and cold-session
 eviction remain separate release gates.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports

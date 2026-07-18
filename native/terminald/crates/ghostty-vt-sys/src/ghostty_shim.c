@@ -222,6 +222,19 @@ void eg_terminal_scroll_to(EgTerminal* state, size_t row) {
   ghostty_terminal_scroll_viewport(state->terminal, behavior);
 }
 
+int eg_terminal_compress_scrollback_full(EgTerminal* state) {
+  if (state == NULL) return -1;
+  GhosttyTerminalCompressionResult compression =
+      GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED;
+  if (ghostty_terminal_compress(
+          state->terminal,
+          GHOSTTY_TERMINAL_COMPRESSION_MODE_FULL,
+          &compression) != GHOSTTY_SUCCESS) {
+    return -1;
+  }
+  return compression == GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED ? 0 : 1;
+}
+
 bool eg_terminal_scrollbar(EgTerminal* state, EgScrollbar* scrollbar) {
   if (state == NULL || scrollbar == NULL) return false;
   GhosttyTerminalScrollbar value = {0};

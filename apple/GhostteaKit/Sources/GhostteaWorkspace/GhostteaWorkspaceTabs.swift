@@ -18,6 +18,13 @@ public struct GhostteaWorkspaceTabsDocument: Equatable, Sendable, Codable {
   public let tabs: [GhostteaWorkspaceTab]
 
   public var sessionIDs: [String] { tabs.flatMap { $0.workspace.sessionIDs } }
+  public var selectedTabSessionIDs: [String] {
+    tabs.first(where: { $0.id == selectedTabID })?.workspace.sessionIDs ?? []
+  }
+  public var inactiveSessionIDs: [String] {
+    let selected = Set(selectedTabSessionIDs)
+    return sessionIDs.filter { !selected.contains($0) }
+  }
 
   private enum CodingKeys: String, CodingKey {
     case version

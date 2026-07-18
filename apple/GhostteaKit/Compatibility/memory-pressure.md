@@ -1,7 +1,7 @@
 # iOS terminal memory-pressure contract
 
-**Status:** renderer eviction and full-snapshot recovery implemented; whole-app
-session budgeting remains open
+**Status:** renderer eviction, full-snapshot recovery, and inactive scrollback
+compression implemented; whole-app session budgeting remains open
 
 **Implemented:** 2026-07-18
 
@@ -52,6 +52,31 @@ Neither path reconnects, changes input authority, or sends terminal bytes to
 the remote program. If a surface is detached while recovery is outstanding,
 normal attach/foreground snapshot behavior supplies the eventual full frame.
 
+## Inactive scrollback compression
+
+The production core now exposes Ghostty's full scrollback compression through
+one serialized path:
+
+```text
+Ghostty C API -> C shim -> Rust adapter/model -> ghosttea-ffi -> Swift actor
+```
+
+`GhostteaTerminal.compressScrollbackFull()` emits no terminal effects and
+changes only Ghostty's storage representation. Adapter, FFI, and Swift tests
+fill a terminal with 2,000 deterministic lines and require select-all content
+and scrollbar state to remain identical across compression.
+
+The application-owned SSH model observes the UIKit memory-warning notification
+once, independently of its number of scenes. It protects every pane in the
+selected tab and compresses hidden-tab terminals in stable workspace order.
+The synchronous Ghostty scan runs behind each terminal actor; the main actor
+awaits it and no active terminal shares that serialization boundary. A failed
+compression records only an audited diagnostic code.
+
+This implements the compression step before whole-session eviction. Ghostty
+still has no runtime trim operation, so compression cannot enforce the resident
+session cap by itself.
+
 ## Diagnostics and invariants
 
 `GhostteaTerminalSurfaceDiagnostics` exposes presentation-only counters:
@@ -99,8 +124,8 @@ Before release, the application still needs:
 
 - an explicit aggregate CPU/GPU budget across all scenes and SSH/shared
   sessions;
-- an inactive-session policy with deterministic least-recently-used eviction
-  or scrollback reduction rather than keeping every native terminal handle;
+- deterministic least-recently-used cold-session eviction and rehydration when
+  compression alone cannot satisfy the resident-session cap;
 - accounting for future decoded images and any shared shaping caches;
 - compact-tier physical-device measurements for multiple active and background
   sessions; and
