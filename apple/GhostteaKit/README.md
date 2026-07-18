@@ -7,6 +7,9 @@ production `ghosttea-core` model on Apple targets. `GhostteaCore` is the safe
 Swift boundary over the versioned `ghosttea-ffi` C ABI and its ordered effect
 arena. The package also contains the host-neutral, demand-driven
 `GhostteaTransport` contract and a pinned libssh2/OpenSSL nonblocking candidate.
+`GhostteaSession` is the production orchestration boundary that binds any such
+transport to one core terminal while preserving effect, input, resize, and
+lifecycle ordering.
 The raw Ghostty, Rust, and libssh2 APIs are explicitly not application
 contracts.
 
@@ -17,6 +20,16 @@ passphrase bytes only during authentication and passes private keys to
 libssh2's in-memory API without a filesystem path. The policy and
 remaining product integration work are recorded in
 [`Compatibility/credential-security-policy.md`](Compatibility/credential-security-policy.md).
+
+`GhostteaSession` owns generation-checked connection and read tasks above the
+transport-neutral reconnect policy. Inbound data is pulled in bounded chunks,
+so a slow terminal or awaited host event naturally withholds further SSH window
+demand. Terminal replies and user input share one bounded, strictly sequenced
+writer. Core effects reach the host in their original order, while route
+changes, background suspension, explicit disconnect, clean exit, and late task
+completion remain generation-safe. PTY resize is sent before the matching core
+resize and full frame. The first replay tests cover clean drain/exit, native
+terminal replies, ordered input, resize propagation, and explicit reconnect.
 
 ## Build and test
 

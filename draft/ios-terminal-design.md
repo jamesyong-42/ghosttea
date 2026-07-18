@@ -2302,6 +2302,31 @@ VoiceOver complete the agreed interaction test matrix.
 
 **Estimated effort:** 2-3 weeks
 
+**Started:** 2026-07-17. The first slice creates a separate
+`GhostteaSession` Swift package above `GhostteaCore` and
+`GhostteaTransport`. The actor owns generation-checked connection and read
+tasks, consumes the Phase 0 reconnect model, and never silently reconnects.
+Route changes and background/explicit teardown finish before the replacement
+state is published, while late completions from invalidated generations are
+ignored.
+
+The session pulls bounded inbound chunks and awaits each ordered core effect,
+so terminal processing and host event delivery propagate demand back to the
+transport instead of creating an unbounded inbound stream. Native terminal
+replies and encoded user input share one bounded sequenced writer under a host
+operation gate. The same gate serializes PTY-before-core resize and its full
+TRF1 frame. State snapshots retain clean exit or redacted failure descriptions
+and expose idle, waiting, connecting, connected, reconnect-available,
+suspended, and failed policy states without exposing libssh2.
+
+Four replay tests prove chunked inbound drain, a native cursor-position reply,
+clean exit status, ordered raw/shared-core input, PTY/core resize, route-change
+teardown, explicit reconnect, generation advance, and redacted
+non-reconnectable operation failure. The full Swift package suite now contains
+68 tests. Concrete SSH configuration factories,
+non-reconnectable authentication classification, production UI binding,
+profiles, and live TUI/device gates remain later Phase 6 slices.
+
 Deliverables:
 
 - the SSH transport selected by the Phase 0 compatibility gate;

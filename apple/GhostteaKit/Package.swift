@@ -15,6 +15,7 @@ let package = Package(
     .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHProbe", targets: ["GhostteaSSHProbe"]),
+    .library(name: "GhostteaSession", targets: ["GhostteaSession"]),
     .library(name: "GhostteaTransport", targets: ["GhostteaTransport"]),
     .library(name: "GhosttyVtProof", targets: ["GhosttyVtProof"]),
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
@@ -67,6 +68,10 @@ let package = Package(
       ]
     ),
     .target(name: "GhostteaFrame"),
+    .target(
+      name: "GhostteaSession",
+      dependencies: ["GhostteaCore", "GhostteaTransport"]
+    ),
     .target(
       name: "GhostteaTerminal",
       dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTransport"],
@@ -123,6 +128,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaSSHProbeTests",
       dependencies: ["GhostteaSSHProbe"]
+    ),
+    .testTarget(
+      name: "GhostteaSessionTests",
+      dependencies: ["GhostteaSession", "GhostteaTransport"]
     ),
     .testTarget(
       name: "GhostteaTransportTests",

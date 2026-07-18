@@ -932,3 +932,28 @@ The complete package suite now contains 64 tests, and both iOS SDK builds pass.
 Physical VoiceOver row navigation, output-announcement pacing, rotor behavior,
 and action confirmation remain release evidence before the Phase 5 exit gate is
 declared complete.
+
+## 2026-07-17: production reconnectable-session foundation
+
+The first Phase 6 slice adds the transport-neutral `GhostteaSession` package.
+It binds one core terminal to a fresh-connection factory, generation-checks all
+connect/read/teardown work, and drives the already-tested reconnect policy for
+path changes, app suspension, explicit disconnect, clean completion, and
+failure. A reconnect is only offered; a new connection still requires an
+explicit request.
+
+Inbound bytes remain pull-based and bounded. Each chunk is fed to the native
+model only after the previous ordered effects complete. Terminal replies and
+user input enter the same bounded sequenced writer under a host operation gate,
+and PTY resize precedes core resize and its full frame. Lifecycle state is
+published only after ordered teardown effects finish, preventing a replacement
+UI from racing a still-live old generation.
+
+Four macOS replay tests cover a cursor-position terminal reply across
+three-byte input chunks, exact clean exit status, serialized raw and shared-core
+key writes, PTY/core resize, route-change teardown, explicit reconnect, and
+generation advance, plus redacted non-reconnectable write failure. The complete
+package suite contains 68 tests. This slice
+has no new UIKit or Metal behavior; dual iOS SDK compilation is retained as its
+Apple portability gate, while live SSH/TUI and physical lifecycle evidence
+remain later Phase 6 work.
