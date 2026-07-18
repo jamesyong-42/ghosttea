@@ -3,7 +3,7 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/jamesyong-42/truffle.git",
-    "revision": "2743a2c0ea51bd8b2ca928903666233b2e74d1c5",
+    "revision": "04c2fcff8b6378706dfef511576ad86f2a2f8541",
     "packagePath": "apple",
     "license": "MIT",
     "products": [
@@ -11,6 +11,23 @@
       "TruffleSwiftUI",
       "TruffleTailscale"
     ]
+  },
+  "tailscaleKit": {
+    "repository": "https://github.com/tailscale/libtailscale.git",
+    "revision": "5e89501def80a6579ca5d0f9a02f336be62b8f2e",
+    "license": "BSD-3-Clause",
+    "licenseSha256": "eed0e0d782d1b71165527831cc954a530f10ca34631af27baac70e947b1001c8",
+    "minimumIOS": "18.1",
+    "artifacts": {
+      "iosArm64": {
+        "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64/TailscaleKit.framework/TailscaleKit",
+        "sha256": "e00e8239c576df7ccb88fde16263c19090c9c77aa07bb1b77596d0bbf3f627de"
+      },
+      "iosSimulatorUniversal": {
+        "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64_x86_64-simulator/TailscaleKit.framework/TailscaleKit",
+        "sha256": "388d316956946b4bfa8e4965c3508496087e800fbd1977073d022e806374c451"
+      }
+    }
   },
   "ghosttea": {
     "appId": "ghosttea-terminal",

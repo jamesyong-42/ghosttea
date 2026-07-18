@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,7 @@ const ghosttyRef = `pkg:github/ghostty-org/ghostty@${ghostty.ghostty.commit}`;
 const opensslRef = `pkg:github/openssl/openssl@${ssh.openssl.commit}`;
 const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
 const truffleRef = `pkg:github/jamesyong-42/truffle@${truffle.package.revision}`;
+const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
 const releaseBlockers = iosReleaseBlockers();
 
@@ -150,6 +151,40 @@ const expected = {
         },
       ],
     }),
+    component({
+      type: "library",
+      ref: tailscaleRef,
+      name: "TailscaleKit",
+      version: truffle.tailscaleKit.revision,
+      license: truffle.tailscaleKit.license,
+      purl: tailscaleRef,
+      hashes: [
+        {
+          alg: "SHA-256",
+          content: truffle.tailscaleKit.artifacts.iosArm64.sha256,
+        },
+      ],
+      repository: truffle.tailscaleKit.repository,
+      properties: [
+        { name: "ghosttea:minimum-ios", value: truffle.tailscaleKit.minimumIOS },
+        {
+          name: "ghosttea:license:sha256",
+          value: truffle.tailscaleKit.licenseSha256,
+        },
+        {
+          name: "ghosttea:ios-device-artifact",
+          value: truffle.tailscaleKit.artifacts.iosArm64.path,
+        },
+        {
+          name: "ghosttea:ios-simulator-artifact",
+          value: truffle.tailscaleKit.artifacts.iosSimulatorUniversal.path,
+        },
+        {
+          name: "ghosttea:ios-simulator-artifact:sha256",
+          value: truffle.tailscaleKit.artifacts.iosSimulatorUniversal.sha256,
+        },
+      ],
+    }),
     ...fonts.fonts.map((font, index) =>
       component({
         type: "file",
@@ -172,13 +207,20 @@ const expected = {
     { ref: ghosttyRef, dependsOn: [] },
     { ref: opensslRef, dependsOn: [] },
     { ref: libssh2Ref, dependsOn: [opensslRef] },
-    { ref: truffleRef, dependsOn: [] },
+    { ref: truffleRef, dependsOn: [tailscaleRef] },
+    { ref: tailscaleRef, dependsOn: [] },
     ...fontRefs.map((ref) => ({ ref, dependsOn: [] })),
   ],
 };
 
 if (process.argv.includes("--print")) {
   process.stdout.write(`${JSON.stringify(expected, null, 2)}\n`);
+  process.exit(0);
+}
+
+if (process.argv.includes("--write")) {
+  writeFileSync(bomPath, `${JSON.stringify(expected, null, 2)}\n`);
+  console.log(`Wrote deterministic iOS CycloneDX BOM to ${bomPath}`);
   process.exit(0);
 }
 

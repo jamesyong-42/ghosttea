@@ -157,6 +157,21 @@ public struct GhostteaKeyInput: Codable, Equatable, Sendable {
   public let alt: Bool
   public let meta: Bool
   public let unshiftedCodepoint: UInt32
+
+  public init(
+    type: String, key: String, code: String, repeat: Bool, shift: Bool, control: Bool,
+    alt: Bool, meta: Bool, unshiftedCodepoint: UInt32
+  ) {
+    self.type = type
+    self.key = key
+    self.code = code
+    self.repeat = `repeat`
+    self.shift = shift
+    self.control = control
+    self.alt = alt
+    self.meta = meta
+    self.unshiftedCodepoint = unshiftedCodepoint
+  }
 }
 
 public struct GhostteaMouseInput: Codable, Equatable, Sendable {
@@ -174,6 +189,28 @@ public struct GhostteaMouseInput: Codable, Equatable, Sendable {
   public let control: Bool
   public let alt: Bool
   public let meta: Bool
+
+  public init(
+    action: String, button: UInt8, x: Float, y: Float, screenWidth: UInt32,
+    screenHeight: UInt32, cellWidth: UInt32, cellHeight: UInt32,
+    paddingLeft: UInt32, paddingTop: UInt32, shift: Bool, control: Bool,
+    alt: Bool, meta: Bool
+  ) {
+    self.action = action
+    self.button = button
+    self.x = x
+    self.y = y
+    self.screenWidth = screenWidth
+    self.screenHeight = screenHeight
+    self.cellWidth = cellWidth
+    self.cellHeight = cellHeight
+    self.paddingLeft = paddingLeft
+    self.paddingTop = paddingTop
+    self.shift = shift
+    self.control = control
+    self.alt = alt
+    self.meta = meta
+  }
 }
 
 public enum GhostteaTunnelInput: Codable, Equatable, Sendable {
@@ -516,6 +553,27 @@ public actor GhostteaTruffleAttachment {
 
   public func requestSnapshot() async throws { try await write(.requestSnapshot) }
 
+  /// Requests authoritative selection extraction. The matching result is
+  /// delivered through `nextEvent()` so the single demand-driven reader keeps
+  /// ownership of the connection.
+  @discardableResult
+  public func requestSelectionText(
+    _ selection: GhostteaSelectionRequest,
+    requestID: String = UUID().uuidString
+  ) async throws -> String {
+    try await write(
+      .selectionText(
+        requestID: requestID,
+        viewID: viewID,
+        attachmentEpoch: info.attachmentEpoch,
+        startColumn: selection.startColumn,
+        startRow: selection.startRow,
+        endColumn: selection.endColumn,
+        endRow: selection.endRow,
+        selectAll: selection.selectAll))
+    return requestID
+  }
+
   public func acknowledge(_ state: GhostteaLogicalSnapshot, patchSequence: UInt64 = 0) async throws
   {
     try await acknowledge(
@@ -576,6 +634,25 @@ public actor GhostteaTruffleAttachment {
     let result = Data(buffer.prefix(count))
     buffer.removeFirst(count)
     return result
+  }
+}
+
+public struct GhostteaSelectionRequest: Equatable, Sendable {
+  public let startColumn: UInt16
+  public let startRow: UInt32
+  public let endColumn: UInt16
+  public let endRow: UInt32
+  public let selectAll: Bool
+
+  public init(
+    startColumn: UInt16 = 0, startRow: UInt32 = 0, endColumn: UInt16 = 0,
+    endRow: UInt32 = 0, selectAll: Bool = false
+  ) {
+    self.startColumn = startColumn
+    self.startRow = startRow
+    self.endColumn = endColumn
+    self.endRow = endRow
+    self.selectAll = selectAll
   }
 }
 

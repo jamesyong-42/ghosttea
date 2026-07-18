@@ -8,8 +8,8 @@
 
 [`ios-release.cdx.json`](ios-release.cdx.json) is the checked-in CycloneDX 1.6
 inventory for the iOS application's direct native and bundled inputs. It is
-generated conceptually—not updated silently—from the authoritative repository
-pins:
+generated only by an explicit, reviewed `--write` invocation from the
+authoritative repository pins:
 
 - `native/ghostty.lock.json`;
 - `native/ssh.lock.json`;
@@ -19,8 +19,10 @@ pins:
 - the tracked MIT, OFL-1.1, and font-notice files.
 
 The BOM records the shared Rust FFI runtime, pinned Ghostty source, OpenSSL,
-libssh2, the exact sibling Truffle Swift revision, and each of the five exact bundled font files. Relationships describe
-the static native/runtime inputs, and every font carries its locked SHA-256.
+libssh2, the exact sibling Truffle Swift revision, the exact TailscaleKit source
+revision and binary/license hashes, and each of the five exact bundled font
+files. Relationships describe the static native/runtime inputs, and every font
+carries its locked SHA-256.
 The BOM timestamp and serial are fixed so identical repository inputs produce
 byte-identical JSON.
 
@@ -29,6 +31,10 @@ Run the drift gate with:
 ```sh
 npm run check:ios-release-bom
 ```
+
+After intentionally reviewing a lock change, regenerate the checked-in file
+with `node scripts/check-ios-release-bom.mjs --write` and run the drift gate
+again.
 
 The verifier constructs the expected BOM in memory and compares it exactly
 with the checked-in file. A changed dependency commit, tag, font hash, package

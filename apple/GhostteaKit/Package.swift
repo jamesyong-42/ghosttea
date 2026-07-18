@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
   name: "GhostteaKit",
   platforms: [
-    .iOS(.v17),
+    .iOS("18.1"),
     .macOS(.v14),
   ],
   products: [
@@ -126,6 +126,7 @@ let package = Package(
       dependencies: [
         "GhostteaCore",
         .product(name: "Truffle", package: "apple"),
+        .product(name: "TruffleTailscale", package: "apple"),
       ]
     ),
     .target(name: "GhostteaWorkspace"),

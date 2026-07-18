@@ -46,7 +46,10 @@ matching compact-stream listener on port 9421, requires Tailscale WhoIs
 identity, reconciles it with the current Truffle peer, and serves the shared
 handshake/session-list contract without changing its existing
 desktop-to-desktop QUIC path. Production TailscaleKit composition and the real
-application target remain the next Phase 8 slices.
+application composition now live in the separate `apple/GhostteaApp` target.
+The pinned TailscaleKit binary sets the production package minimum to iOS 18.1.
+Direct SSH/workspace composition and live cross-device release evidence remain
+later Phase 8 slices.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

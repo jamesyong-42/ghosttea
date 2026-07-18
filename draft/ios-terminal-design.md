@@ -3,7 +3,7 @@
 **Status:** In implementation
 **Date:** July 16, 2026
 **Owners:** Ghosttea maintainers
-**Target:** iOS 17 and later for the first production release
+**Target:** iOS 18.1 and later for the first production release
 
 ---
 
@@ -2723,7 +2723,7 @@ and makes cross-device session continuity a release gate. The diagnostic
 
 **Started:** 2026-07-18. The first slice adds the `GhostteaTruffle` Swift
 product against the real sibling Apple package at locked revision
-`2743a2c0ea51bd8b2ca928903666233b2e74d1c5`. It defines durable host/session
+`04c2fcff8b6378706dfef511576ad86f2a2f8541`. It defines durable host/session
 references, generation-checked peer resolution, the shared app/service IDs,
 and byte-compatible `TSP1` connection-control framing. A typed client completes
 the nonce handshake and lists desktop sessions over Truffle's
@@ -2749,8 +2749,21 @@ remote snapshots and patches into local TRF1 with the bundled fonts, ACKs only
 successfully applied state, and requests an authoritative snapshot after a
 patch discontinuity. Rust proves the snapshot-to-TRF1 ABI and Swift proves the
 full loopback path from compact attachment state to a local TRF1 frame; all 118
-Swift package tests pass after this slice. The
-production Truffle backend and real app target remain open.
+Swift package tests pass after this slice.
+
+The next checkpoint composes the first real application slice in the separate
+`apple/GhostteaApp` target. The app starts the production in-process
+TailscaleKit backend, presents interactive login, discovers Ghosttea peers,
+lists shared sessions, attaches through the compact stream, renders replica
+TRF1 through the Metal surface, and routes keyboard, pointer, scroll,
+selection, control claim, resize, detach, and foreground snapshot requests.
+The pinned TailscaleKit revision is
+`5e89501def80a6579ca5d0f9a02f336be62b8f2e`; its binary and license hashes are
+recorded in the release lock and BOM. Generic device and arm64 simulator builds
+pass with the honest iOS 18.1 minimum, and the sibling Truffle suite passes all
+67 tests. Direct SSH/workspace composition, persisted app restoration, live
+desktop/iPhone/iPad interop evidence, signed device installation, and the
+TestFlight-shaped archive remain open.
 
 Deliverables:
 
@@ -2790,8 +2803,10 @@ bundled font files. Its verifier derives the expected graph from the Ghostty,
 SSH, font, package, license, and notice locks and rejects any unreviewed drift.
 The normal repository check runs inventory mode; release mode additionally
 fails closed while the SSH lock records `productionApproved: false`. The
-checked-in BOM currently contains nine components and exact SHA-256 values for
-all five fonts plus tracked license/notice hashes. Transitive Rust crates,
+checked-in BOM currently contains eleven components, including the exact
+Truffle and TailscaleKit revisions, the device and simulator TailscaleKit
+binary hashes, and exact SHA-256 values for all five fonts plus tracked
+license/notice hashes. Transitive Rust crates,
 final toolchain identity, schema validation in release CI, notice packaging,
 and the other release-hardening gates remain open.
 
@@ -2893,7 +2908,7 @@ Includes Phases 8 and 9.
 | GPU atlases exceed mobile memory                               | Termination under pressure        | Bounded atlases; LRU eviction; full refresh; memory-warning tests                 |
 | Full-libghostty community APIs look faster                     | Architectural drift               | Keep spike bounded; measure against Ghosttea parity contract                      |
 | App Store policy misunderstanding                              | Review delay                      | Remote-execution review note; no downloaded app code; documented background use   |
-| Apple Truffle backend is not yet device-production-ready       | Shared-session release blocker    | Integrate sibling Swift package now; gate release on pinned backend and live interop |
+| Apple Truffle backend lacks live cross-device release evidence | Shared-session release blocker    | Keep exact backend and TailscaleKit pins; gate release on signed-device desktop/iOS interop |
 | Desktop QUIC and Apple raw-stream APIs do not match            | Duplicate or divergent protocol   | Keep Ghosttea message semantics; add a compact TCP binding with shared vectors    |
 | Stale Truffle peer generations are persisted                   | Reconnects target the wrong node  | Persist durable device ID only; resolve a fresh generation for every reconnect    |
 | Selected SSH stack lacks required authentication or algorithms | Launch-host incompatibility       | Phase 0 server matrix; fund missing work or select another stack before Phase 6   |
@@ -2985,7 +3000,8 @@ shared core, but they affect UI, security, and release scope.
 1. **Resolved:** the first release supports both direct SSH and attachment to a
    Ghosttea desktop/server through Truffle.
 2. Is iPhone required at launch, or may the first vertical slice target iPad?
-3. Is iOS 17 an acceptable minimum?
+3. **Resolved:** iOS 18.1 is the minimum because the pinned production
+   TailscaleKit binary is built for iOS 18.1 or newer.
 4. Which font family may be bundled, and is user-supplied font import required?
 5. Does “exact parity” require bundled-font frame parity, or only semantic and
    interaction parity?
