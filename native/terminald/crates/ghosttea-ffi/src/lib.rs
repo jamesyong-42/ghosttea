@@ -14,8 +14,9 @@ use std::{
 };
 
 use ghosttea_core::{
-    ClipboardRequest, RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions,
-    TerminalRuntime, TerminalUpdate,
+    ClipboardRequest, LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
+    RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
+    TerminalUpdate,
 };
 use ghosttea_text::{FontResource, FontResources, TextEngine, TextMetrics};
 use serde_json::json;
@@ -183,6 +184,12 @@ pub struct GhostteaTerminalHandle {
     model: Mutex<TerminalModel>,
 }
 
+pub struct GhostteaReplicaHandle {
+    runtime: Arc<RuntimeState>,
+    poisoned: AtomicBool,
+    model: Mutex<LogicalReplicaModel>,
+}
+
 enum PanicScope {
     Terminal,
     Runtime,
@@ -336,6 +343,42 @@ fn terminal_operation<T>(
                 handle.runtime.poisoned.store(true, Ordering::Release);
             }
             set_error("panic caught at Ghosttea C ABI boundary; handle poisoned");
+            Err(GHOSTTEA_STATUS_PANIC)
+        }
+    }
+}
+
+fn replica_operation<T>(
+    replica: *mut GhostteaReplicaHandle,
+    operation: impl FnOnce(&mut LogicalReplicaModel) -> Result<T, String>,
+) -> Result<T, i32> {
+    if replica.is_null() {
+        set_error("replica handle is null");
+        return Err(GHOSTTEA_STATUS_INVALID_ARGUMENT);
+    }
+    // SAFETY: The caller supplies a live handle created by this library.
+    let handle = unsafe { &*replica };
+    if handle.poisoned.load(Ordering::Acquire) || handle.runtime.poisoned.load(Ordering::Acquire) {
+        set_error("replica or its runtime is poisoned");
+        return Err(GHOSTTEA_STATUS_INVALID_STATE);
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut model = handle
+            .model
+            .lock()
+            .map_err(|_| "replica model lock is poisoned".to_owned())?;
+        operation(&mut model)
+    }));
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(message)) => {
+            set_error(message);
+            Err(GHOSTTEA_STATUS_INTERNAL)
+        }
+        Err(_) => {
+            handle.poisoned.store(true, Ordering::Release);
+            handle.runtime.poisoned.store(true, Ordering::Release);
+            set_error("panic caught at Ghosttea replica C ABI boundary; handle poisoned");
             Err(GHOSTTEA_STATUS_PANIC)
         }
     }
@@ -593,6 +636,164 @@ pub extern "C" fn ghosttea_terminal_is_poisoned(terminal: *const GhostteaTermina
     // SAFETY: A non-null pointer is a live handle by contract.
     let terminal = unsafe { &*terminal };
     terminal.poisoned.load(Ordering::Acquire) || terminal.runtime.poisoned.load(Ordering::Acquire)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_create(
+    runtime: *mut GhostteaRuntimeHandle,
+    session_handle: u64,
+    out_replica: *mut *mut GhostteaReplicaHandle,
+) -> i32 {
+    clear_error();
+    if out_replica.is_null() {
+        set_error("runtime and replica output pointer are required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out_replica.write(ptr::null_mut()) };
+    if runtime.is_null() {
+        set_error("runtime and replica output pointer are required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The runtime pointer is a live handle by contract.
+    let runtime = unsafe { &*runtime };
+    if runtime.state.poisoned.load(Ordering::Acquire) {
+        set_error("runtime is poisoned");
+        return GHOSTTEA_STATUS_INVALID_STATE;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| GhostteaReplicaHandle {
+        runtime: runtime.state.clone(),
+        poisoned: AtomicBool::new(false),
+        model: Mutex::new(LogicalReplicaModel::new(
+            runtime.state.core.clone(),
+            session_handle,
+        )),
+    }));
+    match result {
+        Ok(replica) => {
+            // SAFETY: The output pointer remains writable for this call.
+            unsafe { out_replica.write(Box::into_raw(Box::new(replica))) };
+            GHOSTTEA_STATUS_OK
+        }
+        Err(_) => {
+            set_error("panic caught while creating Ghosttea replica");
+            GHOSTTEA_STATUS_PANIC
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_destroy(replica: *mut GhostteaReplicaHandle) {
+    if !replica.is_null() {
+        // SAFETY: Only a handle returned by replica_create may be destroyed once.
+        unsafe { drop(Box::from_raw(replica)) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_is_poisoned(replica: *const GhostteaReplicaHandle) -> bool {
+    if replica.is_null() {
+        return false;
+    }
+    // SAFETY: A non-null pointer is a live handle by contract.
+    let replica = unsafe { &*replica };
+    replica.poisoned.load(Ordering::Acquire) || replica.runtime.poisoned.load(Ordering::Acquire)
+}
+
+fn replica_update_operation(
+    replica: *mut GhostteaReplicaHandle,
+    out: *mut GhostteaUpdate,
+    operation: impl FnOnce(&mut LogicalReplicaModel) -> Result<TerminalUpdate, String>,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("update output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaUpdate::EMPTY) };
+    match replica_operation(replica, operation) {
+        Ok(update) => write_update(out, update),
+        Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_publish_snapshot_json(
+    replica: *mut GhostteaReplicaHandle,
+    snapshot_json: GhostteaBytesView,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("update output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaUpdate::EMPTY) };
+    // SAFETY: The caller promises a readable byte view for this call.
+    let bytes = match unsafe { view_bytes(snapshot_json) } {
+        Ok(bytes) => bytes,
+        Err((status, message)) => {
+            set_error(message);
+            return status;
+        }
+    };
+    let snapshot = match serde_json::from_slice::<LogicalTerminalSnapshot>(bytes) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            set_error(format!("invalid logical snapshot JSON: {error}"));
+            return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+        }
+    };
+    replica_update_operation(replica, out, |model| {
+        model.publish(snapshot).map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_publish_patch_json(
+    replica: *mut GhostteaReplicaHandle,
+    patch_json: GhostteaBytesView,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("update output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaUpdate::EMPTY) };
+    // SAFETY: The caller promises a readable byte view for this call.
+    let bytes = match unsafe { view_bytes(patch_json) } {
+        Ok(bytes) => bytes,
+        Err((status, message)) => {
+            set_error(message);
+            return status;
+        }
+    };
+    let patch = match serde_json::from_slice::<LogicalTerminalPatch>(bytes) {
+        Ok(patch) => patch,
+        Err(error) => {
+            set_error(format!("invalid logical patch JSON: {error}"));
+            return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+        }
+    };
+    replica_update_operation(replica, out, |model| {
+        model
+            .publish_patch(patch)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_refresh(
+    replica: *mut GhostteaReplicaHandle,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    replica_update_operation(replica, out, |model| {
+        model.refresh().map_err(|error| error.to_string())
+    })
 }
 
 fn update_operation(
@@ -998,6 +1199,9 @@ pub extern "C" fn ghosttea_update_destroy(update: GhostteaUpdate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ghosttea_core::{
+        LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
+    };
 
     #[test]
     fn abi_layout_matches_header_assumptions() {
@@ -1128,5 +1332,77 @@ mod tests {
         assert!(update.storage.data.is_null());
         assert!(update.effects.is_null());
         assert_eq!(update.effect_count, 0);
+    }
+
+    #[test]
+    fn logical_replica_ffi_renders_remote_snapshot_to_trf1() {
+        let runtime = Box::new(GhostteaRuntimeHandle {
+            state: Arc::new(RuntimeState {
+                core: Arc::new(TerminalRuntime::discover().unwrap()),
+                poisoned: AtomicBool::new(false),
+            }),
+        });
+        let runtime = Box::into_raw(runtime);
+        let mut replica = ptr::null_mut();
+        assert_eq!(
+            ghosttea_replica_create(runtime, 91, &mut replica),
+            GHOSTTEA_STATUS_OK
+        );
+        let snapshot = LogicalTerminalSnapshot {
+            session_epoch: 7,
+            layout_epoch: 3,
+            terminal_revision: 11,
+            cols: 20,
+            rows: vec![LogicalRow {
+                text: "shared".into(),
+                cells: vec![LogicalCell {
+                    column: 0,
+                    span: 1,
+                    text: "shared".into(),
+                    style: LogicalCellStyle::default(),
+                }],
+            }],
+            cursor: LogicalCursor {
+                x: 6,
+                y: 0,
+                visible: true,
+                style: 0,
+                blinking: true,
+            },
+            mouse_tracking: false,
+            scrollbar: LogicalScrollbar {
+                total: 1,
+                offset: 0,
+                len: 1,
+            },
+            title: Some("desktop".into()),
+            cwd: Some("/shared".into()),
+        };
+        let json = serde_json::to_vec(&snapshot).unwrap();
+        let mut update = GhostteaUpdate::EMPTY;
+        assert_eq!(
+            ghosttea_replica_publish_snapshot_json(
+                replica,
+                GhostteaBytesView {
+                    data: json.as_ptr(),
+                    len: json.len(),
+                },
+                &mut update,
+            ),
+            GHOSTTEA_STATUS_OK
+        );
+        let effects = unsafe { slice::from_raw_parts(update.effects, update.effect_count) };
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].kind, 5);
+        let frame = unsafe {
+            slice::from_raw_parts(
+                update.storage.data.add(effects[0].payload_offset as usize),
+                effects[0].payload_length as usize,
+            )
+        };
+        assert!(frame.starts_with(b"TRF1"));
+        ghosttea_update_destroy(update);
+        ghosttea_replica_destroy(replica);
+        ghosttea_runtime_destroy(runtime);
     }
 }

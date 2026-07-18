@@ -34,3 +34,79 @@ import Testing
     #expect(frame.payload.starts(with: Data("TRF1".utf8)))
   }
 }
+
+@Test func logicalReplicaRendersRemoteSnapshotsAndPatchesToLocalTRF1() async throws {
+  let runtime = try GhostteaRuntime()
+  let replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: 91)
+  let snapshot = Data(
+    """
+    {
+      "sessionEpoch": 7,
+      "layoutEpoch": 3,
+      "terminalRevision": 11,
+      "cols": 20,
+      "rows": [{
+        "text": "shared",
+        "cells": [{
+          "column": 0,
+          "span": 1,
+          "text": "shared",
+          "style": {
+            "bold": false, "italic": false, "faint": false,
+            "inverse": false, "invisible": false, "strikethrough": false,
+            "underline": false, "foreground": null, "background": null
+          }
+        }]
+      }],
+      "cursor": {"x": 6, "y": 0, "visible": true, "style": 0, "blinking": true},
+      "mouseTracking": false,
+      "scrollbar": {"total": 1, "offset": 0, "len": 1},
+      "title": "desktop",
+      "cwd": "/shared"
+    }
+    """.utf8)
+  let initial = try await replica.publishSnapshotJSON(snapshot)
+  let initialFrame = try #require(initial.effects.onlyFrame)
+  #expect(initialFrame.payload.starts(with: Data("TRF1".utf8)))
+
+  let patch = Data(
+    """
+    {
+      "sessionEpoch": 7,
+      "layoutEpoch": 3,
+      "patchSequence": 1,
+      "terminalRevision": 12,
+      "rowReplacements": [{
+        "rowIndex": 0,
+        "rowRevision": 12,
+        "row": {
+          "text": "shared!",
+          "cells": [{
+            "column": 0,
+            "span": 1,
+            "text": "shared!",
+            "style": {
+              "bold": true, "italic": false, "faint": false,
+              "inverse": false, "invisible": false, "strikethrough": false,
+              "underline": false, "foreground": null, "background": null
+            }
+          }]
+        }
+      }],
+      "cursor": {"x": 7, "y": 0, "visible": true, "style": 0, "blinking": true},
+      "mouseTracking": null,
+      "scrollbar": null
+    }
+    """.utf8)
+  let incremental = try await replica.publishPatchJSON(patch)
+  let incrementalFrame = try #require(incremental.effects.onlyFrame)
+  #expect(incrementalFrame.payload.starts(with: Data("TRF1".utf8)))
+  #expect(!(await replica.isPoisoned))
+  #expect(!runtime.isPoisoned)
+}
+
+private extension [GhostteaOrderedEffect] {
+  var onlyFrame: GhostteaOrderedEffect? {
+    count == 1 && first?.kind == .frameReady ? first : nil
+  }
+}

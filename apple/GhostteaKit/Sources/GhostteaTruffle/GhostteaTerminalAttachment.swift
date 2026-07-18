@@ -518,10 +518,24 @@ public actor GhostteaTruffleAttachment {
 
   public func acknowledge(_ state: GhostteaLogicalSnapshot, patchSequence: UInt64 = 0) async throws
   {
+    try await acknowledge(
+      sessionEpoch: state.sessionEpoch,
+      layoutEpoch: state.layoutEpoch,
+      patchSequence: patchSequence,
+      terminalRevision: state.terminalRevision
+    )
+  }
+
+  public func acknowledge(
+    sessionEpoch: UInt64,
+    layoutEpoch: UInt64,
+    patchSequence: UInt64,
+    terminalRevision: UInt64
+  ) async throws {
     try await write(
       .stateAck(
-        sessionEpoch: state.sessionEpoch, layoutEpoch: state.layoutEpoch,
-        patchSequence: patchSequence, terminalRevision: state.terminalRevision))
+        sessionEpoch: sessionEpoch, layoutEpoch: layoutEpoch,
+        patchSequence: patchSequence, terminalRevision: terminalRevision))
   }
 
   public func detach() async {

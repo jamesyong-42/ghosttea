@@ -31,17 +31,22 @@ gate, and the transitive/toolchain expansion still required before release.
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
 uses the same `ghosttea-terminal` app ID as the desktop daemon, persists only
 Truffle's durable device ID, and resolves a fresh generation-checked `Peer`
-before every connection. Its initial typed client implements the desktop
-`TSP1` connection-control preface, nonce handshake, and shared-session listing
-over Truffle's full-duplex `MeshConnection`. The exact sibling revision and
+before every connection. Its typed clients implement the desktop `TSP1`
+connection-control preface, nonce handshake, shared-session listing, and a
+dedicated demand-driven live attachment over Truffle's full-duplex
+`MeshConnection`. Compact control/state channels carry the existing session
+epochs, input, resize, selection, snapshot, and patch contracts. Remote logical
+state is rendered locally by a separately owned `GhostteaLogicalReplica` C/Swift
+handle, and the replica pump ACKs only successfully produced TRF1 frames. The
+exact sibling revision and
 Ghosttea ports/protocol version are recorded in
 [`Compatibility/truffle-swift.lock.json`](Compatibility/truffle-swift.lock.json)
 and included in the deterministic iOS BOM. The desktop daemon now binds the
 matching compact-stream listener on port 9421, requires Tailscale WhoIs
 identity, reconciles it with the current Truffle peer, and serves the shared
 handshake/session-list contract without changing its existing
-desktop-to-desktop QUIC path. Live attachment, logical replica, and production
-TailscaleKit composition remain the next Phase 8 slices.
+desktop-to-desktop QUIC path. Production TailscaleKit composition and the real
+application target remain the next Phase 8 slices.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

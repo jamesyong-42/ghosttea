@@ -2743,8 +2743,14 @@ decodes the same typed logical state, and exposes control, resize, input, ACK,
 selection, resync, and detach operations. Its loopback test proves handshake,
 attachment, interleaved state, input, and graceful detach; all 117 Swift tests,
 the complete Rust crate tests, workspace checks, and strict Clippy pass. The
-local logical-state-to-TRF1 replica adapter, production Truffle backend, and
-real app target remain open.
+following slice exposes `LogicalReplicaModel` as a separately owned and
+panic-poisoned C/Swift handle. The demand-driven Truffle replica pump now turns
+remote snapshots and patches into local TRF1 with the bundled fonts, ACKs only
+successfully applied state, and requests an authoritative snapshot after a
+patch discontinuity. Rust proves the snapshot-to-TRF1 ABI and Swift proves the
+full loopback path from compact attachment state to a local TRF1 frame; all 118
+Swift package tests pass after this slice. The
+production Truffle backend and real app target remain open.
 
 Deliverables:
 

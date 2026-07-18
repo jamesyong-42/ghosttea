@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCore
 import GhostteaTruffle
 import Testing
 import Truffle
@@ -288,6 +289,69 @@ private struct ConnectionControlFixture: Decodable {
         )
       )
     )
+    try await writeCompactJSON(
+      """
+      {
+        "type": "snapshot",
+        "sessionEpoch": 7,
+        "layoutEpoch": 4,
+        "terminalRevision": 13,
+        "cols": 120,
+        "rows": [{
+          "text": "shared",
+          "cells": [{
+            "column": 0, "span": 1, "text": "shared",
+            "style": {
+              "bold": false, "italic": false, "faint": false,
+              "inverse": false, "invisible": false, "strikethrough": false,
+              "underline": false, "foreground": null, "background": null
+            }
+          }]
+        }],
+        "cursor": {"x": 6, "y": 0, "visible": true, "style": 0, "blinking": true},
+        "mouseTracking": false,
+        "scrollbar": {"total": 1, "offset": 0, "len": 1},
+        "title": "desktop",
+        "cwd": "/shared"
+      }
+      """,
+      channel: .state,
+      to: serverConnection
+    )
+
+    let (ackChannel, ackPayload) = try await readCompact(from: serverConnection)
+    #expect(ackChannel == .control)
+    let ack = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: ackPayload)
+    #expect(
+      ack
+        == .stateAck(
+          sessionEpoch: 7,
+          layoutEpoch: 4,
+          patchSequence: 0,
+          terminalRevision: 13
+        )
+    )
+    try await writeCompactJSON(
+      """
+      {
+        "type": "patch",
+        "sessionEpoch": 7,
+        "layoutEpoch": 4,
+        "patchSequence": 2,
+        "terminalRevision": 14,
+        "rowReplacements": [],
+        "cursor": null,
+        "mouseTracking": null,
+        "scrollbar": null
+      }
+      """,
+      channel: .state,
+      to: serverConnection
+    )
+    let (resyncChannel, resyncPayload) = try await readCompact(from: serverConnection)
+    #expect(resyncChannel == .control)
+    let resync = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: resyncPayload)
+    #expect(resync == .requestSnapshot)
 
     let (inputChannel, inputPayload) = try await readCompact(from: serverConnection)
     #expect(inputChannel == .control)
@@ -333,8 +397,27 @@ private struct ConnectionControlFixture: Decodable {
           rows: 40,
           layoutEpoch: 4
         )
-      )
+    )
   )
+  let runtime = try GhostteaRuntime()
+  let pump = try GhostteaTruffleReplicaPump(
+    attachment: attachment,
+    runtime: runtime,
+    sessionHandle: 91
+  )
+  switch try await pump.next() {
+  case .frame(let update, let fullSnapshot):
+    #expect(fullSnapshot)
+    let frame = try #require(update.effects.first { $0.kind == .frameReady })
+    #expect(frame.payload.starts(with: Data("TRF1".utf8)))
+  default:
+    Issue.record("expected locally rendered remote snapshot")
+  }
+  if case .resynchronizing = try await pump.next() {
+    // Expected: patch sequence 2 was received while sequence 1 was missing.
+  } else {
+    Issue.record("expected a snapshot resynchronization request")
+  }
   try await attachment.send(.text("echo shared\n"), sequence: 1)
   await attachment.detach()
   try await server.value
@@ -374,6 +457,19 @@ private func readCompact(
     throw GhostteaTruffleError.malformedMessage
   }
   return (channel, Data(framed.dropFirst()))
+}
+
+private func writeCompactJSON(
+  _ json: String,
+  channel: GhostteaCompactChannel,
+  to connection: any MeshConnection
+) async throws {
+  let payload = Data(json.utf8)
+  var size = UInt32(payload.count + 1).bigEndian
+  var frame = Swift.withUnsafeBytes(of: &size) { Data($0) }
+  frame.append(channel.rawValue)
+  frame.append(payload)
+  try await connection.write(frame)
 }
 
 private func readUInt32(_ data: Data, at offset: Int) -> UInt32 {

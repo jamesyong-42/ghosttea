@@ -266,6 +266,18 @@ private final class GhostteaNativeTerminalHandle: @unchecked Sendable {
   }
 }
 
+private final class GhostteaNativeReplicaHandle: @unchecked Sendable {
+  let pointer: OpaquePointer
+
+  init(_ pointer: OpaquePointer) {
+    self.pointer = pointer
+  }
+
+  deinit {
+    ghosttea_replica_destroy(pointer)
+  }
+}
+
 public actor GhostteaTerminal {
   public let runtime: GhostteaRuntime
   private let nativeHandle: GhostteaNativeTerminalHandle
@@ -464,33 +476,7 @@ public actor GhostteaTerminal {
       try check(status)
       fatalError("unreachable")
     }
-    let arena = GhostteaUpdateArena(native)
-    guard native.effect_count == 0 || native.effects != nil else {
-      throw GhostteaCoreError.malformedUpdate("effect table is null")
-    }
-    let descriptors = native.effect_count == 0
-      ? []
-      : Array(UnsafeBufferPointer(start: native.effects, count: native.effect_count))
-    let effects = try descriptors.enumerated().map { index, descriptor in
-      guard descriptor.sequence == UInt32(index),
-        let kind = GhostteaEffectKind(rawValue: descriptor.kind)
-      else {
-        throw GhostteaCoreError.malformedUpdate("invalid ordered effect descriptor")
-      }
-      let offset = Int(descriptor.payload_offset)
-      let length = Int(descriptor.payload_length)
-      guard offset <= arena.count, length <= arena.count - offset else {
-        throw GhostteaCoreError.malformedUpdate("effect payload is outside its arena")
-      }
-      return GhostteaOrderedEffect(
-        sequence: descriptor.sequence,
-        kind: kind,
-        payloadOffset: offset,
-        payloadLength: length,
-        arena: arena
-      )
-    }
-    return GhostteaUpdate(effects: effects)
+    return try decodeUpdate(native)
   }
 
   private func performBytes(
@@ -507,6 +493,106 @@ public actor GhostteaTerminal {
     guard let data = output.data else { return Data() }
     return Data(bytes: data, count: output.len)
   }
+}
+
+/// Renders logical state received from an authoritative remote Ghosttea
+/// session into the same TRF1 frames used by a local terminal. The caller owns
+/// snapshot-gap recovery; a rejected patch must be followed by a full snapshot.
+public actor GhostteaLogicalReplica {
+  public let runtime: GhostteaRuntime
+  private let nativeHandle: GhostteaNativeReplicaHandle
+  private var handle: OpaquePointer { nativeHandle.pointer }
+
+  public init(runtime: GhostteaRuntime, sessionHandle: UInt64) throws {
+    self.runtime = runtime
+    var created: OpaquePointer?
+    try check(ghosttea_replica_create(runtime.handle, sessionHandle, &created))
+    guard let created else {
+      throw GhostteaCoreError.malformedUpdate("replica creation returned no handle")
+    }
+    nativeHandle = GhostteaNativeReplicaHandle(created)
+  }
+
+  public var isPoisoned: Bool {
+    ghosttea_replica_is_poisoned(handle)
+  }
+
+  public func publishSnapshotJSON(_ snapshot: Data) throws -> GhostteaUpdate {
+    try publish(snapshot, using: ghosttea_replica_publish_snapshot_json)
+  }
+
+  public func publishPatchJSON(_ patch: Data) throws -> GhostteaUpdate {
+    try publish(patch, using: ghosttea_replica_publish_patch_json)
+  }
+
+  public func refresh() throws -> GhostteaUpdate {
+    try performUpdate { output in ghosttea_replica_refresh(handle, &output) }
+  }
+
+  private func publish(
+    _ json: Data,
+    using operation: (
+      OpaquePointer?, ghosttea_bytes_view_t, UnsafeMutablePointer<ghosttea_update_t>?
+    ) -> ghosttea_status_t
+  ) throws -> GhostteaUpdate {
+    try json.withUnsafeBytes { raw in
+      let bytes = raw.bindMemory(to: UInt8.self)
+      return try performUpdate { output in
+        operation(
+          handle,
+          ghosttea_bytes_view_t(data: bytes.baseAddress, len: bytes.count),
+          &output
+        )
+      }
+    }
+  }
+
+  private func performUpdate(
+    _ operation: (inout ghosttea_update_t) -> ghosttea_status_t
+  ) throws -> GhostteaUpdate {
+    var native = ghosttea_update_t(
+      storage: ghosttea_owned_bytes_t(data: nil, len: 0, capacity: 0),
+      effects: nil,
+      effect_count: 0
+    )
+    let status = operation(&native)
+    guard status == GHOSTTEA_STATUS_OK else {
+      ghosttea_update_destroy(native)
+      try check(status)
+      fatalError("unreachable")
+    }
+    return try decodeUpdate(native)
+  }
+}
+
+private func decodeUpdate(_ native: ghosttea_update_t) throws -> GhostteaUpdate {
+  let arena = GhostteaUpdateArena(native)
+  guard native.effect_count == 0 || native.effects != nil else {
+    throw GhostteaCoreError.malformedUpdate("effect table is null")
+  }
+  let descriptors = native.effect_count == 0
+    ? []
+    : Array(UnsafeBufferPointer(start: native.effects, count: native.effect_count))
+  let effects = try descriptors.enumerated().map { index, descriptor in
+    guard descriptor.sequence == UInt32(index),
+      let kind = GhostteaEffectKind(rawValue: descriptor.kind)
+    else {
+      throw GhostteaCoreError.malformedUpdate("invalid ordered effect descriptor")
+    }
+    let offset = Int(descriptor.payload_offset)
+    let length = Int(descriptor.payload_length)
+    guard offset <= arena.count, length <= arena.count - offset else {
+      throw GhostteaCoreError.malformedUpdate("effect payload is outside its arena")
+    }
+    return GhostteaOrderedEffect(
+      sequence: descriptor.sequence,
+      kind: kind,
+      payloadOffset: offset,
+      payloadLength: length,
+      arena: arena
+    )
+  }
+  return GhostteaUpdate(effects: effects)
 }
 
 private func withUTF8<T>(

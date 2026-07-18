@@ -13,6 +13,7 @@ extern "C" {
 
 typedef struct ghosttea_runtime ghosttea_runtime_t;
 typedef struct ghosttea_terminal ghosttea_terminal_t;
+typedef struct ghosttea_replica ghosttea_replica_t;
 
 typedef enum ghosttea_status {
   GHOSTTEA_STATUS_OK = 0,
@@ -142,6 +143,22 @@ ghosttea_status_t ghosttea_terminal_create(ghosttea_runtime_t *runtime,
 void ghosttea_terminal_destroy(ghosttea_terminal_t *terminal);
 bool ghosttea_terminal_is_poisoned(const ghosttea_terminal_t *terminal);
 
+/* A replica consumes logical snapshot/patch JSON from a remote authoritative
+ * Ghosttea session and renders local TRF1 with this runtime's fonts. */
+ghosttea_status_t ghosttea_replica_create(ghosttea_runtime_t *runtime,
+                                          uint64_t session_handle,
+                                          ghosttea_replica_t **out_replica);
+void ghosttea_replica_destroy(ghosttea_replica_t *replica);
+bool ghosttea_replica_is_poisoned(const ghosttea_replica_t *replica);
+ghosttea_status_t ghosttea_replica_publish_snapshot_json(
+    ghosttea_replica_t *replica, ghosttea_bytes_view_t snapshot_json,
+    ghosttea_update_t *out_update);
+ghosttea_status_t ghosttea_replica_publish_patch_json(
+    ghosttea_replica_t *replica, ghosttea_bytes_view_t patch_json,
+    ghosttea_update_t *out_update);
+ghosttea_status_t ghosttea_replica_refresh(ghosttea_replica_t *replica,
+                                           ghosttea_update_t *out_update);
+
 ghosttea_status_t ghosttea_terminal_feed(ghosttea_terminal_t *terminal,
                                          ghosttea_bytes_view_t bytes,
                                          uint32_t render_request,
@@ -200,10 +217,11 @@ ghosttea_status_t ghosttea_terminal_accessibility_rows(ghosttea_terminal_t *term
 void ghosttea_owned_bytes_free(ghosttea_owned_bytes_t bytes);
 void ghosttea_update_destroy(ghosttea_update_t update);
 
-/* Runtime handles may be shared, but each terminal must be externally
- * serialized. A runtime must outlive its terminals. A panic poisons the
- * affected terminal; rendering panics also poison its shared runtime. After a
- * panic, only poison queries, last-error inspection, and destroy are legal. */
+/* Runtime handles may be shared, but each terminal or replica must be
+ * externally serialized. A runtime must outlive its terminals and replicas. A
+ * panic poisons the affected terminal/replica; rendering panics also poison its
+ * shared runtime. After a panic, only poison queries, last-error inspection,
+ * and destroy are legal. */
 
 #ifdef __cplusplus
 }

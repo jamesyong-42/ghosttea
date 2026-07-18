@@ -124,6 +124,7 @@ let package = Package(
     .target(
       name: "GhostteaTruffle",
       dependencies: [
+        "GhostteaCore",
         .product(name: "Truffle", package: "apple"),
       ]
     ),
@@ -217,6 +218,7 @@ let package = Package(
     .testTarget(
       name: "GhostteaTruffleTests",
       dependencies: [
+        "GhostteaCore",
         "GhostteaTruffle",
         .product(name: "Truffle", package: "apple"),
       ],

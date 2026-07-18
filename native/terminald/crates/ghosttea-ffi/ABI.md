@@ -15,17 +15,20 @@ rejects unknown ABI versions.
 - Effect payload offsets are relative to `update.storage.data`. Binary terminal
   replies and TRF1 frames stay binary; metadata and logical/accessibility data
   use UTF-8 JSON.
-- Runtime handles must outlive terminals. Destroying a null handle or empty
-  output is a no-op.
+- Runtime handles must outlive terminals and logical replicas. Replica creation
+  borrows the runtime's shared text engine and retains the runtime state, just
+  like a terminal handle. Destroying a null handle or empty output is a no-op.
 
 ## Ordering and threading
 
 Descriptor sequence numbers are contiguous from zero and preserve the exact
 `TerminalEffect` order returned by `ghosttea-core`. In particular, a terminal
 reply discovered during `feed` precedes later semantic, logical snapshot, and
-frame effects. Runtime handles may back multiple terminals concurrently, but a
-terminal handle is single-owner and must be externally serialized. The Swift
-wrapper enforces this with an actor.
+frame effects. Logical replicas accept authoritative snapshot/patch JSON and
+return the same ordered update arena, normally containing one TRF1 frame.
+Runtime handles may back multiple terminals and replicas concurrently, but
+each terminal or replica handle is single-owner and must be externally
+serialized. The Swift wrappers enforce this with actors.
 
 ## Errors and poison
 
@@ -34,7 +37,7 @@ on the same thread. Swift copies it immediately. Panics never unwind across C:
 
 - terminal-local panics poison that terminal;
 - a panic in an operation that may touch shared shaping state poisons both the
-  terminal and runtime;
+  terminal/replica and runtime;
 - poisoned handles reject every operation with `INVALID_STATE`;
 - only poison inspection, last-error copying, and destruction remain legal.
 
