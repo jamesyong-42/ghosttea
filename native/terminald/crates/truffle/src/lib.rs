@@ -13,6 +13,7 @@ use std::env;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use subtle::ConstantTimeEq;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 use truffle_core as truffle;
@@ -33,6 +34,7 @@ use ghosttea::{
 };
 
 pub const DEFAULT_QUIC_PORT: u16 = 9420;
+pub const DEFAULT_COMPACT_PORT: u16 = 9421;
 const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(5);
 const ADVERTISEMENT_TTL: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -809,6 +811,7 @@ async fn validated_advertisement(
 pub struct TruffleTerminalConfig {
     pub service_name: String,
     pub quic_port: u16,
+    pub compact_port: u16,
     pub capability: Option<String>,
     pub allow_tailnet_write: bool,
 }
@@ -818,6 +821,7 @@ impl Default for TruffleTerminalConfig {
         Self {
             service_name: "terminal.v1".to_owned(),
             quic_port: DEFAULT_QUIC_PORT,
+            compact_port: DEFAULT_COMPACT_PORT,
             capability: None,
             allow_tailnet_write: false,
         }
@@ -831,6 +835,12 @@ impl TruffleTerminalConfig {
         }
         if self.quic_port == 0 {
             bail!("Truffle terminal QUIC port must be nonzero");
+        }
+        if self.compact_port == 0 {
+            bail!("Truffle terminal compact-stream port must be nonzero");
+        }
+        if self.compact_port == self.quic_port {
+            bail!("Truffle terminal QUIC and compact-stream ports must differ");
         }
         Ok(())
     }
@@ -894,6 +904,10 @@ impl TruffleTerminalMesh {
                 .await
                 .context("listen for terminal QUIC connections")?,
         );
+        let compact_listener = node
+            .listen_tcp(config.compact_port)
+            .await
+            .context("listen for Apple terminal compact-stream connections")?;
         let store_id = format!("{}.hosts", config.service_name);
         let store_namespace = format!("ss:{store_id}");
         // Profiles keep a stable Truffle device ID, so persist the local store
@@ -913,9 +927,10 @@ impl TruffleTerminalMesh {
             capability: config.capability.clone(),
         });
         eprintln!(
-            "[terminal-mesh] ready as {} on QUIC port {}",
+            "[terminal-mesh] ready as {} on QUIC port {} and compact-stream port {}",
             node.local_info().device_name,
-            listener.port()
+            listener.port(),
+            compact_listener.port
         );
 
         let advertise = advertise_loop(
@@ -929,14 +944,25 @@ impl TruffleTerminalMesh {
         let accept = accept_loop(
             Arc::clone(&node),
             Arc::clone(&listener),
+            registry.clone(),
+            config.clone(),
+            host_instance_id.clone(),
+        );
+        let compact_accept = compact_accept_loop(
+            Arc::clone(&node),
+            compact_listener,
             registry,
-            config,
+            config.clone(),
             host_instance_id,
         );
         let result = tokio::select! {
             result = advertise => result,
             result = accept => result,
+            result = compact_accept => result,
         };
+        if let Err(error) = node.unlisten_tcp(config.compact_port).await {
+            eprintln!("[terminal-mesh] compact-stream listener cleanup failed: {error}");
+        }
         runtime.connections.lock().await.clear();
         *runtime.ready.write().await = None;
         result
@@ -1023,6 +1049,150 @@ async fn request_advertisements_from_online_peers(
             );
         }
     }
+}
+
+async fn compact_accept_loop(
+    node: Arc<Node<TailscaleProvider>>,
+    mut listener: truffle::transport::RawListener,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    host_instance_id: String,
+) -> Result<()> {
+    while let Some(incoming) = listener.accept().await {
+        let node = Arc::clone(&node);
+        let registry = registry.clone();
+        let config = config.clone();
+        let host_instance_id = host_instance_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                handle_compact_connection(node, incoming, registry, config, host_instance_id).await
+            {
+                eprintln!("[terminal-mesh] rejected compact-stream connection: {error:#}");
+            }
+        });
+    }
+    Ok(())
+}
+
+async fn handle_compact_connection(
+    node: Arc<Node<TailscaleProvider>>,
+    incoming: truffle::transport::RawIncoming,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    host_instance_id: String,
+) -> Result<()> {
+    let authenticated_node_id = incoming
+        .remote_identity
+        .as_ref()
+        .and_then(|identity| identity.node_id.as_deref())
+        .context("compact-stream source lacks a Tailscale WhoIs stable node ID")?;
+    let peer = node
+        .peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.tailscale_id == authenticated_node_id)
+        .context("compact-stream source is not a current Truffle peer")?;
+    let client_id = format!("truffle:{}", peer.peer_ref);
+    handle_compact_control_protocol(
+        incoming.stream,
+        registry,
+        config,
+        host_instance_id,
+        peer.device_id,
+        client_id,
+    )
+    .await
+}
+
+async fn handle_compact_control_protocol<S>(
+    stream: S,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    host_instance_id: String,
+    expected_device_id: Option<String>,
+    _client_id: String,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut control = CompactProtocolStream::new(stream);
+    let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, control.read_preface())
+        .await
+        .context("timed out reading compact-stream preface")??;
+    if preface.stream_kind != StreamKind::ConnectionControl {
+        bail!("compact stream is not connection-control");
+    }
+    let hello = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
+    )
+    .await
+    .context("timed out reading compact-stream client hello")??
+    .context("compact stream closed before client hello")?;
+    let client_nonce = match hello {
+        ConnectionMessage::ClientHello {
+            protocol_major,
+            protocol_minor,
+            local_device_id,
+            nonce,
+            ..
+        } if protocol_major == PROTOCOL_MAJOR
+            && protocol_minor >= PROTOCOL_MINOR
+            && !local_device_id.trim().is_empty()
+            && expected_device_id
+                .as_deref()
+                .is_none_or(|expected| expected == local_device_id) =>
+        {
+            nonce
+        }
+        ConnectionMessage::ClientHello { .. } => {
+            bail!("compact-stream client hello identity or protocol mismatch")
+        }
+        _ => bail!("expected compact-stream client hello"),
+    };
+    control
+        .write_message(
+            &ConnectionMessage::ServerHello {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                host_instance_id,
+                nonce: client_nonce,
+            },
+            MAX_CONTROL_MESSAGE_BYTES,
+        )
+        .await?;
+
+    while let Some(message) = control
+        .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+        .await?
+    {
+        match message {
+            ConnectionMessage::ListSessions { request_id } => {
+                control
+                    .write_message(
+                        &ConnectionMessage::Sessions {
+                            request_id,
+                            sessions: shared_sessions(&registry, &config),
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
+            _ => {
+                control
+                    .write_message(
+                        &ConnectionMessage::Error {
+                            request_id: None,
+                            code: "unexpected-message".into(),
+                            message: "message is not valid on the connection control stream".into(),
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn accept_loop(
@@ -1567,6 +1737,93 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+struct CompactProtocolStream<S> {
+    stream: S,
+    buffered: VecDeque<u8>,
+}
+
+impl<S> CompactProtocolStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn new(stream: S) -> Self {
+        Self {
+            stream,
+            buffered: VecDeque::new(),
+        }
+    }
+
+    #[cfg(test)]
+    async fn write_preface(&mut self, preface: &StreamPreface) -> Result<()> {
+        self.stream.write_all(&encode_preface(preface)?).await?;
+        Ok(())
+    }
+
+    async fn read_preface(&mut self) -> Result<StreamPreface> {
+        let header = self
+            .read_exact_bytes(16)
+            .await?
+            .context("EOF before compact-stream preface")?;
+        let metadata_len = u32::from_be_bytes(header[12..16].try_into().unwrap()) as usize;
+        if metadata_len > ghosttea::tunnel_protocol::MAX_PREFACE_METADATA_BYTES {
+            bail!("compact-stream preface metadata exceeds limit");
+        }
+        let metadata = self
+            .read_exact_bytes(metadata_len)
+            .await?
+            .context("EOF in compact-stream preface metadata")?;
+        let mut encoded = header;
+        encoded.extend_from_slice(&metadata);
+        Ok(decode_preface(&encoded)?.0)
+    }
+
+    async fn write_message<T: serde::Serialize>(
+        &mut self,
+        message: &T,
+        limit: usize,
+    ) -> Result<()> {
+        self.stream
+            .write_all(&encode_message(message, limit)?)
+            .await?;
+        Ok(())
+    }
+
+    async fn read_message<T: serde::de::DeserializeOwned>(
+        &mut self,
+        limit: usize,
+    ) -> Result<Option<T>> {
+        let Some(header) = self.read_exact_bytes(4).await? else {
+            return Ok(None);
+        };
+        let payload_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        if payload_len > limit {
+            bail!("compact-stream terminal protocol message exceeds limit");
+        }
+        let payload = self
+            .read_exact_bytes(payload_len)
+            .await?
+            .context("EOF in compact-stream terminal protocol message")?;
+        let mut encoded = header;
+        encoded.extend_from_slice(&payload);
+        Ok(Some(decode_message(&encoded, limit)?.0))
+    }
+
+    async fn read_exact_bytes(&mut self, length: usize) -> Result<Option<Vec<u8>>> {
+        while self.buffered.len() < length {
+            let mut chunk = vec![0; 64 * 1024];
+            let read = self.stream.read(&mut chunk).await?;
+            if read == 0 {
+                if self.buffered.is_empty() {
+                    return Ok(None);
+                }
+                bail!("truncated compact terminal stream");
+            }
+            self.buffered.extend(&chunk[..read]);
+        }
+        Ok(Some(self.buffered.drain(..length).collect()))
+    }
+}
+
 struct ProtocolStream {
     stream: QuicStream,
     buffered: VecDeque<u8>,
@@ -1768,6 +2025,7 @@ mod tests {
         let config = TruffleTerminalConfig {
             service_name: "terminal.test".into(),
             quic_port: DEFAULT_QUIC_PORT,
+            compact_port: DEFAULT_COMPACT_PORT,
             capability: Some("secret".into()),
             allow_tailnet_write: false,
         };
@@ -1788,6 +2046,122 @@ mod tests {
             ..TruffleTerminalConfig::default()
         };
         assert!(zero_port.validate().is_err());
+        let same_ports = TruffleTerminalConfig {
+            compact_port: DEFAULT_QUIC_PORT,
+            ..TruffleTerminalConfig::default()
+        };
+        assert!(same_ports.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn compact_stream_handshake_and_session_listing_match_apple_client() {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let registry = Registry::default();
+        let server = tokio::spawn(handle_compact_control_protocol(
+            server_io,
+            registry,
+            TruffleTerminalConfig::default(),
+            "desktop-instance".into(),
+            Some("ios-device".into()),
+            "truffle:peer:1".into(),
+        ));
+        let mut client = CompactProtocolStream::new(client_io);
+        client
+            .write_preface(&StreamPreface {
+                stream_kind: StreamKind::ConnectionControl,
+                session_id: None,
+                view_id: None,
+            })
+            .await
+            .unwrap();
+        client
+            .write_message(
+                &ConnectionMessage::ClientHello {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: PROTOCOL_MINOR,
+                    host_instance_id: String::new(),
+                    local_device_id: "ios-device".into(),
+                    nonce: "fixed-nonce".into(),
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await
+            .unwrap();
+        let hello = client
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            hello,
+            ConnectionMessage::ServerHello {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: PROTOCOL_MINOR,
+                ref host_instance_id,
+                ref nonce,
+            } if host_instance_id == "desktop-instance" && nonce == "fixed-nonce"
+        ));
+
+        client
+            .write_message(
+                &ConnectionMessage::ListSessions {
+                    request_id: "request-1".into(),
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await
+            .unwrap();
+        let sessions = client
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            sessions,
+            ConnectionMessage::Sessions {
+                ref request_id,
+                ref sessions,
+            } if request_id == "request-1" && sessions.is_empty()
+        ));
+        drop(client);
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_stream_rejects_a_claim_that_conflicts_with_confirmed_peer_identity() {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(handle_compact_control_protocol(
+            server_io,
+            Registry::default(),
+            TruffleTerminalConfig::default(),
+            "desktop-instance".into(),
+            Some("expected-device".into()),
+            "truffle:peer:1".into(),
+        ));
+        let mut client = CompactProtocolStream::new(client_io);
+        client
+            .write_preface(&StreamPreface {
+                stream_kind: StreamKind::ConnectionControl,
+                session_id: None,
+                view_id: None,
+            })
+            .await
+            .unwrap();
+        client
+            .write_message(
+                &ConnectionMessage::ClientHello {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: PROTOCOL_MINOR,
+                    host_instance_id: String::new(),
+                    local_device_id: "claimed-device".into(),
+                    nonce: "fixed-nonce".into(),
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await
+            .unwrap();
+        drop(client);
+        assert!(server.await.unwrap().is_err());
     }
 
     #[test]

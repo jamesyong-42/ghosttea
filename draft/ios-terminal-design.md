@@ -2729,9 +2729,15 @@ and byte-compatible `TSP1` connection-control framing. A typed client completes
 the nonce handshake and lists desktop sessions over Truffle's
 `MeshConnection`. Six new tests include an end-to-end loopback connection and
 a connection-control fixture consumed by both Swift and Rust; all 116 package
-tests, the Rust fixture test, and generic simulator/device builds pass. The desktop
-compact-stream listener, live attachment/replica, production Truffle backend,
-and real app target remain open.
+tests, the Rust fixture test, and generic simulator/device builds pass. The
+desktop compact-stream listener is now also implemented on port 9421 beside
+the existing QUIC listener. It fails closed without a Tailscale WhoIs stable
+node ID, matches that ID to the current Truffle peer generation, validates the
+claimed durable device ID when Truffle has learned it, and serves the same
+nonce/session-list contract. Its in-memory success and identity-conflict tests,
+the complete crate tests, workspace check, and strict Clippy pass. Live
+attachment/replica, the production Truffle backend, and real app target remain
+open.
 
 Deliverables:
 

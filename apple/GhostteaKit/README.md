@@ -36,8 +36,12 @@ before every connection. Its initial typed client implements the desktop
 over Truffle's full-duplex `MeshConnection`. The exact sibling revision and
 Ghosttea ports/protocol version are recorded in
 [`Compatibility/truffle-swift.lock.json`](Compatibility/truffle-swift.lock.json)
-and included in the deterministic iOS BOM. Live attachment, logical replica,
-and production TailscaleKit composition remain the next Phase 8 slices.
+and included in the deterministic iOS BOM. The desktop daemon now binds the
+matching compact-stream listener on port 9421, requires Tailscale WhoIs
+identity, reconciles it with the current Truffle peer, and serves the shared
+handshake/session-list contract without changing its existing
+desktop-to-desktop QUIC path. Live attachment, logical replica, and production
+TailscaleKit composition remain the next Phase 8 slices.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to
 recreate an SSH connection. A profile may persist ordinary connection metadata,

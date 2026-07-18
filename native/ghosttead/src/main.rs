@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
         TruffleTerminalConfig {
             service_name: config.service_name,
             quic_port: config.quic_port,
+            compact_port: config.compact_port,
             capability: config.capability,
             allow_tailnet_write: config.allow_tailnet_write,
         },
@@ -88,6 +89,7 @@ struct TruffleHostConfig {
     state_dir: Option<String>,
     service_name: String,
     quic_port: u16,
+    compact_port: u16,
     capability: Option<String>,
     allow_tailnet_write: bool,
 }
@@ -111,6 +113,18 @@ impl TruffleHostConfig {
         if quic_port == 0 {
             bail!("GHOSTTEA_TRUFFLE_PORT must be nonzero");
         }
+        let compact_port = match aliased_env(
+            "GHOSTTEA_TRUFFLE_COMPACT_PORT",
+            "TERMINALD_TRUFFLE_COMPACT_PORT",
+        ) {
+            Some(value) => value
+                .parse::<u16>()
+                .context("GHOSTTEA_TRUFFLE_COMPACT_PORT must be a valid nonzero port")?,
+            None => ghosttea_truffle::DEFAULT_COMPACT_PORT,
+        };
+        if compact_port == 0 {
+            bail!("GHOSTTEA_TRUFFLE_COMPACT_PORT must be nonzero");
+        }
         Ok(Some(Self {
             app_id: nonempty_aliased_env("GHOSTTEA_TRUFFLE_APP_ID", "TERMINALD_TRUFFLE_APP_ID")
                 .unwrap_or_else(|| DEFAULT_APP_ID.to_owned()),
@@ -130,6 +144,7 @@ impl TruffleHostConfig {
             )
             .unwrap_or_else(|| "terminal.v1".to_owned()),
             quic_port,
+            compact_port,
             capability: nonempty_aliased_env(
                 "GHOSTTEA_TRUFFLE_CAPABILITY",
                 "TERMINALD_TRUFFLE_CAPABILITY",
