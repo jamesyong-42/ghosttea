@@ -2761,8 +2761,14 @@ The pinned TailscaleKit revision is
 `5e89501def80a6579ca5d0f9a02f336be62b8f2e`; its binary and license hashes are
 recorded in the release lock and BOM. Generic device and arm64 simulator builds
 pass with the honest iOS 18.1 minimum, and the sibling Truffle suite passes all
-67 tests. Direct SSH/workspace composition, persisted app restoration, live
-desktop/iPhone/iPad interop evidence, signed device installation, and the
+67 tests. The next product checkpoint adds a separate SSH tab backed by the
+protected saved-profile repository and device-only Keychain credentials. It
+supports password, private-key, and keyboard-interactive authentication,
+explicit host-key trust, route/background lifecycle handling, reconnect, PTY
+resize, and the same Metal/input/selection surface used by shared sessions.
+Both generic device and arm64 simulator builds pass and the complete 118-test
+Swift package suite remains green. Durable multi-pane workspace composition,
+persisted app restoration, live desktop/iPhone/iPad interop evidence, and the
 TestFlight-shaped archive remain open.
 
 Deliverables:

@@ -48,7 +48,10 @@ handshake/session-list contract without changing its existing
 desktop-to-desktop QUIC path. Production TailscaleKit composition and the real
 application composition now live in the separate `apple/GhostteaApp` target.
 The pinned TailscaleKit binary sets the production package minimum to iOS 18.1.
-Direct SSH/workspace composition and live cross-device release evidence remain
+The app's SSH tab now composes the protected profile repository, device-only
+Keychain credentials, host-key and keyboard-interactive prompt boundaries,
+network-aware `GhostteaSession`, and the shared Metal terminal surface. Durable
+multi-pane workspace composition and live cross-device release evidence remain
 later Phase 8 slices.
 
 `GhostteaConnectionProfiles` defines the versioned, non-secret recipe used to

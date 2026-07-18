@@ -6,6 +6,15 @@ struct GhostteaContentView: View {
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
+    TabView {
+      sharedSessions
+        .tabItem { Label("Shared", systemImage: "rectangle.connected.to.line.below") }
+      GhostteaSSHView()
+        .tabItem { Label("SSH", systemImage: "terminal") }
+    }
+  }
+
+  private var sharedSessions: some View {
     NavigationStack {
       Group {
         if model.selectedSession != nil {
@@ -28,7 +37,9 @@ struct GhostteaContentView: View {
           }
         } else {
           ToolbarItem(placement: .topBarTrailing) {
-            Button { Task { await model.refreshHosts() } } label: {
+            Button {
+              Task { await model.refreshHosts() }
+            } label: {
               Image(systemName: "arrow.clockwise")
             }
             .disabled(model.phase != .running)
@@ -70,7 +81,9 @@ struct GhostteaContentView: View {
       if !model.hosts.isEmpty {
         Section("Desktops") {
           ForEach(model.hosts, id: \.peer.tailscaleId) { host in
-            Button { model.loadSessions(from: host) } label: {
+            Button {
+              model.loadSessions(from: host)
+            } label: {
               HStack {
                 VStack(alignment: .leading) {
                   Text(host.displayName)
@@ -96,7 +109,9 @@ struct GhostteaContentView: View {
               .foregroundStyle(.secondary)
           }
           ForEach(model.sessions, id: \.sessionID) { session in
-            Button { model.attach(to: session) } label: {
+            Button {
+              model.attach(to: session)
+            } label: {
               HStack {
                 VStack(alignment: .leading, spacing: 3) {
                   Text(session.title)
@@ -173,4 +188,3 @@ private struct GhostteaLoginView: UIViewControllerRepresentable {
     func safariViewControllerDidFinish(_: SFSafariViewController) { onDismiss() }
   }
 }
-

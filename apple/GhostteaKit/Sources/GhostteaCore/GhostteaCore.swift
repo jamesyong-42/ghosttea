@@ -446,14 +446,31 @@ public actor GhostteaTerminal {
     endRow: UInt32,
     selectAll: Bool = false
   ) throws -> String {
-    let data = try performBytes { output in
-      ghosttea_terminal_selection_text(
-        handle, startColumn, startRow, endColumn, endRow, selectAll, &output)
-    }
+    let data = try selectionTextBytes(
+      startColumn: startColumn,
+      startRow: startRow,
+      endColumn: endColumn,
+      endRow: endRow,
+      selectAll: selectAll)
     guard let text = String(data: data, encoding: .utf8) else {
       throw GhostteaCoreError.malformedUpdate("selection text is not UTF-8")
     }
     return text
+  }
+
+  /// UTF-8 selection bytes for strict-concurrency clients that decode the
+  /// value after it crosses the terminal actor boundary.
+  public func selectionTextBytes(
+    startColumn: UInt16,
+    startRow: UInt32,
+    endColumn: UInt16,
+    endRow: UInt32,
+    selectAll: Bool = false
+  ) throws -> Data {
+    try performBytes { output in
+      ghosttea_terminal_selection_text(
+        handle, startColumn, startRow, endColumn, endRow, selectAll, &output)
+    }
   }
 
   public func accessibilityRows(start: UInt16, count: UInt16) throws -> Data {

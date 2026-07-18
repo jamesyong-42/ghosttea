@@ -13,6 +13,14 @@
 		100000000000000000000005 /* GhostteaCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000001 /* GhostteaCore */; };
 		100000000000000000000006 /* GhostteaTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* GhostteaTerminal */; };
 		100000000000000000000007 /* GhostteaTruffle in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000003 /* GhostteaTruffle */; };
+		100000000000000000000008 /* GhostteaSSHAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* GhostteaSSHAppModel.swift */; };
+		100000000000000000000009 /* GhostteaSSHView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* GhostteaSSHView.swift */; };
+		10000000000000000000000A /* GhostteaConnectionProfiles in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000004 /* GhostteaConnectionProfiles */; };
+		10000000000000000000000B /* GhostteaConnectionProfilesUI in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000005 /* GhostteaConnectionProfilesUI */; };
+		10000000000000000000000C /* GhostteaCredentials in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000006 /* GhostteaCredentials */; };
+		10000000000000000000000D /* GhostteaSSH in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000007 /* GhostteaSSH */; };
+		10000000000000000000000E /* GhostteaSession in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000008 /* GhostteaSession */; };
+		10000000000000000000000F /* GhostteaTransport in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000009 /* GhostteaTransport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +29,8 @@
 		200000000000000000000003 /* GhostteaContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaContentView.swift; sourceTree = "<group>"; };
 		200000000000000000000004 /* GhostteaSharedTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSharedTerminalSurface.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Ghosttea.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ghosttea.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000006 /* GhostteaSSHAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSSHAppModel.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* GhostteaSSHView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSSHView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -31,6 +41,12 @@
 				100000000000000000000005 /* GhostteaCore in Frameworks */,
 				100000000000000000000006 /* GhostteaTerminal in Frameworks */,
 				100000000000000000000007 /* GhostteaTruffle in Frameworks */,
+				10000000000000000000000A /* GhostteaConnectionProfiles in Frameworks */,
+				10000000000000000000000B /* GhostteaConnectionProfilesUI in Frameworks */,
+				10000000000000000000000C /* GhostteaCredentials in Frameworks */,
+				10000000000000000000000D /* GhostteaSSH in Frameworks */,
+				10000000000000000000000E /* GhostteaSession in Frameworks */,
+				10000000000000000000000F /* GhostteaTransport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -52,6 +68,8 @@
 				200000000000000000000002 /* GhostteaAppModel.swift */,
 				200000000000000000000003 /* GhostteaContentView.swift */,
 				200000000000000000000004 /* GhostteaSharedTerminalSurface.swift */,
+				200000000000000000000006 /* GhostteaSSHAppModel.swift */,
+				200000000000000000000007 /* GhostteaSSHView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -82,6 +100,12 @@
 				A00000000000000000000001 /* GhostteaCore */,
 				A00000000000000000000002 /* GhostteaTerminal */,
 				A00000000000000000000003 /* GhostteaTruffle */,
+				A00000000000000000000004 /* GhostteaConnectionProfiles */,
+				A00000000000000000000005 /* GhostteaConnectionProfilesUI */,
+				A00000000000000000000006 /* GhostteaCredentials */,
+				A00000000000000000000007 /* GhostteaSSH */,
+				A00000000000000000000008 /* GhostteaSession */,
+				A00000000000000000000009 /* GhostteaTransport */,
 			);
 			productName = Ghosttea;
 			productReference = 200000000000000000000005 /* Ghosttea.app */;
@@ -134,6 +158,8 @@
 				100000000000000000000002 /* GhostteaAppModel.swift in Sources */,
 				100000000000000000000003 /* GhostteaContentView.swift in Sources */,
 				100000000000000000000004 /* GhostteaSharedTerminalSurface.swift in Sources */,
+				100000000000000000000008 /* GhostteaSSHAppModel.swift in Sources */,
+				100000000000000000000009 /* GhostteaSSHView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -268,6 +294,36 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaTruffle;
+		};
+		A00000000000000000000004 /* GhostteaConnectionProfiles */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaConnectionProfiles;
+		};
+		A00000000000000000000005 /* GhostteaConnectionProfilesUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaConnectionProfilesUI;
+		};
+		A00000000000000000000006 /* GhostteaCredentials */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaCredentials;
+		};
+		A00000000000000000000007 /* GhostteaSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaSSH;
+		};
+		A00000000000000000000008 /* GhostteaSession */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaSession;
+		};
+		A00000000000000000000009 /* GhostteaTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaTransport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

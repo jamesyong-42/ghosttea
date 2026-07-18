@@ -18,6 +18,13 @@ import Testing
   #expect(update.effects.contains { $0.kind == .logicalSnapshotJSON })
   let accessibility = try await terminal.accessibilityRows(start: 0, count: 2)
   #expect(String(decoding: accessibility, as: UTF8.self).contains("phase3"))
+  let selection = try await terminal.selectionTextBytes(
+    startColumn: 0,
+    startRow: 0,
+    endColumn: 0,
+    endRow: 0,
+    selectAll: true)
+  #expect(String(decoding: selection, as: UTF8.self).contains("phase3"))
   #expect(!(await terminal.isPoisoned))
   #expect(!runtime.isPoisoned)
 }
