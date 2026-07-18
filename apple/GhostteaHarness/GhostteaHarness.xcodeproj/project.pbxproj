@@ -18,6 +18,8 @@
 		100000000000000000000009 /* GhostteaCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000005 /* GhostteaCore */; };
 		100000000000000000000010 /* GhostteaTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000006 /* GhostteaTerminal */; };
 		100000000000000000000011 /* GhostteaSession in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000007 /* GhostteaSession */; };
+		100000000000000000000012 /* GhostteaWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000008 /* GhostteaWorkspace */; };
+		100000000000000000000013 /* GhostteaWorkspaceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000009 /* GhostteaWorkspaceUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +40,8 @@
 				100000000000000000000009 /* GhostteaCore in Frameworks */,
 				100000000000000000000010 /* GhostteaTerminal in Frameworks */,
 				100000000000000000000011 /* GhostteaSession in Frameworks */,
+				100000000000000000000012 /* GhostteaWorkspace in Frameworks */,
+				100000000000000000000013 /* GhostteaWorkspaceUI in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -97,6 +101,8 @@
 				A00000000000000000000005 /* GhostteaCore */,
 				A00000000000000000000006 /* GhostteaTerminal */,
 				A00000000000000000000007 /* GhostteaSession */,
+				A00000000000000000000008 /* GhostteaWorkspace */,
+				A00000000000000000000009 /* GhostteaWorkspaceUI */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -317,6 +323,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaSession;
+		};
+		A00000000000000000000008 /* GhostteaWorkspace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaWorkspace;
+		};
+		A00000000000000000000009 /* GhostteaWorkspaceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaWorkspaceUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

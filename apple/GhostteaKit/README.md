@@ -56,6 +56,9 @@ command IDs. `GhostteaWorkspaceCommand.route(in:)` turns mutations into outer
 reducer actions while leaving new-tab, split-session, and remote-picker work as
 explicit host requests. Product input code should try this resolver before
 terminal key encoding and forward only unmatched chords to the terminal core.
+`GhostteaWorkspaceShortcutState` additionally preserves press ownership across
+down, repeat, and up events so a claimed application shortcut dispatches once
+and cannot leak its release into the terminal.
 
 `GhostteaSSHConfiguration` and `GhostteaSSHTransport` are the production SSH
 entry points; the older candidate names remain for compatibility fixtures and

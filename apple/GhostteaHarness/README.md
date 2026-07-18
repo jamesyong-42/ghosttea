@@ -2,6 +2,13 @@
 
 This is a deliberately small SwiftUI application for completing the physical-device Phase 0 gates. It references `../GhostteaKit` as a local Swift package and exercises the pinned native artifacts through their current proof boundaries.
 
+The production-session surface also hosts the Phase 7 workspace integration.
+Its live SSH terminal is represented as an identity-only one-tab/one-pane
+workspace and rendered through `GhostteaWorkspaceUI`. Hardware shortcuts are
+resolved by `GhostteaWorkspace` before unmatched keys reach terminal encoding;
+new-tab and split commands remain explicit host requests until the harness has
+a multi-session factory.
+
 The harness provides:
 
 - an on-device Ghostty VT create/feed/resize/key-encoding smoke test;

@@ -1207,3 +1207,28 @@ shell, tmux, Vim, Zellij, htop, btop, and an agent TUI. It is compatibility
 evidence, not release certification; Phase 8 still requires a broader beta
 matrix across device classes, iOS versions, production SSH servers, and updated
 application versions.
+
+## 2026-07-18: production workspace-host integration gate
+
+The first signed Phase 7 host integration wraps the live production SSH Metal
+surface in `GhostteaWorkspaceView` using an identity-only one-tab/one-pane
+document. The UIKit hardware-input callback now resolves shared workspace
+commands before terminal key encoding. Recognized HID usages remain owned from
+key-down through key-up, dispatch exactly once, and suppress repeats; unmatched
+chords retain the preexisting responder and terminal behavior.
+
+The package adds a deterministic press-state test and the full Swift suite now
+passes all 86 tests. The complete harness also builds for generic physical iOS
+and iOS Simulator destinations. The signed iPhone 14 Pro automatic shell gate
+then passed the existing SSH, shared-core, TRF1, native-accessibility, Metal,
+and typed-exit assertions while the real terminal surface was mounted through
+the workspace host, emitting:
+
+```text
+GHOSTTEA_PRODUCTION_SESSION_PASS
+```
+
+The process exited zero and the runner removed its disposable SSH container and
+network. This proves the host boundary without pretending the single-session
+harness can create additional tabs or splits; those commands remain explicit
+session-factory requests for the next Phase 7 slice.

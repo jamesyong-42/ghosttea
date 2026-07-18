@@ -71,6 +71,23 @@ public struct GhostteaWorkspaceKeyChord: Equatable, Sendable {
     self.control = control
   }
 
+  public init?(
+    domCode: String,
+    command: Bool = false,
+    shift: Bool = false,
+    option: Bool = false,
+    control: Bool = false
+  ) {
+    guard let key = Self.key(forDOMCode: domCode) else { return nil }
+    self.init(
+      key: key,
+      command: command,
+      shift: shift,
+      option: option,
+      control: control
+    )
+  }
+
   public var workspaceCommand: GhostteaWorkspaceCommand? {
     let key = key.lowercased()
     if !command, control, !option, key == "tab" {
@@ -114,6 +131,64 @@ public struct GhostteaWorkspaceKeyChord: Equatable, Sendable {
     case "arrowup": .up
     case "arrowdown": .down
     default: nil
+    }
+  }
+
+  private static func key(forDOMCode code: String) -> String? {
+    if code.hasPrefix("Key"), code.count == 4 { return String(code.suffix(1)).lowercased() }
+    if code.hasPrefix("Digit"), code.count == 6 { return String(code.suffix(1)) }
+    switch code {
+    case "Tab": return "tab"
+    case "Enter": return "enter"
+    case "BracketLeft": return "["
+    case "BracketRight": return "]"
+    case "Equal": return "="
+    case "ArrowLeft": return "arrowleft"
+    case "ArrowRight": return "arrowright"
+    case "ArrowUp": return "arrowup"
+    case "ArrowDown": return "arrowdown"
+    default: return nil
+    }
+  }
+}
+
+public enum GhostteaWorkspaceKeyPhase: Equatable, Sendable {
+  case down
+  case repeated
+  case up
+}
+
+public struct GhostteaWorkspaceShortcutResult: Equatable, Sendable {
+  public let handled: Bool
+  public let command: GhostteaWorkspaceCommand?
+
+  public init(handled: Bool, command: GhostteaWorkspaceCommand? = nil) {
+    self.handled = handled
+    self.command = command
+  }
+}
+
+public struct GhostteaWorkspaceShortcutState: Equatable, Sendable {
+  private var boundUsages: Set<UInt16> = []
+
+  public init() {}
+
+  public mutating func handle(
+    usage: UInt16,
+    phase: GhostteaWorkspaceKeyPhase,
+    chord: GhostteaWorkspaceKeyChord?
+  ) -> GhostteaWorkspaceShortcutResult {
+    switch phase {
+    case .up:
+      return GhostteaWorkspaceShortcutResult(handled: boundUsages.remove(usage) != nil)
+    case .repeated:
+      return GhostteaWorkspaceShortcutResult(handled: boundUsages.contains(usage))
+    case .down:
+      guard let command = chord?.workspaceCommand else {
+        return GhostteaWorkspaceShortcutResult(handled: false)
+      }
+      boundUsages.insert(usage)
+      return GhostteaWorkspaceShortcutResult(handled: true, command: command)
     }
   }
 }

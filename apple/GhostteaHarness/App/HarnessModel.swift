@@ -7,6 +7,7 @@ import GhostteaSSH
 import GhostteaSession
 import GhostteaTerminal
 import GhostteaTransport
+import GhostteaWorkspace
 import UIKit
 
 @MainActor
@@ -84,6 +85,7 @@ final class HarnessModel: ObservableObject {
   @Published var frameDecoderResult = "Not run"
   @Published var framePreview: Data?
   @Published var productionSessionFrame: Data?
+  @Published var productionWorkspace: GhostteaWorkspaceTabsDocument?
   @Published var productionSessionStatus = "Not run"
   @Published var productionSessionInputStatus = "Connect to enable input"
   @Published var productionSSHProfile = ProductionSSHProfile.shell
@@ -131,6 +133,7 @@ final class HarnessModel: ObservableObject {
   private var productionTerminal: GhostteaTerminal?
   private var productionCredentialStore: KeychainSSHCredentialStore?
   private var productionCredential: SSHCredentialID?
+  private var productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
   private var productionShellCommandSent = false
   private var productionTmuxResizeSent = false
   private var productionTmuxInitialSizeObserved = false
@@ -901,6 +904,8 @@ final class HarnessModel: ObservableObject {
         productionCredentialStore = store
         productionCredential = credential
         productionSession = session
+        productionWorkspace = try makeProductionWorkspace()
+        productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
         productionSessionStatus = "Connecting through production session…"
         await session.requestConnect()
       } catch {
@@ -925,6 +930,21 @@ final class HarnessModel: ObservableObject {
 
   func handleProductionHardwareInput(_ event: GhostteaHardwareKeyEvent) -> Bool {
     guard let productionSession, isRunningProductionSession else { return false }
+    let shortcut = productionWorkspaceShortcutState.handle(
+      usage: event.hidUsage,
+      phase: event.action.workspacePhase,
+      chord: GhostteaWorkspaceKeyChord(
+        domCode: event.code,
+        command: event.modifiers.contains(.command),
+        shift: event.modifiers.contains(.shift),
+        option: event.modifiers.contains(.option),
+        control: event.modifiers.contains(.control)
+      )
+    )
+    if shortcut.handled {
+      if let command = shortcut.command { handleProductionWorkspaceCommand(command) }
+      return true
+    }
     guard !event.modifiers.contains(.command) else { return false }
     Task {
       do {
@@ -935,6 +955,62 @@ final class HarnessModel: ObservableObject {
       }
     }
     return true
+  }
+
+  func handleProductionWorkspaceAction(_ action: GhostteaWorkspaceTabsAction) {
+    applyProductionWorkspaceRoute(.reducer(action))
+  }
+
+  private func handleProductionWorkspaceCommand(_ command: GhostteaWorkspaceCommand) {
+    guard let productionWorkspace, let route = command.route(in: productionWorkspace) else {
+      return
+    }
+    applyProductionWorkspaceRoute(route)
+  }
+
+  private func applyProductionWorkspaceRoute(_ route: GhostteaWorkspaceCommandRoute) {
+    switch route {
+    case .reducer(let action):
+      guard let productionWorkspace else { return }
+      do {
+        let transition = try productionWorkspace.applying(action)
+        self.productionWorkspace = transition.document
+        productionSessionInputStatus = "Workspace command applied"
+        if transition.shouldCloseWindow { cancelProductionSession() }
+      } catch {
+        productionSessionInputStatus = "Workspace command failed: \(error)"
+      }
+    case .requestNewTab:
+      productionSessionInputStatus = "New tab requires the Phase 7 session factory"
+    case .requestSplit(let axis):
+      productionSessionInputStatus =
+        "\(axis == .horizontal ? "Horizontal" : "Vertical") split requires the Phase 7 session factory"
+    case .openRemoteSessions:
+      productionSessionInputStatus = "Remote-session picker is not installed in the harness"
+    }
+  }
+
+  private func makeProductionWorkspace() throws -> GhostteaWorkspaceTabsDocument {
+    let paneID = "pane-\(UUID().uuidString.lowercased())"
+    let tabID = "tab-\(UUID().uuidString.lowercased())"
+    let workspace = try GhostteaWorkspaceDocument(
+      root: .pane(
+        GhostteaWorkspacePane(
+          id: paneID,
+          sessionID: "session-\(UUID().uuidString.lowercased())"
+        )
+      ),
+      activePaneID: paneID
+    )
+    return try GhostteaWorkspaceTabsDocument(
+      selectedTabID: tabID,
+      tabs: [
+        GhostteaWorkspaceTab(
+          id: tabID,
+          workspace: workspace
+        )
+      ]
+    )
   }
 
   func handleProductionSoftwareInput(_ event: GhostteaSoftwareInputEvent) {
@@ -1793,6 +1869,10 @@ final class HarnessModel: ObservableObject {
   }
 
   private func cleanupProductionCredential() {
+    productionWorkspace = nil
+    productionWorkspaceShortcutState = GhostteaWorkspaceShortcutState()
+    productionSession = nil
+    productionTerminal = nil
     guard let store = productionCredentialStore, let credential = productionCredential else {
       return
     }
@@ -2521,6 +2601,16 @@ final class HarnessModel: ObservableObject {
   private func durationMilliseconds(_ duration: Duration) -> Int64 {
     let components = duration.components
     return components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
+  }
+}
+
+extension GhostteaHardwareKeyAction {
+  fileprivate var workspacePhase: GhostteaWorkspaceKeyPhase {
+    switch self {
+    case .up: .up
+    case .down: .down
+    case .repeated: .repeated
+    }
   }
 }
 

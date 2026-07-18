@@ -42,7 +42,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
   private let tabTitle: (GhostteaWorkspaceTab) -> String
   private let paneTitle: (GhostteaWorkspacePane) -> String
   private let onAction: (GhostteaWorkspaceTabsAction) -> Void
-  private let onNewTab: () -> Void
+  private let onNewTab: (() -> Void)?
   private let paneContent: (String, GhostteaWorkspacePane, Bool) -> PaneContent
 
   public init(
@@ -50,7 +50,7 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
     tabTitle: @escaping (GhostteaWorkspaceTab) -> String = { $0.id },
     paneTitle: @escaping (GhostteaWorkspacePane) -> String = { $0.id },
     onAction: @escaping (GhostteaWorkspaceTabsAction) -> Void,
-    onNewTab: @escaping () -> Void = {},
+    onNewTab: (() -> Void)? = nil,
     @ViewBuilder paneContent: @escaping (String, GhostteaWorkspacePane, Bool) -> PaneContent
   ) {
     self.document = document
@@ -117,13 +117,15 @@ public struct GhostteaWorkspaceView<PaneContent: View>: View {
           .accessibilityIdentifier("ghosttea.tab.\(tab.id)")
         }
 
-        Button(action: onNewTab) {
-          Image(systemName: "plus")
-            .padding(8)
+        if let onNewTab {
+          Button(action: onNewTab) {
+            Image(systemName: "plus")
+              .padding(8)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("New tab")
+          .accessibilityIdentifier("ghosttea.tab.new")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("New tab")
-        .accessibilityIdentifier("ghosttea.tab.new")
       }
       .padding(.horizontal, 6)
       .padding(.vertical, 4)

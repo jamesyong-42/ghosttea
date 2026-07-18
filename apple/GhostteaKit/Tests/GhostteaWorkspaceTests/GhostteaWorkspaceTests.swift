@@ -466,3 +466,21 @@ func workspaceCommandsRouteToReducerOrHost() throws {
   )
   #expect(GhostteaWorkspaceCommand.selectTab(.index(2)).route(in: document) == nil)
 }
+
+@Test("Workspace shortcut presses dispatch once and consume their matching release")
+func workspaceShortcutPressState() {
+  var state = GhostteaWorkspaceShortcutState()
+  let chord = GhostteaWorkspaceKeyChord(domCode: "KeyT", command: true)
+  let down = state.handle(usage: 0x17, phase: .down, chord: chord)
+  let repeated = state.handle(usage: 0x17, phase: .repeated, chord: chord)
+  let up = state.handle(usage: 0x17, phase: .up, chord: chord)
+  let unmatched = state.handle(
+    usage: 0x1b,
+    phase: .down,
+    chord: GhostteaWorkspaceKeyChord(domCode: "KeyX", command: true)
+  )
+  #expect(down == GhostteaWorkspaceShortcutResult(handled: true, command: .newTab))
+  #expect(repeated == GhostteaWorkspaceShortcutResult(handled: true))
+  #expect(up == GhostteaWorkspaceShortcutResult(handled: true))
+  #expect(unmatched == GhostteaWorkspaceShortcutResult(handled: false))
+}

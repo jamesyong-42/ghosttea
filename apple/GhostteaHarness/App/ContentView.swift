@@ -1,6 +1,8 @@
 import Foundation
 import GhostteaSSH
 import GhostteaTerminal
+import GhostteaWorkspace
+import GhostteaWorkspaceUI
 import SwiftUI
 
 struct ContentView: View {
@@ -103,18 +105,27 @@ struct ContentView: View {
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
           }
-          if let frame = model.productionSessionFrame {
-            GhostteaTerminalPreview(
-              frame: frame,
-              visible: scenePhase == .active,
-              onHardwareInput: model.handleProductionHardwareInput,
-              onSoftwareInput: model.handleProductionSoftwareInput,
-              onMouseInput: model.handleProductionMouseInput,
-              onScrollRows: model.handleProductionScrollRows,
-              onSelectionCommit: model.handleProductionSelectionCommit,
-              onSelectAll: model.handleProductionSelectAll
-            )
-            .frame(height: 220)
+          if let frame = model.productionSessionFrame,
+            let workspace = model.productionWorkspace
+          {
+            GhostteaWorkspaceView(
+              document: workspace,
+              tabTitle: { _ in model.productionSSHProfile.rawValue },
+              paneTitle: { _ in "Terminal" },
+              onAction: model.handleProductionWorkspaceAction
+            ) { _, _, isActive in
+              GhostteaTerminalPreview(
+                frame: frame,
+                visible: scenePhase == .active && isActive,
+                onHardwareInput: model.handleProductionHardwareInput,
+                onSoftwareInput: model.handleProductionSoftwareInput,
+                onMouseInput: model.handleProductionMouseInput,
+                onScrollRows: model.handleProductionScrollRows,
+                onSelectionCommit: model.handleProductionSelectionCommit,
+                onSelectAll: model.handleProductionSelectAll
+              )
+            }
+            .frame(height: 260)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             Text(model.productionSessionInputStatus)
               .font(.caption)

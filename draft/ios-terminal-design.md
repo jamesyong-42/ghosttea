@@ -2516,6 +2516,21 @@ passing. Wiring this resolver to the production iOS input host,
 connection-profile integration, and the command palette remain later Phase 7
 slices.
 
+The fifth slice installs that contract in the production iOS harness input
+host. A reusable press-state component binds a recognized HID usage from
+key-down through key-up, dispatches its workspace command exactly once, and
+suppresses repeats; unmatched chords retain the existing UIKit/terminal path.
+The live SSH session now creates an identity-only one-tab/one-pane workspace
+and mounts its real Metal terminal surface through `GhostteaWorkspaceView`.
+Closing the sole pane or tab follows the model's close-window result and
+disconnects the session. Session-producing new-tab and split routes remain
+explicitly unavailable until the multi-session factory lands rather than
+duplicating a live session handle or inventing transport ownership in the UI.
+The complete harness builds for generic device and simulator targets.
+The full Swift package passes 86 tests, and the signed iPhone 14 Pro production
+gate passes its SSH, shared-core, TRF1, native-accessibility, Metal, and typed
+exit checks with the live surface mounted through the workspace view.
+
 Deliverables:
 
 - versioned workspace model;
