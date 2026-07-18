@@ -283,6 +283,53 @@ private let blinkingCursor = TRF1CursorState(
   #expect(try await encoder.encode(.key(optionLeft)) == .bytes(Data([0x1b, 0x62])))
 }
 
+@Test func pointerRoutingAndMouseEncodingMatchTheDesktopBoundary() async throws {
+  #expect(
+    GhostteaPointerOwner.resolve(mouseTracking: false, forceLocalSelection: false)
+      == .localSelection
+  )
+  #expect(
+    GhostteaPointerOwner.resolve(mouseTracking: true, forceLocalSelection: false)
+      == .remoteApplication
+  )
+  #expect(
+    GhostteaPointerOwner.resolve(mouseTracking: true, forceLocalSelection: true)
+      == .localSelection
+  )
+
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 115, columns: 80, rows: 24)
+  )
+  let encoder = GhostteaTerminalInputEncoder(terminal: terminal)
+  let press = GhostteaTerminalMouseEvent(
+    action: .press,
+    button: .left,
+    x: 16,
+    y: 22,
+    screenWidth: 668,
+    screenHeight: 404,
+    cellWidth: 8,
+    cellHeight: 19,
+    paddingLeft: 14,
+    paddingTop: 12
+  )
+  #expect(try await encoder.encode(press) == .bytes(Data()))
+
+  let update = try await terminal.feed(Data("\u{1b}[?1000h\u{1b}[?1006h".utf8), render: .full)
+  let frame = try #require(update.effects.first { $0.kind == .frameReady }?.payload)
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  #expect(state.mouseTracking)
+  #expect(try await encoder.encode(press) == .bytes(Data("\u{1b}[<0;1;1M".utf8)))
+
+  let disabled = try await terminal.feed(Data("\u{1b}[?1000l".utf8), render: .full)
+  let disabledFrame = try #require(disabled.effects.first { $0.kind == .frameReady }?.payload)
+  _ = try state.apply(disabledFrame)
+  #expect(!state.mouseTracking)
+}
+
 @Test func sceneAttachmentTransfersAuthorityAndRejectsStaleDetach() async {
   let registry = GhostteaSceneAttachmentRegistry()
   let sessionID = UUID()

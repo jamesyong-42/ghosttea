@@ -9,7 +9,8 @@ struct RetainedTRF1Row: Equatable, Sendable {
 }
 
 enum RetainedTRF1ApplyResult: Equatable, Sendable {
-  case applied(fullSnapshot: Bool, changedRows: [UInt16], completedResync: Bool, clipboardWrites: [String])
+  case applied(
+    fullSnapshot: Bool, changedRows: [UInt16], completedResync: Bool, clipboardWrites: [String])
   case stale
   case needsFullRefresh
 }
@@ -32,6 +33,7 @@ struct RetainedTRF1State: Sendable {
   private(set) var styleDefinitions: [UInt32: TRF1StyleDefinition] = [:]
   private(set) var cursor: TRF1CursorState?
   private(set) var scrollbar: TRF1ScrollbarState?
+  private(set) var mouseTracking = false
   private(set) var awaitingResync = false
 
   mutating func apply(_ data: Data) throws -> RetainedTRF1ApplyResult {
@@ -71,10 +73,16 @@ struct RetainedTRF1State: Sendable {
 
     let replacements = try decodeTRF1RowReplacements(rowSection)
     let nextCursor = try decodeTRF1CursorState(cursorSection)
-    let glyphs = try frame.sections.first(where: { $0.kind == .glyphDefinitions }).map(decodeTRF1GlyphDefinitions) ?? []
-    let styles = try frame.sections.first(where: { $0.kind == .styleDefinitions }).map(decodeTRF1StyleDefinitions) ?? []
-    let nextScrollbar = try frame.sections.first(where: { $0.kind == .scrollbarState }).map(decodeTRF1ScrollbarState)
-    let clipboardWrites = try frame.sections.filter { $0.kind == .clipboardWrite }.map(decodeTRF1ClipboardWrite)
+    let glyphs =
+      try frame.sections.first(where: { $0.kind == .glyphDefinitions }).map(
+        decodeTRF1GlyphDefinitions) ?? []
+    let styles =
+      try frame.sections.first(where: { $0.kind == .styleDefinitions }).map(
+        decodeTRF1StyleDefinitions) ?? []
+    let nextScrollbar = try frame.sections.first(where: { $0.kind == .scrollbarState }).map(
+      decodeTRF1ScrollbarState)
+    let clipboardWrites = try frame.sections.filter { $0.kind == .clipboardWrite }.map(
+      decodeTRF1ClipboardWrite)
 
     var next = self
     let changedSession = sessionEpoch != 0 && frame.sessionEpoch != sessionEpoch
@@ -122,6 +130,7 @@ struct RetainedTRF1State: Sendable {
     next.terminalRevision = frame.terminalRevision
     next.columns = frame.columns
     next.cursor = nextCursor
+    next.mouseTracking = frame.flags.contains(.mouseTracking)
     if let nextScrollbar {
       next.scrollbar = nextScrollbar
     }

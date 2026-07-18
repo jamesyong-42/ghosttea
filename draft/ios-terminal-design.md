@@ -2218,6 +2218,18 @@ intrinsic Shift state. The row contains no terminal bytes: every action still
 passes through `GhostteaTerminalInputEncoder`, including the configured
 Option-as-terminal versus natural word-motion policy.
 
+The fourth slice establishes the pointer boundary below UIKit gestures. The
+retained TRF1 state now preserves the application mouse-tracking flag, and a
+typed press/release/motion event converts to the existing
+`GhostteaCore.encodeMouse` API. The Metal view normalizes local points into
+clamped viewport cells and desktop-compatible screen, rounded cell, and
+safe-area/content-padding geometry. Routing matches desktop: an application
+with mouse tracking owns unmodified pointer input; otherwise selection stays
+local, and an explicit Shift/force-local override wins. An exact SGR packet test
+proves the shared Ghostty encoder remains the only source of mouse bytes.
+Gesture recognizers, momentum/wheel accumulation, absolute scrollback
+selection, and native selection-text extraction remain the next pointer slice.
+
 Deliverables:
 
 - `UITextInput` integration and marked-text overlay;

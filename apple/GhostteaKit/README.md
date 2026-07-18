@@ -192,6 +192,16 @@ symbols carry their physical HID identity and intrinsic Shift modifier. This
 keeps terminal modes and the Option-key policy in the shared input encoder;
 the accessory view never constructs an escape sequence.
 
+The pointer foundation retains TRF1's mouse-tracking flag and exposes a typed
+press/release/motion model above `GhostteaCore.encodeMouse`. View coordinates
+are normalized with the same screen, rounded cell, and content-padding geometry
+as desktop, including iOS safe-area/content insets. Routing is explicit:
+tracking applications own unmodified pointer input, while non-tracking sessions
+and the Shift/force-local override belong to view-owned selection. The shared
+Ghostty encoder remains the only component that emits mouse protocol bytes.
+Gesture recognizers, wheel accumulation, and selection extraction build on this
+boundary in the next slice.
+
 Renderer shaders live as Metal source in the package and are compiled ahead of
 time by the local `GhostteaMetalCompilerPlugin`. The plugin declares its AIR and
 target-specific `GhostteaTerminal.metallib` outputs as package resources; the

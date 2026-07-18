@@ -30,6 +30,8 @@ The harness provides:
 - a focusable TRF1 preview that exercises the production hardware-key and
   `UITextInput` software/IME paths, including the normalized terminal accessory
   row, and reports their exact encoded bytes or application action;
+- production pointer routing and safe-area-aware mouse/cell geometry assertions
+  in the automatic TRF1 simulator probe;
 - automatic Network.framework path monitoring and generation-checked lifecycle
   policy. A selected-route change or background transition tears down the live
   SSH attempt, while path restoration offers (but never silently starts) a

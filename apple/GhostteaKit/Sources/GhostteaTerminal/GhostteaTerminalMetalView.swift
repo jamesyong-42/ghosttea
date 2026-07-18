@@ -200,6 +200,56 @@
       accessoryInputState.modifiers
     }
 
+    public var terminalMouseTrackingEnabled: Bool { retainedState.mouseTracking }
+
+    public func pointerOwner(forceLocalSelection: Bool = false) -> GhostteaPointerOwner {
+      .resolve(
+        mouseTracking: terminalMouseTrackingEnabled,
+        forceLocalSelection: forceLocalSelection
+      )
+    }
+
+    public func viewportCell(at location: CGPoint) -> GhostteaViewportCellPoint {
+      let insets = effectiveContentInsets()
+      let x = location.x - CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding)
+      let y = location.y - CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding)
+      let maximumColumn = max(0, Int(currentGridSize?.columns ?? retainedState.columns) - 1)
+      let maximumRow = max(0, Int(currentGridSize?.rows ?? UInt16(retainedState.rows.count)) - 1)
+      let column = max(
+        0,
+        min(maximumColumn, Int(floor(x / CGFloat(GhostteaTerminalLayout.cellWidth))))
+      )
+      let row = max(
+        0,
+        min(maximumRow, Int(floor(y / CGFloat(GhostteaTerminalLayout.lineHeight))))
+      )
+      return GhostteaViewportCellPoint(column: UInt16(column), row: UInt16(row))
+    }
+
+    public func terminalMouseEvent(
+      action: GhostteaMouseAction,
+      button: GhostteaMouseButton,
+      at location: CGPoint,
+      modifiers: GhostteaInputModifiers = []
+    ) -> GhostteaTerminalMouseEvent {
+      let insets = effectiveContentInsets()
+      return GhostteaTerminalMouseEvent(
+        action: action,
+        button: button,
+        modifiers: modifiers,
+        x: Float(max(0, min(bounds.width, location.x))),
+        y: Float(max(0, min(bounds.height, location.y))),
+        screenWidth: Self.boundedGeometry(bounds.width),
+        screenHeight: Self.boundedGeometry(bounds.height),
+        cellWidth: Self.boundedGeometry(CGFloat(GhostteaTerminalLayout.cellWidth)),
+        cellHeight: Self.boundedGeometry(CGFloat(GhostteaTerminalLayout.lineHeight)),
+        paddingLeft: Self.boundedGeometry(
+          CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding)),
+        paddingTop: Self.boundedGeometry(
+          CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding))
+      )
+    }
+
     @discardableResult
     public func focusTerminalInput() -> Bool {
       let focused = becomeFirstResponder()
@@ -253,6 +303,10 @@
       let event = accessoryInputState.activate(key)
       updateAccessoryModifierPresentation()
       if let event { emitSoftwareInputEvents([event]) }
+    }
+
+    private static func boundedGeometry(_ value: CGFloat) -> UInt32 {
+      UInt32(max(0, min(CGFloat(UInt32.max), value.rounded())))
     }
 
     @discardableResult

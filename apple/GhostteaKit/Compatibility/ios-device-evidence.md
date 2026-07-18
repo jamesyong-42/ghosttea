@@ -846,3 +846,21 @@ ordered normalized events and latch clearing, and confirms the configurable
 accessory view is present. The package suite now contains 61 tests; both iOS
 SDK builds and the iPhone 17 Pro production TRF1/Metal marker pass. Physical
 touch ergonomics and the final device input matrix remain release evidence.
+
+## 2026-07-17: pointer routing and mouse-encoding foundation
+
+The fourth Phase 5 slice retains TRF1's application mouse-tracking flag and
+adds typed press, release, motion, button, modifier, and geometry values above
+the existing native mouse encoder. The Metal view converts safe-area-aware
+points to clamped viewport cells and emits the same rounded 8×19 cell geometry
+as desktop. Routing resolves to remote application input only when tracking is
+active and no force-local override is present.
+
+The new package test proves local/remote/force-local ownership, suppression
+while tracking is disabled, tracking transitions carried by full TRF1 frames,
+and the byte-exact SGR press packet from Ghostty. Simulator automation validates
+the production view's landscape screen dimensions, content padding, viewport
+cell mapping, and non-tracking local-selection decision. The package suite now
+contains 62 tests; both iOS SDK builds and the iPhone 17 Pro production
+TRF1/Metal marker pass. UIKit gestures, wheel momentum, scrollback selection,
+and device pointer ergonomics remain the next implementation and release gates.

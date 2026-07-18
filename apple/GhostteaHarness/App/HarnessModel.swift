@@ -289,6 +289,17 @@ final class HarnessModel: ObservableObject {
         let surfaceAcceptedFull = try surface.apply(frame: frame)
         let surfaceAcceptedIncremental = try surface.apply(frame: incremental)
         let surfaceAcceptedStale = try surface.apply(frame: incremental)
+        let pointerCell = surface.viewportCell(
+          at: CGPoint(
+            x: 61 + CGFloat(GhostteaTerminalLayout.cellWidth) * 2 + 1,
+            y: 2 + CGFloat(GhostteaTerminalLayout.lineHeight) * 3 + 1
+          )
+        )
+        let pointerEvent = surface.terminalMouseEvent(
+          action: .press,
+          button: .left,
+          at: CGPoint(x: 16, y: 22)
+        )
         var softwareInputEvents: [GhostteaSoftwareInputEvent] = []
         var markedTextStates: [GhostteaMarkedTextState?] = []
         surface.onSoftwareInputEvent = { softwareInputEvents.append($0) }
@@ -369,6 +380,15 @@ final class HarnessModel: ObservableObject {
           surface.latchedAccessoryModifiers.isEmpty,
           surface.inputAccessoryView != nil,
           surface.terminalAccessoryKeys == GhostteaAccessoryKey.terminalDefaults,
+          surface.pointerOwner() == .localSelection,
+          !surface.terminalMouseTrackingEnabled,
+          pointerCell == GhostteaViewportCellPoint(column: 2, row: 3),
+          pointerEvent.screenWidth == 844,
+          pointerEvent.screenHeight == 390,
+          pointerEvent.cellWidth == 8,
+          pointerEvent.cellHeight == 19,
+          pointerEvent.paddingLeft == 61,
+          pointerEvent.paddingTop == 2,
           compositionCaret.width > 0,
           compositionCaret.height == CGFloat(GhostteaTerminalLayout.lineHeight),
           compositionCaret.origin.x.isFinite,
