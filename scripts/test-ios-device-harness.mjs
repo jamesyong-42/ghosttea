@@ -76,8 +76,7 @@ function findDevice() {
       (device) =>
         device.hardwareProperties?.platform === "iOS" &&
         device.hardwareProperties?.reality === "physical" &&
-        device.connectionProperties?.pairingState === "paired" &&
-        device.connectionProperties?.tunnelState === "connected",
+        device.connectionProperties?.pairingState === "paired",
     );
     const requested = process.env.GHOSTTEA_IOS_DEVICE_ID;
     if (requested) {

@@ -2348,8 +2348,10 @@ tmux and Zellij profiles expose the same surface as long-lived interactive
 sessions. `npm run test:ios:production-session` builds and installs the signed
 app, starts the disposable fixture, performs fixture-scoped host-key trust, and
 uses the app process exit status as the physical-device result. Package tests
-and both iOS SDK builds pass; the new physical runner remains to be executed on
-a connected device before its live evidence is recorded.
+and both iOS SDK builds pass. The automatic runner also passes on the physical
+iPhone 14 Pro: the signed app reports the production-session marker after
+native accessibility validation and exits zero, after which the runner removes
+the fixture. Interactive tmux/Zellij and representative TUI gates remain.
 
 Deliverables:
 

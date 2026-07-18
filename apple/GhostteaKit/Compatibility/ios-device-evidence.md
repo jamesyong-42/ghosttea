@@ -1009,6 +1009,13 @@ runner. It builds and installs the signed app, starts the disposable fixture,
 limits automatic host-key acceptance to the injected fixture hostname, streams
 the app console until its pass/fail exit, removes the temporary device-only
 Keychain credential, and tears down the fixture. All 73 package tests and both
-iOS SDK builds pass. The phone was not connected when this slice landed, so the
-new runner itself remains pending physical execution and no live result is
-claimed here.
+iOS SDK builds pass.
+
+The automatic runner then passed on the physical iPhone 14 Pro running iOS
+26.5.2. CoreDevice established its tunnel on demand, installed the signed app,
+and streamed `GHOSTTEA_PRODUCTION_SESSION_PASS`; the app exited with status
+zero. The same process also reported the core, font, TRF1, and visual markers,
+with an exact visual hash and zero recorded edge, channel, or content delta.
+The runner removed the disposable SSH container and network after termination.
+This proves the automatic shell path on device; live tmux, Zellij, Vim, htop,
+and agent-TUI interaction remain separate Phase 6 evidence.
