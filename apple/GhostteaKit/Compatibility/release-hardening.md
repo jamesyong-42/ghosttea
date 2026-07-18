@@ -335,6 +335,10 @@ eviction. Layout identity and secret-free profile bindings survive while the
 terminal, transport, frame, and scrollback are released; selecting or
 reconnecting the cold pane recreates fresh native resources under the same
 session ID without silently starting a remote shell. Aggregate CPU/GPU byte
-enforcement, future decoded-image accounting, compact-tier physical-device
-evidence, and jetsam restoration remain open as the separate whole-application
-memory item.
+enforcement then uses Darwin's process-wide physical-footprint counter and the
+same Phase 0 96/160 MiB soft and 128/224 MiB hard bounds. While over soft, it
+evicts remaining hidden SSH resources one at a time and resamples; selected
+panes and active Truffle views remain protected, with typed diagnostics if they
+alone leave the bound unsatisfied. Compact-tier physical-device evidence, a
+deliberate over-soft recovery run, and jetsam restoration remain open release
+qualification.

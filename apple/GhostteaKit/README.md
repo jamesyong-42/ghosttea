@@ -59,7 +59,10 @@ it to hidden SSH tabs on a warning. Hidden terminals beyond the physical-device
 tier's four/eight-session cap are then evicted by deterministic LRU; selecting
 or reconnecting a cold pane recreates fresh native resources under its stable
 workspace identity without an automatic SSH connection. Aggregate byte-budget
-enforcement remains a separate release gate.
+enforcement samples whole-process Darwin physical footprint and continues LRU
+eviction while above the device tier's soft bound. The implementation is
+complete; compact-device, over-soft recovery, and jetsam evidence remain release
+gates.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

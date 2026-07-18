@@ -27,6 +27,9 @@ public enum GhostteaDiagnosticCode: String, CaseIterable, Codable, Sendable {
   case sshProfileDeleteFailed
   case sshSessionOperationFailed
   case terminalMemoryCompressionFailed
+  case terminalMemorySamplingFailed
+  case terminalMemorySoftBudgetUnsatisfied
+  case terminalMemoryHardBudgetUnsatisfied
   case terminalSessionEvicted
   case terminalSessionEvictionFailed
   case terminalSessionRehydrationFailed

@@ -142,7 +142,7 @@ let package = Package(
     ),
     .target(
       name: "GhosttyVtProof",
-      dependencies: ["GhostteaAppleNative"]
+      dependencies: ["GhostteaAppleNative", "GhostteaWorkspace"]
     ),
     .executableTarget(
       name: "GhostteaSSHLiveProbe",

@@ -111,6 +111,13 @@ disconnects and evicts the least-recently-used hidden terminals while retaining
 their secret-free pane and profile identities. Selecting or reconnecting a cold
 pane creates a fresh terminal and transport under the same workspace session ID
 but leaves SSH demand-paused until the user explicitly reconnects.
+The compact/standard policy is shared with the Phase 0 proof and also controls
+each terminal's initial 3/5 MB scrollback allocation. After count-based cleanup,
+the app samples whole-process Darwin physical footprint. While above the
+96/160 MiB soft bound it evicts additional hidden SSH sessions in LRU order and
+resamples after every teardown; it never sacrifices selected panes or active
+Truffle presentations. Unsatisfied soft/hard bounds and sampling failure produce
+only typed, redacted diagnostics.
 
 The deterministic iPad gate selects an available iPad Simulator, boots it when
 needed, builds and installs the production app target, opens a real second

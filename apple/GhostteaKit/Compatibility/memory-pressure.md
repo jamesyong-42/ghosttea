@@ -1,8 +1,8 @@
 # iOS terminal memory-pressure contract
 
-**Status:** renderer recovery, inactive scrollback compression, and bounded
-cold-session eviction/rehydration implemented; aggregate byte budgeting remains
-open
+**Status:** renderer recovery, scrollback compression, cold-session LRU, and
+aggregate physical-footprint enforcement implemented; device qualification
+remains open
 
 **Implemented:** 2026-07-18
 
@@ -107,6 +107,33 @@ across eviction and rehydration, selected panes to be excluded from LRU output,
 deterministic oldest-first candidates, and a rehydrated factory resource to use
 the original workspace identity with new terminal and session actors.
 
+## Aggregate physical-footprint enforcement
+
+`GhostteaWorkspaceMemoryBudget` is the production source of the Phase 0 compact
+and standard policies. The Phase 0 proof imports those values rather than
+maintaining a second copy. The app also applies the tier's 3/5 MB initial
+scrollback allocation to every newly created and rehydrated terminal.
+
+After renderer notification handlers release reconstructible caches, the
+application-owned warning task compresses scrollback and enforces the resident
+count target. It then samples Darwin `TASK_VM_INFO.phys_footprint`, which covers
+the entire process rather than a sum of guessed Swift, native, transport, and
+GPU allocations. If footprint still exceeds the tier's 96/160 MiB soft bound,
+the app evicts the remaining hidden SSH sessions one at a time in LRU order and
+resamples after each teardown. It stops immediately on reaching the soft bound.
+
+Selected-tab SSH panes and active shared-session presentations remain protected.
+If no reclaimable hidden session remains, an audited code distinguishes an
+unsatisfied soft bound from the 128/224 MiB hard bound. Sampling failure is also
+an audited code. Diagnostics contain no byte counts, session IDs, connection
+metadata, or terminal content.
+
+This is aggregate enforcement because its input is the whole process, including
+all scenes and future decoded-image or shared-cache allocations. Its current
+reclaim vocabulary is intentionally narrower: presentation caches release
+themselves and the application may cold-evict hidden direct-SSH resources, but
+it will not destroy a selected pane or active remote Truffle attachment.
+
 ## Diagnostics and invariants
 
 `GhostteaTerminalSurfaceDiagnostics` exposes presentation-only counters:
@@ -148,16 +175,14 @@ the pinned TailscaleKit dependency.
 
 ## Work still required before release
 
-This slice closes Phase 9's renderer memory-pressure and atlas-eviction item.
-It does not close the separate whole-application memory-budget deliverable.
-Before release, the application still needs:
+This implementation closes Phase 9's in-app memory-policy logic. Before release,
+the policy still needs qualification evidence:
 
-- an explicit aggregate CPU/GPU budget across all scenes and SSH/shared
-  sessions, including enforcement based on measured process footprint rather
-  than the resident-count cap alone;
-- accounting for future decoded images and any shared shaping caches;
 - compact-tier physical-device measurements for multiple active and background
   sessions; and
+- a signed-device pressure run that crosses the soft threshold, proves
+  oldest-first hidden-session eviction, and verifies the sampled footprint
+  returns below the bound when reclaimable state is sufficient;
 - a foreground/resync qualification after a real system memory warning and a
   jetsam recovery test from persisted, secret-free workspace state.
 

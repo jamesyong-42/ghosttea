@@ -852,6 +852,26 @@ func workspaceSessionResidencyUsesDetachedLRU() throws {
   #expect(!candidates.contains("session-d"))
 }
 
+@Test("Production memory policy matches measured compact and standard tiers")
+func workspaceMemoryPolicyMatchesPhaseZero() {
+  let compact = GhostteaWorkspaceMemoryBudget.recommended(
+    forPhysicalMemoryBytes: 4 * 1_073_741_824)
+  let standard = GhostteaWorkspaceMemoryBudget.recommended(
+    forPhysicalMemoryBytes: 4 * 1_073_741_824 + 1)
+
+  #expect(compact.tier == .compact)
+  #expect(compact.maximumResidentSessions == 4)
+  #expect(compact.scrollbackBytesPerSession == 3_000_000)
+  #expect(compact.softApplicationFootprintBytes == 96 * 1_048_576)
+  #expect(compact.hardApplicationFootprintBytes == 128 * 1_048_576)
+  #expect(standard.tier == .standard)
+  #expect(standard.maximumResidentSessions == 8)
+  #expect(standard.scrollbackBytesPerSession == 5_000_000)
+  #expect(standard.softApplicationFootprintBytes == 160 * 1_048_576)
+  #expect(standard.hardApplicationFootprintBytes == 224 * 1_048_576)
+  #expect((GhostteaProcessMemoryFootprint.currentBytes() ?? 0) > 0)
+}
+
 @Test("Session coordinator rejects a registry that does not match the document")
 func workspaceSessionCoordinatorRejectsRegistryMismatch() throws {
   #expect(throws: GhostteaWorkspaceSessionCoordinatorError.registryMismatch) {

@@ -2932,6 +2932,16 @@ cold pane serializes rehydration behind teardown, recreates fresh native
 resources under the same session ID, and remains demand-paused until explicit
 reconnect. Aggregate footprint-driven CPU/GPU enforcement, compact-device
 evidence, and jetsam restoration qualification remain open.
+The twelfth slice implements aggregate enforcement. A production workspace
+policy becomes the single source for the Phase 0 device tiers and initial
+scrollback sizes. After cache eviction, compression, and the count target, the
+app samples Darwin `TASK_VM_INFO.phys_footprint` for the entire process. While
+above the 96/160 MiB soft bound it cold-evicts remaining hidden SSH sessions in
+LRU order and resamples after every teardown. Selected panes and active Truffle
+presentations remain protected; typed diagnostics record sampling failure or
+an unsatisfied 96/160 MiB soft or 128/224 MiB hard bound without recording
+counts or identities. Compact-device, deliberate over-soft recovery, and jetsam
+restoration evidence remain open release qualifications.
 
 Deliverables:
 

@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaWorkspace
 
 public enum GhostteaMemoryDeviceTier: String, Codable, Sendable {
   case compact
@@ -13,23 +14,14 @@ public struct GhostteaMemoryBudget: Codable, Equatable, Sendable {
   public let hardApplicationFootprintBytes: UInt64
 
   public static func recommended(forPhysicalMemoryBytes physicalMemoryBytes: UInt64) -> Self {
-    let mebibyte = UInt64(1_048_576)
-    if physicalMemoryBytes <= 4 * 1_073_741_824 {
-      return Self(
-        tier: .compact,
-        maximumResidentSessions: 4,
-        scrollbackBytesPerSession: 3_000_000,
-        softApplicationFootprintBytes: 96 * mebibyte,
-        hardApplicationFootprintBytes: 128 * mebibyte
-      )
-    }
+    let production = GhostteaWorkspaceMemoryBudget.recommended(
+      forPhysicalMemoryBytes: physicalMemoryBytes)
     return Self(
-      tier: .standard,
-      maximumResidentSessions: 8,
-      scrollbackBytesPerSession: 5_000_000,
-      softApplicationFootprintBytes: 160 * mebibyte,
-      hardApplicationFootprintBytes: 224 * mebibyte
-    )
+      tier: production.tier == .compact ? .compact : .standard,
+      maximumResidentSessions: production.maximumResidentSessions,
+      scrollbackBytesPerSession: production.scrollbackBytesPerSession,
+      softApplicationFootprintBytes: production.softApplicationFootprintBytes,
+      hardApplicationFootprintBytes: production.hardApplicationFootprintBytes)
   }
 
   public func failures(

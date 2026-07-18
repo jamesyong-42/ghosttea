@@ -59,12 +59,12 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var keyboardContinuation: CheckedContinuation<[String], Error>?
   private var nextFactoryHandle: UInt64 = 10_000
   private var started = false
-  private let maximumResidentSessions: Int
+  private let memoryBudget: GhostteaWorkspaceMemoryBudget
 
   init(diagnostics: GhostteaDiagnosticRecorder) {
     self.diagnostics = diagnostics
-    maximumResidentSessions =
-      ProcessInfo.processInfo.physicalMemory <= 4 * 1_073_741_824 ? 4 : 8
+    memoryBudget = .recommended(
+      forPhysicalMemoryBytes: ProcessInfo.processInfo.physicalMemory)
   }
 
   deinit {
@@ -502,6 +502,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       profileID: defaultProfile.id.uuidString.lowercased(),
       sessionConfiguration: .ssh(initialPath: networkPath),
       initialSessionHandle: initialHandle,
+      scrollbackBytes: UInt64(memoryBudget.scrollbackBytesPerSession),
       eventHandler: { [weak self] event in await self?.handle(event) })
   }
 
@@ -640,26 +641,62 @@ final class GhostteaSSHAppModel: ObservableObject {
     workspace: GhostteaWorkspaceTabsDocument,
     coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
   ) async {
-    guard let factory else { return }
     let candidates = residency.evictionCandidates(
       in: workspace,
       residentSessionIDs: await coordinator.sessionIDs,
-      maximumResidentSessions: maximumResidentSessions)
+      maximumResidentSessions: memoryBudget.maximumResidentSessions)
     for sessionID in candidates {
-      do {
-        let resource = try await coordinator.evictSession(sessionID)
-        coldSessionRequests[sessionID] = resource.request
-        coldSessionIDs.insert(sessionID)
-        frames[sessionID] = nil
-        sessionStatuses[sessionID] = "Evicted · reconnect available"
-        let eviction = Task { await factory.evict(resource) }
-        evictionTasks[sessionID] = eviction
-        await eviction.value
-        evictionTasks[sessionID] = nil
-        record(.terminalSessionEvicted, severity: .info)
-      } catch {
-        record(.terminalSessionEvictionFailed)
+      await evictSession(sessionID, coordinator: coordinator)
+    }
+
+    guard var footprint = GhostteaProcessMemoryFootprint.currentBytes() else {
+      record(.terminalMemorySamplingFailed, severity: .warning)
+      return
+    }
+    guard footprint > memoryBudget.softApplicationFootprintBytes else { return }
+
+    let selectedCount = workspace.selectedTabSessionIDs.filter {
+      !coldSessionIDs.contains($0)
+    }.count
+    let pressureCandidates = residency.evictionCandidates(
+      in: workspace,
+      residentSessionIDs: await coordinator.sessionIDs,
+      maximumResidentSessions: selectedCount)
+    for sessionID in pressureCandidates {
+      await evictSession(sessionID, coordinator: coordinator)
+      guard let sampled = GhostteaProcessMemoryFootprint.currentBytes() else {
+        record(.terminalMemorySamplingFailed, severity: .warning)
+        return
       }
+      footprint = sampled
+      if footprint <= memoryBudget.softApplicationFootprintBytes { return }
+    }
+
+    if footprint > memoryBudget.hardApplicationFootprintBytes {
+      record(.terminalMemoryHardBudgetUnsatisfied)
+    } else {
+      record(.terminalMemorySoftBudgetUnsatisfied, severity: .warning)
+    }
+  }
+
+  private func evictSession(
+    _ sessionID: String,
+    coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>
+  ) async {
+    guard let factory else { return }
+    do {
+      let resource = try await coordinator.evictSession(sessionID)
+      coldSessionRequests[sessionID] = resource.request
+      coldSessionIDs.insert(sessionID)
+      frames[sessionID] = nil
+      sessionStatuses[sessionID] = "Evicted · reconnect available"
+      let eviction = Task { await factory.evict(resource) }
+      evictionTasks[sessionID] = eviction
+      await eviction.value
+      evictionTasks[sessionID] = nil
+      record(.terminalSessionEvicted, severity: .info)
+    } catch {
+      record(.terminalSessionEvictionFailed)
     }
   }
 
