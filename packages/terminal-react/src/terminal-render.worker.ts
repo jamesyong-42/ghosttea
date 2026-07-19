@@ -25,6 +25,7 @@ import {
   type PixelSize,
   type TerminalRenderer,
   type TerminalTheme,
+  renderedSizeChanged,
 } from "./renderers/types.js";
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
@@ -541,7 +542,10 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
     } else if (message.type === "resize") {
       const mounted = mounts.get(message.sessionHandle);
       if (!mounted) return;
-      mounted.size = { width: message.width, height: message.height, dpr: message.dpr };
+      const nextSize = { width: message.width, height: message.height, dpr: message.dpr };
+      const changed = renderedSizeChanged(mounted.size, nextSize);
+      mounted.size = nextSize;
+      if (!changed) return;
       renderer?.resize(message.sessionHandle, mounted.size);
       markDirty(message.sessionHandle);
     } else if (message.type === "frame") {

@@ -9,6 +9,7 @@ import {
   ORIGIN_X,
   ORIGIN_Y,
   effectiveCursorStyle,
+  renderedSizeChanged,
   type CellPoint,
   type PixelSize,
   type RenderView,
@@ -953,8 +954,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   resize(id: string, size: PixelSize): void {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    if (surface.width === size.width && surface.height === size.height && surface.dpr === size.dpr) return;
+    const changed = renderedSizeChanged(surface, size);
     Object.assign(surface, size);
+    if (!changed) return;
     surface.canvas.width = Math.max(1, Math.round(size.width * size.dpr));
     surface.canvas.height = Math.max(1, Math.round(size.height * size.dpr));
     this.#configure(surface);

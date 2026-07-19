@@ -54,6 +54,18 @@ export interface PixelSize {
   dpr: number;
 }
 
+function physicalPixels(value: number, dpr: number): number {
+  return Math.max(1, Math.round(value * dpr));
+}
+
+export function renderedSizeChanged(current: PixelSize, next: PixelSize): boolean {
+  return (
+    current.dpr !== next.dpr ||
+    physicalPixels(current.width, current.dpr) !== physicalPixels(next.width, next.dpr) ||
+    physicalPixels(current.height, current.dpr) !== physicalPixels(next.height, next.dpr)
+  );
+}
+
 export interface TerminalRenderer {
   readonly kind: "webgpu" | "canvas2d";
   mount(id: string, canvas: OffscreenCanvas): void;
