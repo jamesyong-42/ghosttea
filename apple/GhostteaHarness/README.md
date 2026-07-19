@@ -101,6 +101,20 @@ Passing evidence is written under ignored
 `native/build/ios-performance-device/evidence.json`. Energy Log, Time Profiler,
 and rendered multi-session scoring remain separate release evidence.
 
+Capture the repeatable idle and sustained rendered-output Instruments subset
+with an unlocked physical device and a device-compatible Xcode:
+
+```sh
+npm run test:ios:instruments:release
+```
+
+The full run records one 60-second idle trace and one 120-second trace for each
+of one, four, and eight resident terminals. A shortened `npm run
+test:ios:instruments` command is available only to prove the launch/recording
+pipeline. Both modes write redacted, hash-bound evidence under ignored
+`native/build/ios-instruments/`; only the full mode can become release evidence
+after the retained CPU and Energy traces are reviewed.
+
 The automated launcher discovers one connected physical iOS device, the sole
 development team configured in Xcode, and the Mac's Bonjour hostname. It checks
 device lock state, runs package and dual-SDK build gates, and signs the app

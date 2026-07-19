@@ -222,6 +222,8 @@ final class HarnessModel: ObservableObject {
   private var disposableFixtureHost = "10.0.0.103"
   private let performanceAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PERFORMANCE_GATE"] == "1"
+  private let performanceTraceScenario =
+    ProcessInfo.processInfo.environment["GHOSTTEA_PERFORMANCE_TRACE_SCENARIO"]
 
   init() {
     if let configuredHost = ProcessInfo.processInfo.environment["GHOSTTEA_FIXTURE_HOST"],
@@ -241,6 +243,13 @@ final class HarnessModel: ObservableObject {
       Task { [weak self] in
         await Task.yield()
         await self?.runPerformanceAutomation()
+      }
+      return
+    }
+    if let performanceTraceScenario {
+      Task { [weak self] in
+        await Task.yield()
+        await self?.runPerformanceTraceAutomation(performanceTraceScenario)
       }
       return
     }
@@ -279,6 +288,28 @@ final class HarnessModel: ObservableObject {
       fflush(nil)
       Darwin.exit(2)
     }
+  }
+
+  private func runPerformanceTraceAutomation(_ rawScenario: String) async {
+    guard let scenario = HarnessPerformanceTraceScenario(rawValue: rawScenario) else {
+      print("GHOSTTEA_PERFORMANCE_TRACE_ERROR invalid-scenario")
+      fflush(nil)
+      return
+    }
+    let configuredDuration = Int(
+      ProcessInfo.processInfo.environment["GHOSTTEA_PERFORMANCE_TRACE_DURATION_SECONDS"] ?? ""
+    )
+    let durationSeconds = min(600, max(1, configuredDuration ?? 120))
+    do {
+      try await HarnessPerformanceTraceWorkload.run(
+        scenario: scenario,
+        durationSeconds: durationSeconds
+      )
+      print("GHOSTTEA_PERFORMANCE_TRACE_COMPLETE \(scenario.rawValue) \(durationSeconds)")
+    } catch {
+      print("GHOSTTEA_PERFORMANCE_TRACE_ERROR \(scenario.rawValue)")
+    }
+    fflush(nil)
   }
 
   deinit {

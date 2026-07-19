@@ -3023,6 +3023,18 @@ Unicode/IME must cover every class; performance must cover both refresh rates;
 Stage Manager and hardware input must cover the physical iPad. Ordinary checks
 validate drift without claiming completion, while release readiness aggregates
 every missing item and fails closed. The campaign itself remains open.
+The twentieth slice makes the repeatable long Instruments subset executable.
+A Release-only harness workload drives one production Metal surface while one,
+four, or eight terminals feed through the shared runtime, plus a separate idle
+interval. The host preflights Xcode instruments and physical-device SDK
+compatibility, records fixed-duration Time Profiler/Metal/Power/Thermal traces,
+rejects short or non-iOS output, and hashes the signed app and retained trace
+trees into a strict redacted evidence schema. Release readiness requires the
+full clean-revision capture and separately reviewed CPU and Energy results; a
+short pipeline proof can never qualify. The initial attempt is retained as a
+fail-closed blocker because locked Xcode 26.1 supports iOS 26.1 while the phone
+runs iOS 26.5.2. Xcode 26.6/toolchain-lock adoption and recapture remain a
+mandatory pre-release task, while continued Phase 9 work is allowed.
 
 Deliverables:
 

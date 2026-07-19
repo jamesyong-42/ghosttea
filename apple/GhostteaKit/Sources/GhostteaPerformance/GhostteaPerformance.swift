@@ -12,6 +12,7 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
   case textEngineLockHold
   case frameDecode
   case metalSubmission
+  case qualificationWorkload
 
   fileprivate var signpostName: StaticString {
     switch self {
@@ -23,6 +24,7 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     case .textEngineLockHold: "text_engine_lock_hold"
     case .frameDecode: "frame_decode"
     case .metalSubmission: "metal_submission"
+    case .qualificationWorkload: "qualification_workload"
     }
   }
 }

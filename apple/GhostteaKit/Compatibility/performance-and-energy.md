@@ -1,6 +1,7 @@
 # iOS performance and energy qualification
 
-**Status:** automated 120 Hz device gate passed; full Instruments matrix open
+**Status:** automated 120 Hz device gate passed; Instruments capture automated
+but blocked on the current Xcode/device pairing
 
 The production pipeline exposes opt-in, coarse-grained Instruments intervals
 through `GhostteaPerformance`. Recording is disabled by default and can be
@@ -151,3 +152,45 @@ The automated four/eight-session feed gate now establishes a fail-closed first
 fairness bound. The rendered four/eight-session Instruments trace must still
 confirm that finding under real display work and decide whether the shared
 engine requires sharding or pooling.
+
+## Automated Instruments capture
+
+The repeatable long-trace subset now runs with:
+
+```sh
+# Short pipeline proof; never release evidence.
+npm run test:ios:instruments
+
+# 60-second idle plus 120-second rendered 1/4/8-session traces.
+npm run test:ios:instruments:release
+```
+
+The host performs a device/toolchain preflight, builds and signs the Release
+harness, installs it, and directly launches four deterministic workloads under
+Time Profiler with Metal Application, Points of Interest, Power Profiler, and
+Thermal State instruments. One visible production Metal surface is driven
+during every output workload while all resident terminals contend through the
+shared runtime. It exports each trace table of contents, rejects a non-iOS
+target or a short recording, hashes the signed app and every retained trace,
+and writes only model/OS/toolchain fields, numeric durations, fixed scenario
+IDs, fixed blockers, and hashes to
+`native/build/ios-instruments/evidence.json`.
+
+Run `npm run check:ios-instruments` to validate retained evidence. The release
+readiness aggregator additionally requires a clean full capture at the current
+revision and explicit `pass` values for both CPU and Energy review. Capture
+alone intentionally leaves those review fields pending; it cannot promote its
+own trace to an accepted baseline.
+
+On 2026-07-18 the connected iPhone runs iOS 26.5.2 while the locked Xcode 26.1
+contains the iOS 26.1 SDK. Builds and CoreDevice launches work, but `xctrace`
+reports that an unknown problem prevents device recording. The runner therefore
+fails before capture with the SDK/device mismatch instead of retaining an empty
+host trace. [Apple's Xcode support matrix](https://developer.apple.com/support/xcode)
+places iOS 26.5 device support in Xcode 26.6; upgrade and deliberately update
+the locked release toolchain before rerunning. This is a mandatory pre-release
+gate, not a blocker for continued implementation.
+
+The automated subset does not replace the physical 60 Hz comparison, true
+unchanged-background trace, long interactive input trace, lifecycle trace, or
+three-repeat baseline campaign described above.

@@ -35,6 +35,22 @@ Its evidence SHA-256 is
 The 60 Hz run and Instruments CPU/Energy plus rendered multi-session traces
 remain release gates.
 
+The long-trace runner now automates the repeatable portion of that open gate:
+one idle trace and sustained rendered one/four/eight-session workloads, with a
+real production Metal surface and shared-runtime contention. It preflights the
+physical device against the locked iPhoneOS SDK, captures Time Profiler, Metal,
+Points of Interest, Power, and Thermal instruments, validates the physical-iOS
+target and duration, and hashes the signed app and retained traces. A separate
+strict verifier rejects unknown evidence fields, quick/partial traces, stale or
+dirty source, and pending CPU/Energy review; release readiness now invokes it.
+
+The first recording attempt is correctly blocked: the connected iPhone is on
+iOS 26.5.2, while locked Xcode 26.1 supports iOS 26.1 devices. [Apple's support
+matrix](https://developer.apple.com/support/xcode) identifies Xcode 26.6 as the
+compatible toolchain. Updating the Xcode lock and rerunning the full trace
+command is mandatory before release, but this known toolchain gap does not
+block the remaining Phase 9 implementation.
+
 ## Deterministic component inventory
 
 [`ios-release.cdx.json`](ios-release.cdx.json) is the checked-in CycloneDX 1.6
@@ -198,9 +214,9 @@ Release certification additionally runs:
 npm run check:ios-release-ready
 ```
 
-The aggregator always runs the BOM/SSH policy, resource, toolchain, and App
-Store gates plus the physical beta matrix so one failure cannot hide the other
-blockers. It currently fails by design because `native/ssh.lock.json` records
+The aggregator always runs the BOM/SSH policy, resource, toolchain, App Store,
+physical beta matrix, and Instruments-evidence gates so one failure cannot hide
+the other blockers. It currently fails by design because `native/ssh.lock.json` records
 `productionApproved: false` for the pinned libssh2 release, the three
 account-owned App Store decisions below remain open, and the complete physical
 beta evidence has not been collected. Development and parity work may continue,

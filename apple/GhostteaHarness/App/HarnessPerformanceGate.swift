@@ -121,6 +121,7 @@ enum HarnessPerformanceGate {
     let recorder = GhostteaPerformanceRecorder.shared
     recorder.setEnabled(true)
     recorder.reset()
+    defer { recorder.setEnabled(false) }
 
     let runtime = try GhostteaRuntime()
     let outputTerminal = try GhostteaTerminal(
@@ -205,7 +206,6 @@ enum HarnessPerformanceGate {
 
     await session.disconnect()
     surface.removeFromSuperview()
-    recorder.setEnabled(false)
 
     var failures: [String] = []
     requireLatency(
@@ -456,5 +456,134 @@ enum HarnessPerformanceGate {
     return maximum.multipliedReportingOverflow(by: 1_000).overflow
       ? UInt64.max
       : maximum * 1_000 / minimum
+  }
+}
+
+enum HarnessPerformanceTraceScenario: String, CaseIterable, Sendable {
+  case idle
+  case output1
+  case output4
+  case output8
+
+  var sessionCount: Int? {
+    switch self {
+    case .idle: nil
+    case .output1: 1
+    case .output4: 4
+    case .output8: 8
+    }
+  }
+}
+
+@MainActor
+enum HarnessPerformanceTraceWorkload {
+  static func run(
+    scenario: HarnessPerformanceTraceScenario,
+    durationSeconds: Int
+  ) async throws {
+    let recorder = GhostteaPerformanceRecorder.shared
+    recorder.setEnabled(true)
+    recorder.reset()
+    try await Task.sleep(for: .seconds(2))
+    if let sessionCount = scenario.sessionCount {
+      try await runRenderedOutput(
+        sessionCount: sessionCount,
+        durationSeconds: durationSeconds,
+        recorder: recorder
+      )
+    } else {
+      try await recorder.measure(.qualificationWorkload) {
+        try await Task.sleep(for: .seconds(durationSeconds))
+      }
+    }
+    recorder.setEnabled(false)
+  }
+
+  private static func runRenderedOutput(
+    sessionCount: Int,
+    durationSeconds: Int,
+    recorder: GhostteaPerformanceRecorder
+  ) async throws {
+    let runtime = try GhostteaRuntime()
+    let terminals = try (0..<sessionCount).map { index in
+      try GhostteaTerminal(
+        runtime: runtime,
+        configuration: .init(
+          sessionHandle: UInt64(20_000 + sessionCount * 100 + index),
+          columns: 100,
+          rows: 30
+        )
+      )
+    }
+    let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+    surface.isPaused = true
+    surface.enableSetNeedsDisplay = false
+    let window = try await activeWindow()
+    surface.frame = window.bounds
+    surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    window.addSubview(surface)
+    surface.layoutIfNeeded()
+    defer {
+      surface.suspendGPU()
+      surface.removeFromSuperview()
+    }
+
+    for (index, terminal) in terminals.enumerated() {
+      let update = try await terminal.feed(Data("trace-warmup-\(index)".utf8), render: .full)
+      if index == 0,
+        let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload
+      {
+        _ = try surface.apply(frame: frame)
+        surface.draw(in: surface)
+      }
+    }
+    recorder.reset()
+
+    let maximumFramesPerSecond = max(1, UIScreen.main.maximumFramesPerSecond)
+    let pacingNanoseconds = UInt64(1_000_000_000 / maximumFramesPerSecond) + 1_000_000
+    let deadline = ContinuousClock.now.advanced(by: .seconds(durationSeconds))
+    var iteration = 0
+    try await recorder.measure(.qualificationWorkload) {
+      while ContinuousClock.now < deadline {
+        var visibleFrame: Data?
+        let currentIteration = iteration
+        try await withThrowingTaskGroup(of: (Int, Data?).self) { group in
+          for (index, terminal) in terminals.enumerated() {
+            group.addTask {
+              let bytes = Data("\rtrace-\(currentIteration)\u{1b}[K".utf8)
+              let update = try await terminal.feed(bytes, render: .damage)
+              return (
+                index,
+                index == 0
+                  ? update.effects.last(where: { $0.kind == .frameReady })?.payload
+                  : nil
+              )
+            }
+          }
+          for try await (index, frame) in group where index == 0 {
+            visibleFrame = frame
+          }
+        }
+        guard let visibleFrame else { throw HarnessPerformanceGateError.frameMissing }
+        _ = try surface.apply(frame: visibleFrame)
+        surface.draw(in: surface)
+        iteration += 1
+        try await Task.sleep(for: .nanoseconds(Int64(pacingNanoseconds)))
+      }
+    }
+  }
+
+  private static func activeWindow() async throws -> UIWindow {
+    for _ in 0..<200 {
+      if let window = UIApplication.shared.connectedScenes
+        .compactMap({ $0 as? UIWindowScene })
+        .flatMap(\.windows)
+        .first(where: \.isKeyWindow)
+      {
+        return window
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw HarnessPerformanceGateError.windowUnavailable
   }
 }

@@ -9,6 +9,7 @@ const checks = [
   ["scripts/check-ios-release-toolchain.mjs"],
   ["scripts/check-ios-app-store-readiness.mjs", "--release"],
   ["scripts/check-ios-beta-matrix.mjs", "--release"],
+  ["scripts/check-ios-instruments-evidence.mjs", "--release"],
 ];
 let failed = false;
 
