@@ -1,7 +1,7 @@
 # iOS native-boundary fuzzing
 
-**Status:** deterministic mutation smoke gates implemented; extended sanitizer
-campaign and corpus retention remain release-candidate work.
+**Status:** deterministic mutation smoke gates and ASan campaign/evidence runner
+implemented; mandatory release-duration evidence remains release-candidate work.
 
 The two hostile-input boundaries are different and are tested independently:
 
@@ -87,3 +87,41 @@ Any crash, panic, sanitizer finding, handle poisoning, owned-buffer invariant
 failure, input exceeding its time/memory budget, or non-reproducible minimized
 case blocks release. Corpus bytes must never contain production terminal data,
 credentials, hostnames, or private keys.
+
+The campaign runner makes this procedure executable:
+
+```sh
+# Short development qualification; always marked release-ineligible.
+npm run test:fuzz:sanitizer
+
+# Clean locked-toolchain release-profile run, one hour per boundary.
+npm run test:fuzz:sanitizer:release
+```
+
+Both boundaries run under AddressSanitizer with abort-on-finding behavior and a
+15-minute per-iteration timeout that includes an isolated cold compiler build.
+LeakSanitizer is disabled: enabling `detect_leaks` hangs after the completed
+mixed Rust/Zig/C test process on the locked macOS toolchain, while the existing
+address sanitizer exits normally. Leak qualification must use Instruments on
+the signed application and is not reported as part of this ASan evidence.
+The runner hashes the exact FFI source/header/locks and
+Swift TRF1 decoder/test corpus, records the immutable source revision and
+Xcode/Swift/Rust identities, and emits iteration count, logical executions,
+elapsed time, peak resident bytes, and zero-valued crash/hang/finding counters
+only after success. The default evidence path is
+`native/build/ios-fuzz-campaign/evidence.json`; it contains repository-relative
+paths and no terminal or connection data.
+
+`--release` fails unless the tracked worktree is clean, the locked toolchain
+gate passes, and each boundary is requested for at least 3,600 seconds. Its
+release-profile sanitizer evidence must be retained beside the exact archive
+provenance; it does not make a differently built archive eligible by itself.
+
+The runner also executes a zero-input Swift ASan runtime preflight before the
+expensive Rust build. On the currently locked Xcode toolchain, even a one-line
+ASan Swift executable stalls in `FindDynamicShadowStart` before `main`. The
+preflight therefore times out after 15 seconds and blocks combined campaign
+evidence rather than misreporting TRF1 sanitizer coverage. Rust FFI ASan passes
+with leak detection disabled. Resolving this locked-toolchain/runtime gap (or
+qualifying a reviewed replacement toolchain) is required before the one-hour
+release campaign can run.

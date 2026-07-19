@@ -311,6 +311,16 @@ the release item. A timed AddressSanitizer campaign against the locked release
 toolchain and release native libraries, with corpus hashes and resource limits
 recorded in evidence, remains mandatory.
 
+`npm run test:fuzz:sanitizer` now implements the timed campaign and redacted
+evidence schema. It hashes seven exact lock/source/corpus inputs, records the
+source and Xcode/Swift/Rust identities, bounds each isolated iteration, reclaims
+its Rust target between boundaries, and requires a clean locked-toolchain
+one-hour run in release mode. Rust FFI ASan passes. The locked Swift ASan runtime
+currently stalls in `FindDynamicShadowStart` before even a zero-input `main`;
+a 15-second preflight writes blocked, release-ineligible evidence and stops
+before expensive work. This toolchain/runtime capability gap must be resolved
+before the release campaign can close.
+
 ## Memory-pressure recovery
 
 [`memory-pressure.md`](memory-pressure.md) defines the implemented

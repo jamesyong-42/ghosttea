@@ -44,6 +44,8 @@
     "test:fuzz:ffi": "cargo test -p ghosttea-ffi deterministic_ffi_state_machine_fuzz_smoke",
     "test:fuzz:trf1": "node scripts/test-ios-trf1-fuzz-smoke.mjs",
     "test:fuzz:smoke": "npm run test:fuzz:ffi && npm run test:fuzz:trf1",
+    "test:fuzz:sanitizer": "node scripts/run-ios-fuzz-sanitizer-campaign.mjs",
+    "test:fuzz:sanitizer:release": "node scripts/run-ios-fuzz-sanitizer-campaign.mjs --release --duration-seconds 3600",
     "test:font-parity:apple-runtime": "node scripts/test-font-parity-apple-runtime.mjs",
     "test:ghosttea-core:apple-runtime": "node scripts/test-font-parity-apple-runtime.mjs --core",
     "test:ghosttea-core:ffi": "node scripts/test-ghosttea-core-ffi.mjs",

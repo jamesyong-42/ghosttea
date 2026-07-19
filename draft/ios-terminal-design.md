@@ -2942,6 +2942,15 @@ presentations remain protected; typed diagnostics record sampling failure or
 an unsatisfied 96/160 MiB soft or 128/224 MiB hard bound without recording
 counts or identities. Compact-device, deliberate over-soft recovery, and jetsam
 restoration evidence remain open release qualifications.
+The thirteenth slice makes the sanitizer campaign executable and fail-closed.
+It adds isolated Rust FFI and standalone real-TRF1-decoder ASan workloads,
+corpus/toolchain/source hashing, bounded iteration timing and peak-memory
+evidence, release-profile/clean-tree enforcement, and automatic scratch-space
+reclamation. Rust FFI ASan passes. A zero-input Swift ASan preflight exposes a
+locked-toolchain blocker: the runtime stalls in `FindDynamicShadowStart` before
+`main`. The runner records blocked release-ineligible evidence after 15 seconds
+instead of claiming Swift coverage; resolving or replacing that reviewed
+toolchain remains mandatory before the one-hour release run.
 
 Deliverables:
 
