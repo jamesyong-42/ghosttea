@@ -3,6 +3,8 @@ export {
   GhostteaAutomationClient,
   type AutomationInputResult,
   type GhostteaAutomationClientOptions,
+  type GhostteaControlCommand,
+  type GhostteaControlConnection,
   type SessionExitedEvent,
 } from "./automation.js";
 export { GhostteaElectronBridge, type GhostteaElectronBridgeOptions } from "./bridge.js";

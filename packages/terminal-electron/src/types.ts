@@ -1,7 +1,7 @@
-export interface TerminalDaemonConnection {
-  controlSocket: string;
+import type { GhostteaControlConnection } from "@vibecook/ghosttea-client";
+
+export interface TerminalDaemonConnection extends GhostteaControlConnection {
   frameSocket: string;
-  authToken: string;
 }
 
 export interface MainToBridgeMessage {

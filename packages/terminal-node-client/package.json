@@ -1,37 +1,18 @@
 {
-  "name": "@vibecook/ghosttea-electron",
+  "name": "@vibecook/ghosttea-client",
   "version": "0.1.0",
-  "description": "Electron lifecycle and direct renderer transport for Ghosttea.",
+  "description": "Electron-free Node control client for the Ghosttea terminal service.",
   "license": "MIT",
   "author": "James Yong",
   "type": "module",
-  "sideEffects": [
-    "./dist/bridge-entry.js"
-  ],
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./main": {
-      "types": "./dist/main.d.ts",
-      "import": "./dist/main.js"
-    },
-    "./automation": {
-      "types": "./dist/automation.d.ts",
-      "import": "./dist/automation.js"
-    },
-    "./preload": {
-      "types": "./dist/preload.d.ts",
-      "import": "./dist/preload.js"
-    },
-    "./types": {
-      "types": "./dist/types.d.ts",
-      "import": "./dist/types.js"
-    },
-    "./bridge-entry": "./dist/bridge-entry.js"
+    }
   },
   "files": [
     "dist",
@@ -41,20 +22,26 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesyong-42/ghosttea.git",
-    "directory": "packages/terminal-electron"
+    "directory": "packages/terminal-node-client"
   },
   "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
   "bugs": {
     "url": "https://github.com/jamesyong-42/ghosttea/issues"
   },
   "keywords": [
-    "electron",
     "ghostty",
+    "node",
     "terminal"
   ],
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@vibecook/ghosttea-protocol": "0.1.0"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -63,15 +50,8 @@
     "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "@vibecook/ghosttea-client": "0.1.0"
-  },
-  "peerDependencies": {
-    "electron": ">=35"
-  },
   "devDependencies": {
     "@types/node": "26.1.1",
-    "electron": "43.1.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }

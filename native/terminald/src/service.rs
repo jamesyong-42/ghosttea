@@ -8,10 +8,12 @@ use anyhow::{Context, Result, bail};
 use ghosttea_text::TextEngine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
     sync::broadcast,
+    task::JoinHandle,
 };
 
 use crate::{
@@ -27,8 +29,17 @@ const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FRAME_SUBSCRIPTION_BYTES: usize = 1024 * 1024;
 const MAX_FRAME_SUBSCRIPTIONS: usize = 4096;
+const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
+
+struct TaskGuard(JoinHandle<()>);
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +283,7 @@ struct ControlContext {
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
     closed_owners: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    private_env_prefixes: Arc<[String]>,
 }
 
 /// Local IPC endpoints and bearer token owned by the embedding application.
@@ -281,12 +293,28 @@ pub struct TerminalServiceConfig {
     pub auth_token: String,
 }
 
+/// Pre-bound local IPC listeners supplied by an embedding application.
+///
+/// Constructing these outside [`TerminalService`] lets a host own runtime
+/// directory creation, socket replacement, permissions, and startup order.
+pub struct TerminalServiceListeners {
+    control: UnixListener,
+    frames: UnixListener,
+}
+
+impl TerminalServiceListeners {
+    pub fn new(control: UnixListener, frames: UnixListener) -> Self {
+        Self { control, frames }
+    }
+}
+
 /// A terminal session service that can run locally or expose sessions through
 /// an injected remote transport.
 pub struct TerminalService {
     config: TerminalServiceConfig,
     mesh: Option<Box<dyn mesh::TerminalMesh>>,
     text_engine: Option<TextEngine>,
+    private_env_prefixes: Vec<String>,
 }
 
 impl TerminalService {
@@ -295,7 +323,28 @@ impl TerminalService {
             config,
             mesh: None,
             text_engine: None,
+            private_env_prefixes: Vec::new(),
         }
+    }
+
+    /// Strip additional host-private prefixes from inherited PTY
+    /// environments. Explicit clean variables and inherited-mode overrides
+    /// remain caller-owned and may intentionally reintroduce a value.
+    pub fn with_private_env_prefixes<I, S>(mut self, prefixes: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for prefix in prefixes {
+            let prefix = prefix.into();
+            if prefix.is_empty() {
+                bail!("private environment prefixes must not be empty");
+            }
+            if !self.private_env_prefixes.contains(&prefix) {
+                self.private_env_prefixes.push(prefix);
+            }
+        }
+        Ok(self)
     }
 
     /// Use host-provided font bytes and metrics instead of system discovery.
@@ -314,17 +363,28 @@ impl TerminalService {
         self
     }
 
+    /// Bind the configured paths using Ghosttea's convenience stale-socket
+    /// replacement policy.
+    pub fn bind(&self) -> Result<TerminalServiceListeners> {
+        remove_stale_socket(&self.config.control_socket)?;
+        remove_stale_socket(&self.config.frame_socket)?;
+        Ok(TerminalServiceListeners::new(
+            UnixListener::bind(&self.config.control_socket)?,
+            UnixListener::bind(&self.config.frame_socket)?,
+        ))
+    }
+
+    /// Bind the configured listeners and serve until either listener fails.
     pub async fn run(self) -> Result<()> {
+        let listeners = self.bind()?;
+        self.serve(listeners).await
+    }
+
+    /// Serve authenticated control and frame traffic on host-owned listeners.
+    pub async fn serve(self, listeners: TerminalServiceListeners) -> Result<()> {
         let configured_text_engine = self.text_engine;
-        let TerminalServiceConfig {
-            control_socket,
-            frame_socket,
-            auth_token,
-        } = self.config;
-        remove_stale_socket(&control_socket)?;
-        remove_stale_socket(&frame_socket)?;
-        let control = UnixListener::bind(&control_socket)?;
-        let frames = UnixListener::bind(&frame_socket)?;
+        let auth_token = self.config.auth_token;
+        let TerminalServiceListeners { control, frames } = listeners;
         let (frame_tx, _) = broadcast::channel::<Vec<u8>>(32);
         let (event_tx, _) = broadcast::channel::<Value>(64);
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
@@ -335,7 +395,7 @@ impl TerminalService {
             .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
         let mut remote_controls = mesh_runtime.subscribe_control();
         let remote_events = event_tx.clone();
-        tokio::spawn(async move {
+        let _remote_control_task = TaskGuard(tokio::spawn(async move {
             loop {
                 match remote_controls.recv().await {
                     Ok(changed) => {
@@ -354,7 +414,7 @@ impl TerminalService {
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
+        }));
         let text_engine = Arc::new(Mutex::new(match configured_text_engine {
             Some(text_engine) => text_engine,
             None => TextEngine::discover().context("system font discovery failed")?,
@@ -368,13 +428,13 @@ impl TerminalService {
                 engine.font_mode()
             );
         }
-        let mesh_task = self.mesh.map(|mesh| {
+        let _mesh_task = self.mesh.map(|mesh| {
             let mesh_registry = Arc::clone(&registry);
-            tokio::spawn(async move {
+            TaskGuard(tokio::spawn(async move {
                 if let Err(error) = mesh.serve(mesh_registry).await {
                     eprintln!("[terminal-mesh] stopped: {error:#}");
                 }
-            })
+            }))
         });
         let control_task = serve_control(
             control,
@@ -386,14 +446,11 @@ impl TerminalService {
                 text_engine,
                 mesh_runtime,
                 closed_owners: Arc::default(),
+                private_env_prefixes: self.private_env_prefixes.into(),
             },
         );
         let frame_task = serve_frames(frames, auth_token, frame_tx);
-        let result = tokio::try_join!(control_task, frame_task).map(|_| ());
-        if let Some(task) = mesh_task {
-            task.abort();
-        }
-        result
+        tokio::try_join!(control_task, frame_task).map(|_| ())
     }
 }
 
@@ -420,9 +477,20 @@ async fn write_packet<W: AsyncWrite + Unpin>(stream: &mut W, bytes: &[u8]) -> Re
     Ok(())
 }
 
+fn auth_tokens_equal(received: &[u8], expected: &[u8]) -> bool {
+    if received.len() > MAX_AUTH_TOKEN_BYTES || expected.len() > MAX_AUTH_TOKEN_BYTES {
+        return false;
+    }
+    let mut received_padded = [0_u8; MAX_AUTH_TOKEN_BYTES];
+    let mut expected_padded = [0_u8; MAX_AUTH_TOKEN_BYTES];
+    received_padded[..received.len()].copy_from_slice(received);
+    expected_padded[..expected.len()].copy_from_slice(expected);
+    bool::from(received_padded.ct_eq(&expected_padded) & received.len().ct_eq(&expected.len()))
+}
+
 async fn authenticate(stream: &mut UnixStream, expected: &str) -> Result<()> {
-    let token = read_packet(stream, 1024).await?;
-    if token != expected.as_bytes() {
+    let token = read_packet(stream, MAX_AUTH_TOKEN_BYTES).await?;
+    if !auth_tokens_equal(&token, expected.as_bytes()) {
         bail!("authentication failed");
     }
     write_packet(stream, b"ok").await
@@ -527,10 +595,11 @@ async fn handle_command(
                         "exitOutcome": exit.exit_outcome,
                     }));
                 });
-                let session = Session::spawn(
+                let session = Session::spawn_with_private_env_prefixes(
                     options,
                     context.frame_tx.clone(),
                     Arc::clone(&context.text_engine),
+                    &context.private_env_prefixes,
                     on_exit,
                 )?;
                 let summary = session.summary();
@@ -1238,6 +1307,42 @@ fn frame_session_handle(frame: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+
+    #[test]
+    fn verifies_local_auth_tokens_without_length_shortcuts() {
+        assert!(auth_tokens_equal(b"secret", b"secret"));
+        assert!(auth_tokens_equal(b"", b""));
+        assert!(!auth_tokens_equal(b"secret", b"secreu"));
+        assert!(!auth_tokens_equal(b"secret", b"secret-longer"));
+        assert!(!auth_tokens_equal(
+            &vec![b'x'; MAX_AUTH_TOKEN_BYTES + 1],
+            b"secret",
+        ));
+    }
+
+    #[test]
+    fn validates_host_private_environment_prefixes() {
+        let config = TerminalServiceConfig {
+            control_socket: "control.sock".to_owned(),
+            frame_socket: "frames.sock".to_owned(),
+            auth_token: "secret".to_owned(),
+        };
+        let service = TerminalService::new(config)
+            .with_private_env_prefixes(["FIELD_", "FIELD_"])
+            .unwrap();
+        assert_eq!(service.private_env_prefixes, ["FIELD_"]);
+
+        let config = TerminalServiceConfig {
+            control_socket: "control.sock".to_owned(),
+            frame_socket: "frames.sock".to_owned(),
+            auth_token: "secret".to_owned(),
+        };
+        assert!(
+            TerminalService::new(config)
+                .with_private_env_prefixes([""])
+                .is_err()
+        );
+    }
 
     #[test]
     fn deserializes_typed_commands() {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { GhostteaAutomationClient } from "@vibecook/ghosttea-client";
 
 const root = resolve(import.meta.dirname, "../..");
 const runtimeDir = mkdtempSync(join(tmpdir(), "terminald-smoke-"));
@@ -20,6 +21,7 @@ const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghost
   },
   stdio: ["ignore", "pipe", "inherit"],
 });
+let automationClient;
 
 function packet(bytes) {
   const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
@@ -193,6 +195,27 @@ try {
     "terminald startup",
     60_000,
   );
+
+  automationClient = new GhostteaAutomationClient({ controlSocket, authToken: token });
+  const automatedSession = await automationClient.createSession({
+    executable: "/bin/sh",
+    args: [],
+    environment: { mode: "clean", variables: { PATH: process.env.PATH ?? "/usr/bin:/bin" } },
+    cols: 40,
+    rows: 8,
+    persistence: "terminate-with-app",
+  });
+  const automatedExit = automationClient.waitForExit(automatedSession.id, 5_000);
+  const automatedInput = await automationClient.pasteAndSubmit(
+    automatedSession.id,
+    "printf 'ghosttea-node-client-ok\\n'; exit 0",
+  );
+  if (!automatedInput.accepted) throw new Error("Node client automation input was rejected");
+  const automatedExitEvent = await automatedExit;
+  if (automatedExitEvent.exitCode !== 0 || automatedExitEvent.exitOutcome !== "completed") {
+    throw new Error(`Node client observed incorrect exit metadata: ${JSON.stringify(automatedExitEvent)}`);
+  }
+
   const control = await open(controlSocket);
   const frames = await open(frameSocket);
   const frameHandles = new Set();
@@ -1033,6 +1056,7 @@ try {
     throw new Error("retained session close failed");
   console.log("ghosttead smoke test passed");
 } finally {
+  automationClient?.dispose();
   child.kill("SIGTERM");
   rmSync(runtimeDir, { recursive: true, force: true });
 }

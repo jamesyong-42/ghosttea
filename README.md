@@ -77,6 +77,8 @@ before falling back to the platform monospace family.
 
 Ghosttea's application integration is split into reusable packages:
 
+- `@vibecook/ghosttea-client` is the Electron-free Node control-socket client
+  for session lifecycle and epoch-guarded automation;
 - `@vibecook/ghosttea-electron` owns daemon supervision, the utility-process
   socket bridge, transferred renderer ports, and isolated-preload helpers;
 - `@vibecook/ghosttea-react` owns the shared renderer runtime, terminal surface,
@@ -93,6 +95,12 @@ external mode the host application starts its own Rust composition service and
 passes an authenticated `TerminalDaemonConnection` to
 `GhostteaElectronBackend`. This allows one application-owned Rust process to
 share a single Truffle node across Ghosttea and other services.
+
+Rust hosts can also supply pre-bound control and frame listeners, private
+environment prefixes, a text engine, and a terminal mesh directly to
+`TerminalService`. Listener ownership, cancellation behavior, stable external
+connection requirements, and shared-Truffle rules are documented in the
+[`ghosttea` crate embedding guide](native/terminald/README.md#embedded-service-mode).
 
 Application automation uses the backend's control-only client. It does not
 open the frame socket, attach a renderer view, or participate in focus and

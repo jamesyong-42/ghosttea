@@ -3,6 +3,9 @@
 Typed browser client for connecting an Electron renderer to the Ghosttea
 terminal service through a transferred control `MessagePort`.
 
+Node daemons that connect directly to the authenticated local control socket
+should use the separate `@vibecook/ghosttea-client` package.
+
 ```ts
 import { ControlClient } from "@vibecook/ghosttea";
 

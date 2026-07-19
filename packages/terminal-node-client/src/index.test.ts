@@ -33,7 +33,7 @@ class FakeSocket extends EventEmitter {
       queueMicrotask(() =>
         this.emit(
           "data",
-          packet({ requestId, type: "hello", protocolMajor: 1, protocolMinor: 2, serverBuild: "test" }),
+          packet({ requestId, type: "hello", protocolMajor: 1, protocolMinor: 5, serverBuild: "test" }),
         ),
       );
     } else if (command.type === "get-automation-state") {
@@ -127,7 +127,7 @@ vi.mock("node:net", () => ({
   }),
 }));
 
-import { GhostteaAutomationClient } from "./automation.js";
+import { GhostteaAutomationClient } from "./index.js";
 
 describe("GhostteaAutomationClient", () => {
   beforeEach(() => {
@@ -136,21 +136,14 @@ describe("GhostteaAutomationClient", () => {
   });
 
   it("closes an application session owner atomically", async () => {
-    const client = new GhostteaAutomationClient({
-      controlSocket: "control.sock",
-      frameSocket: "unused",
-      authToken: "secret",
-    });
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     await client.closeSessionOwner("tab-a");
     expect(commands.at(-1)).toMatchObject({ type: "close-session-owner", ownerId: "tab-a" });
+    client.dispose();
   });
 
-  it("sends atomic automation input without attaching a view or claiming layout control", async () => {
-    const client = new GhostteaAutomationClient({
-      controlSocket: "control.sock",
-      frameSocket: "unused",
-      authToken: "secret",
-    });
+  it("sends epoch-gated automation without claiming view authority", async () => {
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     const result = await client.pasteAndSubmit("session", "hello");
     expect(result).toMatchObject({ accepted: true, humanInputEpoch: 4, inputSequence: 9 });
     expect(commands.map((command) => command.type)).toEqual(["hello", "get-automation-state", "automation-input"]);
@@ -165,12 +158,8 @@ describe("GhostteaAutomationClient", () => {
     client.dispose();
   });
 
-  it("rejects an authentication close and can reconnect cleanly", async () => {
-    const client = new GhostteaAutomationClient({
-      controlSocket: "control.sock",
-      frameSocket: "unused",
-      authToken: "secret",
-    });
+  it("rejects an authentication close and reconnects cleanly", async () => {
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     socketBehavior = "close-during-auth";
     await expect(client.connect()).rejects.toThrow("closed during authentication");
 
@@ -180,12 +169,8 @@ describe("GhostteaAutomationClient", () => {
     client.dispose();
   });
 
-  it("waits for the rich exit event when terminating a managed session", async () => {
-    const client = new GhostteaAutomationClient({
-      controlSocket: "control.sock",
-      frameSocket: "unused",
-      authToken: "secret",
-    });
+  it("waits for rich exit metadata when terminating a session", async () => {
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     await expect(client.terminateAndWait("session")).resolves.toMatchObject({
       sessionId: "session",
       requestedTermination: "application",
@@ -196,12 +181,7 @@ describe("GhostteaAutomationClient", () => {
   });
 
   it("cancels the exit waiter when termination is rejected", async () => {
-    const client = new GhostteaAutomationClient({
-      controlSocket: "control.sock",
-      frameSocket: "unused",
-      authToken: "secret",
-    });
-
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     await expect(client.terminateAndWait("missing", "application", 50)).rejects.toThrow("unknown session");
     expect(client.listenerCount("session-exited")).toBe(0);
     client.dispose();

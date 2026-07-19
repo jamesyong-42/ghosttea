@@ -20,6 +20,7 @@ const npmPackages = [
   "@vibecook/ghosttea-protocol",
   "@vibecook/ghosttea-frame",
   "@vibecook/ghosttea",
+  "@vibecook/ghosttea-client",
   "@vibecook/ghosttea-electron",
   "@vibecook/ghosttea-react",
 ];
@@ -99,10 +100,11 @@ try {
       'import { ControlClient } from "@vibecook/ghosttea";',
       'import { FRAME_MAGIC } from "@vibecook/ghosttea-frame";',
       'import { PROTOCOL_MAJOR } from "@vibecook/ghosttea-protocol";',
-      'import { GhostteaAutomationClient } from "@vibecook/ghosttea-electron/automation";',
+      'import { GhostteaAutomationClient as NodeAutomationClient } from "@vibecook/ghosttea-client";',
+      'import { GhostteaAutomationClient as ElectronAutomationClient } from "@vibecook/ghosttea-electron/automation";',
       'import { existsSync, readFileSync } from "node:fs";',
       'import { join } from "node:path";',
-      'if (typeof ControlClient !== "function" || typeof GhostteaAutomationClient !== "function" || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
+      'if (typeof ControlClient !== "function" || typeof NodeAutomationClient !== "function" || ElectronAutomationClient !== NodeAutomationClient || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
       '  throw new Error("installed Ghosttea packages expose an invalid runtime API");',
       "}",
       'for (const file of ["@vibecook/ghosttea-electron/dist/bridge-entry.js", "@vibecook/ghosttea-react/dist/terminal-render.worker.js"]) {',
@@ -180,6 +182,70 @@ try {
     },
   });
   console.log("external Rust consumer fixture passed");
+
+  const embeddingConsumer = join(fixture, "rust-embedding-consumer");
+  mkdirSync(join(embeddingConsumer, "src"), { recursive: true });
+  const sourcePath = (path) => resolve(root, path).replaceAll("\\", "/");
+  writeFileSync(
+    join(embeddingConsumer, "Cargo.toml"),
+    [
+      "[package]",
+      'name = "ghosttea-embedding-consumer"',
+      'version = "0.0.0"',
+      'edition = "2024"',
+      'rust-version = "1.85"',
+      "",
+      "[dependencies]",
+      'anyhow = "1"',
+      `ghosttea = { path = ${JSON.stringify(sourcePath("native/terminald"))} }`,
+      `ghosttea-truffle = { path = ${JSON.stringify(sourcePath("native/terminald/crates/truffle"))} }`,
+      'tokio = { version = "1.45", features = ["full"] }',
+      'truffle-core = "0.7.2"',
+      "",
+      "[patch.crates-io]",
+      `truffle-core = { path = ${JSON.stringify(sourcePath("../p008/truffle/crates/truffle-core"))} }`,
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(embeddingConsumer, "src/main.rs"),
+    [
+      "use std::sync::Arc;",
+      "",
+      "use anyhow::Result;",
+      "use ghosttea::{TerminalService, TerminalServiceConfig, TerminalServiceListeners};",
+      "use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};",
+      "use tokio::net::UnixListener;",
+      "use truffle_core::{Node, network::tailscale::TailscaleProvider};",
+      "",
+      "#[allow(dead_code)]",
+      "async fn serve_embedded(",
+      "    node: Arc<Node<TailscaleProvider>> ,",
+      "    control: UnixListener,",
+      "    frames: UnixListener,",
+      "    token: String,",
+      ") -> Result<()> {",
+      "    let mesh = TruffleTerminalMesh::new(node, TruffleTerminalConfig::default())?;",
+      "    TerminalService::new(TerminalServiceConfig { control_socket: String::new(), frame_socket: String::new(), auth_token: token })",
+      '        .with_private_env_prefixes(["FIELD_"])?',
+      "        .with_terminal_mesh(mesh)",
+      "        .serve(TerminalServiceListeners::new(control, frames))",
+      "        .await",
+      "}",
+      "",
+      "fn main() {}",
+      "",
+    ].join("\n"),
+  );
+  run("cargo", ["check", "--offline"], {
+    cwd: embeddingConsumer,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: join(fixture, "rust-embedding-target"),
+      GHOSTTEA_GHOSTTY_VT_BUNDLE: join(root, "artifacts/ghostty-vt", nativeArtifact.filename),
+    },
+  });
+  console.log("external Rust embedding fixture passed");
   console.log("Ghosttea package layouts passed");
 } finally {
   rmSync(fixture, { recursive: true, force: true });

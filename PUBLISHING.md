@@ -14,9 +14,10 @@ ghosttea-text ──────────────────┴─> ghos
                          └─> ghosttead (private)
 
 npm
-@vibecook/ghosttea-protocol ─> @vibecook/ghosttea
+@vibecook/ghosttea-protocol ─┬─> @vibecook/ghosttea
+                             └─> @vibecook/ghosttea-client
 @vibecook/ghosttea-frame
-@vibecook/ghosttea-electron
+@vibecook/ghosttea-client ─> @vibecook/ghosttea-electron
 @vibecook/ghosttea + frame + protocol ─> @vibecook/ghosttea-react
 ```
 
@@ -31,7 +32,7 @@ npm run package:check
 cargo test --workspace
 ```
 
-`npm run package:check` builds the SDK, creates the five npm tarballs, installs
+`npm run package:check` builds the SDK, creates the six npm tarballs, installs
 them into a temporary consumer outside the monorepo, imports their public
 runtime APIs, and checks the file lists of the publishable Rust crates. It also
 packages `ghosttea-vt-sys`, installs that `.crate` into an external Rust
@@ -75,7 +76,7 @@ produce an attested workflow artifact.
 3. Dry-run and publish `ghosttea-vt`.
 4. Dry-run and publish `ghosttea` after its exact leaf versions resolve.
 5. Publish `@vibecook/ghosttea-protocol` and `@vibecook/ghosttea-frame`.
-6. Publish `@vibecook/ghosttea`.
+6. Publish `@vibecook/ghosttea` and `@vibecook/ghosttea-client`.
 7. Publish `@vibecook/ghosttea-electron`, then `@vibecook/ghosttea-react`.
 8. Enable and publish `ghosttea-truffle` with the synchronized Ghosttea version.
    `truffle-core` 0.7.2 is registry-resolvable; the adapter remains private
@@ -87,5 +88,5 @@ publish the private demo workspaces.
 All npm packages configure `publish-npm.yml` as their trusted GitHub publisher.
 The workflow contains no registry token: npm exchanges GitHub's short-lived
 OIDC identity for publish access and generates provenance automatically. It
-verifies the version tag, builds and tests all five packages, and publishes
+verifies the version tag, builds and tests all six packages, and publishes
 them in dependency order.

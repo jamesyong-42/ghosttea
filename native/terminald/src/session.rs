@@ -297,7 +297,7 @@ fn signal_process_group(pid: Option<u32>, signal: libc::c_int) -> Result<()> {
     }
 }
 
-fn is_private_service_environment(key: &str) -> bool {
+fn is_private_service_environment(key: &str, extra_prefixes: &[String]) -> bool {
     matches!(
         key,
         "GHOSTTEA_AUTH_TOKEN"
@@ -313,20 +313,35 @@ fn is_private_service_environment(key: &str) -> bool {
     ) || key.starts_with("GHOSTTEA_TRUFFLE_")
         || key.starts_with("TERMINALD_TRUFFLE_")
         || key.starts_with("GHOSTTEA_EXTERNAL_")
+        || extra_prefixes.iter().any(|prefix| key.starts_with(prefix))
+}
+
+fn remove_private_service_environment(
+    command: &mut CommandBuilder,
+    inherited_keys: impl IntoIterator<Item = String>,
+    extra_prefixes: &[String],
+) {
+    for key in inherited_keys {
+        if is_private_service_environment(&key, extra_prefixes) {
+            command.env_remove(key);
+        }
+    }
 }
 
 fn configure_environment(
     command: &mut CommandBuilder,
     legacy: HashMap<String, String>,
     environment: Option<SessionEnvironment>,
+    extra_private_prefixes: &[String],
 ) {
     let environment = environment.unwrap_or(SessionEnvironment::Inherit { overrides: legacy });
     match environment {
         SessionEnvironment::Inherit { overrides } => {
-            for (key, _) in std::env::vars().filter(|(key, _)| is_private_service_environment(key))
-            {
-                command.env_remove(key);
-            }
+            remove_private_service_environment(
+                command,
+                std::env::vars().map(|(key, _)| key),
+                extra_private_prefixes,
+            );
             for (key, value) in overrides {
                 command.env(key, value);
             }
@@ -346,6 +361,16 @@ impl Session {
         options: SpawnOptions,
         frames: broadcast::Sender<Vec<u8>>,
         text_engine: Arc<Mutex<TextEngine>>,
+        on_exit: ExitCallback,
+    ) -> Result<Arc<Self>> {
+        Self::spawn_with_private_env_prefixes(options, frames, text_engine, &[], on_exit)
+    }
+
+    pub(crate) fn spawn_with_private_env_prefixes(
+        options: SpawnOptions,
+        frames: broadcast::Sender<Vec<u8>>,
+        text_engine: Arc<Mutex<TextEngine>>,
+        extra_private_prefixes: &[String],
         on_exit: ExitCallback,
     ) -> Result<Arc<Self>> {
         let SpawnOptions {
@@ -370,7 +395,7 @@ impl Session {
         if let Some(cwd) = cwd {
             command.cwd(cwd);
         }
-        configure_environment(&mut command, env, environment);
+        configure_environment(&mut command, env, environment, extra_private_prefixes);
         let child = pair
             .slave
             .spawn_command(command)
@@ -1215,6 +1240,7 @@ mod tests {
                     ("AGENT_TOKEN".to_owned(), "allowed".to_owned()),
                 ]),
             }),
+            &[],
         );
         assert_eq!(
             command.get_env("PATH"),
@@ -1233,13 +1259,44 @@ mod tests {
 
     #[test]
     fn identifies_service_environment_that_must_not_be_inherited() {
-        assert!(is_private_service_environment("GHOSTTEA_AUTH_TOKEN"));
+        assert!(is_private_service_environment("GHOSTTEA_AUTH_TOKEN", &[]));
         assert!(is_private_service_environment(
-            "GHOSTTEA_TRUFFLE_CAPABILITY"
+            "GHOSTTEA_TRUFFLE_CAPABILITY",
+            &[],
         ));
-        assert!(is_private_service_environment("TRUFFLE_TEST_AUTHKEY"));
-        assert!(!is_private_service_environment("HOME"));
-        assert!(!is_private_service_environment("CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(is_private_service_environment("TRUFFLE_TEST_AUTHKEY", &[]));
+        assert!(is_private_service_environment(
+            "FIELD_CONTROL_TOKEN",
+            &["FIELD_".to_owned()],
+        ));
+        assert!(!is_private_service_environment(
+            "HOME",
+            &["FIELD_".to_owned()],
+        ));
+        assert!(!is_private_service_environment(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            &["FIELD_".to_owned()],
+        ));
+    }
+
+    #[test]
+    fn strips_host_private_prefixes_from_an_inherited_command() {
+        let mut command = CommandBuilder::new("test");
+        command.env("FIELD_CONTROL_TOKEN", "private");
+        command.env("CLAUDE_CODE_OAUTH_TOKEN", "agent-owned");
+        remove_private_service_environment(
+            &mut command,
+            [
+                "FIELD_CONTROL_TOKEN".to_owned(),
+                "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            ],
+            &["FIELD_".to_owned()],
+        );
+        assert_eq!(command.get_env("FIELD_CONTROL_TOKEN"), None);
+        assert_eq!(
+            command.get_env("CLAUDE_CODE_OAUTH_TOKEN"),
+            Some(std::ffi::OsStr::new("agent-owned"))
+        );
     }
 
     #[test]

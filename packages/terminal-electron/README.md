@@ -36,4 +36,6 @@ invalidates a stale automation epoch rather than being delayed.
 Hosts that already own a `TerminalDaemonConnection` can import
 `GhostteaAutomationClient` directly from
 `@vibecook/ghosttea-electron/automation`. That subpath is Node-only and does
-not load Electron main-process modules.
+not load Electron main-process modules. New Electron-free Node hosts should
+depend directly on `@vibecook/ghosttea-client`; the Electron export is retained
+for compatibility.
