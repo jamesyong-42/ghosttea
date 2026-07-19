@@ -25,6 +25,8 @@ export interface RenderBenchmarkConfig {
   quietMs: number;
   workloadExecutable: string;
   workloadScript: string;
+  verifyPixels?: boolean;
+  forceFullRendering?: boolean;
   cases: RenderBenchmarkCase[];
   runner: Record<string, unknown>;
 }

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -88,6 +88,13 @@ if (renderBenchmark) {
       iteration: benchmarkIteration,
       samples: benchmarkSamples.splice(0),
     };
+  });
+
+  ipcMain.handle("render-benchmark-frame-hash", async (event): Promise<string> => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) throw new Error("Rendering benchmark window is unavailable");
+    const image = await window.webContents.capturePage();
+    return createHash("sha256").update(image.toBitmap()).digest("hex");
   });
 
   ipcMain.handle("render-benchmark-complete", async (_event, report: unknown) => {

@@ -127,6 +127,11 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       workerFactory: () => worker as unknown as Worker,
     });
 
+    runtime.setPartialRenderingEnabled(false);
+    expect(worker.messages.at(-1)).toEqual({ type: "partial-rendering", enabled: false });
+    runtime.forceFullRedraw("pane-handle");
+    expect(worker.messages.at(-1)).toEqual({ type: "force-full-redraw", sessionHandle: "pane-handle" });
+
     const started = runtime.startPerformanceMeasurement();
     const startMessage = worker.messages.at(-1) as { requestId: number; type: string };
     expect(startMessage.type).toBe("performance-start");
@@ -156,6 +161,9 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       scheduling: { flushes: 1, renderCalls: 1, maximumDirtyPanes: 1, panesPerFlush: [1] },
       renderer: {
         queueSubmits: 1,
+        fullRenders: 1,
+        partialRenders: 0,
+        damagedRows: 24,
         canvasPixelFrames: 100,
         renderPasses: 2,
         drawCalls: 2,

@@ -614,6 +614,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#postWorker({ type: "visibility", sessionHandle, visible });
   }
 
+  forceFullRedraw(sessionHandle: string): void {
+    this.#postWorker({ type: "force-full-redraw", sessionHandle });
+  }
+
+  setPartialRenderingEnabled(enabled: boolean): void {
+    this.#postWorker({ type: "partial-rendering", enabled });
+  }
+
   claimResizeControl(sessionHandle: string, viewId: string, cols: number, rows: number): void {
     const view = this.#views.get(viewId);
     if (view) {

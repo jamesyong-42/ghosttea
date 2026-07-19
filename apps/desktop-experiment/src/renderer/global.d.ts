@@ -24,6 +24,7 @@ declare global {
       updateActiveCwd: (cwd?: string) => void;
       startRenderBenchmarkCase: (caseName: string, iteration: number) => Promise<void>;
       finishRenderBenchmarkCase: () => Promise<unknown>;
+      renderBenchmarkFrameHash: () => Promise<string>;
       completeRenderBenchmark: (report: unknown) => Promise<void>;
       failRenderBenchmark: (message: string) => Promise<void>;
       onMenuAction: (listener: (action: "copy" | "paste" | "select-all" | "clear-screen") => void) => () => void;

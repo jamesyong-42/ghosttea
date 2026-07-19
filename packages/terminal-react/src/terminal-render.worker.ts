@@ -50,6 +50,7 @@ interface Snapshot {
   sequence: bigint;
   awaitingResync: boolean;
   scrollbar: TerminalScrollbarState | null;
+  damage: { full: boolean; rows: Set<number> };
 }
 
 interface MountedCanvas {
@@ -73,6 +74,7 @@ let recoveryAttempts = 0;
 let recovering = false;
 let nativeTextAnnounced = false;
 let forceCanvasFallback = false;
+let partialRenderingEnabled = true;
 
 interface ActivePerformanceMeasurement {
   startedAt: number;
@@ -107,6 +109,9 @@ function beginPerformanceMeasurement(): void {
     scheduling: { flushes: 0, renderCalls: 0, maximumDirtyPanes: 0, panesPerFlush: [] },
     renderer: {
       queueSubmits: 0,
+      fullRenders: 0,
+      partialRenders: 0,
+      damagedRows: 0,
       canvasPixelFrames: 0,
       renderPasses: 0,
       drawCalls: 0,
@@ -131,6 +136,9 @@ function recordRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): vo
   const target = performanceMeasurement?.renderer;
   if (!target) return;
   target.queueSubmits += metrics.queueSubmits;
+  target.fullRenders += metrics.fullRenders;
+  target.partialRenders += metrics.partialRenders;
+  target.damagedRows += metrics.damagedRows;
   target.canvasPixelFrames += metrics.canvasPixels;
   target.renderPasses += metrics.renderPasses;
   target.drawCalls += metrics.drawCalls;
@@ -213,6 +221,7 @@ function snapshot(id: string): Snapshot {
       sequence: 0n,
       awaitingResync: false,
       scrollbar: null,
+      damage: { full: true, rows: new Set() },
     };
     snapshots.set(id, value);
   }
@@ -234,7 +243,7 @@ function scheduleCursorBlink(id: string, reset: boolean): void {
       if (occluded.has(id) || !current || !current.focused || !current.cursor.visible || !current.cursor.blinking)
         return;
       current.cursorBlinkVisible = !current.cursorBlinkVisible;
-      markDirty(id);
+      invalidateRows(id, [current.cursor.y]);
       scheduleCursorBlink(id, false);
     }, CURSOR_BLINK_INTERVAL_MS),
   );
@@ -280,7 +289,7 @@ async function recoverDevice(info: GPUDeviceLostInfo): Promise<void> {
     for (const [id, mount] of mounts) {
       next.mount(id, mount.canvas);
       next.resize(id, mount.size);
-      markDirty(id);
+      invalidateFull(id);
     }
     postToRenderer({ type: "renderer-status", backend: next.kind, recovered: true });
   } catch (error) {
@@ -331,6 +340,10 @@ async function flush(): Promise<void> {
         ? backend.renderBatch(entries)
         : entries.map(({ id, view }) => backend.render(id, view));
       const renderedAt = active ? performance.now() : 0;
+      for (const { view } of entries) {
+        view.damage.full = false;
+        view.damage.rows.clear();
+      }
       if (active && performanceMeasurement === active) {
         active.scheduling.renderCalls += entries.length;
         active.samples.renderCpuMs.push(renderedAt - beforeRender);
@@ -360,6 +373,27 @@ function markDirty(id: string): void {
   if (!occluded.has(id)) scheduleFlush();
 }
 
+function invalidateFull(id: string): void {
+  const damage = snapshot(id).damage;
+  damage.full = true;
+  damage.rows.clear();
+  markDirty(id);
+}
+
+function invalidateRows(id: string, rows: Iterable<number>): void {
+  if (!partialRenderingEnabled) {
+    invalidateFull(id);
+    return;
+  }
+  const damage = snapshot(id).damage;
+  if (!damage.full) {
+    for (const row of rows) {
+      if (Number.isSafeInteger(row) && row >= 0) damage.rows.add(row);
+    }
+  }
+  markDirty(id);
+}
+
 async function mount(id: string, canvas: OffscreenCanvas): Promise<void> {
   if (mounts.has(id)) renderer?.unmount(id);
   const entry: MountedCanvas = { canvas, size: { width: 1, height: 1, dpr: 1 } };
@@ -368,7 +402,7 @@ async function mount(id: string, canvas: OffscreenCanvas): Promise<void> {
   if (mounts.get(id) !== entry) return;
   backend.mount(id, canvas);
   backend.resize(id, entry.size);
-  markDirty(id);
+  invalidateFull(id);
 }
 
 function applyFrame(packet: ArrayBuffer): void {
@@ -481,6 +515,7 @@ function applyFrame(packet: ArrayBuffer): void {
     : previous.nativeStyleRows.slice();
   const rowRevisions = full ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
   const replacements = decodeRowReplacements(rowSection);
+  const damagedRows: number[] = [];
   if (active) active.frames.rowsDecoded += replacements.length;
   for (const replacement of replacements) {
     if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
@@ -489,18 +524,20 @@ function applyFrame(packet: ArrayBuffer): void {
     nativeRows[replacement.row] = replacement.glyphs;
     nativeStyleRows[replacement.row] = replacement.styles;
     rowRevisions[replacement.row] = replacement.revision;
+    damagedRows.push(replacement.row);
   }
   previous.rows = rows;
   previous.nativeRows = nativeRows;
   previous.nativeStyleRows = nativeStyleRows;
   previous.rowRevisions = rowRevisions;
+  const previousCursor = previous.cursor;
   const nextCursor = decodeCursorState(cursorSection);
   const cursorChanged =
-    nextCursor.x !== previous.cursor.x ||
-    nextCursor.y !== previous.cursor.y ||
-    nextCursor.visible !== previous.cursor.visible ||
-    nextCursor.style !== previous.cursor.style ||
-    nextCursor.blinking !== previous.cursor.blinking;
+    nextCursor.x !== previousCursor.x ||
+    nextCursor.y !== previousCursor.y ||
+    nextCursor.visible !== previousCursor.visible ||
+    nextCursor.style !== previousCursor.style ||
+    nextCursor.blinking !== previousCursor.blinking;
   previous.cursor = nextCursor;
   if (cursorChanged) scheduleCursorBlink(id, true);
   previous.layoutEpoch = frame.layoutEpoch;
@@ -508,7 +545,12 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
-  markDirty(id);
+  if (full || changedSession || completingResync) {
+    invalidateFull(id);
+  } else {
+    if (cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
+    if (damagedRows.length > 0) invalidateRows(id, damagedRows);
+  }
   if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
 }
 
@@ -521,6 +563,9 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       });
     } else if (message.type === "renderer-config") {
       forceCanvasFallback = Boolean(message.forceCanvasFallback);
+    } else if (message.type === "partial-rendering") {
+      partialRenderingEnabled = Boolean(message.enabled);
+      for (const id of mounts.keys()) invalidateFull(id);
     } else if (message.type === "unmount") {
       mounts.delete(message.sessionHandle);
       dirty.delete(message.sessionHandle);
@@ -547,19 +592,19 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       mounted.size = nextSize;
       if (!changed) return;
       renderer?.resize(message.sessionHandle, mounted.size);
-      markDirty(message.sessionHandle);
+      invalidateFull(message.sessionHandle);
     } else if (message.type === "frame") {
       applyFrame(message.packet);
     } else if (message.type === "theme") {
       snapshot(message.sessionHandle).theme = message.theme;
-      markDirty(message.sessionHandle);
+      invalidateFull(message.sessionHandle);
     } else if (message.type === "selection") {
       snapshot(message.sessionHandle).selection = message.selection;
-      markDirty(message.sessionHandle);
+      invalidateFull(message.sessionHandle);
     } else if (message.type === "visibility") {
       if (message.visible) {
         occluded.delete(message.sessionHandle);
-        markDirty(message.sessionHandle);
+        invalidateFull(message.sessionHandle);
         scheduleCursorBlink(message.sessionHandle, true);
       } else {
         occluded.add(message.sessionHandle);
@@ -571,12 +616,14 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       const value = snapshot(message.sessionHandle);
       value.focused = Boolean(message.focused);
       scheduleCursorBlink(message.sessionHandle, value.focused);
-      markDirty(message.sessionHandle);
+      invalidateRows(message.sessionHandle, [value.cursor.y]);
     } else if (message.type === "cursor-activity") {
       const value = snapshot(message.sessionHandle);
       const changesPixels = cursorActivityChangesPixels(value.cursor, value.focused, value.cursorBlinkVisible);
       scheduleCursorBlink(message.sessionHandle, true);
-      if (changesPixels) markDirty(message.sessionHandle);
+      if (changesPixels) invalidateRows(message.sessionHandle, [value.cursor.y]);
+    } else if (message.type === "force-full-redraw") {
+      invalidateFull(message.sessionHandle);
     } else if (message.type === "performance-start") {
       void ensureRenderer()
         .then(() => {

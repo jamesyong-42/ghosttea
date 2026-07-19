@@ -14,6 +14,7 @@ interface MeasuredIteration {
   endToIdleMs: number;
   worker: TerminalRenderPerformanceSnapshot;
   electron: ElectronCaseSamples;
+  pixelCheck?: { partialHash: string; fullHash: string };
 }
 
 let suiteStarted = false;
@@ -58,6 +59,7 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
   useEffect(() => {
     if (suiteStarted) return;
     suiteStarted = true;
+    runtime.setPartialRenderingEnabled(!config.forceFullRendering);
     const views = new Map<string, string>();
     const waiters = new Map<string, (viewId: string) => void>();
     const onAttached = (event: Event): void => {
@@ -173,6 +175,23 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
       const electron = measured
         ? ((await window.desktop.finishRenderBenchmarkCase()) as ElectronCaseSamples)
         : { caseName: benchmarkCase.name, iteration, samples: [] };
+      let pixelCheck: MeasuredIteration["pixelCheck"];
+      if (measured && config.verifyPixels && benchmarkCase.kind === "payload") {
+        const partialHash = await window.desktop.renderBenchmarkFrameHash();
+        await runtime.startPerformanceMeasurement();
+        for (const session of created) runtime.forceFullRedraw(session.handle);
+        const verification = await runtime.finishPerformanceMeasurement({ quietMs: config.quietMs, timeoutMs: 20_000 });
+        if (verification.renderer.fullRenders !== created.length) {
+          throw new Error(
+            `Expected ${created.length} forced full redraws for ${benchmarkCase.name}; observed ${verification.renderer.fullRenders}`,
+          );
+        }
+        const fullHash = await window.desktop.renderBenchmarkFrameHash();
+        pixelCheck = { partialHash, fullHash };
+        if (partialHash !== fullHash) {
+          throw new Error(`Partial rendering differs from a forced full redraw for ${benchmarkCase.name}`);
+        }
+      }
       await cleanUpSessions(created);
       await delay(config.cooldownMs);
 
@@ -186,6 +205,7 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
         endToIdleMs,
         worker,
         electron,
+        ...(pixelCheck ? { pixelCheck } : {}),
       };
     };
 

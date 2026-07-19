@@ -133,6 +133,8 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
     context.restore();
     if (!this.#performanceMeasurementEnabled) return undefined;
     const metrics = emptyRenderMetrics();
+    metrics.fullRenders = 1;
+    metrics.damagedRows = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
     metrics.canvasPixels = surface.canvas.width * surface.canvas.height;
     metrics.renderPasses = 1;
     metrics.drawCalls = 1;

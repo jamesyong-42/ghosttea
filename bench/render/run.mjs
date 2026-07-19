@@ -22,9 +22,12 @@ function parseArgs(argv) {
     quietMs: 300,
     build: true,
     allowUntracked: [],
+    verifyPixels: false,
+    forceFullRendering: false,
     cases: [
       "idle-4",
       "typing-1",
+      "sparse-1",
       "scroll-1",
       "dense-1",
       "unicode-1",
@@ -47,6 +50,8 @@ function parseArgs(argv) {
     else if (argument.startsWith("--allow-untracked=")) {
       options.allowUntracked = argument.slice("--allow-untracked=".length).split(",").filter(Boolean);
     } else if (argument === "--no-build") options.build = false;
+    else if (argument === "--verify-pixels") options.verifyPixels = true;
+    else if (argument === "--force-full-rendering") options.forceFullRendering = true;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
   return options;
@@ -105,13 +110,15 @@ function main() {
   --iterations=5      Measured repetitions per case
   --warmup=1          Unmeasured repetitions per case
   --scale=1           Payload multiplier
-  --cases=list        idle-4,typing-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
+  --cases=list        idle-4,typing-1,sparse-1,visual-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
   --width=1200        Electron content window width
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
   --quiet-ms=300      Required worker quiet period before capture
   --allow-untracked=  Explicit comma-separated untracked-file exceptions
   --no-build          Reuse existing release daemon and built Electron app
+  --verify-pixels     Compare partial output with a forced full redraw
+  --force-full-rendering  Disable row-damage rendering for an A/B baseline
 `);
     return;
   }
@@ -142,6 +149,8 @@ function main() {
     const payloadFiles = {};
     for (const [name, payload] of Object.entries({
       scrolling: payloads.scrolling,
+      sparse: payloads.sparse,
+      visual: payloads.visual,
       dense: payloads.dense,
       unicode: payloads.unicode,
       redraw,
@@ -159,6 +168,24 @@ function main() {
         operations: Math.max(60, Math.round(180 * options.scale)),
         intervalMs: 16,
         inputText: "terminal-render-benchmark\n",
+      },
+      "sparse-1": {
+        name: "sparse-1",
+        panes: 1,
+        kind: "payload",
+        payloadPath: payloadFiles.sparse.path,
+        payloadBytes: payloadFiles.sparse.bytes,
+        chunkBytes: 107,
+        intervalMs: 8,
+      },
+      "visual-1": {
+        name: "visual-1",
+        panes: 1,
+        kind: "payload",
+        payloadPath: payloadFiles.visual.path,
+        payloadBytes: payloadFiles.visual.bytes,
+        chunkBytes: 107,
+        intervalMs: 8,
       },
       "scroll-1": {
         name: "scroll-1",
@@ -235,6 +262,8 @@ function main() {
       quietMs: options.quietMs,
       workloadExecutable: process.execPath,
       workloadScript: resolve(root, "bench/render/workload.mjs"),
+      verifyPixels: options.verifyPixels,
+      forceFullRendering: options.forceFullRendering,
       cases: options.cases.map((name) => catalog[name]),
       runner: {
         generatedAt: new Date().toISOString(),

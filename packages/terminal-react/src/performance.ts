@@ -1,5 +1,8 @@
 export interface TerminalRenderMetrics {
   queueSubmits: number;
+  fullRenders: number;
+  partialRenders: number;
+  damagedRows: number;
   canvasPixels: number;
   renderPasses: number;
   drawCalls: number;
@@ -35,6 +38,9 @@ export interface TerminalRenderPerformanceSnapshot {
   };
   renderer: {
     queueSubmits: number;
+    fullRenders: number;
+    partialRenders: number;
+    damagedRows: number;
     canvasPixelFrames: number;
     renderPasses: number;
     drawCalls: number;
@@ -57,6 +63,9 @@ export interface TerminalRenderPerformanceSnapshot {
 export function emptyRenderMetrics(): TerminalRenderMetrics {
   return {
     queueSubmits: 0,
+    fullRenders: 0,
+    partialRenders: 0,
+    damagedRows: 0,
     canvasPixels: 0,
     renderPasses: 0,
     drawCalls: 0,

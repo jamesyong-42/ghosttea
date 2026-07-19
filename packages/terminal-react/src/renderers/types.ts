@@ -39,6 +39,12 @@ export interface RenderView {
   cursorBlinkVisible: boolean;
   selection: CellSelection | null;
   theme: TerminalTheme;
+  damage?: RenderDamage;
+}
+
+export interface RenderDamage {
+  full: boolean;
+  rows: ReadonlySet<number>;
 }
 
 export function effectiveCursorStyle(view: RenderView): CursorStyle | null {

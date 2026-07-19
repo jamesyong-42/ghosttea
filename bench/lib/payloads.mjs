@@ -57,6 +57,30 @@ export function unicodePayload({ lines = 4_000 } = {}) {
   return Buffer.from(`${chunks.join("\n")}\n`, "utf8");
 }
 
+/** Repeatedly replaces one fixed row without scrolling the viewport. */
+export function sparseRowPayload({ frames = 180, row = 10, width = 100 } = {}) {
+  const cursor = `\u001b[${row};1H`;
+  const chunks = [];
+  for (let frame = 0; frame < frames; frame += 1) {
+    const prefix = `sparse-${String(frame).padStart(6, "0")}-`;
+    chunks.push(`${cursor}${prefix}${"x".repeat(Math.max(0, width - prefix.length))}`);
+  }
+  return Buffer.from(chunks.join(""), "utf8");
+}
+
+/** Static renderer features kept on screen while one distant row is replaced. */
+export function visualFixturePayload({ frames = 60, row = 10, width = 100 } = {}) {
+  const fixture = [
+    CLEAR,
+    "\u001b[2;3H\u001b[31;44m╭────────────╮\u001b[0m",
+    "\u001b[3;3H\u001b[32;45m│ ░▒▓ █ ▄▀▐ │\u001b[0m",
+    "\u001b[4;3H\u001b[33;46m╰────────────╯\u001b[0m",
+    "\u001b[6;3H日本語 e\u0301 😀 👨‍💻 ffi →",
+    "\u001b[8;3H\u001b[1;3;4;9;38;5;208mstyled decorations\u001b[0m",
+  ].join("");
+  return Buffer.concat([Buffer.from(fixture, "utf8"), sparseRowPayload({ frames, row, width })]);
+}
+
 /** Alternate-screen style full redraws (scroll / clear cycles). */
 export function scrollRegionPayload({ frames = 200, rows = 40, cols = 100 } = {}) {
   const chunks = [CLEAR];
@@ -85,6 +109,16 @@ export function payloadCatalog(scale = 1) {
     }),
     unicode: unicodePayload({
       lines: Math.round(3_000 * s),
+    }),
+    sparse: sparseRowPayload({
+      frames: Math.max(60, Math.round(180 * s)),
+      row: 10,
+      width: 100,
+    }),
+    visual: visualFixturePayload({
+      frames: Math.max(30, Math.round(60 * s)),
+      row: 10,
+      width: 100,
     }),
     scrollRegion: scrollRegionPayload({
       frames: Math.round(120 * s),

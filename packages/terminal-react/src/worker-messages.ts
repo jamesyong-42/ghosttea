@@ -4,6 +4,7 @@ import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 
 export type RendererToWorkerMessage =
   | { type: "renderer-config"; forceCanvasFallback: boolean }
+  | { type: "partial-rendering"; enabled: boolean }
   | { type: "mount"; sessionHandle: string; canvas: OffscreenCanvas }
   | { type: "unmount"; sessionHandle: string }
   | { type: "drop-session"; sessionHandle: string }
@@ -14,6 +15,7 @@ export type RendererToWorkerMessage =
   | { type: "visibility"; sessionHandle: string; visible: boolean }
   | { type: "focus"; sessionHandle: string; focused: boolean }
   | { type: "cursor-activity"; sessionHandle: string }
+  | { type: "force-full-redraw"; sessionHandle: string }
   | { type: "performance-start"; requestId: number }
   | { type: "performance-finish"; requestId: number; quietMs: number; timeoutMs: number };
 

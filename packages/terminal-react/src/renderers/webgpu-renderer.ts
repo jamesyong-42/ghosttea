@@ -17,6 +17,7 @@ import {
   type TerminalRenderer,
 } from "./types.js";
 import { graphemeCellWidth, splitGraphemes } from "../cell-width.js";
+import { rowsForDamage } from "./render-damage.js";
 
 const ATLAS_SIZE = 2048;
 const FONT_STACK = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
@@ -482,6 +483,7 @@ interface WebGpuSurface extends PixelSize {
   glyphBuffer: DynamicVertexBuffer;
   colorGlyphBuffer: DynamicVertexBuffer;
   fallbackGlyphBuffer: DynamicVertexBuffer;
+  sceneValid: boolean;
 }
 
 function clipX(pixel: number, width: number): number {
@@ -997,6 +999,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       glyphBuffer: new DynamicVertexBuffer(this.device, `glyphs ${id}`),
       colorGlyphBuffer: new DynamicVertexBuffer(this.device, `color glyphs ${id}`),
       fallbackGlyphBuffer: new DynamicVertexBuffer(this.device, `fallback glyphs ${id}`),
+      sceneValid: false,
     };
     this.#surfaces.set(id, surface);
     this.#configure(surface);
@@ -1030,6 +1033,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     surface.sceneTexture.destroy();
     surface.sceneTexture = this.#createSceneTexture(surface.canvas.width, surface.canvas.height);
     surface.postProcessBindGroup = this.#createPostProcessBindGroup(surface.sceneTexture);
+    surface.sceneValid = false;
   }
 
   #createSceneTexture(width: number, height: number): GPUTexture {
@@ -1082,6 +1086,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const scale = surface.dpr;
     const viewportWidth = surface.canvas.width;
     const viewportHeight = surface.canvas.height;
+    const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
+    const { full: fullRedraw, rows: renderRows } = rowsForDamage(rowCount, view.damage, surface.sceneValid);
+    const renderRowSet = new Set(renderRows);
     const rectangleVertices: number[] = [];
     const glyphVertices: number[] = [];
     const colorGlyphVertices: number[] = [];
@@ -1096,8 +1103,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     };
     const monoDefinitions = new Map<number, GlyphDefinition>();
     const colorDefinitions = new Map<number, GlyphDefinition>();
-    for (const row of view.nativeRows) {
-      for (const glyph of row) {
+    for (const row of renderRows) {
+      for (const glyph of view.nativeRows[row] ?? []) {
         const definition = view.glyphDefinitions.get(glyph.glyphId);
         if (!definition) continue;
         (definition.format === GlyphFormat.Rgba8Premultiplied ? colorDefinitions : monoDefinitions).set(
@@ -1109,7 +1116,29 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     this.#monoAtlas.prepare(monoDefinitions.values());
     this.#colorAtlas.prepare(colorDefinitions.values());
 
-    for (let row = 0; row < view.nativeStyleRows.length; row += 1) {
+    if (!fullRedraw) {
+      for (const row of renderRows) {
+        const top = row === 0 ? 0 : (ORIGIN_Y + row * LINE_HEIGHT) * scale;
+        const bottom =
+          row === rowCount - 1
+            ? viewportHeight
+            : Math.min(viewportHeight, (ORIGIN_Y + (row + 1) * LINE_HEIGHT) * scale);
+        pushRectangle(
+          rectangleVertices,
+          0,
+          top,
+          viewportWidth,
+          Math.max(0, bottom - top),
+          // The rectangle pipeline blends. Force the row reset opaque so it
+          // replaces stale scene pixels even when a theme carries alpha.
+          [view.theme.background[0], view.theme.background[1], view.theme.background[2], 1],
+          viewportWidth,
+          viewportHeight,
+        );
+      }
+    }
+
+    for (const row of renderRows) {
       for (const run of view.nativeStyleRows[row] ?? []) {
         const style = styleFor(run.styleId);
         if (!style.background) continue;
@@ -1130,7 +1159,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const selection = ordered(view.selection);
     if (selection) {
       const [start, end] = selection;
-      for (let row = start.row; row <= end.row; row += 1) {
+      for (const row of renderRows) {
+        if (row < start.row || row > end.row) continue;
         const first = row === start.row ? start.column : 0;
         const last = row === end.row ? end.column : Math.max(0, cellLength(view.rows[row] ?? "") - 1);
         pushRectangle(
@@ -1149,10 +1179,13 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
 
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
     if (!hasNativeRows) {
-      this.#fallbackAtlas.prepare(view.rows.flatMap(splitGraphemes), scale);
+      this.#fallbackAtlas.prepare(
+        renderRows.flatMap((row) => splitGraphemes(view.rows[row] ?? "")),
+        scale,
+      );
     }
     if (hasNativeRows) {
-      for (let row = 0; row < view.nativeRows.length; row += 1) {
+      for (const row of renderRows) {
         const boxCells = boxDrawingCells(view.rows[row] ?? "");
         const blockCells = blockElementCells(view.rows[row] ?? "");
         for (const instance of view.nativeRows[row] ?? []) {
@@ -1217,7 +1250,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         }
       }
     } else {
-      for (let row = 0; row < view.rows.length; row += 1) {
+      for (const row of renderRows) {
         let column = 0;
         for (const grapheme of splitGraphemes(view.rows[row] ?? "")) {
           const glyph = this.#fallbackAtlas.glyph(grapheme, scale);
@@ -1243,7 +1276,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       }
     }
 
-    for (let row = 0; row < view.nativeStyleRows.length; row += 1) {
+    for (const row of renderRows) {
       for (const run of view.nativeStyleRows[row] ?? []) {
         const style = styleFor(run.styleId);
         if (style.invisible) continue;
@@ -1281,7 +1314,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const decorationInstanceCount = rectangleVertices.length / 10 - decorationInstanceStart;
 
     const cursorStyle = effectiveCursorStyle(view);
-    if (cursorStyle !== null) {
+    if (cursorStyle !== null && renderRowSet.has(view.cursor.y)) {
       const x = (ORIGIN_X + view.cursor.x * CELL_WIDTH) * scale;
       const y = (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * scale;
       const width = CELL_WIDTH * scale;
@@ -1372,7 +1405,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
             b: view.theme.background[2],
             a: view.theme.background[3],
           },
-          loadOp: "clear",
+          loadOp: fullRedraw ? "clear" : "load",
           storeOp: "store",
         },
       ],
@@ -1437,12 +1470,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     postProcessPass.setBindGroup(0, surface.postProcessBindGroup);
     postProcessPass.draw(3);
     postProcessPass.end();
+    surface.sceneValid = true;
     if (!this.#performanceMeasurementEnabled) return undefined;
     const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
     const colorUploadsAfter = this.#colorAtlas.uploadMetrics();
     const fallbackUploadsAfter = this.#fallbackAtlas.uploadMetrics();
     return {
       queueSubmits: 0,
+      fullRenders: Number(fullRedraw),
+      partialRenders: Number(!fullRedraw),
+      damagedRows: renderRows.length,
       canvasPixels: viewportWidth * viewportHeight,
       renderPasses: 2,
       drawCalls:

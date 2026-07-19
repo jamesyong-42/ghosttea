@@ -42,6 +42,8 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 | ----------------- | ------------------------------------------------------------------ |
 | `idle-4`          | Four mounted panes, no output; detects idle/cursor/background work |
 | `typing-1`        | Paced input/local echo; exposes redundant input and cursor renders |
+| `sparse-1`        | Replaces one row repeatedly; isolates persistent row-damage work   |
+| `visual-1`        | Pixel fixture for box/block, Unicode, styles, cursor, and damage   |
 | `scroll-1`        | One pane receiving a fast plain-text scrolling flood               |
 | `dense-1`         | One pane with dense SGR foreground/background changes              |
 | `unicode-1`       | Native shaping, rasterization, atlas, emoji/CJK/combining pressure |
@@ -69,6 +71,12 @@ npm run bench:render -- \
 `--no-build` reuses the current release daemon and Electron build. It is useful
 for harness debugging, but optimization evidence should normally use the full
 build path so stale bundles cannot contaminate a comparison.
+
+Use `--verify-pixels` with payload cases to hash the final Electron frame,
+force a full redraw of every pane, and require the second frame to match
+exactly. `visual-1` is intended for this gate. Use `--force-full-rendering` to
+turn every invalidation into a full redraw for a controlled A/B measurement of
+row-damage rendering.
 
 Tracked worktree changes invalidate comparison reports. Untracked files are
 also rejected unless they are explicitly acknowledged; the exception remains

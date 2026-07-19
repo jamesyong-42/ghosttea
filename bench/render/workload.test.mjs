@@ -4,6 +4,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { sparseRowPayload, visualFixturePayload } from "../lib/payloads.mjs";
+
+test("sparse row payload emits one fixed-size cursor update per frame", () => {
+  const payload = sparseRowPayload({ frames: 3, row: 10, width: 100 });
+  assert.equal(payload.byteLength, 3 * 107);
+  assert.equal(payload.toString("utf8").match(/\u001b\[10;1H/g)?.length, 3);
+});
+
+test("visual fixture preserves renderer features around sparse updates", () => {
+  const payload = visualFixturePayload({ frames: 2, row: 10, width: 100 }).toString("utf8");
+  assert.match(payload, /╭─+/);
+  assert.match(payload, /░▒▓ █ ▄▀▐/);
+  assert.match(payload, /日本語 e\u0301 😀/);
+  assert.equal(payload.match(/\u001b\[10;1H/g)?.length, 2);
+});
 
 test("paced workload waits for its gate and reproduces payload bytes exactly", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ghosttea-render-workload-test-"));
