@@ -60,9 +60,11 @@ tier's four/eight-session cap are then evicted by deterministic LRU; selecting
 or reconnecting a cold pane recreates fresh native resources under its stable
 workspace identity without an automatic SSH connection. Aggregate byte-budget
 enforcement samples whole-process Darwin physical footprint and continues LRU
-eviction while above the device tier's soft bound. The implementation is
-complete; compact-device, over-soft recovery, and jetsam evidence remain release
-gates.
+eviction while above the device tier's soft bound. A signed standard-tier
+iPhone gate now drives the production path from 185.1 MiB to 145.2 MiB with one
+exact oldest-hidden-session eviction. The implementation and standard-tier
+over-soft recovery proof are complete; compact-device and real
+system-pressure/jetsam evidence remain release gates.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
 the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,

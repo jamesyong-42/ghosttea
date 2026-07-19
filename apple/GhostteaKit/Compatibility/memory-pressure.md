@@ -1,8 +1,9 @@
 # iOS terminal memory-pressure contract
 
 **Status:** renderer recovery, scrollback compression, cold-session LRU,
-aggregate physical-footprint enforcement, and an abrupt process-death
-restoration gate implemented; device pressure/jetsam qualification remains open
+aggregate physical-footprint enforcement, signed-device over-soft recovery,
+and an abrupt process-death restoration gate implemented; compact-device and
+real system pressure/jetsam qualification remain open
 
 **Implemented:** 2026-07-18
 
@@ -180,11 +181,33 @@ the policy still needs qualification evidence:
 
 - compact-tier physical-device measurements for multiple active and background
   sessions; and
-- a signed-device pressure run that crosses the soft threshold, proves
-  oldest-first hidden-session eviction, and verifies the sampled footprint
-  returns below the bound when reclaimable state is sufficient;
 - a foreground/resync qualification after a real system memory warning and a
   jetsam recovery test from persisted, secret-free workspace state.
+
+The production-app Debug gate `npm run test:ios:app:memory-recovery` now closes
+the deterministic over-soft item. It builds and signs the real app, uses an
+isolated protected store, creates five demand-paused direct-SSH sessions, and
+maps/touches Debug-only memory attributed evenly to the four hidden sessions.
+It stops above the active policy's soft limit and below its hard limit, then
+calls the exact production memory-warning handler. Passing requires:
+
+- physical footprint at or below the tier's soft limit after recovery;
+- exact oldest-first hidden-session eviction order;
+- no selected-session eviction or workspace-document mutation;
+- cold state only for evicted sessions and idle transport state for survivors;
+- one typed eviction diagnostic per eviction and no sampling, eviction, or
+  unsatisfied-budget diagnostic; and
+- complete file protection plus secret-free workspace restoration bytes.
+
+The host independently parses the numeric marker against the tier limits and
+writes redacted, app-binary-hash-bound evidence under
+`native/build/ios-memory-recovery/evidence.json`. On the first iPhone 14 Pro
+(`iPhone15,2`) run with iOS 26.5.2, the standard-tier footprint moved from
+194,085,904 bytes (185.1 MiB) to 152,273,936 bytes (145.2 MiB) after exactly
+one hidden-session eviction, below the 160 MiB soft bound. The evidence hash
+was `ae4a5acd050e87bb5b6d83f2ebfc185e5789675544d2e05444c841f266310ec8`;
+the implementation run correctly records `sourceClean: false`, so it is
+diagnostic qualification rather than release-candidate evidence.
 
 The production-app Debug gate `npm run test:ios:app:process-restoration`
 automates the safe precursor to that last item. It persists an isolated
@@ -198,5 +221,6 @@ the host terminated the prepared app with signal 15, the next launch restored
 the demand-paused workspace and emitted the pass marker, and the app exited
 zero after deleting its isolated state.
 
-Until those gates exist, a memory warning is a safe presentation-cache release
-mechanism, not evidence that the whole app is jetsam-proof.
+Until the remaining gates exist, the production warning path has deterministic
+whole-app recovery evidence on standard-tier hardware, but the app is not yet
+qualified as compact-device or jetsam-proof.

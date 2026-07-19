@@ -3047,6 +3047,18 @@ termination, this is not represented as jetsam evidence; real system-pressure
 kill and foreground/resync qualification remain open.
 The first signed iPhone 14 Pro run passed both launches and the host-initiated
 signal-15 boundary, then removed its isolated state and exited zero.
+The twenty-second slice closes the deterministic standard-tier over-soft
+recovery qualification. A Debug-only signed-production-app gate creates five
+demand-paused direct-SSH sessions in an isolated protected store, attributes
+touched mappings to the four hidden sessions, crosses the 160 MiB soft bound
+without crossing the 224 MiB hard bound, and calls the exact production memory
+warning handler. App-side assertions cover stable oldest-first LRU, selected
+session and workspace preservation, cold/idle resource state, typed diagnostics,
+and protected secret-free persistence; the host independently validates the
+numeric marker and binds redacted evidence to the signed executable. The first
+iPhone 14 Pro run recovered from 194,085,904 to 152,273,936 bytes after one
+hidden eviction. Debug triggers and mappings are absent from Release. Compact
+hardware and real OS-delivered pressure/jetsam qualification remain open.
 
 Deliverables:
 

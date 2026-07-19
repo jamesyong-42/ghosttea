@@ -64,6 +64,11 @@ final class GhostteaSSHAppModel: ObservableObject {
   private var nextFactoryHandle: UInt64 = 10_000
   private var started = false
   private let memoryBudget: GhostteaWorkspaceMemoryBudget
+  #if DEBUG
+    private var memoryRecoveryAutomationActive = false
+    private var memoryRecoveryAllocations: [String: [GhostteaMemoryRecoveryAllocation]] = [:]
+    private var memoryRecoveryEvictionOrder: [String] = []
+  #endif
 
   init(diagnostics: GhostteaDiagnosticRecorder) {
     self.diagnostics = diagnostics
@@ -129,6 +134,7 @@ final class GhostteaSSHAppModel: ObservableObject {
         profiles = try await repository.load()
         #if DEBUG
           if await runProcessRestorationAutomationIfRequested() { return }
+          if await runMemoryRecoveryAutomationIfRequested() { return }
         #endif
         if try await restoreWorkspace() { return }
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
@@ -701,6 +707,12 @@ final class GhostteaSSHAppModel: ObservableObject {
       evictionTasks[sessionID] = eviction
       await eviction.value
       evictionTasks[sessionID] = nil
+      #if DEBUG
+        if memoryRecoveryAutomationActive {
+          memoryRecoveryAllocations[sessionID] = nil
+          memoryRecoveryEvictionOrder.append(sessionID)
+        }
+      #endif
       record(.terminalSessionEvicted, severity: .info)
     } catch {
       record(.terminalSessionEvictionFailed)
@@ -901,7 +913,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       ).first
     else { throw GhostteaSSHAppError.applicationSupportUnavailable }
     #if DEBUG
-      if let automationDirectory = ghostteaProcessRestorationAutomationDirectory() {
+      if let automationDirectory = ghostteaAutomationDirectory() {
         return root.appendingPathComponent(automationDirectory, isDirectory: true)
       }
     #endif
@@ -910,7 +922,7 @@ final class GhostteaSSHAppModel: ObservableObject {
 
   private func knownHostsPath() throws -> String {
     #if DEBUG
-      if ghostteaProcessRestorationAutomationDirectory() != nil {
+      if ghostteaAutomationDirectory() != nil {
         return try applicationSupportRoot().appendingPathComponent("known-hosts").path
       }
     #endif
@@ -1061,6 +1073,196 @@ final class GhostteaSSHAppModel: ObservableObject {
         }
       }
     }
+
+    private func runMemoryRecoveryAutomationIfRequested() async -> Bool {
+      guard let rootName = ghostteaMemoryRecoveryAutomationDirectory() else { return false }
+      do {
+        let result = try await runMemoryRecoveryAutomation(rootName: rootName)
+        print(
+          "GHOSTTEA_MEMORY_RECOVERY_PASS before=\(result.beforeBytes) after=\(result.afterBytes) evicted=\(result.evictedCount) tier=\(memoryBudget.tier.rawValue)"
+        )
+        fflush(nil)
+        Darwin.exit(EXIT_SUCCESS)
+      } catch {
+        print("GHOSTTEA_MEMORY_RECOVERY_FAIL")
+        fflush(nil)
+        Darwin.exit(EXIT_FAILURE)
+      }
+    }
+
+    private func runMemoryRecoveryAutomation(
+      rootName: String
+    ) async throws -> GhostteaMemoryRecoveryAutomationResult {
+      guard credentialStore != nil else { throw GhostteaSSHAppError.automationInvariant }
+      let root = try applicationSupportRoot()
+      guard root.lastPathComponent == rootName,
+        let profileUUID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")
+      else { throw GhostteaSSHAppError.automationInvariant }
+      let profile = try GhostteaSSHConnectionProfile(
+        id: profileUUID,
+        name: "Memory recovery fixture",
+        host: "invalid.invalid",
+        username: "memory-fixture",
+        authentication: .keyboardInteractive
+      )
+      let profileStore = GhostteaSSHConnectionProfileStore(
+        fileURL: root.appendingPathComponent("ssh-profiles.json")
+      )
+      try await profileStore.save([profile])
+      profiles = [profile]
+
+      let runtime = try self.runtime ?? GhostteaRuntime()
+      self.runtime = runtime
+      let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
+      var sessions: [String: GhostteaSSHWorkspaceSession] = [:]
+      var tabs: [GhostteaWorkspaceTab] = []
+      let persistedProfileID = profile.id.uuidString.lowercased()
+      for index in 0..<5 {
+        let allocation = try await factory.allocate(.newTab, connect: false)
+        let pane = GhostteaWorkspacePane(
+          id: "memory-pane-\(index)",
+          sessionID: allocation.sessionID
+        )
+        let terminal = try GhostteaWorkspaceDocument(
+          root: .pane(pane),
+          activePaneID: pane.id
+        )
+        tabs.append(GhostteaWorkspaceTab(id: "memory-tab-\(index)", workspace: terminal))
+        sessions[allocation.sessionID] = allocation.session
+        sessionProfileIDs[allocation.sessionID] = persistedProfileID
+        grids[allocation.sessionID] = GhostteaTerminalGridSize(
+          columns: UInt16(profile.columns),
+          rows: UInt16(profile.rows)
+        )
+        sessionStatuses[allocation.sessionID] = "Reconnect available"
+      }
+      let document = try GhostteaWorkspaceTabsDocument(
+        selectedTabID: "memory-tab-4",
+        tabs: tabs
+      )
+      self.factory = factory
+      coordinator = try makeCoordinator(
+        document: document,
+        sessions: sessions,
+        factory: factory
+      )
+      workspace = document
+      residency = GhostteaWorkspaceSessionResidency(sessionIDs: document.sessionIDs)
+      residency.touch(document.selectedTabSessionIDs)
+      status = "Workspace ready"
+      try await persistWorkspace()
+
+      let restorationData = try Data(
+        contentsOf: root.appendingPathComponent("ssh-workspace.json")
+      )
+      let restorationText = String(decoding: restorationData, as: UTF8.self)
+      guard !restorationText.contains("invalid.invalid"),
+        !restorationText.contains("memory-fixture"),
+        !restorationText.contains("\"host\""),
+        !restorationText.contains("\"username\""),
+        !restorationText.contains("\"authentication\"")
+      else { throw GhostteaSSHAppError.automationInvariant }
+      for name in ["ssh-profiles.json", "ssh-workspace.json"] {
+        let attributes = try FileManager.default.attributesOfItem(
+          atPath: root.appendingPathComponent(name).path
+        )
+        guard attributes[.protectionKey] as? FileProtectionType == .complete else {
+          throw GhostteaSSHAppError.automationInvariant
+        }
+      }
+
+      let hiddenSessionIDs = document.inactiveSessionIDs
+      guard hiddenSessionIDs.count == 4,
+        let selectedSessionID = document.selectedTabSessionIDs.first,
+        let initialFootprint = GhostteaProcessMemoryFootprint.currentBytes()
+      else { throw GhostteaSSHAppError.automationInvariant }
+      try await diagnostics.beginLaunch()
+      let diagnosticSnapshot = try await diagnostics.snapshot()
+      let diagnosticBaseline = diagnosticSnapshot.events.last?.sequence ?? 0
+
+      memoryRecoveryAutomationActive = true
+      memoryRecoveryEvictionOrder = []
+      let mebibyte = UInt64(1_048_576)
+      let targetFootprint = min(
+        memoryBudget.softApplicationFootprintBytes + 24 * mebibyte,
+        memoryBudget.hardApplicationFootprintBytes - 16 * mebibyte
+      )
+      var loadedFootprint = initialFootprint
+      var allocationIndex = 0
+      while loadedFootprint <= targetFootprint {
+        guard allocationIndex < 64 else { throw GhostteaSSHAppError.automationInvariant }
+        let sessionID = hiddenSessionIDs[allocationIndex % hiddenSessionIDs.count]
+        memoryRecoveryAllocations[sessionID, default: []].append(
+          try GhostteaMemoryRecoveryAllocation(byteCount: 8 * Int(mebibyte))
+        )
+        allocationIndex += 1
+        guard let sampled = GhostteaProcessMemoryFootprint.currentBytes() else {
+          throw GhostteaSSHAppError.automationInvariant
+        }
+        loadedFootprint = sampled
+      }
+      guard loadedFootprint > memoryBudget.softApplicationFootprintBytes,
+        loadedFootprint < memoryBudget.hardApplicationFootprintBytes
+      else { throw GhostteaSSHAppError.automationInvariant }
+
+      await handleMemoryWarning()
+      try await Task.sleep(for: .milliseconds(100))
+      guard let recoveredFootprint = GhostteaProcessMemoryFootprint.currentBytes(),
+        recoveredFootprint <= memoryBudget.softApplicationFootprintBytes,
+        !memoryRecoveryEvictionOrder.isEmpty,
+        memoryRecoveryEvictionOrder
+          == Array(hiddenSessionIDs.prefix(memoryRecoveryEvictionOrder.count)),
+        !memoryRecoveryEvictionOrder.contains(selectedSessionID),
+        workspace == document
+      else { throw GhostteaSSHAppError.automationInvariant }
+      guard let coordinator else { throw GhostteaSSHAppError.automationInvariant }
+      let recoveredDocument = await coordinator.document
+      guard recoveredDocument == document else {
+        throw GhostteaSSHAppError.automationInvariant
+      }
+
+      let residentSessionIDs = await coordinator.sessionIDs
+      guard !residentSessionIDs.contains(where: { memoryRecoveryEvictionOrder.contains($0) }),
+        residentSessionIDs.contains(selectedSessionID),
+        Set(memoryRecoveryEvictionOrder).isSubset(of: coldSessionIDs)
+      else { throw GhostteaSSHAppError.automationInvariant }
+      for sessionID in residentSessionIDs {
+        guard let resource = await coordinator.session(for: sessionID) else {
+          throw GhostteaSSHAppError.automationInvariant
+        }
+        let snapshot = await resource.session.snapshot()
+        guard snapshot.reconnectState == .idle else {
+          throw GhostteaSSHAppError.automationInvariant
+        }
+      }
+
+      try await Task.sleep(for: .milliseconds(100))
+      let recoveredDiagnostics = try await diagnostics.snapshot()
+      let newDiagnostics = recoveredDiagnostics.events.filter {
+        $0.sequence > diagnosticBaseline
+      }
+      guard
+        newDiagnostics.filter({ $0.code == .terminalSessionEvicted }).count
+          == memoryRecoveryEvictionOrder.count,
+        !newDiagnostics.contains(where: {
+          $0.code == .terminalMemorySamplingFailed
+            || $0.code == .terminalMemorySoftBudgetUnsatisfied
+            || $0.code == .terminalMemoryHardBudgetUnsatisfied
+            || $0.code == .terminalSessionEvictionFailed
+        })
+      else { throw GhostteaSSHAppError.automationInvariant }
+
+      let result = GhostteaMemoryRecoveryAutomationResult(
+        beforeBytes: loadedFootprint,
+        afterBytes: recoveredFootprint,
+        evictedCount: memoryRecoveryEvictionOrder.count
+      )
+      memoryRecoveryAutomationActive = false
+      memoryRecoveryAllocations.removeAll()
+      await disconnectWorkspace(clearPersistence: true)
+      try FileManager.default.removeItem(at: root)
+      return result
+    }
   #endif
 
   private func identity(_ kind: String) -> String {
@@ -1103,5 +1305,37 @@ private enum GhostteaSSHAppError: Error {
 #if DEBUG
   private struct ProcessRestorationAutomationCheckpoint: Codable {
     let diagnosticSequence: UInt64
+  }
+
+  private struct GhostteaMemoryRecoveryAutomationResult {
+    let beforeBytes: UInt64
+    let afterBytes: UInt64
+    let evictedCount: Int
+  }
+
+  private final class GhostteaMemoryRecoveryAllocation {
+    private let pointer: UnsafeMutableRawPointer
+    private let byteCount: Int
+
+    init(byteCount: Int) throws {
+      guard byteCount > 0,
+        let mapped = mmap(
+          nil,
+          byteCount,
+          PROT_READ | PROT_WRITE,
+          MAP_PRIVATE | MAP_ANON,
+          -1,
+          0
+        ),
+        mapped != MAP_FAILED
+      else { throw GhostteaSSHAppError.automationInvariant }
+      pointer = mapped
+      self.byteCount = byteCount
+      memset(pointer, 0xA5, byteCount)
+    }
+
+    deinit {
+      munmap(pointer, byteCount)
+    }
   }
 #endif

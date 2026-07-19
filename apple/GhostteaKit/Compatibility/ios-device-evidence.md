@@ -1607,3 +1607,42 @@ This is signed-device evidence for production restoration across abrupt process
 death. The host deliberately caused SIGTERM, so it is not recorded as a jetsam
 pass. Real system-pressure termination plus foreground/resync remains an open
 release qualification.
+
+## 2026-07-18: production over-soft memory recovery
+
+`npm run test:ios:app:memory-recovery` built, signed, installed, and launched
+the production Debug app on the same iPhone 14 Pro (`iPhone15,2`) running iOS
+26.5.2. The app created five direct-SSH sessions with demand paused and no
+credential or connection attempt in a random isolated Application Support
+directory. Four hidden sessions received evenly distributed, touched,
+Debug-only mappings until Darwin `phys_footprint` crossed the standard tier's
+160 MiB soft bound while remaining below its 224 MiB hard bound.
+
+The app invoked the ordinary production memory-warning handler. It compressed
+hidden scrollback, applied the resident/count policy, evicted hidden sessions
+one at a time in deterministic LRU order, released each evicted session's test
+mapping, and resampled the whole process. The signed app emitted:
+
+```text
+GHOSTTEA_MEMORY_RECOVERY_PASS before=194085904 after=152273936 evicted=1 tier=standard
+```
+
+The host independently required `soft < before < hard`, `after <= soft`, a
+strict footprint reduction, and one to four evictions. On-device assertions
+also required exact oldest-first order, selected-session protection, an
+unchanged workspace document, cold state only for evicted resources, idle
+surviving transports, matching typed diagnostics, complete file protection,
+and secret-free restoration JSON. The app removed the isolated state and
+exited zero. The Release app built successfully and contained none of the
+automation triggers, marker, or allocation type.
+
+The ignored redacted evidence file is bound to launcher SHA-256
+`debf68c9318142237bbf8079453948f313ae9406b22116ca7ee8e0b075212438`, app
+logic SHA-256
+`25ec549e70a8257e6e8fb66333f3523c19d6f272b7ac767b8554dcd4d815d690`, and
+has SHA-256
+`ae4a5acd050e87bb5b6d83f2ebfc185e5789675544d2e05444c841f266310ec8`.
+Because this implementation run records `sourceClean: false`, it is a
+diagnostic proof rather than release-candidate evidence. Compact-tier hardware,
+an OS-delivered warning with foreground/TRF1 resync, and actual jetsam recovery
+remain release work.

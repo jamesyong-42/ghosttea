@@ -61,7 +61,7 @@ final class GhostteaAppModel: ObservableObject {
   func start() {
     #if DEBUG
       if ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_MULTISCENE"] == "1"
-        || ghostteaProcessRestorationAutomationDirectory() != nil
+        || ghostteaAutomationDirectory() != nil
       {
         return
       }

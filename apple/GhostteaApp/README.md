@@ -86,6 +86,22 @@ This proves the production process-death restoration path. It does not claim
 that iOS jetsam caused the termination; real system-pressure/jetsam evidence
 remains a separate release gate.
 
+The over-soft-memory gate creates five disconnected, demand-paused SSH
+sessions in another isolated protected store, raises the signed app above its
+active tier's soft footprint limit without crossing the hard limit, and invokes
+the production memory-warning handler. The app and host jointly require exact
+hidden-session LRU eviction, selected-session and workspace preservation, idle
+surviving transports, protected secret-free persistence, and recovery below the
+soft limit:
+
+```bash
+npm run test:ios:app:memory-recovery
+```
+
+The touched mappings and automation entry points are Debug-only and absent from
+the Release binary. This gate deliberately triggers the production handler; it
+does not impersonate an OS-delivered warning or jetsam event.
+
 For ordinary signed-device debugging with streaming console output, use
 `npm run run:ios:app:console`.
 

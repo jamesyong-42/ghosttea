@@ -9,7 +9,7 @@ struct GhostteaApp: App {
   init() {
     let diagnostics: GhostteaDiagnosticRecorder
     #if DEBUG
-      if let automationDirectory = ghostteaProcessRestorationAutomationDirectory() {
+      if let automationDirectory = ghostteaAutomationDirectory() {
         diagnostics =
           (try? GhostteaDiagnosticRecorder.applicationSupport(
             directoryName: automationDirectory
@@ -37,7 +37,7 @@ struct GhostteaApp: App {
     _sshModel = StateObject(wrappedValue: sshModel)
     Task { try? await diagnostics.beginLaunch() }
     #if DEBUG
-      if ghostteaProcessRestorationAutomationDirectory() != nil {
+      if ghostteaAutomationDirectory() != nil {
         Task { @MainActor in sshModel.start() }
       }
     #endif
@@ -54,6 +54,14 @@ struct GhostteaApp: App {
 }
 
 #if DEBUG
+  func ghostteaAutomationDirectory() -> String? {
+    let candidates = [
+      ghostteaProcessRestorationAutomationDirectory(),
+      ghostteaMemoryRecoveryAutomationDirectory(),
+    ].compactMap { $0 }
+    return candidates.count == 1 ? candidates[0] : nil
+  }
+
   func ghostteaProcessRestorationAutomationDirectory() -> String? {
     let environment = ProcessInfo.processInfo.environment
     let prepare = environment["GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE"] == "1"
@@ -63,6 +71,15 @@ struct GhostteaApp: App {
       runID.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
     else { return nil }
     return "GhostteaProcessRestorationAutomation-\(runID)"
+  }
+
+  func ghostteaMemoryRecoveryAutomationDirectory() -> String? {
+    let environment = ProcessInfo.processInfo.environment
+    guard environment["GHOSTTEA_AUTORUN_MEMORY_RECOVERY"] == "1",
+      let runID = environment["GHOSTTEA_MEMORY_RECOVERY_RUN_ID"],
+      runID.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
+    else { return nil }
+    return "GhostteaMemoryRecoveryAutomation-\(runID)"
   }
 #endif
 

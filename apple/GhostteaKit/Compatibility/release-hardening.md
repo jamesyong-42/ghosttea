@@ -425,9 +425,14 @@ enforcement then uses Darwin's process-wide physical-footprint counter and the
 same Phase 0 96/160 MiB soft and 128/224 MiB hard bounds. While over soft, it
 evicts remaining hidden SSH resources one at a time and resamples; selected
 panes and active Truffle views remain protected, with typed diagnostics if they
-alone leave the bound unsatisfied. Compact-tier physical-device evidence, a
-deliberate over-soft recovery run, and jetsam restoration remain open release
-qualification.
+alone leave the bound unsatisfied. A Debug-only signed-app gate now creates five
+demand-paused sessions, crosses the standard-tier soft limit without crossing
+hard, invokes that exact production handler, and jointly verifies the numeric
+result on-device and on the host. Its first iPhone 14 Pro run recovered from
+185.1 MiB to 145.2 MiB with exactly the oldest hidden session evicted; the
+selected session, workspace, idle survivors, protected persistence, and typed
+diagnostics all passed. Compact-tier physical-device evidence and real
+system-pressure/jetsam restoration remain open release qualification.
 
 An opt-in Debug gate now exercises the production app across abrupt process
 death. It uses an isolated per-run protected store, persists a demand-paused

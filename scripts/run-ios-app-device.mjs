@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -9,6 +9,8 @@ const developerDirectory = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app
 const project = join(root, "apple/GhostteaApp/GhostteaApp.xcodeproj");
 const derivedData = join(root, "native/build/ios-app/signed");
 const app = join(derivedData, "Build/Products/Debug-iphoneos/Ghosttea.app");
+const appExecutable = join(app, "Ghosttea");
+const appLogicBinary = join(app, "Ghosttea.debug.dylib");
 const bundleIdentifier = "com.vibecook.Ghosttea";
 const tailscaleArtifact = resolve(root, "../p008/truffle/apple/Vendor/TailscaleKit.xcframework");
 const environment = { ...process.env, DEVELOPER_DIR: developerDirectory };
@@ -246,9 +248,7 @@ function tryTerminateApp(device) {
 
 async function runProcessRestoration(device) {
   const runID = randomBytes(16).toString("hex");
-  const baseEnvironment = { ...environment };
-  delete baseEnvironment.DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE;
-  delete baseEnvironment.DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_VERIFY;
+  const baseEnvironment = cleanLifecycleAutomationEnvironment();
   const prepareEnvironment = {
     ...baseEnvironment,
     DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE: "1",
@@ -277,6 +277,105 @@ async function runProcessRestoration(device) {
   } finally {
     tryTerminateApp(device);
   }
+}
+
+async function runMemoryRecovery(device) {
+  const runID = randomBytes(16).toString("hex");
+  const launchEnvironment = {
+    ...cleanLifecycleAutomationEnvironment(),
+    DEVICECTL_CHILD_GHOSTTEA_AUTORUN_MEMORY_RECOVERY: "1",
+    DEVICECTL_CHILD_GHOSTTEA_MEMORY_RECOVERY_RUN_ID: runID,
+  };
+
+  try {
+    const execution = await executeStreaming("xcrun", launchArguments(device), {
+      environment: launchEnvironment,
+      timeout: 180_000,
+    });
+    const output = `${execution.stdout}${execution.stderr}`;
+    const match = output.match(
+      /GHOSTTEA_MEMORY_RECOVERY_PASS before=(\d+) after=(\d+) evicted=(\d+) tier=(compact|standard)/,
+    );
+    if (!match) throw new Error("Signed iOS app exited without the memory-recovery pass marker.");
+
+    const [, beforeText, afterText, evictedText, tier] = match;
+    const beforeBytes = Number(beforeText);
+    const afterBytes = Number(afterText);
+    const evictedCount = Number(evictedText);
+    const mebibyte = 1_048_576;
+    const softBytes = (tier === "compact" ? 96 : 160) * mebibyte;
+    const hardBytes = (tier === "compact" ? 128 : 224) * mebibyte;
+    if (
+      !Number.isSafeInteger(beforeBytes) ||
+      !Number.isSafeInteger(afterBytes) ||
+      !Number.isSafeInteger(evictedCount) ||
+      beforeBytes <= softBytes ||
+      beforeBytes >= hardBytes ||
+      afterBytes > softBytes ||
+      afterBytes >= beforeBytes ||
+      evictedCount < 1 ||
+      evictedCount > 4
+    ) {
+      throw new Error("Memory-recovery marker did not satisfy the host-side tier contract.");
+    }
+
+    const gitRevision = execute("git", ["rev-parse", "HEAD"], { capture: true }).stdout.trim();
+    const gitStatus = execute("git", ["status", "--porcelain"], { capture: true }).stdout.trim();
+    const evidenceDirectory = join(root, "native/build/ios-memory-recovery");
+    mkdirSync(evidenceDirectory, { recursive: true });
+    writeFileSync(
+      join(evidenceDirectory, "evidence.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          status: "passed",
+          sourceRevision: gitRevision,
+          sourceClean: gitStatus === "",
+          appExecutableSha256: createHash("sha256").update(readFileSync(appExecutable)).digest("hex"),
+          appLogicSha256: createHash("sha256").update(readFileSync(appLogicBinary)).digest("hex"),
+          device: {
+            modelIdentifier: device.hardwareProperties.productType,
+            systemVersion: device.deviceProperties.osVersionNumber,
+          },
+          policy: { tier, softBytes, hardBytes },
+          result: { beforeBytes, afterBytes, evictedCount },
+          assertions: {
+            productionMemoryWarningPath: true,
+            hiddenLRUOrder: true,
+            selectedSessionProtected: true,
+            workspacePreserved: true,
+            sessionsDemandPaused: true,
+            protectedSecretFreePersistence: true,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    console.log(
+      `Verified signed iOS memory recovery: ${formatMiB(beforeBytes)} -> ${formatMiB(afterBytes)}, ${evictedCount} hidden session(s) evicted.`,
+    );
+  } finally {
+    tryTerminateApp(device);
+  }
+}
+
+function cleanLifecycleAutomationEnvironment() {
+  const result = { ...environment };
+  for (const name of [
+    "DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE",
+    "DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_VERIFY",
+    "DEVICECTL_CHILD_GHOSTTEA_PROCESS_RESTORATION_RUN_ID",
+    "DEVICECTL_CHILD_GHOSTTEA_AUTORUN_MEMORY_RECOVERY",
+    "DEVICECTL_CHILD_GHOSTTEA_MEMORY_RECOVERY_RUN_ID",
+  ]) {
+    delete result[name];
+  }
+  return result;
+}
+
+function formatMiB(bytes) {
+  return `${(bytes / 1_048_576).toFixed(1)} MiB`;
 }
 
 async function main() {
@@ -310,6 +409,10 @@ async function main() {
   if (process.argv.includes("--process-restoration")) {
     await runProcessRestoration(device);
     console.log("Verified abrupt process-death workspace restoration on the signed iOS app.");
+    return;
+  }
+  if (process.argv.includes("--memory-recovery")) {
+    await runMemoryRecovery(device);
     return;
   }
   const expectedMarker = process.env.GHOSTTEA_IOS_EXPECT_MARKER;

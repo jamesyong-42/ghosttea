@@ -71,6 +71,7 @@
     "test:ios:app:interop": "GHOSTTEA_IOS_CONSOLE=1 GHOSTTEA_IOS_EXPECT_MARKER=GHOSTTEA_SHARED_INTEROP_PASS DEVICECTL_CHILD_GHOSTTEA_AUTORUN_SHARED_INTEROP=1 node scripts/run-ios-app-device.mjs",
     "test:ios:app:restart": "GHOSTTEA_IOS_CONSOLE=1 GHOSTTEA_IOS_EXPECT_MARKER=GHOSTTEA_SHARED_RESTART_PASS DEVICECTL_CHILD_GHOSTTEA_AUTORUN_SHARED_RESTART=1 node scripts/run-ios-app-device.mjs",
     "test:ios:app:process-restoration": "node scripts/run-ios-app-device.mjs --process-restoration",
+    "test:ios:app:memory-recovery": "node scripts/run-ios-app-device.mjs --memory-recovery",
     "test:ios:app:multiscene": "node scripts/test-ios-app-multiscene.mjs",
     "archive:ios:app": "node scripts/archive-ios-app.mjs",
     "validate:ios:release-artifact": "node scripts/validate-ios-release-artifact.mjs",
