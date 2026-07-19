@@ -3066,6 +3066,15 @@ class. Automatic rows invoke the deterministic signed-app over-soft and
 host-termination gates; separate manual rows require OS-delivered warning/resync
 and actual system-pressure termination against the exact release artifact, so
 proxy evidence cannot silently satisfy jetsam coverage.
+The twenty-fourth slice implements the physical-campaign recorder rather than
+leaving release evidence to hand-edited JSON. It accepts only a policy-eligible
+Apple Distribution IPA evidence document for the current clean Ghosttea and
+Truffle revisions, queries the paired device for redacted model/OS identity,
+hashes retained automatic/manual records, validates reviewed scenario/method
+pairs, and atomically merges only an identical matrix/source/artifact/device
+run. Paths, device identifiers, terminal content, and arbitrary notes never
+enter beta evidence. Unit tests reject ineligible artifacts, duplicate or
+unreviewed results, and cross-artifact merges.
 
 Deliverables:
 

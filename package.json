@@ -73,6 +73,7 @@
     "test:ios:app:process-restoration": "node scripts/run-ios-app-device.mjs --process-restoration",
     "test:ios:app:memory-recovery": "node scripts/run-ios-app-device.mjs --memory-recovery",
     "test:ios:app:multiscene": "node scripts/test-ios-app-multiscene.mjs",
+    "record:ios:beta-evidence": "node scripts/record-ios-beta-evidence.mjs",
     "archive:ios:app": "node scripts/archive-ios-app.mjs",
     "validate:ios:release-artifact": "node scripts/validate-ios-release-artifact.mjs",
     "test:ssh:fixture": "node scripts/ssh-fixture.mjs test",

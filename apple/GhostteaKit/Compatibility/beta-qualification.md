@@ -64,6 +64,34 @@ scenario-specific device constraint. It also requires every evidence file to
 reference the current Git revision and one common release-artifact evidence
 hash.
 
+## Recording a physical run
+
+Do not hand-edit the evidence JSON. After retaining each automatic console or
+manual test record in the access-controlled release directory, use the recorder
+to hash those files and append their reviewed scenario/method pairs:
+
+```sh
+npm run record:ios:beta-evidence -- \
+  --artifact-evidence /secure/release/Ghosttea.release-evidence.json \
+  --device-class largePhone \
+  --refresh-rate 120 \
+  --hardware-keyboard false \
+  --pointing-device false \
+  --scenario memory-pressure-recovery:automatic:/secure/traces/memory.log \
+  --scenario process-restoration:automatic:/secure/traces/restoration.log \
+  --output /secure/release/ios-beta-evidence/large-phone.json
+```
+
+The recorder selects the single paired physical iOS device (or
+`GHOSTTEA_IOS_DEVICE_ID`), copies only its Apple model identifier and OS
+version, and stores only SHA-256 hashes of retained records. It refuses a dirty
+Ghosttea or Truffle revision, an ineligible artifact policy, a non-distribution
+IPA, debugger-enabled entitlements, unknown scenario/method pairs, duplicate
+results, or a merge across a different matrix, source, artifact, or device.
+Writes validate in a temporary file before atomically replacing an existing
+run record. This intentionally means development archives cannot create beta
+release evidence.
+
 ## Redacted evidence schema
 
 Each `.json` file in the evidence directory describes one physical device run:

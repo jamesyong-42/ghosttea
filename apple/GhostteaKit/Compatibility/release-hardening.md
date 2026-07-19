@@ -255,6 +255,14 @@ on every device class, while OS-delivered warning/resync and real
 system-pressure termination are separate manual requirements. This prevents
 the passing proxy gates from being mistaken for jetsam qualification.
 
+`npm run record:ios:beta-evidence` is the fail-closed acquisition boundary. It
+queries only the paired device's redacted model/OS fields, hashes retained
+automatic or manual records, and atomically merges reviewed scenario/method
+pairs. It will not write unless the worktree and sibling Truffle checkout are
+clean and the supplied artifact evidence contains an eligible Apple
+Distribution IPA with debugger attachment disabled. Existing evidence cannot
+be reused across a matrix, revision, artifact, or device change.
+
 Evidence files accept only reviewed numeric/device fields, known enum-like
 identifiers, revisions, timestamps, and SHA-256 hashes. They reject UDIDs,
 device names, hosts, users, commands, terminal output, and arbitrary notes.
