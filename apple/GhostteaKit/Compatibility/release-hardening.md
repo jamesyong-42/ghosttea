@@ -428,3 +428,13 @@ panes and active Truffle views remain protected, with typed diagnostics if they
 alone leave the bound unsatisfied. Compact-tier physical-device evidence, a
 deliberate over-soft recovery run, and jetsam restoration remain open release
 qualification.
+
+An opt-in Debug gate now exercises the production app across abrupt process
+death. It uses an isolated per-run protected store, persists a demand-paused
+workspace, lets the host terminate the process without a lifecycle callback,
+and verifies stable identity, zero connection attempt, secret-free restoration,
+and conservative `previousTerminationUnrecorded` diagnostics after relaunch.
+This reduces the jetsam-restoration risk but remains a proxy: a real
+system-pressure kill and foreground/resync run are still required for release.
+The first signed iPhone 14 Pro run completed both launches, the host-initiated
+signal-15 termination, restoration validation, isolated cleanup, and exit zero.

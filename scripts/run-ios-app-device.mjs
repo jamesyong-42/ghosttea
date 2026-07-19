@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -35,7 +36,7 @@ function executeStreaming(program, args, options = {}) {
   return new Promise((resolveExecution, rejectExecution) => {
     const child = spawn(program, args, {
       cwd: root,
-      env: environment,
+      env: options.environment ?? environment,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -62,6 +63,50 @@ function executeStreaming(program, args, options = {}) {
         return;
       }
       resolveExecution({ status, stdout, stderr });
+    });
+  });
+}
+
+function executeStreamingUntilMarker(program, args, marker, options = {}) {
+  return new Promise((resolveExecution, rejectExecution) => {
+    const child = spawn(program, args, {
+      cwd: root,
+      env: options.environment ?? environment,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    let matched = false;
+    const receive = (chunk, destination) => {
+      output += chunk;
+      destination.write(chunk);
+      if (!matched && output.includes(marker)) {
+        matched = true;
+        options.onMarker?.();
+      }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => receive(chunk, process.stdout));
+    child.stderr.on("data", (chunk) => receive(chunk, process.stderr));
+    const timer = setTimeout(() => {
+      options.onTimeout?.();
+      child.kill("SIGTERM");
+    }, options.timeout ?? 180_000);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectExecution(error);
+    });
+    child.once("close", (status, signal) => {
+      clearTimeout(timer);
+      if (!matched) {
+        rejectExecution(
+          new Error(
+            `${program} ${args.join(" ")} exited before marker ${marker} with status ${status ?? `signal ${signal}`}`,
+          ),
+        );
+        return;
+      }
+      resolveExecution({ status, output });
     });
   });
 }
@@ -115,20 +160,18 @@ function findDevice() {
 }
 
 function deviceIsUnlocked(device) {
-  const response = withDeviceJSON((output) =>
-    execute("xcrun", [
-      "devicectl",
-      "device",
-      "info",
-      "lockState",
-      "--device",
-      device.identifier,
-      "--json-output",
-      output,
-      "--quiet",
-    ]),
-  );
-  return !response.result.passcodeRequired;
+  try {
+    const response = withDeviceJSON((output) =>
+      execute(
+        "xcrun",
+        ["devicectl", "device", "info", "lockState", "--device", device.identifier, "--json-output", output, "--quiet"],
+        { capture: true, allowFailure: true },
+      ),
+    );
+    return !response.result.passcodeRequired;
+  } catch {
+    return false;
+  }
 }
 
 function delay(milliseconds) {
@@ -144,6 +187,96 @@ async function waitForUnlockedDevice(device) {
     if (deviceIsUnlocked(device)) return;
   }
   throw new Error(`Timed out waiting for ${device.hardwareProperties.marketingName} to be unlocked.`);
+}
+
+function launchArguments(device) {
+  return [
+    "devicectl",
+    "device",
+    "process",
+    "launch",
+    "--device",
+    device.identifier,
+    "--terminate-existing",
+    "--console",
+    bundleIdentifier,
+  ];
+}
+
+function terminateApp(device) {
+  const processes = withDeviceJSON((output) =>
+    execute("xcrun", [
+      "devicectl",
+      "device",
+      "info",
+      "processes",
+      "--device",
+      device.identifier,
+      "--json-output",
+      output,
+      "--quiet",
+    ]),
+  ).result.runningProcesses;
+  for (const process of processes) {
+    if (!process.executable?.includes("/Ghosttea.app/Ghosttea")) continue;
+    execute(
+      "xcrun",
+      [
+        "devicectl",
+        "device",
+        "process",
+        "terminate",
+        "--device",
+        device.identifier,
+        "--pid",
+        String(process.processIdentifier),
+      ],
+      { allowFailure: true },
+    );
+  }
+}
+
+function tryTerminateApp(device) {
+  try {
+    terminateApp(device);
+  } catch {
+    // A disconnected device has no reachable process to clean up.
+  }
+}
+
+async function runProcessRestoration(device) {
+  const runID = randomBytes(16).toString("hex");
+  const baseEnvironment = { ...environment };
+  delete baseEnvironment.DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE;
+  delete baseEnvironment.DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_VERIFY;
+  const prepareEnvironment = {
+    ...baseEnvironment,
+    DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE: "1",
+    DEVICECTL_CHILD_GHOSTTEA_PROCESS_RESTORATION_RUN_ID: runID,
+  };
+  const verifyEnvironment = {
+    ...baseEnvironment,
+    DEVICECTL_CHILD_GHOSTTEA_AUTORUN_PROCESS_RESTORATION_VERIFY: "1",
+    DEVICECTL_CHILD_GHOSTTEA_PROCESS_RESTORATION_RUN_ID: runID,
+  };
+
+  try {
+    await executeStreamingUntilMarker("xcrun", launchArguments(device), "GHOSTTEA_PROCESS_RESTORATION_PREPARED", {
+      environment: prepareEnvironment,
+      onMarker: () => tryTerminateApp(device),
+      onTimeout: () => tryTerminateApp(device),
+    });
+    await delay(500);
+    const verified = await executeStreaming("xcrun", launchArguments(device), {
+      environment: verifyEnvironment,
+      timeout: 180_000,
+    });
+    if (!`${verified.stdout}${verified.stderr}`.includes("GHOSTTEA_PROCESS_RESTORATION_PASS")) {
+      throw new Error("Signed iOS app exited without the process-restoration pass marker.");
+    }
+  } finally {
+    tryTerminateApp(device);
+  }
 }
 
 async function main() {
@@ -174,8 +307,13 @@ async function main() {
   await waitForUnlockedDevice(device);
   execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
   await waitForUnlockedDevice(device);
+  if (process.argv.includes("--process-restoration")) {
+    await runProcessRestoration(device);
+    console.log("Verified abrupt process-death workspace restoration on the signed iOS app.");
+    return;
+  }
   const expectedMarker = process.env.GHOSTTEA_IOS_EXPECT_MARKER;
-  const launchArguments = [
+  const ordinaryLaunchArguments = [
     "devicectl",
     "device",
     "process",
@@ -187,8 +325,8 @@ async function main() {
     bundleIdentifier,
   ];
   const launched = expectedMarker
-    ? await executeStreaming("xcrun", launchArguments, { timeout: 180_000 })
-    : execute("xcrun", launchArguments);
+    ? await executeStreaming("xcrun", ordinaryLaunchArguments, { timeout: 180_000 })
+    : execute("xcrun", ordinaryLaunchArguments);
   if (expectedMarker) {
     const output = `${launched.stdout}${launched.stderr}`;
     if (!output.includes(expectedMarker)) {

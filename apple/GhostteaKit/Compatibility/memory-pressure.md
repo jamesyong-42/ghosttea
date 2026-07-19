@@ -1,8 +1,8 @@
 # iOS terminal memory-pressure contract
 
-**Status:** renderer recovery, scrollback compression, cold-session LRU, and
-aggregate physical-footprint enforcement implemented; device qualification
-remains open
+**Status:** renderer recovery, scrollback compression, cold-session LRU,
+aggregate physical-footprint enforcement, and an abrupt process-death
+restoration gate implemented; device pressure/jetsam qualification remains open
 
 **Implemented:** 2026-07-18
 
@@ -185,6 +185,18 @@ the policy still needs qualification evidence:
   returns below the bound when reclaimable state is sufficient;
 - a foreground/resync qualification after a real system memory warning and a
   jetsam recovery test from persisted, secret-free workspace state.
+
+The production-app Debug gate `npm run test:ios:app:process-restoration`
+automates the safe precursor to that last item. It persists an isolated
+demand-paused workspace, is killed by the host without a termination callback,
+and on the next signed-device launch requires stable workspace identity, no
+connection attempt, complete file protection, secret-free restoration JSON,
+and a new `previousTerminationUnrecorded` diagnostic. It deliberately does not
+label the host termination as jetsam or close the real system-pressure gate.
+The first signed run passed on an iPhone 14 Pro (`iPhone15,2`) with iOS 26.5.2:
+the host terminated the prepared app with signal 15, the next launch restored
+the demand-paused workspace and emitted the pass marker, and the app exited
+zero after deleting its isolated state.
 
 Until those gates exist, a memory warning is a safe presentation-cache release
 mechanism, not evidence that the whole app is jetsam-proof.

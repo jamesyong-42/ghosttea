@@ -12,6 +12,10 @@ import GhostteaWorkspace
 import SwiftUI
 import UIKit
 
+#if DEBUG
+  import Darwin
+#endif
+
 struct GhostteaPendingHostKey: Identifiable {
   let id = UUID()
   let challenge: GhostteaSSHHostKeyChallenge
@@ -123,6 +127,9 @@ final class GhostteaSSHAppModel: ObservableObject {
         self.repository = repository
         self.restorationStore = restorationStore
         profiles = try await repository.load()
+        #if DEBUG
+          if await runProcessRestorationAutomationIfRequested() { return }
+        #endif
         if try await restoreWorkspace() { return }
         status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
       } catch {
@@ -457,7 +464,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     let result = try await factory.restore(
       persisted,
       profiles: profiles,
-      knownHostsPath: try GhostteaSSHKnownHostsFile().prepare(),
+      knownHostsPath: try knownHostsPath(),
       hostKeyPolicy: hostKeyPolicy(),
       credentialStore: credentialStore,
       keyboardInteractiveResponder: keyboardInteractiveResponder(),
@@ -550,7 +557,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   ) throws -> GhostteaSSHConfiguration {
     guard let credentialStore else { throw GhostteaSSHAppError.notReady }
     return try profile.configuration(
-      knownHostsPath: try GhostteaSSHKnownHostsFile().prepare(),
+      knownHostsPath: try knownHostsPath(),
       hostKeyPolicy: hostKeyPolicy(),
       credentialStore: credentialStore,
       keyboardInteractiveResponder: keyboardInteractiveResponder())
@@ -893,8 +900,168 @@ final class GhostteaSSHAppModel: ObservableObject {
         for: .applicationSupportDirectory, in: .userDomainMask
       ).first
     else { throw GhostteaSSHAppError.applicationSupportUnavailable }
+    #if DEBUG
+      if let automationDirectory = ghostteaProcessRestorationAutomationDirectory() {
+        return root.appendingPathComponent(automationDirectory, isDirectory: true)
+      }
+    #endif
     return root.appendingPathComponent("Ghosttea", isDirectory: true)
   }
+
+  private func knownHostsPath() throws -> String {
+    #if DEBUG
+      if ghostteaProcessRestorationAutomationDirectory() != nil {
+        return try applicationSupportRoot().appendingPathComponent("known-hosts").path
+      }
+    #endif
+    return try GhostteaSSHKnownHostsFile().prepare()
+  }
+
+  #if DEBUG
+    private func runProcessRestorationAutomationIfRequested() async -> Bool {
+      guard let rootName = ghostteaProcessRestorationAutomationDirectory() else { return false }
+      do {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE"] == "1" {
+          try await prepareProcessRestorationAutomation(rootName: rootName)
+          print("GHOSTTEA_PROCESS_RESTORATION_PREPARED")
+          fflush(nil)
+          return true
+        }
+        try await verifyProcessRestorationAutomation(rootName: rootName)
+        print("GHOSTTEA_PROCESS_RESTORATION_PASS")
+        fflush(nil)
+        Darwin.exit(EXIT_SUCCESS)
+      } catch {
+        print("GHOSTTEA_PROCESS_RESTORATION_FAIL")
+        fflush(nil)
+        Darwin.exit(EXIT_FAILURE)
+      }
+    }
+
+    private func prepareProcessRestorationAutomation(rootName: String) async throws {
+      guard credentialStore != nil else { throw GhostteaSSHAppError.automationInvariant }
+      let root = try applicationSupportRoot()
+      guard root.lastPathComponent == rootName else {
+        throw GhostteaSSHAppError.automationInvariant
+      }
+      guard let profileID = UUID(uuidString: "00000000-0000-4000-8000-000000000001") else {
+        throw GhostteaSSHAppError.automationInvariant
+      }
+      let profile = try GhostteaSSHConnectionProfile(
+        id: profileID,
+        name: "Process restoration fixture",
+        host: "invalid.invalid",
+        username: "restoration-fixture",
+        authentication: .keyboardInteractive
+      )
+      let profileStore = GhostteaSSHConnectionProfileStore(
+        fileURL: root.appendingPathComponent("ssh-profiles.json")
+      )
+      try await profileStore.save([profile])
+      profiles = [profile]
+
+      let runtime = try self.runtime ?? GhostteaRuntime()
+      self.runtime = runtime
+      let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
+      let allocation = try await factory.allocate(.newTab, connect: false)
+      let pane = GhostteaWorkspacePane(id: "automation-pane", sessionID: allocation.sessionID)
+      let terminal = try GhostteaWorkspaceDocument(root: .pane(pane), activePaneID: pane.id)
+      let document = try GhostteaWorkspaceTabsDocument(
+        selectedTabID: "automation-tab",
+        tabs: [GhostteaWorkspaceTab(id: "automation-tab", workspace: terminal)]
+      )
+      let persistedProfileID = profile.id.uuidString.lowercased()
+      sessionProfileIDs = [allocation.sessionID: persistedProfileID]
+      grids = [
+        allocation.sessionID: GhostteaTerminalGridSize(
+          columns: UInt16(profile.columns), rows: UInt16(profile.rows))
+      ]
+      sessionStatuses = [allocation.sessionID: "Reconnect available"]
+      self.factory = factory
+      coordinator = try makeCoordinator(
+        document: document,
+        sessions: [allocation.sessionID: allocation.session],
+        factory: factory
+      )
+      workspace = document
+      residency = GhostteaWorkspaceSessionResidency(sessionIDs: document.sessionIDs)
+      residency.touch(document.selectedTabSessionIDs)
+      status = "Workspace ready"
+      try await persistWorkspace()
+
+      guard await allocation.session.session.snapshot().reconnectState == .idle else {
+        throw GhostteaSSHAppError.automationInvariant
+      }
+      try await diagnostics.beginLaunch()
+      let diagnosticsSnapshot = try await diagnostics.snapshot()
+      guard diagnosticsSnapshot.launchActive,
+        let sequence = diagnosticsSnapshot.events.last?.sequence
+      else { throw GhostteaSSHAppError.automationInvariant }
+      let checkpoint = ProcessRestorationAutomationCheckpoint(diagnosticSequence: sequence)
+      let checkpointURL = root.appendingPathComponent("checkpoint.json")
+      try JSONEncoder().encode(checkpoint).write(to: checkpointURL, options: .atomic)
+      try FileManager.default.setAttributes(
+        [.protectionKey: FileProtectionType.complete],
+        ofItemAtPath: checkpointURL.path
+      )
+      try validateProcessRestorationFiles(root: root)
+    }
+
+    private func verifyProcessRestorationAutomation(rootName: String) async throws {
+      let root = try applicationSupportRoot()
+      guard root.lastPathComponent == rootName,
+        try await restoreWorkspace(),
+        let workspace,
+        workspace.sessionIDs.count == 1,
+        status == "Workspace restored · reconnect when ready",
+        frames.isEmpty,
+        let sessionID = workspace.sessionIDs.first,
+        sessionStatuses[sessionID] == "Reconnect available",
+        let coordinator,
+        let resource = await coordinator.session(for: sessionID),
+        await resource.session.snapshot().reconnectState == .idle
+      else { throw GhostteaSSHAppError.automationInvariant }
+
+      let restorationURL = root.appendingPathComponent("ssh-workspace.json")
+      let restorationData = try Data(contentsOf: restorationURL)
+      let restorationText = String(decoding: restorationData, as: UTF8.self)
+      guard !restorationText.contains("invalid.invalid"),
+        !restorationText.contains("restoration-fixture"),
+        !restorationText.contains("\"host\""),
+        !restorationText.contains("\"username\""),
+        !restorationText.contains("\"authentication\"")
+      else { throw GhostteaSSHAppError.automationInvariant }
+
+      let checkpoint = try JSONDecoder().decode(
+        ProcessRestorationAutomationCheckpoint.self,
+        from: Data(contentsOf: root.appendingPathComponent("checkpoint.json"))
+      )
+      try await diagnostics.beginLaunch()
+      let diagnosticsSnapshot = try await diagnostics.snapshot()
+      guard
+        diagnosticsSnapshot.events.contains(where: {
+          $0.sequence > checkpoint.diagnosticSequence
+            && $0.code == .previousTerminationUnrecorded
+        })
+      else { throw GhostteaSSHAppError.automationInvariant }
+
+      try validateProcessRestorationFiles(root: root)
+      await disconnectWorkspace(clearPersistence: true)
+      try FileManager.default.removeItem(at: root)
+    }
+
+    private func validateProcessRestorationFiles(root: URL) throws {
+      for name in ["ssh-profiles.json", "ssh-workspace.json", "checkpoint.json"] {
+        let attributes = try FileManager.default.attributesOfItem(
+          atPath: root.appendingPathComponent(name).path
+        )
+        guard attributes[.protectionKey] as? FileProtectionType == .complete else {
+          throw GhostteaSSHAppError.automationInvariant
+        }
+      }
+    }
+  #endif
 
   private func identity(_ kind: String) -> String {
     "ios-\(kind)-\(UUID().uuidString.lowercased())"
@@ -928,4 +1095,13 @@ private enum GhostteaSSHAppError: Error {
   case missingProfile
   case missingResidentSession
   case applicationSupportUnavailable
+  #if DEBUG
+    case automationInvariant
+  #endif
 }
+
+#if DEBUG
+  private struct ProcessRestorationAutomationCheckpoint: Codable {
+    let diagnosticSequence: UInt64
+  }
+#endif

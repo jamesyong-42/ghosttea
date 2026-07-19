@@ -1572,3 +1572,38 @@ This closes the automated 120 Hz local latency and shared-engine feed gate. A
 60 Hz physical run, longer Instruments CPU/Energy traces, rendered
 four/eight-session output, and physical iPad multi-scene qualification remain
 release work.
+
+## 2026-07-18: production process-death restoration proxy
+
+`npm run test:ios:app:process-restoration` built, signed, installed, and
+launched the production Debug app on an iPhone 14 Pro (`iPhone15,2`) running
+iOS 26.5.2. The app used a random, per-run Application Support directory and
+created one keyboard-interactive profile with no credential plus one
+demand-paused direct-SSH workspace. Its shared Truffle runtime was disabled for
+this probe, and the ordinary profile, known-hosts, workspace, and diagnostic
+stores were never opened.
+
+After the app persisted and validated its checkpoint, the host observed:
+
+```text
+GHOSTTEA_PROCESS_RESTORATION_PREPARED
+Sent signal to terminate process sent to pid <redacted>
+App terminated due to signal 15.
+```
+
+The host then relaunched the same installed app with the same opaque run scope.
+Before reporting success, the app required the original workspace session ID,
+an idle reconnect model, `Reconnect available`, no frame or connection attempt,
+complete file protection on all three documents, no host/username/authentication
+fields in workspace restoration JSON, and a
+`previousTerminationUnrecorded` diagnostic sequence newer than the prepared
+checkpoint. It removed the isolated directory and exited zero:
+
+```text
+GHOSTTEA_PROCESS_RESTORATION_PASS
+```
+
+This is signed-device evidence for production restoration across abrupt process
+death. The host deliberately caused SIGTERM, so it is not recorded as a jetsam
+pass. Real system-pressure termination plus foreground/resync remains an open
+release qualification.

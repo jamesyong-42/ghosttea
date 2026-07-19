@@ -3035,6 +3035,18 @@ short pipeline proof can never qualify. The initial attempt is retained as a
 fail-closed blocker because locked Xcode 26.1 supports iOS 26.1 while the phone
 runs iOS 26.5.2. Xcode 26.6/toolchain-lock adoption and recapture remain a
 mandatory pre-release task, while continued Phase 9 work is allowed.
+The twenty-first slice automates the production process-death restoration
+precursor. A Debug-only signed-device gate uses an isolated protected store,
+creates a direct-SSH workspace with demand paused, kills the app without its
+termination callback, and relaunches it. Passing requires stable workspace
+identity, an idle transport, explicit reconnect availability, secret-free
+restoration bytes, complete file protection, and a newer conservative
+`previousTerminationUnrecorded` diagnostic. The run cleans up its isolated
+state and never touches saved user profiles. Because the host initiates the
+termination, this is not represented as jetsam evidence; real system-pressure
+kill and foreground/resync qualification remain open.
+The first signed iPhone 14 Pro run passed both launches and the host-initiated
+signal-15 boundary, then removed its isolated state and exited zero.
 
 Deliverables:
 

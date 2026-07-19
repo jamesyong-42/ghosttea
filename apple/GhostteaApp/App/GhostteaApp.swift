@@ -7,16 +7,40 @@ struct GhostteaApp: App {
   @StateObject private var sshModel: GhostteaSSHAppModel
 
   init() {
-    let diagnostics =
-      (try? GhostteaDiagnosticRecorder.applicationSupport())
-      ?? GhostteaDiagnosticRecorder(
-        fileURL: FileManager.default.temporaryDirectory
-          .appendingPathComponent("ghosttea-redacted-diagnostics.json"))
+    let diagnostics: GhostteaDiagnosticRecorder
+    #if DEBUG
+      if let automationDirectory = ghostteaProcessRestorationAutomationDirectory() {
+        diagnostics =
+          (try? GhostteaDiagnosticRecorder.applicationSupport(
+            directoryName: automationDirectory
+          ))
+          ?? GhostteaDiagnosticRecorder(
+            fileURL: FileManager.default.temporaryDirectory
+              .appendingPathComponent("ghosttea-restoration-automation-diagnostics.json"))
+      } else {
+        diagnostics =
+          (try? GhostteaDiagnosticRecorder.applicationSupport())
+          ?? GhostteaDiagnosticRecorder(
+            fileURL: FileManager.default.temporaryDirectory
+              .appendingPathComponent("ghosttea-redacted-diagnostics.json"))
+      }
+    #else
+      diagnostics =
+        (try? GhostteaDiagnosticRecorder.applicationSupport())
+        ?? GhostteaDiagnosticRecorder(
+          fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosttea-redacted-diagnostics.json"))
+    #endif
     _sharedRuntime = StateObject(
       wrappedValue: GhostteaSharedRuntimeModel(diagnostics: diagnostics))
-    _sshModel = StateObject(
-      wrappedValue: GhostteaSSHAppModel(diagnostics: diagnostics))
+    let sshModel = GhostteaSSHAppModel(diagnostics: diagnostics)
+    _sshModel = StateObject(wrappedValue: sshModel)
     Task { try? await diagnostics.beginLaunch() }
+    #if DEBUG
+      if ghostteaProcessRestorationAutomationDirectory() != nil {
+        Task { @MainActor in sshModel.start() }
+      }
+    #endif
   }
 
   var body: some Scene {
@@ -28,6 +52,19 @@ struct GhostteaApp: App {
     }
   }
 }
+
+#if DEBUG
+  func ghostteaProcessRestorationAutomationDirectory() -> String? {
+    let environment = ProcessInfo.processInfo.environment
+    let prepare = environment["GHOSTTEA_AUTORUN_PROCESS_RESTORATION_PREPARE"] == "1"
+    let verify = environment["GHOSTTEA_AUTORUN_PROCESS_RESTORATION_VERIFY"] == "1"
+    guard prepare != verify,
+      let runID = environment["GHOSTTEA_PROCESS_RESTORATION_RUN_ID"],
+      runID.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
+    else { return nil }
+    return "GhostteaProcessRestorationAutomation-\(runID)"
+  }
+#endif
 
 private struct GhostteaSceneContainer: View {
   @State private var sceneID: UUID

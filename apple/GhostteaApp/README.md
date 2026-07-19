@@ -1,8 +1,8 @@
 # Ghosttea iOS app
 
 This is the production application composition target. Unlike
-`GhostteaHarness`, it contains no fixture credentials, automated gates, or
-diagnostic controls. Its shared-session flow owns the in-process Truffle node,
+`GhostteaHarness`, it contains no fixture credentials or release-reachable
+diagnostic controls; its opt-in automation is compiled only in Debug. Its shared-session flow owns the in-process Truffle node,
 interactive Tailscale login, peer/session browsing, logical replica, Metal
 terminal surface, keyboard/mouse/selection input, control state, and foreground
 snapshot resynchronization.
@@ -68,6 +68,23 @@ stable across this restart; the desktop `hostInstanceID` must change.
 ```bash
 npm run test:ios:app:restart
 ```
+
+The process-restoration gate uses an isolated per-run Application Support
+directory, creates a demand-paused direct-SSH workspace without a credential or
+connection attempt, then has the host terminate the app without a lifecycle
+callback. On relaunch it requires the same persisted workspace identity, an
+idle transport state, `Reconnect available`, complete file protection, a
+secret-free restoration document, and a newer
+`previousTerminationUnrecorded` diagnostic. It removes the isolated directory
+after passing and never touches saved user profiles:
+
+```bash
+npm run test:ios:app:process-restoration
+```
+
+This proves the production process-death restoration path. It does not claim
+that iOS jetsam caused the termination; real system-pressure/jetsam evidence
+remains a separate release gate.
 
 For ordinary signed-device debugging with streaming console output, use
 `npm run run:ios:app:console`.
