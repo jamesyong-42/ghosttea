@@ -3075,6 +3075,12 @@ pairs, and atomically merges only an identical matrix/source/artifact/device
 run. Paths, device identifiers, terminal content, and arbitrary notes never
 enter beta evidence. Unit tests reject ineligible artifacts, duplicate or
 unreviewed results, and cross-artifact merges.
+The same review pass rechecks the release-blocking SSH pin. libssh2 1.11.1
+remains the latest tag; master contains all six recorded fixes but is 791
+commits ahead, while the first minimal cherry-pick conflicts in `src/sftp.c`.
+The immutable lock records this evidence and remains unapproved. Phase 9 will
+consume a fixed upstream release or an independently reviewed backport, never
+rename the broad development branch as a security-only update.
 
 Deliverables:
 

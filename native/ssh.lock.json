@@ -21,7 +21,7 @@
     "knownGap": "A successful public-key partial step is reported as LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED (-19); explicit second-method sequencing works but must be policy-safe"
   },
   "securityReview": {
-    "reviewedAt": "2026-07-17",
+    "reviewedAt": "2026-07-18",
     "minimumOpenSSLTag": "openssl-3.5.7",
     "affectedThrough": "libssh2-1.11.1",
     "blockedReason": "The pinned libssh2 release is affected by newly disclosed pre-authentication vulnerabilities and no fixed upstream release has been tagged.",
@@ -41,6 +41,14 @@
       "ssh-fixture-swift",
       "ios-device-harness"
     ],
-    "completedRevalidation": []
+    "completedRevalidation": [],
+    "lastUpstreamCheck": {
+      "checkedAt": "2026-07-18",
+      "latestTaggedRelease": "libssh2-1.11.1",
+      "masterCommit": "95375dc0dd56e2457ae216249e6f6b8156d5f7a3",
+      "commitsSincePinnedRelease": 791,
+      "allRequiredFixesAreAncestors": true,
+      "minimalBackportStatus": "blocked: 2dae3024897e1898d389835151f4e9606227721d conflicts in src/sftp.c when cherry-picked onto libssh2-1.11.1"
+    }
   }
 }

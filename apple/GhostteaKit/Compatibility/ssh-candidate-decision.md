@@ -25,6 +25,18 @@ incorporates the recorded commits and the Apple, fixture, package, and physical-
 device gates are rerun. This release gate does not block Phase 1 implementation
 against the current compatibility artifact.
 
+The upstream state was checked again on 2026-07-18. The official download and
+release pages still expose 1.11.1 as the latest tag. Upstream master at
+`95375dc0dd56e2457ae216249e6f6b8156d5f7a3` contains all six fixes recorded in
+the lock, but it is 791 commits beyond the pinned release. Absorbing that branch
+would not be a narrow security update. A minimal chronological cherry-pick was
+also tested in a disposable worktree; the first backport,
+`2dae3024897e1898d389835151f4e9606227721d`, conflicts in `src/sftp.c` against
+1.11.1. No generated source or lock pin was changed. The production blocker
+therefore remains until upstream tags the prepared fixed release or a separately
+reviewed backport stack is authored and passes every recorded revalidation
+gate.
+
 Separately, against the pinned OpenSSH
 `publickey,keyboard-interactive` endpoint, the correct public key returns
 `LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED` (`-19`) with the session still

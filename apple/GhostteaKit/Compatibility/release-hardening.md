@@ -226,6 +226,13 @@ Changing the bit alone is not approval. The SSH lock must first move to a fixed
 source revision, incorporate the required fixes, and record successful Apple
 artifact, package, fixture, Swift, and physical-device revalidation.
 
+The 2026-07-18 upstream recheck found no fixed tag. Upstream master contains all
+recorded fixes but is 791 commits beyond 1.11.1, and the first attempted minimal
+backport conflicts against the release source. The lock records that observation
+without changing its pin or approval bit. Waiting for the prepared upstream
+release—or conducting a separately reviewed backport—is intentional risk
+control, not an implementation gap to bypass.
+
 ## Remaining release work
 
 The dependency graph, compiler identity, notices, app-bundle BOM, archive
