@@ -18,15 +18,16 @@ Release qualification remains open until 60 Hz and 120 Hz physical-device
 traces establish the accepted latency/CPU/energy baseline. Native shared
 text-engine lock wait/hold attribution is implemented per serialized terminal
 and replica through a dedicated snapshot ABI, with no additional call when
-profiling is disabled. Four/eight-session device evidence must still establish
-fairness and determine whether the engine needs sharding or pooling.
-The next slice adds a fail-closed physical-device Release runner for the
+profiling is disabled. A fail-closed physical-device Release runner covers the
 repeatable local pipeline. It scores 1,000 ordered input writes and 1,000
 received-byte-to-Metal submissions, requires every native/feed/decode/render
 boundary with zero sample drops, and proves suspended draw attempts submit no
-GPU work. The device returns redacted numeric JSON through `devicectl`; the host
-writes ignored evidence. The first execution is pending an unlocked device,
-and Instruments CPU/Energy plus multi-session traces remain release gates.
+GPU work. It also runs 256 concurrent native feeds per terminal across four and
+eight terminals sharing one runtime, with exact attribution counts and explicit
+lock-wait, per-session p99, and starvation/skew bounds. The device returns
+redacted numeric JSON through `devicectl`; the host writes ignored evidence. The
+first execution is pending an unlocked device, and Instruments CPU/Energy plus
+rendered multi-session traces remain release gates.
 
 ## Deterministic component inventory
 

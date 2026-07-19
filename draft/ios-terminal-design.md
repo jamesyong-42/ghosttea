@@ -2995,6 +2995,15 @@ numeric, redacted JSON evidence through `devicectl`; missing evidence or any
 failed invariant fails the host command. Its first run is pending an unlocked
 device. Longer CPU/Energy, 60/120 Hz comparison, and four/eight-session traces
 remain release evidence.
+The eighteenth slice extends the same Release/device evidence contract across
+the shared native text engine. Four and eight terminals over one runtime each
+perform 256 concurrent feeds, require exact native-feed and mutex wait/hold
+sample counts without recorder drops, and fail on an 8 ms lock-wait p99, 16 ms
+per-session feed p99, or explicit slowest/fastest starvation bounds. The
+redacted result retains per-terminal numeric distributions for the future
+sharding/pooling decision. Its first run shares the seventeenth slice's pending
+unlocked-device execution; rendered multi-session Instruments traces remain a
+separate release gate.
 
 Deliverables:
 

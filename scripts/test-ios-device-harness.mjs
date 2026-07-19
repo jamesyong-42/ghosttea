@@ -112,21 +112,15 @@ function findDevice() {
   }
 }
 
-function deviceIsUnlocked(device) {
+function queryDeviceIsUnlocked(device) {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "ghosttea-ios-lock-"));
   const output = join(temporaryDirectory, "lock-state.json");
   try {
-    execute("xcrun", [
-      "devicectl",
-      "device",
-      "info",
-      "lockState",
-      "--device",
-      device.identifier,
-      "--json-output",
-      output,
-      "--quiet",
-    ]);
+    execute(
+      "xcrun",
+      ["devicectl", "device", "info", "lockState", "--device", device.identifier, "--json-output", output, "--quiet"],
+      { capture: true },
+    );
     const lockState = JSON.parse(readFileSync(output, "utf8")).result;
     return !lockState.passcodeRequired;
   } finally {
@@ -138,8 +132,26 @@ function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
+async function deviceIsUnlocked(device) {
+  const attempts = 3;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return queryDeviceIsUnlocked(device);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+      console.log(`CoreDevice lock-state query failed; retrying (${attempt}/${attempts})…`);
+      await delay(attempt * 1_000);
+    }
+  }
+  throw new Error(
+    `Could not establish the CoreDevice tunnel to ${device.hardwareProperties.marketingName} after ${attempts} attempts: ${lastError.message}`,
+  );
+}
+
 async function waitForUnlockedDevice(device, failImmediately = false) {
-  if (deviceIsUnlocked(device)) return;
+  if (await deviceIsUnlocked(device)) return;
   if (failImmediately) {
     throw new Error(`Unlock ${device.hardwareProperties.marketingName} before running the device harness.`);
   }
@@ -147,7 +159,7 @@ async function waitForUnlockedDevice(device, failImmediately = false) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     await delay(1_000);
-    if (deviceIsUnlocked(device)) return;
+    if (await deviceIsUnlocked(device)) return;
   }
   throw new Error(`Timed out waiting for ${device.hardwareProperties.marketingName} to be unlocked.`);
 }

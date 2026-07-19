@@ -46,16 +46,27 @@ npm run test:ios:performance
 The runner builds the harness in Release configuration, signs and installs it
 on the selected unlocked iPhone, and runs 1,000 ordered in-memory transport
 writes plus 1,000 production core/TRF1/attached-Metal updates. It also attempts
-120 draws after suspending the surface. The app returns a redacted base64 JSON
-marker over `devicectl`; the host validates it and writes
+120 draws after suspending the surface. The same run creates four and then eight
+terminals over one shared native runtime and concurrently feeds 256 updates per
+terminal. The app returns a redacted base64 JSON marker over `devicectl`; the
+host validates it and writes
 `native/build/ios-performance-device/evidence.json`. A missing marker, dropped
 sample, percentile failure, missing native boundary, transport mismatch, or
 background Metal submission fails the command. No SSH fixture or credential is
 used by this gate.
 
-This automated workload establishes repeatable local-pipeline latency and
-background-submission evidence. It does not replace the longer interactive
-output, multi-session, Time Profiler, or Energy Log trace below.
+The shared-engine scenarios require every terminal to complete every feed and
+every feed to produce one native-feed and text-engine wait/hold sample. They
+reject a text-engine lock-wait p99 at or above 8 ms, any per-terminal feed p99
+at or above 16 ms, a slowest-to-fastest p99 ratio above 4x, or a completion-time
+ratio above 2x. These are deterministic starvation and lock-convoy guards. The
+per-terminal summaries and native aggregate samples remain in the evidence so
+the first device run can still drive the architectural sharding/pooling review.
+
+This automated workload establishes repeatable local-pipeline latency,
+background-submission, and shared-engine fairness evidence. It does not replace
+the longer interactive output, rendered multi-session, Time Profiler, or Energy
+Log trace below.
 
 Run the same release build, fixture, duration, power state, thermal state, and
 display refresh mode on each comparison. Record the source revision, archive
@@ -119,5 +130,7 @@ Each serialized terminal and logical replica now exposes its latest completed
 native text-engine acquisition through a dedicated C ABI snapshot. Swift reads
 that snapshot only while profiling is enabled and records one wait/hold sample
 per new sequence; normal production execution makes no additional FFI call.
-The four/eight-session physical trace must still establish acceptable fairness
-and decide whether the shared engine requires sharding or pooling.
+The automated four/eight-session feed gate now establishes a fail-closed first
+fairness bound. The rendered four/eight-session Instruments trace must still
+confirm that finding under real display work and decide whether the shared
+engine requires sharding or pooling.

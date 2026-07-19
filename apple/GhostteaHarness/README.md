@@ -61,8 +61,9 @@ The harness provides:
 - strict known-host verification with explicit reject, accept-once, and atomic accept-and-store decisions.
 - a Release-mode physical-device performance gate with 1,000 ordered input
   writes, 1,000 received-byte-to-Metal samples, native text-engine contention
-  attribution, and a zero-background-submission assertion. It emits only
-  redacted numeric JSON evidence.
+  attribution, concurrent four/eight-terminal shared-engine fairness, and a
+  zero-background-submission assertion. It emits only redacted numeric JSON
+  evidence.
 
 The harness is diagnostic scaffolding, not the production terminal UI. Its
 offscreen and preview surfaces render TRF1 only for conformance; it does not
@@ -98,7 +99,7 @@ npm run test:ios:performance
 
 Passing evidence is written under ignored
 `native/build/ios-performance-device/evidence.json`. Energy Log, Time Profiler,
-and multi-session scoring remain separate release evidence.
+and rendered multi-session scoring remain separate release evidence.
 
 The automated launcher discovers one connected physical iOS device, the sole
 development team configured in Xcode, and the Mac's Bonjour hostname. It checks
