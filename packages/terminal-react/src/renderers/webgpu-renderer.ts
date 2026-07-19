@@ -51,7 +51,8 @@ struct VertexOutput {
 }
 `;
 
-const GLYPH_SHADER = /* wgsl */ `
+function glyphShader(coverageChannel: "r" | "a"): string {
+  return /* wgsl */ `
 @group(0) @binding(0) var atlas: texture_2d<f32>;
 @group(0) @binding(1) var atlas_sampler: sampler;
 
@@ -91,11 +92,15 @@ struct VertexOutput {
 }
 
 @fragment fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
-  let coverage = textureSample(atlas, atlas_sampler, input.uv).a;
+  let coverage = textureSample(atlas, atlas_sampler, input.uv).${coverageChannel};
   let alpha = input.color.a * coverage;
   return vec4f(input.color.rgb * alpha, alpha);
 }
 `;
+}
+
+const MONO_GLYPH_SHADER = glyphShader("r");
+const FALLBACK_GLYPH_SHADER = glyphShader("a");
 
 const COLOR_GLYPH_SHADER = /* wgsl */ `
 @group(0) @binding(0) var atlas: texture_2d<f32>;
@@ -365,11 +370,12 @@ class NativeGlyphAtlas {
     readonly device: GPUDevice,
     bindGroupLayout: GPUBindGroupLayout,
     readonly label: string,
+    readonly format: "r8unorm" | "rgba8unorm",
   ) {
     this.#texture = device.createTexture({
       label,
       size: [ATLAS_SIZE, ATLAS_SIZE],
-      format: "rgba8unorm",
+      format,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.#sampler = device.createSampler({ minFilter: "linear", magFilter: "linear" });
@@ -432,22 +438,12 @@ class NativeGlyphAtlas {
       this.#rowHeight = 0;
     }
     if (this.#y + height + 1 > ATLAS_SIZE) throw new Error(`${this.label} exhausted`);
-    let pixels = definition.pixels;
-    if (definition.format === GlyphFormat.Alpha8) {
-      const rgba = new Uint8Array(width * height * 4);
-      for (let index = 0; index < pixels.length; index += 1) {
-        const offset = index * 4;
-        rgba[offset] = 255;
-        rgba[offset + 1] = 255;
-        rgba[offset + 2] = 255;
-        rgba[offset + 3] = pixels[index]!;
-      }
-      pixels = rgba;
-    }
+    const pixels = definition.pixels;
+    const bytesPerPixel = this.format === "r8unorm" ? 1 : 4;
     this.device.queue.writeTexture(
       { texture: this.#texture, origin: [this.#x, this.#y] },
       pixels,
-      { bytesPerRow: width * 4, rowsPerImage: height },
+      { bytesPerRow: width * bytesPerPixel, rowsPerImage: height },
       [width, height],
     );
     this.#uploadBytes += pixels.byteLength;
@@ -814,6 +810,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   readonly #surfaces = new Map<string, WebGpuSurface>();
   readonly #rectanglePipeline: GPURenderPipeline;
   readonly #glyphPipeline: GPURenderPipeline;
+  readonly #fallbackGlyphPipeline: GPURenderPipeline;
   readonly #colorGlyphPipeline: GPURenderPipeline;
   readonly #postProcessPipeline: GPURenderPipeline;
   readonly #postProcessSampler: GPUSampler;
@@ -827,7 +824,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     readonly format: GPUTextureFormat,
   ) {
     const rectangleModule = device.createShaderModule({ label: "terminal rectangle shader", code: RECT_SHADER });
-    const glyphModule = device.createShaderModule({ label: "terminal glyph shader", code: GLYPH_SHADER });
+    const glyphModule = device.createShaderModule({ label: "terminal glyph shader", code: MONO_GLYPH_SHADER });
+    const fallbackGlyphModule = device.createShaderModule({
+      label: "terminal fallback glyph shader",
+      code: FALLBACK_GLYPH_SHADER,
+    });
     const colorGlyphModule = device.createShaderModule({
       label: "terminal color glyph shader",
       code: COLOR_GLYPH_SHADER,
@@ -878,6 +879,31 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       fragment: { module: glyphModule, entryPoint: "fragment_main", targets: [{ format, blend: premultipliedBlend }] },
       primitive: { topology: "triangle-list" },
     });
+    this.#fallbackGlyphPipeline = device.createRenderPipeline({
+      label: "terminal fallback glyph pipeline",
+      layout: "auto",
+      vertex: {
+        module: fallbackGlyphModule,
+        entryPoint: "vertex_main",
+        buffers: [
+          {
+            arrayStride: 48,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x4" },
+              { shaderLocation: 1, offset: 16, format: "float32x4" },
+              { shaderLocation: 2, offset: 32, format: "float32x4" },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module: fallbackGlyphModule,
+        entryPoint: "fragment_main",
+        targets: [{ format, blend: premultipliedBlend }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
     this.#colorGlyphPipeline = device.createRenderPipeline({
       label: "terminal color glyph pipeline",
       layout: "auto",
@@ -921,13 +947,15 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       device,
       this.#glyphPipeline.getBindGroupLayout(0),
       "native monochrome glyph atlas",
+      "r8unorm",
     );
     this.#colorAtlas = new NativeGlyphAtlas(
       device,
       this.#colorGlyphPipeline.getBindGroupLayout(0),
       "native color glyph atlas",
+      "rgba8unorm",
     );
-    this.#fallbackAtlas = new FallbackGlyphAtlas(device, this.#glyphPipeline.getBindGroupLayout(0));
+    this.#fallbackAtlas = new FallbackGlyphAtlas(device, this.#fallbackGlyphPipeline.getBindGroupLayout(0));
   }
 
   static async create(onLost: (info: GPUDeviceLostInfo) => void): Promise<WebGpuTerminalRenderer> {
@@ -1359,7 +1387,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       pass.draw(6, colorGlyphVertices.length / 12);
     }
     if (fallbackGlyphBuffer && fallbackGlyphData.length > 0) {
-      pass.setPipeline(this.#glyphPipeline);
+      pass.setPipeline(this.#fallbackGlyphPipeline);
       pass.setBindGroup(0, this.#fallbackAtlas.bindGroup);
       pass.setVertexBuffer(0, fallbackGlyphBuffer);
       pass.draw(6, fallbackGlyphVertices.length / 12);
