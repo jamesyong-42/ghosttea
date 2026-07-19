@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 if (process.platform !== "darwin") process.exit(0);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const nativeDirectory = join(root, "apps", "desktop", "native");
+const appDirectory = resolve(root, process.argv[2] ?? "apps/desktop");
+const nativeDirectory = join(appDirectory, "native");
 const output = join(nativeDirectory, "build", "Release", "ghosttea_native_tabs.node");
 const inputs = [join(nativeDirectory, "binding.gyp"), join(nativeDirectory, "macos-tab-order.mm")];
 if (existsSync(output) && inputs.every((input) => statSync(input).mtimeMs <= statSync(output).mtimeMs)) process.exit(0);

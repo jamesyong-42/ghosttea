@@ -1,0 +1,22 @@
+appId: com.vibecook.ghosttea.experiment
+productName: Ghosttea Experiment
+asar: true
+directories:
+  output: ../../dist-experiment
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: build/bin/ghosttead
+    to: bin/ghosttead
+mac:
+  category: public.app-category.developer-tools
+  extraResources:
+    - from: native/build/Release/ghosttea_native_tabs.node
+      to: native/ghosttea_native_tabs.node
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+artifactName: ${productName}-${version}-${arch}.${ext}
