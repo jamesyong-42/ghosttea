@@ -28,6 +28,7 @@ import {
 } from "./renderers/types.js";
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
+import { cursorActivityChangesPixels } from "./cursor-invalidation.js";
 import { emptyRenderMetrics, type TerminalRenderPerformanceSnapshot } from "./performance.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 
@@ -556,8 +557,10 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       scheduleCursorBlink(message.sessionHandle, value.focused);
       markDirty(message.sessionHandle);
     } else if (message.type === "cursor-activity") {
+      const value = snapshot(message.sessionHandle);
+      const changesPixels = cursorActivityChangesPixels(value.cursor, value.focused, value.cursorBlinkVisible);
       scheduleCursorBlink(message.sessionHandle, true);
-      markDirty(message.sessionHandle);
+      if (changesPixels) markDirty(message.sessionHandle);
     } else if (message.type === "performance-start") {
       void ensureRenderer()
         .then(() => {
