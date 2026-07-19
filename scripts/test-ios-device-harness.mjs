@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,8 +14,8 @@ const environment = {
 const fixtureScript = join(root, "scripts/ssh-fixture.mjs");
 const project = join(root, "apple/GhostteaHarness/GhostteaHarness.xcodeproj");
 const derivedData = join(root, "native/build/ios-harness/signed-automated");
-const app = join(derivedData, "Build/Products/Debug-iphoneos/GhostteaHarness.app");
 const bundleIdentifier = "com.vibecook.GhostteaHarness";
+const performanceEvidencePath = join(root, "native/build/ios-performance-device/evidence.json");
 let fixtureStarted = false;
 const productionTmuxAutomation = process.argv.includes("--production-tmux");
 const productionVimAutomation = process.argv.includes("--production-vim");
@@ -31,6 +31,7 @@ const productionSessionAutomation =
   productionZellijAutomation ||
   productionMonitorTuisAutomation ||
   productionClaudeAutomation;
+const performanceAutomation = process.argv.includes("--performance");
 
 function execute(program, args, options = {}) {
   const result = spawnSync(program, args, {
@@ -180,11 +181,13 @@ async function main() {
   const team = developmentTeam();
   const device = findDevice();
   await waitForUnlockedDevice(device, true);
-  const host = fixtureHost();
+  const host = performanceAutomation ? "" : fixtureHost();
 
   try {
     execute("xcrun", ["swift", "test", "--disable-sandbox", "--package-path", join(root, "apple/GhostteaKit")]);
     execute("npm", ["run", "test:ios:harness"]);
+    const configuration = performanceAutomation ? "Release" : "Debug";
+    const configuredApp = join(derivedData, `Build/Products/${configuration}-iphoneos/GhostteaHarness.app`);
     execute("xcodebuild", [
       "-project",
       project,
@@ -192,7 +195,7 @@ async function main() {
       "GhostteaHarness",
       "-allowProvisioningUpdates",
       "-configuration",
-      "Debug",
+      configuration,
       "-quiet",
       "-destination",
       `id=${device.hardwareProperties.udid}`,
@@ -203,10 +206,12 @@ async function main() {
       "build",
     ]);
     await waitForUnlockedDevice(device);
-    execute(process.execPath, [fixtureScript, "down"], { allowFailure: true });
-    execute(process.execPath, [fixtureScript, "device-up"]);
-    fixtureStarted = true;
-    execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, app]);
+    if (!performanceAutomation) {
+      execute(process.execPath, [fixtureScript, "down"], { allowFailure: true });
+      execute(process.execPath, [fixtureScript, "device-up"]);
+      fixtureStarted = true;
+    }
+    execute("xcrun", ["devicectl", "device", "install", "app", "--device", device.identifier, configuredApp]);
     await waitForUnlockedDevice(device);
     const launchArguments = [
       "devicectl",
@@ -217,31 +222,52 @@ async function main() {
       device.identifier,
       "--terminate-existing",
     ];
-    if (productionSessionAutomation) launchArguments.push("--console");
+    if (productionSessionAutomation || performanceAutomation) launchArguments.push("--console");
     launchArguments.push(
       "--environment-variables",
       JSON.stringify({
-        ...(productionSessionAutomation
+        ...(performanceAutomation
           ? {
-              GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1",
-              ...(productionWorkspaceAutomation ? { GHOSTTEA_AUTORUN_PRODUCTION_WORKSPACE: "1" } : {}),
-              ...(productionTmuxAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "tmux" } : {}),
-              ...(productionVimAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "vim" } : {}),
-              ...(productionZellijAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "zellij" } : {}),
-              ...(productionMonitorTuisAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "monitor-tuis" } : {}),
-              ...(productionClaudeAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "claude" } : {}),
+              GHOSTTEA_AUTORUN_PERFORMANCE_GATE: "1",
+              GHOSTTEA_PERFORMANCE_RECORDING: "1",
             }
-          : {
-              GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
-              GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
-            }),
-        GHOSTTEA_FIXTURE_HOST: host,
+          : productionSessionAutomation
+            ? {
+                GHOSTTEA_AUTORUN_PRODUCTION_SESSION: "1",
+                ...(productionWorkspaceAutomation ? { GHOSTTEA_AUTORUN_PRODUCTION_WORKSPACE: "1" } : {}),
+                ...(productionTmuxAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "tmux" } : {}),
+                ...(productionVimAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "vim" } : {}),
+                ...(productionZellijAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "zellij" } : {}),
+                ...(productionMonitorTuisAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "monitor-tuis" } : {}),
+                ...(productionClaudeAutomation ? { GHOSTTEA_PRODUCTION_PROFILE: "claude" } : {}),
+              }
+            : {
+                GHOSTTEA_AUTORUN_MEMORY_GATE: "1",
+                GHOSTTEA_AUTORUN_ACTIVE_SSH_MEMORY_GATE: "1",
+              }),
+        ...(host ? { GHOSTTEA_FIXTURE_HOST: host } : {}),
       }),
       bundleIdentifier,
     );
-    execute("xcrun", launchArguments, {
-      timeout: productionSessionAutomation ? 120_000 : undefined,
+    const launch = execute("xcrun", launchArguments, {
+      capture: performanceAutomation,
+      timeout: performanceAutomation ? 180_000 : productionSessionAutomation ? 120_000 : undefined,
     });
+
+    if (performanceAutomation) {
+      const consoleOutput = `${launch.stdout ?? ""}\n${launch.stderr ?? ""}`;
+      process.stdout.write(consoleOutput);
+      const encoded = consoleOutput.match(/GHOSTTEA_PERFORMANCE_EVIDENCE ([A-Za-z0-9+/=]+)/)?.[1];
+      if (!encoded) throw new Error("Performance evidence marker was not emitted by the device app.");
+      const evidence = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      mkdirSync(join(root, "native/build/ios-performance-device"), { recursive: true });
+      writeFileSync(performanceEvidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+      if (evidence.failures?.length) {
+        throw new Error(`Physical-device performance gate failed: ${evidence.failures.join("; ")}`);
+      }
+      console.log(`Physical-device latency evidence passed and was written to ${performanceEvidencePath}.`);
+      return;
+    }
 
     console.log(`\nLaunched on ${device.hardwareProperties.marketingName} with disposable fixture ${host}:22022.`);
     if (productionSessionAutomation) {

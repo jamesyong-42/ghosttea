@@ -2986,6 +2986,15 @@ zero-initializing and covered across Rust, FFI, and Swift. Swift polls them only
 when performance recording is enabled and emits bounded wait/hold samples;
 disabled production runs make no extra FFI call. Four/eight-session physical
 traces still decide whether measured fairness requires sharding or pooling.
+The seventeenth slice automates the repeatable physical-device latency subset.
+An unlocked-device Release runner performs 1,000 real session input writes and
+1,000 production core/TRF1/attached-Metal updates, enforces the original p50/p99
+targets, requires every coarse boundary and native contention sample without
+drops, and attempts 120 draws after GPU suspension. The app returns only
+numeric, redacted JSON evidence through `devicectl`; missing evidence or any
+failed invariant fails the host command. Its first run is pending an unlocked
+device. Longer CPU/Energy, 60/120 Hz comparison, and four/eight-session traces
+remain release evidence.
 
 Deliverables:
 

@@ -37,6 +37,26 @@ hidden by a synthetic in-process timer.
 
 ## Qualification protocol
 
+The deterministic physical-device latency subset is automated with:
+
+```sh
+npm run test:ios:performance
+```
+
+The runner builds the harness in Release configuration, signs and installs it
+on the selected unlocked iPhone, and runs 1,000 ordered in-memory transport
+writes plus 1,000 production core/TRF1/attached-Metal updates. It also attempts
+120 draws after suspending the surface. The app returns a redacted base64 JSON
+marker over `devicectl`; the host validates it and writes
+`native/build/ios-performance-device/evidence.json`. A missing marker, dropped
+sample, percentile failure, missing native boundary, transport mismatch, or
+background Metal submission fails the command. No SSH fixture or credential is
+used by this gate.
+
+This automated workload establishes repeatable local-pipeline latency and
+background-submission evidence. It does not replace the longer interactive
+output, multi-session, Time Profiler, or Energy Log trace below.
+
 Run the same release build, fixture, duration, power state, thermal state, and
 display refresh mode on each comparison. Record the source revision, archive
 evidence hash, iOS/Xcode versions, device model, available refresh rates,

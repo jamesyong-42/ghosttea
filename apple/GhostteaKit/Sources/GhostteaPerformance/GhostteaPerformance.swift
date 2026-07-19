@@ -6,6 +6,7 @@ import os
 public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
   case inputToTransportWrite
   case receivedBytesToFrameDelivery
+  case receivedBytesToMetalSubmission
   case nativeFeed
   case textEngineLockWait
   case textEngineLockHold
@@ -16,6 +17,7 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     switch self {
     case .inputToTransportWrite: "input_to_transport_write"
     case .receivedBytesToFrameDelivery: "received_bytes_to_frame_delivery"
+    case .receivedBytesToMetalSubmission: "received_bytes_to_metal_submission"
     case .nativeFeed: "native_feed"
     case .textEngineLockWait: "text_engine_lock_wait"
     case .textEngineLockHold: "text_engine_lock_hold"

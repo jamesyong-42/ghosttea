@@ -23,6 +23,8 @@
 		100000000000000000000014 /* GhostteaSSHWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000010 /* GhostteaSSHWorkspace */; };
 		100000000000000000000015 /* GhostteaConnectionProfiles in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000011 /* GhostteaConnectionProfiles */; };
 		100000000000000000000016 /* GhostteaConnectionProfilesUI in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000012 /* GhostteaConnectionProfilesUI */; };
+		100000000000000000000017 /* HarnessPerformanceGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* HarnessPerformanceGate.swift */; };
+		100000000000000000000018 /* GhostteaPerformance in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000013 /* GhostteaPerformance */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +33,7 @@
 		200000000000000000000003 /* HarnessModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessModel.swift; sourceTree = "<group>"; };
 		200000000000000000000004 /* HarnessDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessDiagnostics.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* GhostteaHarness.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GhostteaHarness.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000006 /* HarnessPerformanceGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessPerformanceGate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +51,7 @@
 				100000000000000000000014 /* GhostteaSSHWorkspace in Frameworks */,
 				100000000000000000000015 /* GhostteaConnectionProfiles in Frameworks */,
 				100000000000000000000016 /* GhostteaConnectionProfilesUI in Frameworks */,
+				100000000000000000000018 /* GhostteaPerformance in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -71,6 +75,7 @@
 				200000000000000000000002 /* ContentView.swift */,
 				200000000000000000000003 /* HarnessModel.swift */,
 				200000000000000000000004 /* HarnessDiagnostics.swift */,
+				200000000000000000000006 /* HarnessPerformanceGate.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -112,6 +117,7 @@
 				A00000000000000000000010 /* GhostteaSSHWorkspace */,
 				A00000000000000000000011 /* GhostteaConnectionProfiles */,
 				A00000000000000000000012 /* GhostteaConnectionProfilesUI */,
+				A00000000000000000000013 /* GhostteaPerformance */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -172,6 +178,7 @@
 				100000000000000000000002 /* ContentView.swift in Sources */,
 				100000000000000000000003 /* HarnessModel.swift in Sources */,
 				100000000000000000000004 /* HarnessDiagnostics.swift in Sources */,
+				100000000000000000000017 /* HarnessPerformanceGate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,6 +364,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaConnectionProfilesUI;
+		};
+		A00000000000000000000013 /* GhostteaPerformance */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaPerformance;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

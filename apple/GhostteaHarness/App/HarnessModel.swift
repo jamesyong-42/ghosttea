@@ -220,6 +220,8 @@ final class HarnessModel: ObservableObject {
   private var lifecycleProbe = LifecycleProbe.none
   private var backgroundCancellationMilliseconds: Int64?
   private var disposableFixtureHost = "10.0.0.103"
+  private let performanceAutomation =
+    ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PERFORMANCE_GATE"] == "1"
 
   init() {
     if let configuredHost = ProcessInfo.processInfo.environment["GHOSTTEA_FIXTURE_HOST"],
@@ -234,6 +236,13 @@ final class HarnessModel: ObservableObject {
         guard let self else { return }
         self.handleNetworkPathChange(path)
       }
+    }
+    if performanceAutomation {
+      Task { [weak self] in
+        await Task.yield()
+        await self?.runPerformanceAutomation()
+      }
+      return
     }
     if ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_MEMORY_GATE"] == "1" {
       Task { [weak self] in
@@ -252,6 +261,23 @@ final class HarnessModel: ObservableObject {
     Task { [weak self] in
       await Task.yield()
       self?.runFrameDecoderProof()
+    }
+  }
+
+  private func runPerformanceAutomation() async {
+    do {
+      let result = try await HarnessPerformanceGate.run()
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      let payload = try encoder.encode(result).base64EncodedString()
+      print("GHOSTTEA_PERFORMANCE_EVIDENCE \(payload)")
+      print(result.passed ? "GHOSTTEA_PERFORMANCE_PASS" : "GHOSTTEA_PERFORMANCE_FAIL")
+      fflush(nil)
+      Darwin.exit(result.passed ? 0 : 1)
+    } catch {
+      print("GHOSTTEA_PERFORMANCE_ERROR \(error)")
+      fflush(nil)
+      Darwin.exit(2)
     }
   }
 
