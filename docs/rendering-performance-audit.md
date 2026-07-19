@@ -1,6 +1,6 @@
 # Per-pane rendering performance audit
 
-Status: architectural audit, before performance instrumentation or optimization.
+Status: architectural audit plus the first measured optimization cycle.
 
 The current per-pane canvas model is viable. All pane canvases in a renderer
 window share one render worker and one WebGPU device, while each pane owns its
@@ -221,3 +221,67 @@ inconclusive.
 9. Reduce text-engine lock scope and introduce concurrent shaping contexts.
 
 This ordering is provisional. Benchmark evidence can and should reorder it.
+
+## Measured optimization log
+
+The first cycle ran on an Apple M1 Max at DPR 2 and 120 Hz with the native
+WebGPU backend, nominal thermal state, one warmup, and five measured repetitions
+per steady-state workload. Raw reports are intentionally ignored local
+artifacts under `bench/render/results*.json`; each report records its exact Git
+revision and worktree exceptions.
+
+Retained changes:
+
+1. Cursor activity now redraws only when it reveals a focused blinking cursor.
+   In the typing workload, render CPU moved from 174.2 ms to 156.5 ms and
+   arrival-to-render p99 from 26.93 ms to 11.53 ms. The CPU interval crossed
+   zero, while the latency improvement was statistically supported.
+2. Worker flushes use `requestAnimationFrame` with an 8 ms timer fallback.
+   Arrival-to-render p99 improved by roughly 20-34% in typing, single-pane
+   scroll, dense, redraw, and four-pane scroll. At 120 Hz, live resize rendered
+   more intermediate sizes than the old timer; this is smoother but costs more
+   work, so resize invalidation is handled independently.
+3. Dirty panes in one worker flush share a command encoder and queue submission.
+   Four-pane scrolling retained about 295 pane renders but reduced submissions
+   to about 104, equal to flush count. Electron CPU improved 10.5%. The reported
+   per-pane arrival p99 rose 12% because batch completion is now timestamped
+   after the last pane is encoded; end-to-idle was unchanged.
+4. Resize invalidation compares DPR and rounded physical dimensions. A new
+   `resize-jitter-1` workload oscillates by 0.2 CSS pixels without changing the
+   DPR-2 canvas. It fell from 180 renders/submissions and 51.5 ms render CPU to
+   zero, reduced Electron CPU 61.5%, and improved end-to-idle 17.3% across seven
+   measured repetitions.
+5. Rectangle and glyph quads are instanced. Glyph instances contain bounds, UV
+   bounds, and color; rectangle instances contain three corners so rotated
+   segments used by rounded box drawing remain exact. Against the pre-instance
+   renderer, vertex uploads fell 73-78%, while render CPU improved 18% for
+   typing, 29% for scrolling, 41% for dense output, 31% for redraw, and 34% for
+   four-pane scrolling.
+6. The monochrome glyph atlas is `r8unorm` and consumes 4 MiB instead of 16 MiB.
+   A cold Unicode run with the same 39 atlas upload calls transferred 15,968
+   bytes instead of 47,648 bytes, a deterministic 66.5% overall reduction after
+   retaining RGBA color glyphs. The single cold timing sample is not treated as
+   latency evidence.
+7. Incremental frame application now structurally shares unchanged glyph/style
+   rows, and each style ID is resolved once per render. The isolated deltas were
+   mostly below the confidence threshold; redraw render CPU improved 5%, and
+   typing Electron CPU improved 12.8%. The change remains useful groundwork for
+   row-revision geometry caching.
+
+Across the complete retained stack versus the original clean baseline, median
+worker render CPU improved 33% for typing, 29% for scrolling, 41% for dense
+output, 24% for Unicode, 33% for redraw, and 39% for four-pane scrolling.
+Arrival-to-render p99 improved 23-87%, and vertex upload volume improved 65-75%.
+End-to-idle is intentionally almost unchanged for paced workloads because the
+payload duration and quiet window dominate it.
+
+Process working-set measurements varied materially between fresh Electron runs
+and are not used to claim a memory win. The explicit atlas allocation reduction
+is deterministic, but the next harness iteration should add GPU allocation
+counters and per-process lifetime normalization.
+
+The next invasive step is persistent row-damage rendering. Before accepting it,
+the harness needs image correctness fixtures for styled text, selection,
+cursor transitions, block elements, and rounded box drawing. Backend status and
+performance counters catch WebGPU validation failures but cannot detect a
+shader that renders valid yet incorrect pixels.
