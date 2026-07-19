@@ -14,10 +14,7 @@ const timeoutSeconds = Number(argument("--iteration-timeout-seconds") ?? 900);
 const preflightTimeoutMs = Number(argument("--preflight-timeout-ms") ?? 15_000);
 const output = resolve(root, argument("--output") ?? "native/build/ios-fuzz-campaign/evidence.json");
 const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
-const xcodeToolchainBin = join(
-  developerDir,
-  "Toolchains/XcodeDefault.xctoolchain/usr/bin",
-);
+const xcodeToolchainBin = join(developerDir, "Toolchains/XcodeDefault.xctoolchain/usr/bin");
 const lockedSwiftc = join(xcodeToolchainBin, "swiftc");
 const lockedClang = join(xcodeToolchainBin, "clang");
 
@@ -245,8 +242,7 @@ function classifyAppleAsanHang({ timedOut, stderr }) {
   return {
     code: "swift-asan-runtime-preflight-timeout",
     radar: null,
-    message:
-      "Swift AddressSanitizer runtime preflight timed out before main; TRF1 ASan coverage is unavailable.",
+    message: "Swift AddressSanitizer runtime preflight timed out before main; TRF1 ASan coverage is unavailable.",
     shadowSignature,
     hostMatchesAdvisory: false,
   };
@@ -271,7 +267,7 @@ function runProcess(program, args, { env = {}, timeoutMs, cwd = root } = {}) {
 // Cheap Apple-clang ASan capability probe (independent of TRF1).
 const clangSmokeSource = join(buildRoot, "asan-clang-smoke.c");
 const clangSmokeBinary = join(buildRoot, "asan-clang-smoke");
-writeFileSync(clangSmokeSource, 'int main(void){return 0;}\n');
+writeFileSync(clangSmokeSource, "int main(void){return 0;}\n");
 const clangBuild = runProcess(
   lockedClang,
   ["-isysroot", macSdk, "-fsanitize=address", "-O1", clangSmokeSource, "-o", clangSmokeBinary],
@@ -284,11 +280,7 @@ if (clangBuild.status !== 0) {
 }
 const clangPreflight = runProcess(clangSmokeBinary, [], { timeoutMs: preflightTimeoutMs });
 const appleAsanRuntime = {
-  status: clangPreflight.timedOut
-    ? "runtime-preflight-timeout"
-    : clangPreflight.status === 0
-      ? "passed"
-      : "failed",
+  status: clangPreflight.timedOut ? "runtime-preflight-timeout" : clangPreflight.status === 0 ? "passed" : "failed",
   elapsedMilliseconds: clangPreflight.elapsedMilliseconds,
   exitStatus: clangPreflight.status,
   stderrTail: `${clangPreflight.stderr ?? ""}`.trim().split("\n").slice(-8),
@@ -408,18 +400,14 @@ if (swiftRuntimePreflight.timedOut || appleAsanRuntime.status === "runtime-prefl
   };
   writeEvidence(evidence);
   if (ffiError) {
-    throw new Error(
-      `${blocker}; FFI boundary also failed (${ffiError.message}); evidence written to ${output}`,
-    );
+    throw new Error(`${blocker}; FFI boundary also failed (${ffiError.message}); evidence written to ${output}`);
   }
   throw new Error(`${blocker}; evidence written to ${output}`);
 }
 if (swiftRuntimePreflight.error) throw swiftRuntimePreflight.error;
 if (swiftRuntimePreflight.status !== 0) {
   process.stderr.write(`${swiftRuntimePreflight.stdout ?? ""}\n${swiftRuntimePreflight.stderr ?? ""}`);
-  throw new Error(
-    `Swift AddressSanitizer runtime preflight failed with status ${swiftRuntimePreflight.status}`,
-  );
+  throw new Error(`Swift AddressSanitizer runtime preflight failed with status ${swiftRuntimePreflight.status}`);
 }
 if (ffiError) throw ffiError;
 
