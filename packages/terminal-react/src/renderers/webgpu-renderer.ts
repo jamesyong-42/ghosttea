@@ -988,6 +988,27 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   }
 
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
+    if (!this.#surfaces.has(id)) return;
+    const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
+    const metrics = this.#encodeRender(id, view, encoder);
+    this.device.queue.submit([encoder.finish()]);
+    if (metrics) metrics.queueSubmits = 1;
+    return metrics;
+  }
+
+  renderBatch(entries: ReadonlyArray<{ id: string; view: RenderView }>): Array<TerminalRenderMetrics | undefined> {
+    const active = entries.filter(({ id }) => this.#surfaces.has(id));
+    if (active.length === 0) return entries.map(() => undefined);
+    const encoder = this.device.createCommandEncoder({ label: `terminal frame batch (${active.length} panes)` });
+    const byId = new Map<string, TerminalRenderMetrics | undefined>();
+    for (const { id, view } of active) byId.set(id, this.#encodeRender(id, view, encoder));
+    this.device.queue.submit([encoder.finish()]);
+    const firstMetrics = [...byId.values()].find((metrics) => metrics !== undefined);
+    if (firstMetrics) firstMetrics.queueSubmits = 1;
+    return entries.map(({ id }) => byId.get(id));
+  }
+
+  #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
@@ -1267,7 +1288,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const cursorVertexStart = decorationVertexStart + decorationVertexCount;
     const cursorVertexCount = rectangleVertices.length / 6 - cursorVertexStart;
 
-    const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
       colorAttachments: [
@@ -1344,12 +1364,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     postProcessPass.setBindGroup(0, surface.postProcessBindGroup);
     postProcessPass.draw(3);
     postProcessPass.end();
-    this.device.queue.submit([encoder.finish()]);
     if (!this.#performanceMeasurementEnabled) return undefined;
     const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
     const colorUploadsAfter = this.#colorAtlas.uploadMetrics();
     const fallbackUploadsAfter = this.#fallbackAtlas.uploadMetrics();
     return {
+      queueSubmits: 0,
       canvasPixels: viewportWidth * viewportHeight,
       renderPasses: 2,
       drawCalls:

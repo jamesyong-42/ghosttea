@@ -1,4 +1,5 @@
 export interface TerminalRenderMetrics {
+  queueSubmits: number;
   canvasPixels: number;
   renderPasses: number;
   drawCalls: number;
@@ -33,6 +34,7 @@ export interface TerminalRenderPerformanceSnapshot {
     panesPerFlush: number[];
   };
   renderer: {
+    queueSubmits: number;
     canvasPixelFrames: number;
     renderPasses: number;
     drawCalls: number;
@@ -54,6 +56,7 @@ export interface TerminalRenderPerformanceSnapshot {
 
 export function emptyRenderMetrics(): TerminalRenderMetrics {
   return {
+    queueSubmits: 0,
     canvasPixels: 0,
     renderPasses: 0,
     drawCalls: 0,

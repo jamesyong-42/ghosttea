@@ -155,6 +155,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       },
       scheduling: { flushes: 1, renderCalls: 1, maximumDirtyPanes: 1, panesPerFlush: [1] },
       renderer: {
+        queueSubmits: 1,
         canvasPixelFrames: 100,
         renderPasses: 2,
         drawCalls: 2,

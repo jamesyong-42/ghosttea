@@ -60,6 +60,7 @@ export interface TerminalRenderer {
   unmount(id: string): void;
   resize(id: string, size: PixelSize): void;
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined;
+  renderBatch?(entries: ReadonlyArray<{ id: string; view: RenderView }>): Array<TerminalRenderMetrics | undefined>;
   setPerformanceMeasurementEnabled?(enabled: boolean): void;
   settle?(): Promise<void>;
 }

@@ -105,6 +105,7 @@ function beginPerformanceMeasurement(): void {
     },
     scheduling: { flushes: 0, renderCalls: 0, maximumDirtyPanes: 0, panesPerFlush: [] },
     renderer: {
+      queueSubmits: 0,
       canvasPixelFrames: 0,
       renderPasses: 0,
       drawCalls: 0,
@@ -128,6 +129,7 @@ function notePerformanceActivity(now = performance.now()): void {
 function recordRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): void {
   const target = performanceMeasurement?.renderer;
   if (!target) return;
+  target.queueSubmits += metrics.queueSubmits;
   target.canvasPixelFrames += metrics.canvasPixels;
   target.renderPasses += metrics.renderPasses;
   target.drawCalls += metrics.drawCalls;
@@ -316,28 +318,34 @@ async function flush(): Promise<void> {
     );
   }
   for (const id of ids) dirty.delete(id);
-  for (const id of ids) {
-    if (!mounts.has(id)) continue;
-    const snapshot = snapshots.get(id);
-    if (!snapshot) continue;
+  const entries = ids.flatMap((id) => {
+    const view = mounts.has(id) ? snapshots.get(id) : undefined;
+    return view ? [{ id, view }] : [];
+  });
+  if (entries.length > 0) {
     try {
       const active = performanceMeasurement;
       const beforeRender = active ? performance.now() : 0;
-      const dirtySince = active?.dirtySince.get(id);
-      const lastFrameAt = active?.lastFrameAt.get(id);
-      const metrics = backend.render(id, snapshot);
+      const metrics = backend.renderBatch
+        ? backend.renderBatch(entries)
+        : entries.map(({ id, view }) => backend.render(id, view));
       const renderedAt = active ? performance.now() : 0;
       if (active && performanceMeasurement === active) {
-        active.scheduling.renderCalls += 1;
+        active.scheduling.renderCalls += entries.length;
         active.samples.renderCpuMs.push(renderedAt - beforeRender);
-        if (dirtySince !== undefined) active.samples.dirtyToRenderMs.push(renderedAt - dirtySince);
-        if (lastFrameAt !== undefined) active.samples.frameArrivalToRenderMs.push(renderedAt - lastFrameAt);
-        active.dirtySince.delete(id);
-        recordRenderMetrics(metrics ?? emptyRenderMetrics());
+        for (let index = 0; index < entries.length; index += 1) {
+          const { id } = entries[index]!;
+          const dirtySince = active.dirtySince.get(id);
+          const lastFrameAt = active.lastFrameAt.get(id);
+          if (dirtySince !== undefined) active.samples.dirtyToRenderMs.push(renderedAt - dirtySince);
+          if (lastFrameAt !== undefined) active.samples.frameArrivalToRenderMs.push(renderedAt - lastFrameAt);
+          active.dirtySince.delete(id);
+          recordRenderMetrics(metrics[index] ?? emptyRenderMetrics());
+        }
         notePerformanceActivity(renderedAt);
       }
     } catch (error) {
-      console.error(`[terminal-renderer] failed to render view ${id}`, error);
+      console.error(`[terminal-renderer] failed to render ${entries.length} view(s)`, error);
     }
   }
   if ([...dirty].some((id) => !occluded.has(id))) scheduleFlush();
