@@ -475,10 +475,10 @@ function applyFrame(packet: ArrayBuffer): void {
   const rows = full ? Array<string>(frame.rows).fill("") : previous.rows.slice();
   const nativeRows = full
     ? Array.from({ length: frame.rows }, () => [] as GlyphInstance[])
-    : previous.nativeRows.map((row) => row.slice());
+    : previous.nativeRows.slice();
   const nativeStyleRows = full
     ? Array.from({ length: frame.rows }, () => [] as StyleRun[])
-    : previous.nativeStyleRows.map((row) => row.slice());
+    : previous.nativeStyleRows.slice();
   const rowRevisions = full ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
   const replacements = decodeRowReplacements(rowSection);
   if (active) active.frames.rowsDecoded += replacements.length;

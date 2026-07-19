@@ -1086,6 +1086,14 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const glyphVertices: number[] = [];
     const colorGlyphVertices: number[] = [];
     const fallbackGlyphVertices: number[] = [];
+    const resolvedStyles = new Map<number, ResolvedStyle>();
+    const styleFor = (styleId: number): ResolvedStyle => {
+      const cached = resolvedStyles.get(styleId);
+      if (cached) return cached;
+      const resolved = resolveStyle(view.styleDefinitions.get(styleId), view.theme);
+      resolvedStyles.set(styleId, resolved);
+      return resolved;
+    };
     const monoDefinitions = new Map<number, GlyphDefinition>();
     const colorDefinitions = new Map<number, GlyphDefinition>();
     for (const row of view.nativeRows) {
@@ -1103,7 +1111,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
 
     for (let row = 0; row < view.nativeStyleRows.length; row += 1) {
       for (const run of view.nativeStyleRows[row] ?? []) {
-        const style = resolveStyle(view.styleDefinitions.get(run.styleId), view.theme);
+        const style = styleFor(run.styleId);
         if (!style.background) continue;
         pushRectangle(
           rectangleVertices,
@@ -1150,7 +1158,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         for (const instance of view.nativeRows[row] ?? []) {
           const definition = view.glyphDefinitions.get(instance.glyphId);
           if (!definition) continue;
-          const style = resolveStyle(view.styleDefinitions.get(instance.styleId), view.theme);
+          const style = styleFor(instance.styleId);
           if (style.invisible) continue;
           const isSelected = selectionContains(selection, row, instance.cellStart);
           const foreground = isSelected ? view.theme.selectionForeground : style.foreground;
@@ -1237,7 +1245,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
 
     for (let row = 0; row < view.nativeStyleRows.length; row += 1) {
       for (const run of view.nativeStyleRows[row] ?? []) {
-        const style = resolveStyle(view.styleDefinitions.get(run.styleId), view.theme);
+        const style = styleFor(run.styleId);
         if (style.invisible) continue;
         const x = (ORIGIN_X + run.cellStart * CELL_WIDTH) * scale;
         const width = run.cellSpan * CELL_WIDTH * scale;
