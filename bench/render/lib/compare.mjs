@@ -225,6 +225,12 @@ export function validateComparableReports(baselineReport, candidateReport) {
     ["candidate", candidateReport],
   ]) {
     if (report.config?.runner?.gitDirty) issues.push(`${label} was captured from a dirty worktree`);
+    const untracked = report.config?.runner?.gitUntrackedFiles ?? [];
+    const accepted = new Set(report.config?.runner?.acceptedUntrackedFiles ?? []);
+    const unexpectedUntracked = untracked.filter((path) => !accepted.has(path));
+    if (unexpectedUntracked.length > 0) {
+      issues.push(`${label} contained unaccepted untracked files: ${unexpectedUntracked.join(", ")}`);
+    }
     if (["serious", "critical"].includes(report.electron?.finalThermalState)) {
       issues.push(`${label} ended at ${report.electron.finalThermalState} thermal state`);
     }

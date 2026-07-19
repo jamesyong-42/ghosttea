@@ -69,6 +69,16 @@ npm run bench:render -- \
 for harness debugging, but optimization evidence should normally use the full
 build path so stale bundles cannot contaminate a comparison.
 
+Tracked worktree changes invalidate comparison reports. Untracked files are
+also rejected unless they are explicitly acknowledged; the exception remains
+visible in raw metadata:
+
+```sh
+npm run bench:render -- \
+  --allow-untracked=pnpm-lock.yaml,pnpm-workspace.yaml \
+  --output=bench/render/results-baseline.json
+```
+
 ## Recorded evidence
 
 Each measured repetition preserves raw data rather than only a headline FPS:

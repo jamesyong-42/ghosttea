@@ -47,4 +47,11 @@ test("comparison gate rejects dirty or mismatched runs", () => {
   assert.deepEqual(validateComparableReports(report, mismatch), [
     "machine, display, runtime, suite, or workload configuration differs",
   ]);
+  const untracked = structuredClone(report);
+  untracked.config.runner.gitUntrackedFiles = ["local.txt"];
+  assert.deepEqual(validateComparableReports(report, untracked), [
+    "candidate contained unaccepted untracked files: local.txt",
+  ]);
+  untracked.config.runner.acceptedUntrackedFiles = ["local.txt"];
+  assert.deepEqual(validateComparableReports(report, untracked), []);
 });

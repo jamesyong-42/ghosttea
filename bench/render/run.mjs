@@ -21,6 +21,7 @@ function parseArgs(argv) {
     cooldownMs: 750,
     quietMs: 300,
     build: true,
+    allowUntracked: [],
     cases: ["idle-4", "typing-1", "scroll-1", "dense-1", "unicode-1", "redraw-1", "scroll-4", "resize-1"],
   };
   for (const argument of argv) {
@@ -33,7 +34,9 @@ function parseArgs(argv) {
     else if (argument.startsWith("--cooldown-ms=")) options.cooldownMs = Number(argument.slice(14));
     else if (argument.startsWith("--quiet-ms=")) options.quietMs = Number(argument.slice(11));
     else if (argument.startsWith("--cases=")) options.cases = argument.slice(8).split(",").filter(Boolean);
-    else if (argument === "--no-build") options.build = false;
+    else if (argument.startsWith("--allow-untracked=")) {
+      options.allowUntracked = argument.slice("--allow-untracked=".length).split(",").filter(Boolean);
+    } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
   return options;
@@ -48,6 +51,10 @@ function run(command, args, options = {}) {
 function capture(command, args) {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8" });
   return result.status === 0 ? result.stdout.trim() : "unknown";
+}
+
+function succeeds(command, args) {
+  return spawnSync(command, args, { cwd: root, stdio: "ignore" }).status === 0;
 }
 
 function validate(options) {
@@ -93,6 +100,7 @@ function main() {
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
   --quiet-ms=300      Required worker quiet period before capture
+  --allow-untracked=  Explicit comma-separated untracked-file exceptions
   --no-build          Reuse existing release daemon and built Electron app
 `);
     return;
@@ -220,7 +228,9 @@ function main() {
         node: process.version,
         gitRevision: capture("git", ["rev-parse", "HEAD"]),
         gitBranch: capture("git", ["branch", "--show-current"]),
-        gitDirty: capture("git", ["status", "--porcelain"]) !== "",
+        gitDirty: !succeeds("git", ["diff", "--quiet"]) || !succeeds("git", ["diff", "--cached", "--quiet"]),
+        gitUntrackedFiles: capture("git", ["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean),
+        acceptedUntrackedFiles: options.allowUntracked,
         scale: options.scale,
       },
     };
