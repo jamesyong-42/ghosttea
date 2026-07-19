@@ -3013,6 +3013,16 @@ suspended draw attempts produce zero submissions, and both four/eight-session
 fairness scenarios pass. Its redacted JSON SHA-256 is
 `163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
 The 60 Hz comparison and longer rendered CPU/Energy traces remain open.
+The nineteenth slice turns the pre-beta device and real-application list into a
+checked release contract. Four physical device classes, 60/120 Hz, and 22
+automatic/manual scenarios are enumerated in a hash-bound manifest. Strict
+redacted evidence files bind every run to one clean source revision, one signed
+artifact evidence hash, and hashes of retained traces while rejecting unknown
+fields and identifiers. Transport continuity, lifecycle recovery, and
+Unicode/IME must cover every class; performance must cover both refresh rates;
+Stage Manager and hardware input must cover the physical iPad. Ordinary checks
+validate drift without claiming completion, while release readiness aggregates
+every missing item and fails closed. The campaign itself remains open.
 
 Deliverables:
 

@@ -185,9 +185,11 @@ atlas occupancy/eviction, and reconnect/resync timing.
 ```sh
 npm run bench:ghostty-vt:apple:matrix
 npm run test:ios:device
+npm run test:ios:performance
 npm run test:ios:app:interop
 npm run test:ios:app:restart
 npm run test:ios:app:multiscene
+npm run check:ios-beta-matrix
 ```
 
 The production desktop demo and iOS app must concurrently attach to the same

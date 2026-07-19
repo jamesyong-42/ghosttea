@@ -199,11 +199,12 @@ npm run check:ios-release-ready
 ```
 
 The aggregator always runs the BOM/SSH policy, resource, toolchain, and App
-Store gates so one failure cannot hide the other blockers. It currently fails
-by design because `native/ssh.lock.json` records `productionApproved: false`
-for the pinned libssh2 release and because the three account-owned App Store
-decisions below remain open. Development and parity work may continue, but a
-release artifact cannot pass while any policy condition is false.
+Store gates plus the physical beta matrix so one failure cannot hide the other
+blockers. It currently fails by design because `native/ssh.lock.json` records
+`productionApproved: false` for the pinned libssh2 release, the three
+account-owned App Store decisions below remain open, and the complete physical
+beta evidence has not been collected. Development and parity work may continue,
+but a release artifact cannot pass while any policy condition is false.
 
 Changing the bit alone is not approval. The SSH lock must first move to a fixed
 source revision, incorporate the required fixes, and record successful Apple
@@ -222,6 +223,24 @@ production-approval blocker also remains in force.
 Development-only Docker fixture tools such as Zellij, htop, btop, and Claude
 Code do not ship in the iOS app and must remain outside the release component
 graph.
+
+## Beta device and application matrix
+
+[`beta-qualification.md`](beta-qualification.md) and
+[`ios-beta-matrix.json`](ios-beta-matrix.json) define the fail-closed physical
+campaign. The checked contract requires four device classes, 60/120 Hz, 22
+real-application and lifecycle scenarios, exact automatic/manual methods, and
+special per-device coverage for transport continuity, Unicode/IME, Stage
+Manager, and hardware input.
+
+Evidence files accept only reviewed numeric/device fields, known enum-like
+identifiers, revisions, timestamps, and SHA-256 hashes. They reject UDIDs,
+device names, hosts, users, commands, terminal output, and arbitrary notes.
+Every file binds to the exact matrix, clean source revision, common signed
+artifact evidence, and retained trace hashes. Ordinary checks validate the
+contract without claiming completion; `check:ios-release-ready` invokes the
+release form and reports every missing coverage item. The physical campaign is
+open and intentionally release-blocking.
 
 ## App Store privacy, encryption, and review gate
 

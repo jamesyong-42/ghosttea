@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "evidenceSchemaVersion": 1,
+  "deviceClasses": [
+    {
+      "id": "compactPhone",
+      "description": "Current compact iPhone",
+      "minimumRuns": 1
+    },
+    {
+      "id": "largePhone",
+      "description": "Current large iPhone",
+      "minimumRuns": 1
+    },
+    {
+      "id": "tabletKeyboardPointer",
+      "description": "Current iPad with hardware keyboard and pointing device",
+      "minimumRuns": 1
+    },
+    {
+      "id": "tabletTouch",
+      "description": "Current iPad using touch and software keyboard",
+      "minimumRuns": 1
+    }
+  ],
+  "refreshRates": [60, 120],
+  "scenarios": [
+    {
+      "id": "accessibility-voiceover",
+      "description": "VoiceOver row navigation, cursor state, and terminal actions",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "claude-code",
+      "description": "Claude Code prompt, interrupt, shortcuts, and resize",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-claude"
+    },
+    {
+      "id": "codex-agent",
+      "description": "Codex interactive agent workflow",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "direct-ssh-shell",
+      "description": "Interactive direct SSH shell, input, output, resize, and exit",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-session",
+      "requiredOnEveryDeviceClass": true
+    },
+    {
+      "id": "fzf",
+      "description": "fzf filtering, selection, cancellation, and resize",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "git-interactive",
+      "description": "Interactive Git add, rebase, and pager workflows",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "hardware-keyboard-pointer",
+      "description": "Hardware modifiers, shortcuts, pointer selection, wheel, and context menu",
+      "requiredMethods": ["manual"],
+      "requiredDeviceClasses": ["tabletKeyboardPointer"]
+    },
+    {
+      "id": "high-volume-resize",
+      "description": "Sustained output with rapid resize and bounded inbound flow control",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "htop-btop",
+      "description": "htop and btop render, input, exit, and resize",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-monitor-tuis"
+    },
+    {
+      "id": "ipad-stage-manager",
+      "description": "Two live Stage Manager windows share a runtime but retain distinct view authority",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:app:multiscene",
+      "requiredDeviceClasses": ["tabletKeyboardPointer"]
+    },
+    {
+      "id": "less-man",
+      "description": "less and man paging, search, selection, and exit",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "lifecycle-network-recovery",
+      "description": "Background, foreground, route loss, explicit reconnect, and state recovery",
+      "requiredMethods": ["manual"],
+      "requiredOnEveryDeviceClass": true
+    },
+    {
+      "id": "local-performance",
+      "description": "Release latency, background GPU, and shared-engine fairness gate",
+      "requiredMethods": ["automatic"],
+      "npmScript": "test:ios:performance",
+      "requiredAtEveryRefreshRate": true
+    },
+    {
+      "id": "neovim",
+      "description": "Neovim normal, insert, command, selection, and resize workflows",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "repl",
+      "description": "Interactive language REPL editing, history, interrupt, and Unicode output",
+      "requiredMethods": ["manual"]
+    },
+    {
+      "id": "shared-session-continuity",
+      "description": "Desktop/iOS concurrent attach, handoff, resize, selection, detach, and resync",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:app:interop",
+      "requiredOnEveryDeviceClass": true
+    },
+    {
+      "id": "shared-session-restart",
+      "description": "Desktop restart rejects stale state and permits fresh discovery and attachment",
+      "requiredMethods": ["automatic"],
+      "npmScript": "test:ios:app:restart"
+    },
+    {
+      "id": "tmux",
+      "description": "tmux attach, input, split navigation, resize, detach, and reconnect",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-tmux"
+    },
+    {
+      "id": "unicode-ime",
+      "description": "CJK marked text, emoji clusters, wide cells, paste, and selection",
+      "requiredMethods": ["manual"],
+      "requiredOnEveryDeviceClass": true
+    },
+    {
+      "id": "vim",
+      "description": "Vim render, input modes, command entry, and resize",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-vim"
+    },
+    {
+      "id": "workspace-persistence",
+      "description": "Profiles, tabs, panes, restoration, palette, and exact teardown",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-workspace"
+    },
+    {
+      "id": "zellij",
+      "description": "Zellij attach, input, pane navigation, resize, detach, and reconnect",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:production-zellij"
+    }
+  ]
+}
