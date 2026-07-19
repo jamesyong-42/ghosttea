@@ -2946,11 +2946,15 @@ The thirteenth slice makes the sanitizer campaign executable and fail-closed.
 It adds isolated Rust FFI and standalone real-TRF1-decoder ASan workloads,
 corpus/toolchain/source hashing, bounded iteration timing and peak-memory
 evidence, release-profile/clean-tree enforcement, and automatic scratch-space
-reclamation. Rust FFI ASan passes. A zero-input Swift ASan preflight exposes a
-locked-toolchain blocker: the runtime stalls in `FindDynamicShadowStart` before
-`main`. The runner records blocked release-ineligible evidence after 15 seconds
-instead of claiming Swift coverage; resolving or replacing that reviewed
-toolchain remains mandatory before the one-hour release run.
+reclamation. The fourteenth slice hardens that campaign against the real host
+blocker: it always invokes the locked Xcode `swiftc`/`clang` with the matching
+macOS SDK, runs an Apple-clang ASan capability preflight and the Rust FFI
+boundary before Swift, and classifies the observed hang in
+`FindDynamicShadowStart`/`InitializeShadowMemory` as Apple radar **171762808**
+(ASan/TSan hang on macOS 26.4+ with Xcode ≤26.3; workaround Xcode 26.4+). Rust
+FFI ASan still passes. Blocked evidence remains release-ineligible and never
+claims TRF1 ASan coverage; locking Xcode ≥26.4 and re-running the one-hour
+release campaign is the remaining unblock.
 
 Deliverables:
 

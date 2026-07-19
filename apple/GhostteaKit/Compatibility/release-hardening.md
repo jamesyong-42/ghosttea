@@ -313,13 +313,17 @@ recorded in evidence, remains mandatory.
 
 `npm run test:fuzz:sanitizer` now implements the timed campaign and redacted
 evidence schema. It hashes seven exact lock/source/corpus inputs, records the
-source and Xcode/Swift/Rust identities, bounds each isolated iteration, reclaims
-its Rust target between boundaries, and requires a clean locked-toolchain
-one-hour run in release mode. Rust FFI ASan passes. The locked Swift ASan runtime
-currently stalls in `FindDynamicShadowStart` before even a zero-input `main`;
-a 15-second preflight writes blocked, release-ineligible evidence and stops
-before expensive work. This toolchain/runtime capability gap must be resolved
-before the release campaign can close.
+source and locked Xcode/Swift/Rust identities (not bare PATH tools), bounds each
+isolated iteration, reclaims its Rust target between boundaries, and requires a
+clean locked-toolchain one-hour run in release mode. The Rust FFI boundary runs
+first and passes under LLVM ASan. On macOS 26.5.1 with the currently locked
+Xcode 26.1 toolchain, Apple's clang/Swift ASan runtime hangs during shadow
+initialization before `main` (Apple radar **171762808**; fixed by Xcode 26.4+).
+A 15-second Apple-clang preflight plus Swift TRF1 preflight classifies that hang,
+writes blocked release-ineligible evidence that still includes the completed FFI
+boundary, and refuses TRF1 sanitizer coverage. Closing this gate requires
+reviewing and locking Xcode ≥26.4 on the release host, then re-running
+`npm run test:fuzz:sanitizer:release`.
 
 ## Memory-pressure recovery
 

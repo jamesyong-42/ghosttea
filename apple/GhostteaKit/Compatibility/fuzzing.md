@@ -117,11 +117,26 @@ gate passes, and each boundary is requested for at least 3,600 seconds. Its
 release-profile sanitizer evidence must be retained beside the exact archive
 provenance; it does not make a differently built archive eligible by itself.
 
-The runner also executes a zero-input Swift ASan runtime preflight before the
-expensive Rust build. On the currently locked Xcode toolchain, even a one-line
-ASan Swift executable stalls in `FindDynamicShadowStart` before `main`. The
-preflight therefore times out after 15 seconds and blocks combined campaign
-evidence rather than misreporting TRF1 sanitizer coverage. Rust FFI ASan passes
-with leak detection disabled. Resolving this locked-toolchain/runtime gap (or
-qualifying a reviewed replacement toolchain) is required before the one-hour
-release campaign can run.
+The runner always uses the locked Xcode toolchain (`DEVELOPER_DIR` +
+`XcodeDefault.xctoolchain` `swiftc`/`clang` and the matching macOS SDK), not
+whatever `swiftc` happens to be first on `PATH`. It collects evidence in this
+order:
+
+1. Apple-clang one-line ASan runtime preflight (isolates OS/Xcode capability).
+2. Rust FFI AddressSanitizer campaign (LLVM/Rust runtime; independent of Apple
+   clang ASan).
+3. Zero-input Swift TRF1 ASan preflight, then the real decoder probe.
+
+On macOS 26.4+ with Xcode 26.3 or older, Apple's AddressSanitizer runtime can
+hang in shadow initialization (`FindDynamicShadowStart` /
+`InitializeShadowMemory`) before `main` for both C and Swift. Apple documents
+this as radar **171762808** and the workaround is **Xcode 26.4+**. The campaign
+classifies that hang, still records any completed Rust FFI boundary, writes
+`status: blocked` / `releaseEligible: false`, and never claims Swift TRF1 ASan
+coverage. LeakSanitizer remains disabled separately: enabling `detect_leaks`
+hangs after completed mixed Rust/Zig/C tests on the locked macOS toolchain.
+
+**Unblock for release:** install and review-lock Xcode ≥26.4 (or a later fixed
+release) in `ios-toolchain.lock.json`, re-run
+`npm run test:fuzz:sanitizer:release` on a clean tree, and retain the resulting
+evidence beside archive provenance.
