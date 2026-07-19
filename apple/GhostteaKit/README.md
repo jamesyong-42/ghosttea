@@ -516,6 +516,14 @@ foreground/background compression gate. Standard-tier physical-device evidence
 is recorded; compact-device, renderer, active-transport, jetsam, and energy
 measurements remain.
 
+`GhostteaPerformance` provides the opt-in coarse pipeline signposts used for
+release profiling. Set `GHOSTTEA_PERFORMANCE_RECORDING=1` only for a scored
+launch; recording is otherwise disabled. Its constant-time bounded recorder
+exports numeric duration/byte summaries and has no arbitrary-string API. The
+physical-device protocol, latency gates, energy comparison, and evidence rules
+are defined in
+[`Compatibility/performance-and-energy.md`](Compatibility/performance-and-energy.md).
+
 No package source should import `GhosttyVt` outside the `GhosttyVtProof` target. This keeps the unstable upstream API from leaking into future app code.
 
 Likewise, only `CGhostteaSSH` and the isolated `GhostteaSSHProbe` may import

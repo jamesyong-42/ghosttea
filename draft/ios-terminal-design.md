@@ -2958,6 +2958,15 @@ release campaign is the remaining unblock. **Accepted deferral (2026-07-18):**
 this host-toolchain limitation does not block continued Phase 9 implementation
 or device testing. It remains a mandatory pre-release gate and must be closed
 before an App Store or external beta release candidate is declared eligible.
+The fifteenth slice starts performance qualification with an opt-in reusable
+Swift package and coarse Instruments intervals spanning input/write,
+transport/frame delivery, native feed, retained TRF1 decode, and Metal command
+submission. Its constant-time 2,048-sample-per-metric rings retain only numeric
+duration and byte-count summaries and are disabled by default. The scored
+physical-device protocol now fixes fixtures, thermal/power state, sample counts,
+60/120 Hz coverage, latency gates, background GPU activity, CPU/energy
+regression limits, and evidence retention. Physical baseline traces and native
+text-engine mutex wait/hold/fairness attribution remain open.
 
 Deliverables:
 
@@ -3043,28 +3052,28 @@ Includes Phases 8 and 9.
 
 ## 24. Risks and mitigations
 
-| Risk                                                           | Impact                            | Mitigation                                                                        |
-| -------------------------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------- |
-| `libghostty-vt` API changes                                    | Native build and wrapper breakage | Pin commit; keep custom shim; upgrade only through fixture gate                   |
-| Rust core extraction regresses desktop                         | Existing product instability      | Mechanical first move; byte-identical frames; existing integration and benchmarks |
-| iOS font behavior differs                                      | Frame and screenshot mismatch     | Bundle identical licensed font bytes; explicit metrics and raster scale           |
-| FFI buffer lifetime bugs                                       | Crashes or corruption             | Opaque handles; owned buffers; sanitizers; lifecycle stress tests                 |
-| Swift/Rust boundary becomes chatty                             | Latency and energy regression     | One call per input/update; one contiguous frame; no per-cell calls                |
-| Metal renderer diverges from WebGPU                            | Visual inconsistency              | Shared TRF1; render-order specification; screenshot suite                         |
-| IME behavior is incomplete                                     | Poor international usability      | UIKit-native composition; dedicated CJK/emoji test matrix                         |
-| iOS suspension kills SSH                                       | Lost interactive session          | tmux/zellij; explicit states; reconnect; prefer desktop-hosted Truffle sessions   |
-| Host-key handling is weakened for convenience                  | Security failure                  | Verification required; fingerprint prompt; known-host management                  |
-| GPU atlases exceed mobile memory                               | Termination under pressure        | Bounded atlases; LRU eviction; full refresh; memory-warning tests                 |
-| Full-libghostty community APIs look faster                     | Architectural drift               | Keep spike bounded; measure against Ghosttea parity contract                      |
-| App Store policy misunderstanding                              | Review delay                      | Remote-execution review note; no downloaded app code; documented background use   |
-| Apple Truffle backend lacks the complete live cross-device matrix | Shared-session release blocker | Preserve automated handoff, resize, resync, restart, and listener gates; complete physical iPad multi-scene qualification before release |
-| Desktop QUIC and Apple raw-stream APIs do not match            | Duplicate or divergent protocol   | Keep Ghosttea message semantics; add a compact TCP binding with shared vectors    |
-| Stale Truffle peer generations are persisted                   | Reconnects target the wrong node  | Persist durable device ID only; resolve a fresh generation for every reconnect    |
-| Selected SSH stack lacks required authentication or algorithms | Launch-host incompatibility       | Phase 0 server matrix; fund missing work or select another stack before Phase 6   |
-| Inbound output outruns terminal processing                     | Memory growth or disconnect       | Pull-based reads; SSH channel-window backpressure; sustained-flood tests          |
-| CPU terminal and scrollback state exceed mobile budget         | Jetsam termination                | Device-tier budgets; cache reclamation; trim shim or whole-session eviction       |
-| Native panic leaves partially mutated state                    | Corruption after retry            | Poison terminal or runtime; destroy and recreate; never retry                     |
-| Shared text-engine mutex serializes session floods             | Cross-session latency             | Measure wait/hold/fairness; shard or pool shaping only if required                |
+| Risk                                                              | Impact                            | Mitigation                                                                                                                               |
+| ----------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `libghostty-vt` API changes                                       | Native build and wrapper breakage | Pin commit; keep custom shim; upgrade only through fixture gate                                                                          |
+| Rust core extraction regresses desktop                            | Existing product instability      | Mechanical first move; byte-identical frames; existing integration and benchmarks                                                        |
+| iOS font behavior differs                                         | Frame and screenshot mismatch     | Bundle identical licensed font bytes; explicit metrics and raster scale                                                                  |
+| FFI buffer lifetime bugs                                          | Crashes or corruption             | Opaque handles; owned buffers; sanitizers; lifecycle stress tests                                                                        |
+| Swift/Rust boundary becomes chatty                                | Latency and energy regression     | One call per input/update; one contiguous frame; no per-cell calls                                                                       |
+| Metal renderer diverges from WebGPU                               | Visual inconsistency              | Shared TRF1; render-order specification; screenshot suite                                                                                |
+| IME behavior is incomplete                                        | Poor international usability      | UIKit-native composition; dedicated CJK/emoji test matrix                                                                                |
+| iOS suspension kills SSH                                          | Lost interactive session          | tmux/zellij; explicit states; reconnect; prefer desktop-hosted Truffle sessions                                                          |
+| Host-key handling is weakened for convenience                     | Security failure                  | Verification required; fingerprint prompt; known-host management                                                                         |
+| GPU atlases exceed mobile memory                                  | Termination under pressure        | Bounded atlases; LRU eviction; full refresh; memory-warning tests                                                                        |
+| Full-libghostty community APIs look faster                        | Architectural drift               | Keep spike bounded; measure against Ghosttea parity contract                                                                             |
+| App Store policy misunderstanding                                 | Review delay                      | Remote-execution review note; no downloaded app code; documented background use                                                          |
+| Apple Truffle backend lacks the complete live cross-device matrix | Shared-session release blocker    | Preserve automated handoff, resize, resync, restart, and listener gates; complete physical iPad multi-scene qualification before release |
+| Desktop QUIC and Apple raw-stream APIs do not match               | Duplicate or divergent protocol   | Keep Ghosttea message semantics; add a compact TCP binding with shared vectors                                                           |
+| Stale Truffle peer generations are persisted                      | Reconnects target the wrong node  | Persist durable device ID only; resolve a fresh generation for every reconnect                                                           |
+| Selected SSH stack lacks required authentication or algorithms    | Launch-host incompatibility       | Phase 0 server matrix; fund missing work or select another stack before Phase 6                                                          |
+| Inbound output outruns terminal processing                        | Memory growth or disconnect       | Pull-based reads; SSH channel-window backpressure; sustained-flood tests                                                                 |
+| CPU terminal and scrollback state exceed mobile budget            | Jetsam termination                | Device-tier budgets; cache reclamation; trim shim or whole-session eviction                                                              |
+| Native panic leaves partially mutated state                       | Corruption after retry            | Poison terminal or runtime; destroy and recreate; never retry                                                                            |
+| Shared text-engine mutex serializes session floods                | Cross-session latency             | Measure wait/hold/fairness; shard or pool shaping only if required                                                                       |
 
 ---
 

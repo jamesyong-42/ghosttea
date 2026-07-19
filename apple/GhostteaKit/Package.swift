@@ -15,6 +15,7 @@ let package = Package(
     .library(name: "GhostteaConnectionProfilesUI", targets: ["GhostteaConnectionProfilesUI"]),
     .library(name: "GhostteaCore", targets: ["GhostteaCore"]),
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
+    .library(name: "GhostteaPerformance", targets: ["GhostteaPerformance"]),
     .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
     .library(name: "GhostteaSSH", targets: ["GhostteaSSH"]),
     .library(name: "GhostteaSSHWorkspace", targets: ["GhostteaSSHWorkspace"]),
@@ -30,7 +31,7 @@ let package = Package(
   dependencies: [
     // Development intentionally mirrors the Rust workspace's sibling Truffle
     // checkout. Release automation records and verifies its exact Git revision.
-    .package(path: "../../../p008/truffle/apple"),
+    .package(path: "../../../p008/truffle/apple")
   ],
   targets: [
     .binaryTarget(
@@ -68,6 +69,7 @@ let package = Package(
       linkerSettings: [.linkedFramework("Security")]
     ),
     .target(name: "GhostteaDiagnostics"),
+    .target(name: "GhostteaPerformance"),
     .target(
       name: "GhostteaConnectionProfiles",
       dependencies: ["GhostteaCredentials", "GhostteaSSH"]
@@ -98,7 +100,7 @@ let package = Package(
     ),
     .target(
       name: "GhostteaCore",
-      dependencies: ["GhostteaAppleNative", "GhostteaFonts"],
+      dependencies: ["GhostteaAppleNative", "GhostteaFonts", "GhostteaPerformance"],
       linkerSettings: [
         .linkedFramework("CoreGraphics"),
         .linkedFramework("CoreText"),
@@ -108,11 +110,11 @@ let package = Package(
     .target(name: "GhostteaFrame"),
     .target(
       name: "GhostteaSession",
-      dependencies: ["GhostteaCore", "GhostteaTransport"]
+      dependencies: ["GhostteaCore", "GhostteaPerformance", "GhostteaTransport"]
     ),
     .target(
       name: "GhostteaTerminal",
-      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaTransport"],
+      dependencies: ["GhostteaCore", "GhostteaFrame", "GhostteaPerformance", "GhostteaTransport"],
       exclude: ["GhostteaTerminal.metal"],
       resources: [.copy("Resources/terminal-visual-golden.json")],
       linkerSettings: [
@@ -163,6 +165,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaDiagnosticsTests",
       dependencies: ["GhostteaDiagnostics"]
+    ),
+    .testTarget(
+      name: "GhostteaPerformanceTests",
+      dependencies: ["GhostteaPerformance"]
     ),
     .testTarget(
       name: "GhostteaConnectionProfilesTests",

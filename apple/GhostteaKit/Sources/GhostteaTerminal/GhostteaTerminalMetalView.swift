@@ -1,5 +1,6 @@
 #if os(iOS)
   import Foundation
+  import GhostteaPerformance
   import MetalKit
   import UIKit
 
@@ -400,7 +401,12 @@
     @discardableResult
     public func apply(frame data: Data) throws -> Bool {
       do {
-        switch try retainedState.apply(data) {
+        let applyResult = try GhostteaPerformanceRecorder.shared.measure(
+          .frameDecode, byteCount: data.count
+        ) {
+          try retainedState.apply(data)
+        }
+        switch applyResult {
         case .applied(let fullSnapshot, _, _, _):
           if fullSnapshot { awaitingMemoryPressureRefresh = false }
           updateAccessibilitySnapshot()
@@ -1019,16 +1025,18 @@
       }
       do {
         let renderer = try renderer()
-        let draw = try renderer.render(
-          state: retainedState,
-          target: drawable.texture,
-          scale: Float(contentScaleFactor),
-          contentInsets: effectiveContentInsets(),
-          selection: terminalSelection,
-          focused: terminalFocused,
-          cursorBlinkVisible: cursorBlinkVisible,
-          presenting: drawable
-        )
+        let draw = try GhostteaPerformanceRecorder.shared.measure(.metalSubmission) {
+          try renderer.render(
+            state: retainedState,
+            target: drawable.texture,
+            scale: Float(contentScaleFactor),
+            contentInsets: effectiveContentInsets(),
+            selection: terminalSelection,
+            focused: terminalFocused,
+            cursorBlinkVisible: cursorBlinkVisible,
+            presenting: drawable
+          )
+        }
         updateDiagnostics(
           renderedFrames: diagnostics.renderedFrames + 1,
           residentAtlasBytes: renderer.atlases.residentBytes,

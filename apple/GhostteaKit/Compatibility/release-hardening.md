@@ -4,6 +4,21 @@
 
 **Started:** 2026-07-18
 
+## Performance and energy
+
+[`performance-and-energy.md`](performance-and-energy.md) defines the physical
+device protocol and the first production instrumentation slice. The opt-in
+`GhostteaPerformance` package emits bounded Instruments intervals for input
+through ordered write, demanded bytes through ordered frame delivery, native
+feed, TRF1 retained-state decode, and Metal submission. It records only numeric
+durations and byte counts, uses constant-time bounded storage, and remains
+disabled by default. Package tests pass on the locked Xcode toolchain.
+
+Release qualification remains open until 60 Hz and 120 Hz physical-device
+traces establish the accepted latency/CPU/energy baseline. Native shared
+text-engine lock wait/hold/fairness instrumentation is also still required to
+attribute four/eight-session contention.
+
 ## Deterministic component inventory
 
 [`ios-release.cdx.json`](ios-release.cdx.json) is the checked-in CycloneDX 1.6

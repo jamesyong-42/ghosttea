@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaCore
+import GhostteaPerformance
 import GhostteaTransport
 
 public struct GhostteaSessionFailure: Equatable, Sendable {
@@ -150,32 +151,46 @@ public actor GhostteaSession {
 
   public func send(_ bytes: Data) async throws {
     guard !bytes.isEmpty else { return }
-    try await withConnectedOperation { connection in
-      try await write(bytes, to: connection)
+    try await GhostteaPerformanceRecorder.shared.measure(
+      .inputToTransportWrite, byteCount: bytes.count
+    ) {
+      try await withConnectedOperation { connection in
+        try await write(bytes, to: connection)
+      }
     }
   }
 
   public func sendKey(_ event: GhostteaKeyEvent) async throws {
-    try await withConnectedOperation { connection in
-      try await write(try await terminal.encodeKey(event), to: connection)
+    try await GhostteaPerformanceRecorder.shared.measure(.inputToTransportWrite) {
+      try await withConnectedOperation { connection in
+        try await write(try await terminal.encodeKey(event), to: connection)
+      }
     }
   }
 
   public func sendPaste(_ text: String) async throws {
-    try await withConnectedOperation { connection in
-      try await write(try await terminal.encodePaste(text), to: connection)
+    try await GhostteaPerformanceRecorder.shared.measure(
+      .inputToTransportWrite, byteCount: text.utf8.count
+    ) {
+      try await withConnectedOperation { connection in
+        try await write(try await terminal.encodePaste(text), to: connection)
+      }
     }
   }
 
   public func sendFocus(_ focused: Bool) async throws {
-    try await withConnectedOperation { connection in
-      try await write(try await terminal.encodeFocus(focused), to: connection)
+    try await GhostteaPerformanceRecorder.shared.measure(.inputToTransportWrite) {
+      try await withConnectedOperation { connection in
+        try await write(try await terminal.encodeFocus(focused), to: connection)
+      }
     }
   }
 
   public func sendMouse(_ event: GhostteaMouseEvent) async throws {
-    try await withConnectedOperation { connection in
-      try await write(try await terminal.encodeMouse(event), to: connection)
+    try await GhostteaPerformanceRecorder.shared.measure(.inputToTransportWrite) {
+      try await withConnectedOperation { connection in
+        try await write(try await terminal.encodeMouse(event), to: connection)
+      }
     }
   }
 
@@ -301,11 +316,15 @@ public actor GhostteaSession {
     connection: any TerminalConnection,
     generation: UInt64
   ) async throws {
-    try await withOperation {
-      guard self.connection?.generation == generation else {
-        throw CancellationError()
+    try await GhostteaPerformanceRecorder.shared.measure(
+      .receivedBytesToFrameDelivery, byteCount: bytes.count
+    ) {
+      try await withOperation {
+        guard self.connection?.generation == generation else {
+          throw CancellationError()
+        }
+        try await execute(try await terminal.feed(bytes, render: .damage), on: connection)
       }
-      try await execute(try await terminal.feed(bytes, render: .damage), on: connection)
     }
   }
 

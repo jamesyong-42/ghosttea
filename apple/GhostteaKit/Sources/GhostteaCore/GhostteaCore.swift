@@ -1,6 +1,7 @@
 import Foundation
 import GhostteaCoreNative
 import GhostteaFonts
+import GhostteaPerformance
 
 public enum GhostteaCoreError: Error, CustomStringConvertible, Sendable {
   case native(status: UInt32, message: String)
@@ -308,16 +309,19 @@ public actor GhostteaTerminal {
     ghosttea_terminal_is_poisoned(handle)
   }
 
-  public func feed(_ bytes: Data, render: GhostteaRenderRequest = .damage) throws -> GhostteaUpdate {
-    try bytes.withUnsafeBytes { raw in
-      let typed = raw.bindMemory(to: UInt8.self)
-      return try performUpdate { output in
-        ghosttea_terminal_feed(
-          handle,
-          ghosttea_bytes_view_t(data: typed.baseAddress, len: typed.count),
-          render.rawValue,
-          &output
-        )
+  public func feed(_ bytes: Data, render: GhostteaRenderRequest = .damage) throws -> GhostteaUpdate
+  {
+    try GhostteaPerformanceRecorder.shared.measure(.nativeFeed, byteCount: bytes.count) {
+      try bytes.withUnsafeBytes { raw in
+        let typed = raw.bindMemory(to: UInt8.self)
+        return try performUpdate { output in
+          ghosttea_terminal_feed(
+            handle,
+            ghosttea_bytes_view_t(data: typed.baseAddress, len: typed.count),
+            render.rawValue,
+            &output
+          )
+        }
       }
     }
   }
@@ -595,7 +599,8 @@ private func decodeUpdate(_ native: ghosttea_update_t) throws -> GhostteaUpdate 
   guard native.effect_count == 0 || native.effects != nil else {
     throw GhostteaCoreError.malformedUpdate("effect table is null")
   }
-  let descriptors = native.effect_count == 0
+  let descriptors =
+    native.effect_count == 0
     ? []
     : Array(UnsafeBufferPointer(start: native.effects, count: native.effect_count))
   let effects = try descriptors.enumerated().map { index, descriptor in
