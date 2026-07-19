@@ -2954,7 +2954,10 @@ boundary before Swift, and classifies the observed hang in
 (ASan/TSan hang on macOS 26.4+ with Xcode ≤26.3; workaround Xcode 26.4+). Rust
 FFI ASan still passes. Blocked evidence remains release-ineligible and never
 claims TRF1 ASan coverage; locking Xcode ≥26.4 and re-running the one-hour
-release campaign is the remaining unblock.
+release campaign is the remaining unblock. **Accepted deferral (2026-07-18):**
+this host-toolchain limitation does not block continued Phase 9 implementation
+or device testing. It remains a mandatory pre-release gate and must be closed
+before an App Store or external beta release candidate is declared eligible.
 
 Deliverables:
 

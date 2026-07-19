@@ -325,6 +325,12 @@ boundary, and refuses TRF1 sanitizer coverage. Closing this gate requires
 reviewing and locking Xcode ≥26.4 on the release host, then re-running
 `npm run test:fuzz:sanitizer:release`.
 
+**Accepted deferral (2026-07-18):** continue implementation and internal device
+qualification with the deterministic smoke gates and passing Rust FFI ASan
+boundary. Do not treat the deferral as a waiver: a fixed, review-locked Xcode
+and a passing one-hour Swift/TRF1 ASan campaign remain mandatory before an App
+Store or external beta release candidate can be release-eligible.
+
 ## Memory-pressure recovery
 
 [`memory-pressure.md`](memory-pressure.md) defines the implemented

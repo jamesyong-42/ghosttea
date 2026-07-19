@@ -140,3 +140,9 @@ hangs after completed mixed Rust/Zig/C tests on the locked macOS toolchain.
 release) in `ios-toolchain.lock.json`, re-run
 `npm run test:fuzz:sanitizer:release` on a clean tree, and retain the resulting
 evidence beside archive provenance.
+
+**Accepted deferral (2026-07-18):** this Apple runtime blocker is deferred for
+ongoing implementation and internal device testing only. The smoke campaigns
+and Rust FFI ASan result are the interim development gates; the full passing
+Swift/TRF1 campaign above remains mandatory before external beta or App Store
+release qualification.
