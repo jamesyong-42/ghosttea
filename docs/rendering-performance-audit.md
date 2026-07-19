@@ -267,6 +267,33 @@ Retained changes:
    mostly below the confidence threshold; redraw render CPU improved 5%, and
    typing Electron CPU improved 12.8%. The change remains useful groundwork for
    row-revision geometry caching.
+8. The worker now preserves and unions replacement-row damage, including both
+   sides of a cursor move. Each pane retains its scene texture; incremental
+   renders reset and redraw only damaged row bands plus one neighboring row for
+   glyph overhang, while the existing CRT post-process still samples the full
+   pane. Full snapshots, resize, theme/selection changes, visibility restore,
+   renderer recovery, and explicit verification requests remain full redraws.
+   A benchmark switch promotes every invalidation to full damage for controlled
+   same-build A/B runs.
+
+The row-damage correctness gate captures the complete Electron window, hashes
+its bitmap, forces a full redraw of every pane, and requires an exact SHA-256
+match. Sparse, dense SGR, Unicode, repeated full-redraw, and a dedicated visual
+fixture all matched. The visual fixture keeps styled box/block glyphs, wide and
+combining text, a translucent custom theme, selection, cursor, and unchanged
+rows resident while another row is updated; it completed 33 partial renders
+before matching the forced full frame exactly.
+
+On the isolated sparse workload, seven measured repetitions reduced median
+worker render CPU from 30.7 ms to 17.6 ms (-42.7%, 95% interval entirely below
+zero) and aggregate Electron CPU by 15.4%. End-to-idle was unchanged because
+the payload is deliberately paced, and vertex upload volume was inconclusive.
+In the eight-case control, typing render CPU improved 10.6%, vertex uploads
+4.2%, and Electron CPU 11.5%. Scrolling, dense output, Unicode, repeated
+full-screen redraw, multi-pane scrolling, and end-to-idle results were neutral.
+A targeted seven-run scroll repeat also found the earlier memory-peak signal
+inconclusive (+0.9%, 95% interval -5.2% to +8.9%), so no memory regression is
+claimed.
 
 Across the complete retained stack versus the original clean baseline, median
 worker render CPU improved 33% for typing, 29% for scrolling, 41% for dense
@@ -280,8 +307,9 @@ and are not used to claim a memory win. The explicit atlas allocation reduction
 is deterministic, but the next harness iteration should add GPU allocation
 counters and per-process lifetime normalization.
 
-The next invasive step is persistent row-damage rendering. Before accepting it,
-the harness needs image correctness fixtures for styled text, selection,
-cursor transitions, block elements, and rounded box drawing. Backend status and
-performance counters catch WebGPU validation failures but cannot detect a
-shader that renders valid yet incorrect pixels.
+The next row-oriented step is persistent GPU geometry by row revision. The
+current change avoids rebuilding clean rows on sparse frames, but it still
+allocates fresh JavaScript arrays and rewrites compact buffers for the damaged
+rows, and the CRT post-process remains full-pane. Any row-geometry cache should
+use the same forced-full pixel gate and controlled full-damage baseline rather
+than assuming fewer uploads automatically improve end-to-idle latency.

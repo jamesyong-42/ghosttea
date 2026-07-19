@@ -43,7 +43,7 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 | `idle-4`          | Four mounted panes, no output; detects idle/cursor/background work |
 | `typing-1`        | Paced input/local echo; exposes redundant input and cursor renders |
 | `sparse-1`        | Replaces one row repeatedly; isolates persistent row-damage work   |
-| `visual-1`        | Pixel fixture for box/block, Unicode, styles, cursor, and damage   |
+| `visual-1`        | Pixel fixture for box/block, Unicode, theme, selection, and damage |
 | `scroll-1`        | One pane receiving a fast plain-text scrolling flood               |
 | `dense-1`         | One pane with dense SGR foreground/background changes              |
 | `unicode-1`       | Native shaping, rasterization, atlas, emoji/CJK/combining pressure |

@@ -19,6 +19,15 @@ interface MeasuredIteration {
 
 let suiteStarted = false;
 
+const VISUAL_FIXTURE_THEME = {
+  ...DEFAULT_THEME,
+  background: [0.04, 0.06, 0.1, 0.82],
+  foreground: [0.92, 0.95, 1, 1],
+  cursor: [1, 0.72, 0.2, 1],
+  selection: [0.18, 0.42, 0.7, 0.72],
+  selectionForeground: [1, 1, 1, 1],
+} satisfies typeof DEFAULT_THEME;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -112,6 +121,15 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
       setSessions(created);
       await nextPaint();
       await Promise.all(created.map((session) => waitForView(session.id)));
+      if (benchmarkCase.name === "visual-1") {
+        for (const session of created) {
+          runtime.setTheme(session.handle, VISUAL_FIXTURE_THEME);
+          runtime.setSelection(session.handle, {
+            anchor: { row: 1, column: 2 },
+            focus: { row: 9, column: 20 },
+          });
+        }
+      }
       // Keep renderer/device/pipeline creation and the initial full snapshot out
       // of steady-state measurements. Cold start should be a separate suite.
       await delay(400);
