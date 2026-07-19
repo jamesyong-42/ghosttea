@@ -38,16 +38,17 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 
 ## Workloads
 
-| Case        | Purpose                                                            |
-| ----------- | ------------------------------------------------------------------ |
-| `idle-4`    | Four mounted panes, no output; detects idle/cursor/background work |
-| `typing-1`  | Paced input/local echo; exposes redundant input and cursor renders |
-| `scroll-1`  | One pane receiving a fast plain-text scrolling flood               |
-| `dense-1`   | One pane with dense SGR foreground/background changes              |
-| `unicode-1` | Native shaping, rasterization, atlas, emoji/CJK/combining pressure |
-| `redraw-1`  | Repeated cursor-home full-screen updates                           |
-| `scroll-4`  | Four simultaneous PTYs and pane surfaces sharing the worker/device |
-| `resize-1`  | Display-paced pane resizing and terminal reflow/resource churn     |
+| Case              | Purpose                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `idle-4`          | Four mounted panes, no output; detects idle/cursor/background work |
+| `typing-1`        | Paced input/local echo; exposes redundant input and cursor renders |
+| `scroll-1`        | One pane receiving a fast plain-text scrolling flood               |
+| `dense-1`         | One pane with dense SGR foreground/background changes              |
+| `unicode-1`       | Native shaping, rasterization, atlas, emoji/CJK/combining pressure |
+| `redraw-1`        | Repeated cursor-home full-screen updates                           |
+| `scroll-4`        | Four simultaneous PTYs and pane surfaces sharing the worker/device |
+| `resize-1`        | Display-paced pane resizing and terminal reflow/resource churn     |
+| `resize-jitter-1` | Subpixel layout jitter that should not rebuild GPU resources       |
 
 Payload workloads are emitted by a small Node helper in fixed-size chunks on a
 monotonic interval. This prevents a fast `cat` from collapsing the whole input

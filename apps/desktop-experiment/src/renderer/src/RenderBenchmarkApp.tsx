@@ -148,8 +148,9 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
         await delay(benchmarkCase.durationMs ?? 2_500);
       } else if (benchmarkCase.kind === "resize") {
         const frames = benchmarkCase.operations ?? 180;
+        const resizeDelta = benchmarkCase.resizeDelta ?? 37;
         for (let frame = 0; frame < frames; frame += 1) {
-          setResizeOffset(frame % 2 === 0 ? 0 : 37);
+          setResizeOffset(frame % 2 === 0 ? 0 : resizeDelta);
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
         }
         setResizeOffset(0);

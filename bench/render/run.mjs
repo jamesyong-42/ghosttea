@@ -22,7 +22,17 @@ function parseArgs(argv) {
     quietMs: 300,
     build: true,
     allowUntracked: [],
-    cases: ["idle-4", "typing-1", "scroll-1", "dense-1", "unicode-1", "redraw-1", "scroll-4", "resize-1"],
+    cases: [
+      "idle-4",
+      "typing-1",
+      "scroll-1",
+      "dense-1",
+      "unicode-1",
+      "redraw-1",
+      "scroll-4",
+      "resize-1",
+      "resize-jitter-1",
+    ],
   };
   for (const argument of argv) {
     if (argument.startsWith("--output=")) options.output = resolve(root, argument.slice(9));
@@ -95,7 +105,7 @@ function main() {
   --iterations=5      Measured repetitions per case
   --warmup=1          Unmeasured repetitions per case
   --scale=1           Payload multiplier
-  --cases=list        idle-4,typing-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1
+  --cases=list        idle-4,typing-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
   --width=1200        Electron content window width
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
@@ -200,6 +210,13 @@ function main() {
         panes: 1,
         kind: "resize",
         operations: Math.max(60, Math.round(180 * options.scale)),
+      },
+      "resize-jitter-1": {
+        name: "resize-jitter-1",
+        panes: 1,
+        kind: "resize",
+        operations: Math.max(60, Math.round(180 * options.scale)),
+        resizeDelta: 0.2,
       },
     };
     const unknownCases = options.cases.filter((name) => !catalog[name]);
