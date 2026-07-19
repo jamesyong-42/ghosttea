@@ -101,9 +101,23 @@
       "requiredAtEveryRefreshRate": true
     },
     {
+      "id": "memory-pressure-recovery",
+      "description": "Over-soft LRU recovery, OS warning resync, and tier budget enforcement",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:app:memory-recovery",
+      "requiredOnEveryDeviceClass": true
+    },
+    {
       "id": "neovim",
       "description": "Neovim normal, insert, command, selection, and resize workflows",
       "requiredMethods": ["manual"]
+    },
+    {
+      "id": "process-restoration",
+      "description": "Abrupt process death, demand-paused restoration, and real pressure termination",
+      "requiredMethods": ["automatic", "manual"],
+      "npmScript": "test:ios:app:process-restoration",
+      "requiredOnEveryDeviceClass": true
     },
     {
       "id": "repl",

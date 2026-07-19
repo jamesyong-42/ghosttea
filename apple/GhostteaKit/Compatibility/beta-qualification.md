@@ -24,10 +24,18 @@ hardware keyboard/pointer scenarios must pass on the corresponding physical
 iPad class; the simulator multi-scene command remains required automatic
 structural evidence but is not a substitute for the manual physical run.
 
-The application matrix contains 22 scenarios spanning shells, Vim, Neovim,
+Memory-pressure recovery and process restoration require both methods on every
+device class. Their automatic commands prove deterministic over-soft LRU and
+host-terminated restoration against the signed production Debug app. The
+manual records must come from the exact release artifact under an OS-delivered
+memory warning and actual system-pressure termination/foreground recovery;
+the deterministic proxies cannot fill those manual rows.
+
+The application matrix contains 24 scenarios spanning shells, Vim, Neovim,
 tmux, Zellij, htop/btop, less/man, fzf, interactive Git, a language REPL,
 Codex, Claude Code, Unicode/IME, accessibility, high-volume resize, workspace
-persistence, lifecycle recovery, performance, and shared-session continuity.
+persistence, lifecycle recovery, performance, memory-pressure recovery,
+process restoration, and shared-session continuity.
 The checked manifest identifies which scenarios require an automatic trace, a
 manual trace, or both, and verifies that every referenced npm command exists.
 

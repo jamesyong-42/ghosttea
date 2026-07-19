@@ -3014,7 +3014,7 @@ fairness scenarios pass. Its redacted JSON SHA-256 is
 `163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
 The 60 Hz comparison and longer rendered CPU/Energy traces remain open.
 The nineteenth slice turns the pre-beta device and real-application list into a
-checked release contract. Four physical device classes, 60/120 Hz, and 22
+checked release contract. Four physical device classes, 60/120 Hz, and 24
 automatic/manual scenarios are enumerated in a hash-bound manifest. Strict
 redacted evidence files bind every run to one clean source revision, one signed
 artifact evidence hash, and hashes of retained traces while rejecting unknown
@@ -3059,6 +3059,13 @@ numeric marker and binds redacted evidence to the signed executable. The first
 iPhone 14 Pro run recovered from 194,085,904 to 152,273,936 bytes after one
 hidden eviction. Debug triggers and mappings are absent from Release. Compact
 hardware and real OS-delivered pressure/jetsam qualification remain open.
+The twenty-third slice makes that distinction fail-closed in the release
+campaign. The checked beta matrix expands from 22 to 24 scenarios and requires
+both memory-pressure recovery and process restoration on every physical device
+class. Automatic rows invoke the deterministic signed-app over-soft and
+host-termination gates; separate manual rows require OS-delivered warning/resync
+and actual system-pressure termination against the exact release artifact, so
+proxy evidence cannot silently satisfy jetsam coverage.
 
 Deliverables:
 

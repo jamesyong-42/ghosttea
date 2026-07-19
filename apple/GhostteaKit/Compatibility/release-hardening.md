@@ -244,10 +244,16 @@ graph.
 
 [`beta-qualification.md`](beta-qualification.md) and
 [`ios-beta-matrix.json`](ios-beta-matrix.json) define the fail-closed physical
-campaign. The checked contract requires four device classes, 60/120 Hz, 22
+campaign. The checked contract requires four device classes, 60/120 Hz, 24
 real-application and lifecycle scenarios, exact automatic/manual methods, and
 special per-device coverage for transport continuity, Unicode/IME, Stage
 Manager, and hardware input.
+
+The matrix now carries the memory gates explicitly: deterministic signed-app
+over-soft recovery and abrupt process restoration are automatic requirements
+on every device class, while OS-delivered warning/resync and real
+system-pressure termination are separate manual requirements. This prevents
+the passing proxy gates from being mistaken for jetsam qualification.
 
 Evidence files accept only reviewed numeric/device fields, known enum-like
 identifiers, revisions, timestamps, and SHA-256 hashes. They reject UDIDs,
