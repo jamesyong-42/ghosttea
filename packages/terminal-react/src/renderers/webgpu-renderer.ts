@@ -28,11 +28,20 @@ struct VertexOutput {
 }
 
 @vertex fn vertex_main(
-  @location(0) position: vec2f,
+  @builtin(vertex_index) vertex_index: u32,
+  @location(0) bounds: vec4f,
   @location(1) color: vec4f,
 ) -> VertexOutput {
+  let positions = array<vec2f, 6>(
+    vec2f(bounds.x, bounds.z),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.y, bounds.w),
+  );
   var output: VertexOutput;
-  output.position = vec4f(position, 0.0, 1.0);
+  output.position = vec4f(positions[vertex_index], 0.0, 1.0);
   output.color = color;
   return output;
 }
@@ -53,13 +62,30 @@ struct VertexOutput {
 }
 
 @vertex fn vertex_main(
-  @location(0) position: vec2f,
-  @location(1) uv: vec2f,
+  @builtin(vertex_index) vertex_index: u32,
+  @location(0) bounds: vec4f,
+  @location(1) uv_bounds: vec4f,
   @location(2) color: vec4f,
 ) -> VertexOutput {
+  let positions = array<vec2f, 6>(
+    vec2f(bounds.x, bounds.z),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.y, bounds.w),
+  );
+  let uvs = array<vec2f, 6>(
+    vec2f(uv_bounds.x, uv_bounds.z),
+    vec2f(uv_bounds.y, uv_bounds.z),
+    vec2f(uv_bounds.x, uv_bounds.w),
+    vec2f(uv_bounds.x, uv_bounds.w),
+    vec2f(uv_bounds.y, uv_bounds.z),
+    vec2f(uv_bounds.y, uv_bounds.w),
+  );
   var output: VertexOutput;
-  output.position = vec4f(position, 0.0, 1.0);
-  output.uv = uv;
+  output.position = vec4f(positions[vertex_index], 0.0, 1.0);
+  output.uv = uvs[vertex_index];
   output.color = color;
   return output;
 }
@@ -82,13 +108,30 @@ struct VertexOutput {
 }
 
 @vertex fn vertex_main(
-  @location(0) position: vec2f,
-  @location(1) uv: vec2f,
+  @builtin(vertex_index) vertex_index: u32,
+  @location(0) bounds: vec4f,
+  @location(1) uv_bounds: vec4f,
   @location(2) color: vec4f,
 ) -> VertexOutput {
+  let positions = array<vec2f, 6>(
+    vec2f(bounds.x, bounds.z),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.x, bounds.w),
+    vec2f(bounds.y, bounds.z),
+    vec2f(bounds.y, bounds.w),
+  );
+  let uvs = array<vec2f, 6>(
+    vec2f(uv_bounds.x, uv_bounds.z),
+    vec2f(uv_bounds.y, uv_bounds.z),
+    vec2f(uv_bounds.x, uv_bounds.w),
+    vec2f(uv_bounds.x, uv_bounds.w),
+    vec2f(uv_bounds.y, uv_bounds.z),
+    vec2f(uv_bounds.y, uv_bounds.w),
+  );
   var output: VertexOutput;
-  output.position = vec4f(position, 0.0, 1.0);
-  output.uv = uv;
+  output.position = vec4f(positions[vertex_index], 0.0, 1.0);
+  output.uv = uvs[vertex_index];
   output.color = color;
   return output;
 }
@@ -464,15 +507,7 @@ function pushRectangle(
   const right = clipX(x + width, viewportWidth);
   const top = clipY(y, viewportHeight);
   const bottom = clipY(y + height, viewportHeight);
-  const vertex = (px: number, py: number): void => {
-    output.push(px, py, ...color);
-  };
-  vertex(left, top);
-  vertex(right, top);
-  vertex(left, bottom);
-  vertex(left, bottom);
-  vertex(right, top);
-  vertex(right, bottom);
+  output.push(left, right, top, bottom, ...color);
 }
 
 function pushGlyph(
@@ -490,15 +525,7 @@ function pushGlyph(
   const right = clipX(x + width, viewportWidth);
   const top = clipY(y, viewportHeight);
   const bottom = clipY(y + height, viewportHeight);
-  const vertex = (px: number, py: number, u: number, v: number): void => {
-    output.push(px, py, u, v, ...color);
-  };
-  vertex(left, top, glyph.u0, glyph.v0);
-  vertex(right, top, glyph.u1, glyph.v0);
-  vertex(left, bottom, glyph.u0, glyph.v1);
-  vertex(left, bottom, glyph.u0, glyph.v1);
-  vertex(right, top, glyph.u1, glyph.v0);
-  vertex(right, bottom, glyph.u1, glyph.v1);
+  output.push(left, right, top, bottom, glyph.u0, glyph.u1, glyph.v0, glyph.v1, ...color);
 }
 
 function ordered(selection: RenderView["selection"]): [CellPoint, CellPoint] | null {
@@ -814,10 +841,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         entryPoint: "vertex_main",
         buffers: [
           {
-            arrayStride: 24,
+            arrayStride: 32,
+            stepMode: "instance",
             attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x2" },
-              { shaderLocation: 1, offset: 8, format: "float32x4" },
+              { shaderLocation: 0, offset: 0, format: "float32x4" },
+              { shaderLocation: 1, offset: 16, format: "float32x4" },
             ],
           },
         ],
@@ -837,11 +865,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         entryPoint: "vertex_main",
         buffers: [
           {
-            arrayStride: 32,
+            arrayStride: 48,
+            stepMode: "instance",
             attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x2" },
-              { shaderLocation: 1, offset: 8, format: "float32x2" },
-              { shaderLocation: 2, offset: 16, format: "float32x4" },
+              { shaderLocation: 0, offset: 0, format: "float32x4" },
+              { shaderLocation: 1, offset: 16, format: "float32x4" },
+              { shaderLocation: 2, offset: 32, format: "float32x4" },
             ],
           },
         ],
@@ -857,11 +886,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         entryPoint: "vertex_main",
         buffers: [
           {
-            arrayStride: 32,
+            arrayStride: 48,
+            stepMode: "instance",
             attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x2" },
-              { shaderLocation: 1, offset: 8, format: "float32x2" },
-              { shaderLocation: 2, offset: 16, format: "float32x4" },
+              { shaderLocation: 0, offset: 0, format: "float32x4" },
+              { shaderLocation: 1, offset: 16, format: "float32x4" },
+              { shaderLocation: 2, offset: 32, format: "float32x4" },
             ],
           },
         ],
@@ -1054,7 +1084,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
-    const backgroundVertexCount = rectangleVertices.length / 6;
+    const backgroundInstanceCount = rectangleVertices.length / 8;
 
     const selection = ordered(view.selection);
     if (selection) {
@@ -1074,7 +1104,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
-    const selectionVertexCount = rectangleVertices.length / 6 - backgroundVertexCount;
+    const selectionInstanceCount = rectangleVertices.length / 8 - backgroundInstanceCount;
 
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
     if (!hasNativeRows) {
@@ -1206,8 +1236,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         }
       }
     }
-    const decorationVertexStart = backgroundVertexCount + selectionVertexCount;
-    const decorationVertexCount = rectangleVertices.length / 6 - decorationVertexStart;
+    const decorationInstanceStart = backgroundInstanceCount + selectionInstanceCount;
+    const decorationInstanceCount = rectangleVertices.length / 8 - decorationInstanceStart;
 
     const cursorStyle = effectiveCursorStyle(view);
     if (cursorStyle !== null) {
@@ -1287,8 +1317,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const glyphBuffer = surface.glyphBuffer.write(glyphData);
     const colorGlyphBuffer = surface.colorGlyphBuffer.write(colorGlyphData);
     const fallbackGlyphBuffer = surface.fallbackGlyphBuffer.write(fallbackGlyphData);
-    const cursorVertexStart = decorationVertexStart + decorationVertexCount;
-    const cursorVertexCount = rectangleVertices.length / 6 - cursorVertexStart;
+    const cursorInstanceStart = decorationInstanceStart + decorationInstanceCount;
+    const cursorInstanceCount = rectangleVertices.length / 8 - cursorInstanceStart;
 
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
@@ -1306,43 +1336,43 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         },
       ],
     });
-    if (rectangleBuffer && backgroundVertexCount > 0) {
+    if (rectangleBuffer && backgroundInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, rectangleBuffer);
-      pass.draw(backgroundVertexCount);
+      pass.draw(6, backgroundInstanceCount);
     }
-    if (rectangleBuffer && selectionVertexCount > 0) {
+    if (rectangleBuffer && selectionInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, rectangleBuffer);
-      pass.draw(selectionVertexCount, 1, backgroundVertexCount);
+      pass.draw(6, selectionInstanceCount, 0, backgroundInstanceCount);
     }
     if (glyphBuffer && glyphData.length > 0) {
       pass.setPipeline(this.#glyphPipeline);
       pass.setBindGroup(0, this.#monoAtlas.bindGroup);
       pass.setVertexBuffer(0, glyphBuffer);
-      pass.draw(glyphVertices.length / 8);
+      pass.draw(6, glyphVertices.length / 12);
     }
     if (colorGlyphBuffer && colorGlyphData.length > 0) {
       pass.setPipeline(this.#colorGlyphPipeline);
       pass.setBindGroup(0, this.#colorAtlas.bindGroup);
       pass.setVertexBuffer(0, colorGlyphBuffer);
-      pass.draw(colorGlyphVertices.length / 8);
+      pass.draw(6, colorGlyphVertices.length / 12);
     }
     if (fallbackGlyphBuffer && fallbackGlyphData.length > 0) {
       pass.setPipeline(this.#glyphPipeline);
       pass.setBindGroup(0, this.#fallbackAtlas.bindGroup);
       pass.setVertexBuffer(0, fallbackGlyphBuffer);
-      pass.draw(fallbackGlyphVertices.length / 8);
+      pass.draw(6, fallbackGlyphVertices.length / 12);
     }
-    if (rectangleBuffer && decorationVertexCount > 0) {
+    if (rectangleBuffer && decorationInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, rectangleBuffer);
-      pass.draw(decorationVertexCount, 1, decorationVertexStart);
+      pass.draw(6, decorationInstanceCount, 0, decorationInstanceStart);
     }
-    if (rectangleBuffer && cursorVertexCount > 0) {
+    if (rectangleBuffer && cursorInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, rectangleBuffer);
-      pass.draw(cursorVertexCount, 1, cursorVertexStart);
+      pass.draw(6, cursorInstanceCount, 0, cursorInstanceStart);
     }
     pass.end();
 
@@ -1375,18 +1405,18 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       canvasPixels: viewportWidth * viewportHeight,
       renderPasses: 2,
       drawCalls:
-        Number(backgroundVertexCount > 0) +
-        Number(selectionVertexCount > 0) +
+        Number(backgroundInstanceCount > 0) +
+        Number(selectionInstanceCount > 0) +
         Number(glyphData.length > 0) +
         Number(colorGlyphData.length > 0) +
         Number(fallbackGlyphData.length > 0) +
-        Number(decorationVertexCount > 0) +
-        Number(cursorVertexCount > 0) +
+        Number(decorationInstanceCount > 0) +
+        Number(cursorInstanceCount > 0) +
         1,
-      rectangleVertices: rectangleVertices.length / 6,
-      monoGlyphVertices: glyphVertices.length / 8,
-      colorGlyphVertices: colorGlyphVertices.length / 8,
-      fallbackGlyphVertices: fallbackGlyphVertices.length / 8,
+      rectangleVertices: (rectangleVertices.length / 8) * 6,
+      monoGlyphVertices: (glyphVertices.length / 12) * 6,
+      colorGlyphVertices: (colorGlyphVertices.length / 12) * 6,
+      fallbackGlyphVertices: (fallbackGlyphVertices.length / 12) * 6,
       vertexUploadBytes:
         rectangleData.byteLength + glyphData.byteLength + colorGlyphData.byteLength + fallbackGlyphData.byteLength,
       atlasUploadBytes:
