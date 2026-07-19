@@ -29,16 +29,19 @@ struct VertexOutput {
 
 @vertex fn vertex_main(
   @builtin(vertex_index) vertex_index: u32,
-  @location(0) bounds: vec4f,
-  @location(1) color: vec4f,
+  @location(0) p0: vec2f,
+  @location(1) p1: vec2f,
+  @location(2) p2: vec2f,
+  @location(3) color: vec4f,
 ) -> VertexOutput {
+  let p3 = p1 + p2 - p0;
   let positions = array<vec2f, 6>(
-    vec2f(bounds.x, bounds.z),
-    vec2f(bounds.y, bounds.z),
-    vec2f(bounds.x, bounds.w),
-    vec2f(bounds.x, bounds.w),
-    vec2f(bounds.y, bounds.z),
-    vec2f(bounds.y, bounds.w),
+    p0,
+    p1,
+    p2,
+    p2,
+    p1,
+    p3,
   );
   var output: VertexOutput;
   output.position = vec4f(positions[vertex_index], 0.0, 1.0);
@@ -503,7 +506,7 @@ function pushRectangle(
   const right = clipX(x + width, viewportWidth);
   const top = clipY(y, viewportHeight);
   const bottom = clipY(y + height, viewportHeight);
-  output.push(left, right, top, bottom, ...color);
+  output.push(left, top, right, top, left, bottom, ...color);
 }
 
 function pushGlyph(
@@ -716,15 +719,15 @@ function pushBoxDrawing(
       if (length <= Number.EPSILON) continue;
       const nx = ((-dy / length) * stroke) / 2;
       const ny = ((dx / length) * stroke) / 2;
-      const vertex = (px: number, py: number): void => {
-        output.push(clipX(px, viewportWidth), clipY(py, viewportHeight), ...color);
-      };
-      vertex(from[0] + nx, from[1] + ny);
-      vertex(to[0] + nx, to[1] + ny);
-      vertex(from[0] - nx, from[1] - ny);
-      vertex(from[0] - nx, from[1] - ny);
-      vertex(to[0] + nx, to[1] + ny);
-      vertex(to[0] - nx, to[1] - ny);
+      output.push(
+        clipX(from[0] + nx, viewportWidth),
+        clipY(from[1] + ny, viewportHeight),
+        clipX(to[0] + nx, viewportWidth),
+        clipY(to[1] + ny, viewportHeight),
+        clipX(from[0] - nx, viewportWidth),
+        clipY(from[1] - ny, viewportHeight),
+        ...color,
+      );
     }
     return;
   }
@@ -842,11 +845,13 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         entryPoint: "vertex_main",
         buffers: [
           {
-            arrayStride: 32,
+            arrayStride: 40,
             stepMode: "instance",
             attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x4" },
-              { shaderLocation: 1, offset: 16, format: "float32x4" },
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32x2" },
+              { shaderLocation: 2, offset: 16, format: "float32x2" },
+              { shaderLocation: 3, offset: 24, format: "float32x4" },
             ],
           },
         ],
@@ -1112,7 +1117,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
-    const backgroundInstanceCount = rectangleVertices.length / 8;
+    const backgroundInstanceCount = rectangleVertices.length / 10;
 
     const selection = ordered(view.selection);
     if (selection) {
@@ -1132,7 +1137,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
-    const selectionInstanceCount = rectangleVertices.length / 8 - backgroundInstanceCount;
+    const selectionInstanceCount = rectangleVertices.length / 10 - backgroundInstanceCount;
 
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
     if (!hasNativeRows) {
@@ -1265,7 +1270,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       }
     }
     const decorationInstanceStart = backgroundInstanceCount + selectionInstanceCount;
-    const decorationInstanceCount = rectangleVertices.length / 8 - decorationInstanceStart;
+    const decorationInstanceCount = rectangleVertices.length / 10 - decorationInstanceStart;
 
     const cursorStyle = effectiveCursorStyle(view);
     if (cursorStyle !== null) {
@@ -1346,7 +1351,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const colorGlyphBuffer = surface.colorGlyphBuffer.write(colorGlyphData);
     const fallbackGlyphBuffer = surface.fallbackGlyphBuffer.write(fallbackGlyphData);
     const cursorInstanceStart = decorationInstanceStart + decorationInstanceCount;
-    const cursorInstanceCount = rectangleVertices.length / 8 - cursorInstanceStart;
+    const cursorInstanceCount = rectangleVertices.length / 10 - cursorInstanceStart;
 
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
@@ -1441,7 +1446,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         Number(decorationInstanceCount > 0) +
         Number(cursorInstanceCount > 0) +
         1,
-      rectangleVertices: (rectangleVertices.length / 8) * 6,
+      rectangleVertices: (rectangleVertices.length / 10) * 6,
       monoGlyphVertices: (glyphVertices.length / 12) * 6,
       colorGlyphVertices: (colorGlyphVertices.length / 12) * 6,
       fallbackGlyphVertices: (fallbackGlyphVertices.length / 12) * 6,
