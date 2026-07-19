@@ -67,7 +67,7 @@ const dirty = new Set<string>();
 const occluded = new Set<string>();
 let renderer: TerminalRenderer | undefined;
 let rendererPromise: Promise<TerminalRenderer> | undefined;
-let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let flushScheduled = false;
 let recoveryAttempts = 0;
 let recovering = false;
 let nativeTextAnnounced = false;
@@ -150,14 +150,14 @@ async function finishPerformanceMeasurement(requestId: number, quietMs: number, 
   while (true) {
     const now = performance.now();
     const hasVisibleDirty = [...dirty].some((id) => !occluded.has(id));
-    if (!flushTimer && !hasVisibleDirty && now - active.lastActivityAt >= quietMs) {
+    if (!flushScheduled && !hasVisibleDirty && now - active.lastActivityAt >= quietMs) {
       const beforeDrainActivity = active.lastActivityAt;
       if (renderer?.settle) {
         const drainStarted = performance.now();
         await renderer.settle();
         gpuQueueDrainMs = performance.now() - drainStarted;
       }
-      if (active.lastActivityAt === beforeDrainActivity && !flushTimer) break;
+      if (active.lastActivityAt === beforeDrainActivity && !flushScheduled) break;
     }
     if (now >= deadline) {
       timedOutWaitingForIdle = true;
@@ -294,10 +294,14 @@ async function recoverDevice(info: GPUDeviceLostInfo): Promise<void> {
 }
 
 function scheduleFlush(): void {
-  flushTimer ??= setTimeout(() => {
-    flushTimer = undefined;
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const run = (): void => {
+    flushScheduled = false;
     void flush();
-  }, 8);
+  };
+  if (typeof self.requestAnimationFrame === "function") self.requestAnimationFrame(run);
+  else setTimeout(run, 8);
 }
 
 async function flush(): Promise<void> {
