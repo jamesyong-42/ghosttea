@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { GhostteaWorkspace } from "@vibecook/ghosttea-react/workspace";
 import { handleDomEditCommand } from "./dom-edit-commands";
+import { RenderBenchmarkApp } from "./RenderBenchmarkApp";
 
 export function App() {
+  if (window.desktop.renderBenchmarkConfig) {
+    return <RenderBenchmarkApp config={window.desktop.renderBenchmarkConfig} />;
+  }
+  return <DesktopApp />;
+}
+
+function DesktopApp() {
   const [active, setActive] = useState(document.visibilityState !== "hidden");
   const platform = useMemo(
     () => ({

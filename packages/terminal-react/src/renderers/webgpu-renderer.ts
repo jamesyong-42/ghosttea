@@ -1,6 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { CursorStyle, GlyphFormat, type GlyphDefinition, type StyleDefinition } from "@vibecook/ghosttea-frame";
+import type { TerminalRenderMetrics } from "../performance.js";
 
 import {
   CELL_WIDTH,
@@ -185,6 +186,8 @@ class FallbackGlyphAtlas {
   #x = 1;
   #y = 1;
   #rowHeight = 0;
+  #uploadBytes = 0;
+  #uploadCalls = 0;
 
   constructor(
     readonly device: GPUDevice,
@@ -279,6 +282,8 @@ class FallbackGlyphAtlas {
       { bytesPerRow: width * 4, rowsPerImage: height },
       [width, height],
     );
+    this.#uploadBytes += image.data.byteLength;
+    this.#uploadCalls += 1;
     const location: GlyphLocation = {
       u0: this.#x / ATLAS_SIZE,
       v0: this.#y / ATLAS_SIZE,
@@ -295,6 +300,10 @@ class FallbackGlyphAtlas {
   destroy(): void {
     this.#texture.destroy();
   }
+
+  uploadMetrics(): { bytes: number; calls: number } {
+    return { bytes: this.#uploadBytes, calls: this.#uploadCalls };
+  }
 }
 
 class NativeGlyphAtlas {
@@ -305,6 +314,8 @@ class NativeGlyphAtlas {
   #x = 1;
   #y = 1;
   #rowHeight = 0;
+  #uploadBytes = 0;
+  #uploadCalls = 0;
 
   constructor(
     readonly device: GPUDevice,
@@ -395,6 +406,8 @@ class NativeGlyphAtlas {
       { bytesPerRow: width * 4, rowsPerImage: height },
       [width, height],
     );
+    this.#uploadBytes += pixels.byteLength;
+    this.#uploadCalls += 1;
     const location: GlyphLocation = {
       u0: this.#x / ATLAS_SIZE,
       v0: this.#y / ATLAS_SIZE,
@@ -410,6 +423,10 @@ class NativeGlyphAtlas {
 
   destroy(): void {
     this.#texture.destroy();
+  }
+
+  uploadMetrics(): { bytes: number; calls: number } {
+    return { bytes: this.#uploadBytes, calls: this.#uploadCalls };
   }
 }
 
@@ -775,6 +792,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   readonly #monoAtlas: NativeGlyphAtlas;
   readonly #colorAtlas: NativeGlyphAtlas;
   readonly #fallbackAtlas: FallbackGlyphAtlas;
+  #performanceMeasurementEnabled = false;
 
   private constructor(
     readonly device: GPUDevice,
@@ -895,6 +913,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     return new WebGpuTerminalRenderer(device, navigator.gpu.getPreferredCanvasFormat());
   }
 
+  setPerformanceMeasurementEnabled(enabled: boolean): void {
+    this.#performanceMeasurementEnabled = enabled;
+  }
+
   mount(id: string, canvas: OffscreenCanvas): void {
     const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) throw new Error("WebGPU canvas context unavailable");
@@ -965,9 +987,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     });
   }
 
-  render(id: string, view: RenderView): void {
+  render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
+    const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
+    const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
+    const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;
     const scale = surface.dpr;
     const viewportWidth = surface.canvas.width;
     const viewportHeight = surface.canvas.height;
@@ -1320,6 +1345,43 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     postProcessPass.draw(3);
     postProcessPass.end();
     this.device.queue.submit([encoder.finish()]);
+    if (!this.#performanceMeasurementEnabled) return undefined;
+    const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
+    const colorUploadsAfter = this.#colorAtlas.uploadMetrics();
+    const fallbackUploadsAfter = this.#fallbackAtlas.uploadMetrics();
+    return {
+      canvasPixels: viewportWidth * viewportHeight,
+      renderPasses: 2,
+      drawCalls:
+        Number(backgroundVertexCount > 0) +
+        Number(selectionVertexCount > 0) +
+        Number(glyphData.length > 0) +
+        Number(colorGlyphData.length > 0) +
+        Number(fallbackGlyphData.length > 0) +
+        Number(decorationVertexCount > 0) +
+        Number(cursorVertexCount > 0) +
+        1,
+      rectangleVertices: rectangleVertices.length / 6,
+      monoGlyphVertices: glyphVertices.length / 8,
+      colorGlyphVertices: colorGlyphVertices.length / 8,
+      fallbackGlyphVertices: fallbackGlyphVertices.length / 8,
+      vertexUploadBytes:
+        rectangleData.byteLength + glyphData.byteLength + colorGlyphData.byteLength + fallbackGlyphData.byteLength,
+      atlasUploadBytes:
+        monoUploadsAfter.bytes -
+        monoUploadsBefore!.bytes +
+        (colorUploadsAfter.bytes - colorUploadsBefore!.bytes) +
+        (fallbackUploadsAfter.bytes - fallbackUploadsBefore!.bytes),
+      atlasUploadCalls:
+        monoUploadsAfter.calls -
+        monoUploadsBefore!.calls +
+        (colorUploadsAfter.calls - colorUploadsBefore!.calls) +
+        (fallbackUploadsAfter.calls - fallbackUploadsBefore!.calls),
+    };
+  }
+
+  settle(): Promise<void> {
+    return this.device.queue.onSubmittedWorkDone();
   }
 
   destroy(): void {

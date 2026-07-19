@@ -6,6 +6,7 @@ import {
   type StyleDefinition,
   type StyleRun,
 } from "@vibecook/ghosttea-frame";
+import type { TerminalRenderMetrics } from "../performance.js";
 
 export type Rgba = readonly [number, number, number, number];
 
@@ -58,7 +59,9 @@ export interface TerminalRenderer {
   mount(id: string, canvas: OffscreenCanvas): void;
   unmount(id: string): void;
   resize(id: string, size: PixelSize): void;
-  render(id: string, view: RenderView): void;
+  render(id: string, view: RenderView): TerminalRenderMetrics | undefined;
+  setPerformanceMeasurementEnabled?(enabled: boolean): void;
+  settle?(): Promise<void>;
 }
 
 export const DEFAULT_THEME: TerminalTheme = {

@@ -1,4 +1,5 @@
 import { CursorStyle } from "@vibecook/ghosttea-frame";
+import { emptyRenderMetrics, type TerminalRenderMetrics } from "../performance.js";
 import {
   CELL_WIDTH,
   LINE_HEIGHT,
@@ -33,6 +34,11 @@ function ordered(selection: RenderView["selection"]): [CellPoint, CellPoint] | n
 export class CanvasTerminalRenderer implements TerminalRenderer {
   readonly kind = "canvas2d" as const;
   readonly #surfaces = new Map<string, CanvasSurface>();
+  #performanceMeasurementEnabled = false;
+
+  setPerformanceMeasurementEnabled(enabled: boolean): void {
+    this.#performanceMeasurementEnabled = enabled;
+  }
 
   mount(id: string, canvas: OffscreenCanvas): void {
     const context = canvas.getContext("2d", { alpha: false });
@@ -52,7 +58,7 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
     surface.canvas.height = Math.max(1, Math.round(size.height * size.dpr));
   }
 
-  render(id: string, view: RenderView): void {
+  render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
     const { context, width, height, dpr } = surface;
@@ -122,5 +128,11 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
       }
     }
     context.restore();
+    if (!this.#performanceMeasurementEnabled) return undefined;
+    const metrics = emptyRenderMetrics();
+    metrics.canvasPixels = surface.canvas.width * surface.canvas.height;
+    metrics.renderPasses = 1;
+    metrics.drawCalls = 1;
+    return metrics;
   }
 }

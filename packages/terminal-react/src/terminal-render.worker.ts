@@ -28,6 +28,7 @@ import {
 } from "./renderers/types.js";
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
+import { emptyRenderMetrics, type TerminalRenderPerformanceSnapshot } from "./performance.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 
 interface Snapshot {
@@ -70,6 +71,119 @@ let recoveryAttempts = 0;
 let recovering = false;
 let nativeTextAnnounced = false;
 let forceCanvasFallback = false;
+
+interface ActivePerformanceMeasurement {
+  startedAt: number;
+  lastActivityAt: number;
+  lastFrameAt: Map<string, number>;
+  dirtySince: Map<string, number>;
+  frames: TerminalRenderPerformanceSnapshot["frames"];
+  scheduling: TerminalRenderPerformanceSnapshot["scheduling"];
+  renderer: TerminalRenderPerformanceSnapshot["renderer"];
+  samples: TerminalRenderPerformanceSnapshot["samples"];
+}
+
+let performanceMeasurement: ActivePerformanceMeasurement | undefined;
+
+function beginPerformanceMeasurement(): void {
+  const now = performance.now();
+  performanceMeasurement = {
+    startedAt: now,
+    lastActivityAt: now,
+    lastFrameAt: new Map(),
+    dirtySince: new Map(),
+    frames: {
+      received: 0,
+      bytes: 0,
+      full: 0,
+      incremental: 0,
+      stale: 0,
+      resyncRequested: 0,
+      rowsDecoded: 0,
+      glyphDefinitions: 0,
+    },
+    scheduling: { flushes: 0, renderCalls: 0, maximumDirtyPanes: 0, panesPerFlush: [] },
+    renderer: {
+      canvasPixelFrames: 0,
+      renderPasses: 0,
+      drawCalls: 0,
+      rectangleVertices: 0,
+      monoGlyphVertices: 0,
+      colorGlyphVertices: 0,
+      fallbackGlyphVertices: 0,
+      vertexUploadBytes: 0,
+      atlasUploadBytes: 0,
+      atlasUploadCalls: 0,
+    },
+    samples: { frameApplyMs: [], renderCpuMs: [], dirtyToRenderMs: [], frameArrivalToRenderMs: [] },
+  };
+  renderer?.setPerformanceMeasurementEnabled?.(true);
+}
+
+function notePerformanceActivity(now = performance.now()): void {
+  if (performanceMeasurement) performanceMeasurement.lastActivityAt = now;
+}
+
+function recordRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): void {
+  const target = performanceMeasurement?.renderer;
+  if (!target) return;
+  target.canvasPixelFrames += metrics.canvasPixels;
+  target.renderPasses += metrics.renderPasses;
+  target.drawCalls += metrics.drawCalls;
+  target.rectangleVertices += metrics.rectangleVertices;
+  target.monoGlyphVertices += metrics.monoGlyphVertices;
+  target.colorGlyphVertices += metrics.colorGlyphVertices;
+  target.fallbackGlyphVertices += metrics.fallbackGlyphVertices;
+  target.vertexUploadBytes += metrics.vertexUploadBytes;
+  target.atlasUploadBytes += metrics.atlasUploadBytes;
+  target.atlasUploadCalls += metrics.atlasUploadCalls;
+}
+
+async function finishPerformanceMeasurement(requestId: number, quietMs: number, timeoutMs: number): Promise<void> {
+  const active = performanceMeasurement;
+  if (!active) throw new Error("No terminal render performance measurement is active");
+  const deadline = performance.now() + timeoutMs;
+  let timedOutWaitingForIdle = false;
+  let gpuQueueDrainMs: number | null = null;
+
+  while (true) {
+    const now = performance.now();
+    const hasVisibleDirty = [...dirty].some((id) => !occluded.has(id));
+    if (!flushTimer && !hasVisibleDirty && now - active.lastActivityAt >= quietMs) {
+      const beforeDrainActivity = active.lastActivityAt;
+      if (renderer?.settle) {
+        const drainStarted = performance.now();
+        await renderer.settle();
+        gpuQueueDrainMs = performance.now() - drainStarted;
+      }
+      if (active.lastActivityAt === beforeDrainActivity && !flushTimer) break;
+    }
+    if (now >= deadline) {
+      timedOutWaitingForIdle = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, quietMs / 4))));
+  }
+
+  if (timedOutWaitingForIdle && renderer?.settle) {
+    const drainStarted = performance.now();
+    await renderer.settle();
+    gpuQueueDrainMs = performance.now() - drainStarted;
+  }
+  const snapshot: TerminalRenderPerformanceSnapshot = {
+    backend: renderer?.kind ?? "starting",
+    durationMs: performance.now() - active.startedAt,
+    timedOutWaitingForIdle,
+    gpuQueueDrainMs,
+    frames: active.frames,
+    scheduling: active.scheduling,
+    renderer: active.renderer,
+    samples: active.samples,
+  };
+  renderer?.setPerformanceMeasurementEnabled?.(false);
+  if (performanceMeasurement === active) performanceMeasurement = undefined;
+  postToRenderer({ type: "performance-result", requestId, snapshot });
+}
 
 function postToRenderer(message: WorkerToRendererMessage): void {
   self.postMessage(message);
@@ -188,13 +302,35 @@ function scheduleFlush(): void {
 async function flush(): Promise<void> {
   const backend = await ensureRenderer();
   const ids = [...dirty].filter((id) => !occluded.has(id));
+  if (performanceMeasurement && ids.length > 0) {
+    performanceMeasurement.scheduling.flushes += 1;
+    performanceMeasurement.scheduling.panesPerFlush.push(ids.length);
+    performanceMeasurement.scheduling.maximumDirtyPanes = Math.max(
+      performanceMeasurement.scheduling.maximumDirtyPanes,
+      ids.length,
+    );
+  }
   for (const id of ids) dirty.delete(id);
   for (const id of ids) {
     if (!mounts.has(id)) continue;
     const snapshot = snapshots.get(id);
     if (!snapshot) continue;
     try {
-      backend.render(id, snapshot);
+      const active = performanceMeasurement;
+      const beforeRender = active ? performance.now() : 0;
+      const dirtySince = active?.dirtySince.get(id);
+      const lastFrameAt = active?.lastFrameAt.get(id);
+      const metrics = backend.render(id, snapshot);
+      const renderedAt = active ? performance.now() : 0;
+      if (active && performanceMeasurement === active) {
+        active.scheduling.renderCalls += 1;
+        active.samples.renderCpuMs.push(renderedAt - beforeRender);
+        if (dirtySince !== undefined) active.samples.dirtyToRenderMs.push(renderedAt - dirtySince);
+        if (lastFrameAt !== undefined) active.samples.frameArrivalToRenderMs.push(renderedAt - lastFrameAt);
+        active.dirtySince.delete(id);
+        recordRenderMetrics(metrics ?? emptyRenderMetrics());
+        notePerformanceActivity(renderedAt);
+      }
     } catch (error) {
       console.error(`[terminal-renderer] failed to render view ${id}`, error);
     }
@@ -203,6 +339,9 @@ async function flush(): Promise<void> {
 }
 
 function markDirty(id: string): void {
+  if (performanceMeasurement && !performanceMeasurement.dirtySince.has(id)) {
+    performanceMeasurement.dirtySince.set(id, performance.now());
+  }
   dirty.add(id);
   if (!occluded.has(id)) scheduleFlush();
 }
@@ -219,8 +358,20 @@ async function mount(id: string, canvas: OffscreenCanvas): Promise<void> {
 }
 
 function applyFrame(packet: ArrayBuffer): void {
+  const active = performanceMeasurement;
+  const applyStarted = active ? performance.now() : 0;
+  if (active) {
+    active.frames.received += 1;
+    active.frames.bytes += packet.byteLength;
+    active.lastActivityAt = applyStarted;
+  }
   const frame = decodeFrame(packet);
   const id = frame.sessionHandle.toString();
+  if (active) {
+    active.lastFrameAt.set(id, applyStarted);
+    if ((frame.flags & FrameFlag.FullSnapshot) !== 0) active.frames.full += 1;
+    else active.frames.incremental += 1;
+  }
   const previous = snapshot(id);
   const fullFrame = (frame.flags & FrameFlag.FullSnapshot) !== 0;
   const classification = classifyFrame(previous, {
@@ -229,9 +380,19 @@ function applyFrame(packet: ArrayBuffer): void {
     sequence: frame.frameSequence,
     full: fullFrame,
   });
-  if (classification === "stale") return;
+  if (classification === "stale") {
+    if (active) {
+      active.frames.stale += 1;
+      active.samples.frameApplyMs.push(performance.now() - applyStarted);
+    }
+    return;
+  }
   const changedSession = previous.sessionEpoch !== 0n && frame.sessionEpoch !== previous.sessionEpoch;
   if (classification === "resync") {
+    if (active) {
+      active.frames.resyncRequested += 1;
+      active.samples.frameApplyMs.push(performance.now() - applyStarted);
+    }
     previous.awaitingResync = true;
     postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
     return;
@@ -251,10 +412,14 @@ function applyFrame(packet: ArrayBuffer): void {
   const styleSection = frame.sections.find((candidate) => candidate.kind === SectionKind.StyleDefinitions);
   const clipboardSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ClipboardWrite);
   const scrollbarSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ScrollbarState);
-  if (!rowSection || !cursorSection) return;
+  if (!rowSection || !cursorSection) {
+    if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
+    return;
+  }
 
   if (glyphSection) {
     const definitions = decodeGlyphDefinitions(glyphSection);
+    if (active) active.frames.glyphDefinitions += definitions.length;
     for (const definition of definitions) previous.glyphDefinitions.set(definition.id, definition);
     if (!nativeTextAnnounced && definitions.length > 0) {
       nativeTextAnnounced = true;
@@ -301,7 +466,9 @@ function applyFrame(packet: ArrayBuffer): void {
     ? Array.from({ length: frame.rows }, () => [] as StyleRun[])
     : previous.nativeStyleRows.map((row) => row.slice());
   const rowRevisions = full ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
-  for (const replacement of decodeRowReplacements(rowSection)) {
+  const replacements = decodeRowReplacements(rowSection);
+  if (active) active.frames.rowsDecoded += replacements.length;
+  for (const replacement of replacements) {
     if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
     if (replacement.revision < (rowRevisions[replacement.row] ?? 0n)) continue;
     rows[replacement.row] = replacement.text;
@@ -328,6 +495,7 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
   markDirty(id);
+  if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
 }
 
 self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
@@ -390,6 +558,17 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
     } else if (message.type === "cursor-activity") {
       scheduleCursorBlink(message.sessionHandle, true);
       markDirty(message.sessionHandle);
+    } else if (message.type === "performance-start") {
+      void ensureRenderer()
+        .then(() => {
+          beginPerformanceMeasurement();
+          postToRenderer({ type: "performance-started", requestId: message.requestId });
+        })
+        .catch((error) => console.error("[terminal-renderer] failed to start performance measurement", error));
+    } else if (message.type === "performance-finish") {
+      void finishPerformanceMeasurement(message.requestId, message.quietMs, message.timeoutMs).catch((error) => {
+        console.error("[terminal-renderer] failed to finish performance measurement", error);
+      });
     }
   } catch (error) {
     console.error("[terminal-renderer] rejected worker message", error);

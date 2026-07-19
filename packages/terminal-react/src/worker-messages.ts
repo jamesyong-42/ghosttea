@@ -1,5 +1,6 @@
 import type { CellSelection, TerminalTheme } from "./renderers/types.js";
 import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
+import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 
 export type RendererToWorkerMessage =
   | { type: "renderer-config"; forceCanvasFallback: boolean }
@@ -12,7 +13,9 @@ export type RendererToWorkerMessage =
   | { type: "selection"; sessionHandle: string; selection: CellSelection | null }
   | { type: "visibility"; sessionHandle: string; visible: boolean }
   | { type: "focus"; sessionHandle: string; focused: boolean }
-  | { type: "cursor-activity"; sessionHandle: string };
+  | { type: "cursor-activity"; sessionHandle: string }
+  | { type: "performance-start"; requestId: number }
+  | { type: "performance-finish"; requestId: number; quietMs: number; timeoutMs: number };
 
 export type WorkerToRendererMessage =
   | { type: "renderer-status"; backend: string; textEngine?: string; recovered?: boolean }
@@ -20,4 +23,6 @@ export type WorkerToRendererMessage =
   | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }
+  | { type: "performance-started"; requestId: number }
+  | { type: "performance-result"; requestId: number; snapshot: TerminalRenderPerformanceSnapshot }
   | { type: "renderer-reload-required"; reason: string };

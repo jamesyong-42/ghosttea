@@ -10,3 +10,4 @@ export {
   type TerminalMount,
 } from "./runtime.js";
 export { DEFAULT_THEME, type CellPoint, type CellSelection, type TerminalTheme } from "./renderers/types.js";
+export type { TerminalRenderMetrics, TerminalRenderPerformanceSnapshot } from "./performance.js";

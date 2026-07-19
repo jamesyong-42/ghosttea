@@ -14,6 +14,7 @@ import {
 } from "@vibecook/ghosttea-protocol";
 import { FrameFlag } from "@vibecook/ghosttea-frame";
 import type { CellSelection, TerminalTheme } from "./renderers/types.js";
+import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 import { FrameResyncController } from "./frame-resync.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 
@@ -102,6 +103,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
   #rendererBackend = "starting";
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
+  #performanceRequestId = 1;
+  readonly #performanceRequests = new Map<
+    number,
+    {
+      resolve: (value: TerminalRenderPerformanceSnapshot | undefined) => void;
+      reject: (error: Error) => void;
+      timer: number;
+    }
+  >();
   #disposed = false;
 
   constructor(options: GhostteaTerminalRuntimeOptions) {
@@ -147,6 +157,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.#resync.request(data.sessionHandle);
       } else if (data.type === "frame-resync-complete") {
         this.#resync.complete(data.sessionHandle);
+      } else if (data.type === "performance-started") {
+        this.#resolvePerformanceRequest(data.requestId, undefined);
+      } else if (data.type === "performance-result") {
+        this.#resolvePerformanceRequest(data.requestId, data.snapshot);
       } else if (data.type === "renderer-reload-required") {
         console.error(`[terminal-runtime] renderer requested reload: ${String(data.reason ?? "unknown")}`);
         this.#platform.setForceCanvasFallback(true);
@@ -166,6 +180,50 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   get rendererBackend(): string {
     return this.#rendererBackend;
+  }
+
+  #resolvePerformanceRequest(requestId: number, value: TerminalRenderPerformanceSnapshot | undefined): void {
+    const pending = this.#performanceRequests.get(requestId);
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    this.#performanceRequests.delete(requestId);
+    pending.resolve(value);
+  }
+
+  #performanceRequest(
+    send: (requestId: number) => RendererToWorkerMessage,
+    timeoutMs: number,
+  ): Promise<TerminalRenderPerformanceSnapshot | undefined> {
+    if (this.#disposed) return Promise.reject(new Error("Terminal runtime is disposed"));
+    const requestId = this.#performanceRequestId++;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.#performanceRequests.delete(requestId);
+        reject(new Error(`Terminal render performance request ${requestId} timed out`));
+      }, timeoutMs);
+      this.#performanceRequests.set(requestId, { resolve, reject, timer });
+      this.#postWorker(send(requestId));
+    });
+  }
+
+  async startPerformanceMeasurement(): Promise<void> {
+    await this.#performanceRequest((requestId) => ({ type: "performance-start", requestId }), 10_000);
+  }
+
+  async finishPerformanceMeasurement(
+    options: {
+      quietMs?: number;
+      timeoutMs?: number;
+    } = {},
+  ): Promise<TerminalRenderPerformanceSnapshot> {
+    const quietMs = Math.max(0, options.quietMs ?? 250);
+    const timeoutMs = Math.max(quietMs + 1_000, options.timeoutMs ?? 15_000);
+    const result = await this.#performanceRequest(
+      (requestId) => ({ type: "performance-finish", requestId, quietMs, timeoutMs }),
+      timeoutMs + 5_000,
+    );
+    if (!result) throw new Error("Terminal render worker returned no performance snapshot");
+    return result;
   }
 
   connect(): Promise<void> {
@@ -417,6 +475,11 @@ export class GhostteaTerminalRuntime extends EventTarget {
         if (current !== view) return;
         current.attachmentEpoch = response.attachmentEpoch;
         current.readWrite = response.readWrite;
+        this.dispatchEvent(
+          new CustomEvent("view-attached", {
+            detail: { sessionId, sessionHandle, viewId, readWrite: response.readWrite },
+          }),
+        );
         const previous = this.#sessionByHandle.get(sessionHandle);
         if (previous && previous.readWrite !== response.readWrite) {
           const updated = { ...previous, readWrite: response.readWrite };
@@ -676,6 +739,11 @@ export class GhostteaTerminalRuntime extends EventTarget {
     for (const timer of this.#metadataTimers.values()) window.clearTimeout(timer);
     this.#metadataTimers.clear();
     this.#resync.dispose();
+    for (const request of this.#performanceRequests.values()) {
+      window.clearTimeout(request.timer);
+      request.reject(new Error("Terminal runtime was disposed during a performance request"));
+    }
+    this.#performanceRequests.clear();
     this.#views.clear();
     this.#focusByView.clear();
     this.#mountGenerationByHandle.clear();

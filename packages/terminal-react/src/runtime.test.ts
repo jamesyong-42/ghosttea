@@ -113,6 +113,70 @@ afterEach(() => {
 });
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
+  it("round-trips isolated performance measurements through the render worker", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: new FakePort() as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+
+    const started = runtime.startPerformanceMeasurement();
+    const startMessage = worker.messages.at(-1) as { requestId: number; type: string };
+    expect(startMessage.type).toBe("performance-start");
+    worker.dispatchEvent(
+      new MessageEvent("message", { data: { type: "performance-started", requestId: startMessage.requestId } }),
+    );
+    await expect(started).resolves.toBeUndefined();
+
+    const finished = runtime.finishPerformanceMeasurement({ quietMs: 50, timeoutMs: 1_000 });
+    const finishMessage = worker.messages.at(-1) as { requestId: number; type: string };
+    expect(finishMessage).toMatchObject({ type: "performance-finish", quietMs: 50, timeoutMs: 1_050 });
+    const snapshot = {
+      backend: "webgpu",
+      durationMs: 100,
+      timedOutWaitingForIdle: false,
+      gpuQueueDrainMs: 1,
+      frames: {
+        received: 1,
+        bytes: 16,
+        full: 1,
+        incremental: 0,
+        stale: 0,
+        resyncRequested: 0,
+        rowsDecoded: 24,
+        glyphDefinitions: 10,
+      },
+      scheduling: { flushes: 1, renderCalls: 1, maximumDirtyPanes: 1, panesPerFlush: [1] },
+      renderer: {
+        canvasPixelFrames: 100,
+        renderPasses: 2,
+        drawCalls: 2,
+        rectangleVertices: 6,
+        monoGlyphVertices: 6,
+        colorGlyphVertices: 0,
+        fallbackGlyphVertices: 0,
+        vertexUploadBytes: 336,
+        atlasUploadBytes: 0,
+        atlasUploadCalls: 0,
+      },
+      samples: { frameApplyMs: [1], renderCpuMs: [2], dirtyToRenderMs: [8], frameArrivalToRenderMs: [9] },
+    };
+    worker.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "performance-result", requestId: finishMessage.requestId, snapshot },
+      }),
+    );
+    await expect(finished).resolves.toEqual(snapshot);
+    runtime.dispose();
+  });
+
   it("copies stable terminal-owned selection text through the platform clipboard", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerMonitor, screen } from "electron";
 import {
   GhostteaElectronBackend,
   installGhostteaEditShortcuts,
@@ -11,6 +11,20 @@ import {
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { orderNativeTabs } from "./native-tab-order";
 import { DesktopTabRegistry } from "./tab-registry";
+import type { ElectronCaseSamples, ElectronProcessSample, RenderBenchmarkConfig } from "../benchmark/types";
+
+function renderBenchmarkConfiguration(): RenderBenchmarkConfig | undefined {
+  const serialized = process.env.GHOSTTEA_RENDER_BENCH_CONFIG;
+  if (!serialized) return undefined;
+  const parsed = JSON.parse(serialized) as RenderBenchmarkConfig;
+  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.cases)) {
+    throw new Error("Unsupported rendering benchmark configuration");
+  }
+  return parsed;
+}
+
+const renderBenchmark = renderBenchmarkConfiguration();
+const renderBenchmarkOutput = process.env.GHOSTTEA_RENDER_BENCH_OUTPUT;
 
 app.setName("Ghosttea Experiment");
 nativeTheme.themeSource = "dark";
@@ -32,6 +46,81 @@ if (profile.name !== "default") {
 // profiles coexist; launching the same profile again activates its window.
 const ownsProfile = app.requestSingleInstanceLock({ profile: profile.name });
 if (!ownsProfile) app.quit();
+
+let benchmarkSampler: ReturnType<typeof setInterval> | undefined;
+let benchmarkSamples: ElectronProcessSample[] = [];
+let benchmarkCaseName = "";
+let benchmarkIteration = 0;
+
+function takeElectronProcessSample(): ElectronProcessSample {
+  return {
+    atMs: Date.now(),
+    thermalState: powerMonitor.getCurrentThermalState(),
+    processes: app.getAppMetrics().map((metric) => ({
+      pid: metric.pid,
+      type: metric.type,
+      ...(metric.name ? { name: metric.name } : {}),
+      ...(metric.serviceName ? { serviceName: metric.serviceName } : {}),
+      cpuPercent: metric.cpu.percentCPUUsage,
+      idleWakeupsPerSecond: metric.cpu.idleWakeupsPerSecond,
+      workingSetBytes: metric.memory.workingSetSize * 1024,
+    })),
+  };
+}
+
+if (renderBenchmark) {
+  ipcMain.handle("render-benchmark-case-start", (_event, caseName: unknown, iteration: unknown) => {
+    if (benchmarkSampler) throw new Error("A rendering benchmark case is already active");
+    benchmarkCaseName = typeof caseName === "string" ? caseName : "unknown";
+    benchmarkIteration = typeof iteration === "number" ? iteration : -1;
+    benchmarkSamples = [];
+    // Prime Electron's interval CPU counters; the first value is documented as zero.
+    app.getAppMetrics();
+    benchmarkSampler = setInterval(() => benchmarkSamples.push(takeElectronProcessSample()), 100);
+  });
+
+  ipcMain.handle("render-benchmark-case-finish", (): ElectronCaseSamples => {
+    if (benchmarkSampler) clearInterval(benchmarkSampler);
+    benchmarkSampler = undefined;
+    benchmarkSamples.push(takeElectronProcessSample());
+    return {
+      caseName: benchmarkCaseName,
+      iteration: benchmarkIteration,
+      samples: benchmarkSamples.splice(0),
+    };
+  });
+
+  ipcMain.handle("render-benchmark-complete", async (_event, report: unknown) => {
+    if (!renderBenchmarkOutput) throw new Error("GHOSTTEA_RENDER_BENCH_OUTPUT is required");
+    const display = screen.getPrimaryDisplay();
+    const complete = {
+      ...(typeof report === "object" && report ? report : { report }),
+      electron: {
+        versions: process.versions,
+        gpuFeatureStatus: app.getGPUFeatureStatus(),
+        gpuInfo: await app.getGPUInfo("basic"),
+        display: {
+          size: display.size,
+          workAreaSize: display.workAreaSize,
+          scaleFactor: display.scaleFactor,
+          displayFrequency: display.displayFrequency,
+          colorSpace: display.colorSpace,
+        },
+        finalThermalState: powerMonitor.getCurrentThermalState(),
+      },
+    };
+    mkdirSync(resolve(renderBenchmarkOutput, ".."), { recursive: true });
+    writeFileSync(renderBenchmarkOutput, `${JSON.stringify(complete, null, 2)}\n`);
+    console.log(`[render-bench] wrote ${renderBenchmarkOutput}`);
+    setTimeout(() => app.quit(), 50);
+  });
+
+  ipcMain.handle("render-benchmark-failed", (_event, message: unknown) => {
+    console.error(`[render-bench] ${String(message)}`);
+    process.exitCode = 1;
+    setTimeout(() => app.quit(), 50);
+  });
+}
 
 ipcMain.on("terminal-context-menu", (event, canCopy: boolean) => {
   const window = BrowserWindow.fromWebContents(event.sender);
@@ -238,11 +327,17 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     `--ghosttea-tab-id=${tabId}`,
     `--ghosttea-tab-claim-existing=${claimExistingSessions ? "1" : "0"}`,
     ...(options.initialCwd ? [`--ghosttea-tab-cwd=${encodeURIComponent(options.initialCwd)}`] : []),
+    ...(renderBenchmark
+      ? [
+          "--ghosttea-render-benchmark=1",
+          `--ghosttea-render-benchmark-config=${encodeURIComponent(JSON.stringify(renderBenchmark))}`,
+        ]
+      : []),
   ];
 
   const window = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: renderBenchmark?.width ?? 800,
+    height: renderBenchmark?.height ?? 600,
     minWidth: 320,
     minHeight: 180,
     show: false,
@@ -259,7 +354,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
-      backgroundThrottling: true,
+      backgroundThrottling: !renderBenchmark,
       additionalArguments,
     },
   });
@@ -347,6 +442,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
+  if (renderBenchmark) return;
   if (tabs.records().length === 0) {
     void createWindow({ claimExistingSessions: true }).catch((error) =>
       console.error("failed to recreate window", error),
@@ -363,5 +459,6 @@ app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => 
 
 app.on("before-quit", () => {
   quitting = true;
+  if (benchmarkSampler) clearInterval(benchmarkSampler);
   backend?.stop();
 });
