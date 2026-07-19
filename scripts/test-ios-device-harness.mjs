@@ -262,6 +262,7 @@ async function main() {
       bundleIdentifier,
     );
     const launch = execute("xcrun", launchArguments, {
+      allowFailure: performanceAutomation,
       capture: performanceAutomation,
       timeout: performanceAutomation ? 180_000 : productionSessionAutomation ? 120_000 : undefined,
     });
@@ -276,6 +277,9 @@ async function main() {
       writeFileSync(performanceEvidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
       if (evidence.failures?.length) {
         throw new Error(`Physical-device performance gate failed: ${evidence.failures.join("; ")}`);
+      }
+      if (launch.status !== 0) {
+        throw new Error(`Device performance app exited with status ${launch.status}.`);
       }
       console.log(`Physical-device latency evidence passed and was written to ${performanceEvidencePath}.`);
       return;

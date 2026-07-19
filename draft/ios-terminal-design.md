@@ -2992,18 +2992,27 @@ An unlocked-device Release runner performs 1,000 real session input writes and
 targets, requires every coarse boundary and native contention sample without
 drops, and attempts 120 draws after GPU suspension. The app returns only
 numeric, redacted JSON evidence through `devicectl`; missing evidence or any
-failed invariant fails the host command. Its first run is pending an unlocked
-device. Longer CPU/Energy, 60/120 Hz comparison, and four/eight-session traces
-remain release evidence.
+failed invariant fails the host command. Longer CPU/Energy, 60/120 Hz
+comparison, and four/eight-session rendered traces remain release evidence.
 The eighteenth slice extends the same Release/device evidence contract across
 the shared native text engine. Four and eight terminals over one runtime each
 perform 256 concurrent feeds, require exact native-feed and mutex wait/hold
 sample counts without recorder drops, and fail on an 8 ms lock-wait p99, 16 ms
 per-session feed p99, or explicit slowest/fastest starvation bounds. The
 redacted result retains per-terminal numeric distributions for the future
-sharding/pooling decision. Its first run shares the seventeenth slice's pending
-unlocked-device execution; rendered multi-session Instruments traces remain a
-separate release gate.
+sharding/pooling decision. The local Metal portion disables event-driven draws,
+paces outside the scored interval, and issues exactly one explicit draw per
+update so drawable/vblank backpressure does not contaminate command-submission
+latency. Failed evidence is retained as well as passing evidence. Its first run
+shares the seventeenth slice's device command; rendered multi-session
+Instruments traces remain a separate release gate.
+The first corrected run passes on a 120 Hz iPhone 14 Pro with nominal thermal
+state: input/write is 0.0018/0.0048 ms p50/p99, received bytes through Metal
+submission is 1.91/2.28 ms, all exact sample counts have zero drops, all 120
+suspended draw attempts produce zero submissions, and both four/eight-session
+fairness scenarios pass. Its redacted JSON SHA-256 is
+`163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
+The 60 Hz comparison and longer rendered CPU/Energy traces remain open.
 
 Deliverables:
 

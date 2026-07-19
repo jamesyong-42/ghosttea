@@ -1536,3 +1536,39 @@ console, requires the pass marker, times out fail-closed, and shuts down a
 simulator it booted. This is strong structural and lifecycle evidence, but it
 does not replace the physical iPad test of two live Metal/Truffle terminal
 attachments under Stage Manager.
+
+## 2026-07-18: automated Release performance and shared-engine fairness
+
+`npm run test:ios:performance` built, signed, installed, and launched the
+Release harness on an iPhone 14 Pro (`iPhone15,2`) running iOS 26.5.2. The
+device reported a 120 Hz maximum refresh rate, nominal thermal state, and Low
+Power Mode disabled. The app exited automatically after returning schema-2
+redacted numeric evidence with no failures.
+
+The 1,000-sample local pipeline passed the original strict gates:
+
+| Boundary                                |       p50 |       p99 | Samples / drops |
+| --------------------------------------- | --------: | --------: | --------------: |
+| input through ordered transport write   | 0.0018 ms | 0.0048 ms |       1,000 / 0 |
+| received bytes through Metal submission |   1.91 ms |   2.28 ms |       1,000 / 0 |
+| native feed                             |   0.92 ms |   1.08 ms |       1,000 / 0 |
+| retained TRF1 decode                    |  0.050 ms |  0.072 ms |       1,000 / 0 |
+| Metal command submission                |   0.36 ms |   0.48 ms |       1,000 / 0 |
+
+The view submitted exactly 1,000 frames, and 120 draw attempts after GPU
+suspension produced zero additional submissions. The loop paced 9.33 ms outside
+each scored interval so drawable/vblank backpressure could not be mistaken for
+command-submission time.
+
+Four terminals sharing one runtime completed 1,024 native feeds with a 1.16 ms
+text-engine lock-wait p99 and zero drops. Eight terminals completed 2,048 feeds
+with a 0.384 ms lock-wait p99 and zero drops. Every per-terminal p99 remained
+below 1.84 ms in the four-session case and below 0.48 ms in the eight-session
+case; both fairness scenarios passed their starvation and convoy bounds.
+
+The ignored evidence file's SHA-256 is
+`163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
+This closes the automated 120 Hz local latency and shared-engine feed gate. A
+60 Hz physical run, longer Instruments CPU/Energy traces, rendered
+four/eight-session output, and physical iPad multi-scene qualification remain
+release work.

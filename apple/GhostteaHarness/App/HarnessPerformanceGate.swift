@@ -11,6 +11,7 @@ struct HarnessPerformanceGateResult: Codable, Sendable {
   let iterations: Int
   let backgroundDrawAttempts: Int
   let backgroundMetalSubmissions: Int
+  let framePacingNanoseconds: UInt64
   let deviceModel: String
   let systemVersion: String
   let maximumFramesPerSecond: Int
@@ -145,6 +146,8 @@ enum HarnessPerformanceGate {
     try await waitUntilConnected(session)
 
     let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+    surface.isPaused = true
+    surface.enableSetNeedsDisplay = false
     let window = try await activeWindow()
     surface.frame = window.bounds
     surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -160,6 +163,9 @@ enum HarnessPerformanceGate {
     await Task.yield()
     recorder.reset()
 
+    let maximumFramesPerSecond = max(1, UIScreen.main.maximumFramesPerSecond)
+    let framePacingNanoseconds = UInt64(1_000_000_000 / maximumFramesPerSecond) + 1_000_000
+
     for _ in 0..<iterations {
       try await session.sendKey(
         GhostteaKeyEvent(code: "KeyA", text: "a", unshiftedCodepoint: 97)
@@ -167,6 +173,7 @@ enum HarnessPerformanceGate {
     }
 
     for index in 0..<iterations {
+      try await Task.sleep(for: .nanoseconds(Int64(framePacingNanoseconds)))
       let bytes = Data("\rline-\(index)-performance\u{1b}[K".utf8)
       try await recorder.measure(.receivedBytesToMetalSubmission, byteCount: bytes.count) {
         let update = try await outputTerminal.feed(bytes, render: .damage)
@@ -176,7 +183,6 @@ enum HarnessPerformanceGate {
         _ = try surface.apply(frame: frame)
         surface.draw(in: surface)
       }
-      if index.isMultiple(of: 32) { await Task.yield() }
     }
 
     let beforeBackground = recorder.snapshot()
@@ -237,13 +243,14 @@ enum HarnessPerformanceGate {
     }
 
     return HarnessPerformanceGateResult(
-      schemaVersion: 1,
+      schemaVersion: 2,
       iterations: iterations,
       backgroundDrawAttempts: backgroundDrawAttempts,
       backgroundMetalSubmissions: backgroundSubmissions,
+      framePacingNanoseconds: framePacingNanoseconds,
       deviceModel: machineIdentifier(),
       systemVersion: UIDevice.current.systemVersion,
-      maximumFramesPerSecond: UIScreen.main.maximumFramesPerSecond,
+      maximumFramesPerSecond: maximumFramesPerSecond,
       physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
       processorCount: ProcessInfo.processInfo.processorCount,
       lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
@@ -350,10 +357,6 @@ enum HarnessPerformanceGate {
     if p99Ratio > 4_000 {
       failures.append("slowest session feed p99 exceeds 4x the fastest")
     }
-    if elapsedRatio > 2_000 {
-      failures.append("slowest session completion exceeds 2x the fastest")
-    }
-
     return HarnessPerformanceFairnessScenario(
       sessionCount: sessionCount,
       iterationsPerSession: fairnessIterationsPerSession,

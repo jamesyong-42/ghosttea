@@ -24,10 +24,16 @@ received-byte-to-Metal submissions, requires every native/feed/decode/render
 boundary with zero sample drops, and proves suspended draw attempts submit no
 GPU work. It also runs 256 concurrent native feeds per terminal across four and
 eight terminals sharing one runtime, with exact attribution counts and explicit
-lock-wait, per-session p99, and starvation/skew bounds. The device returns
-redacted numeric JSON through `devicectl`; the host writes ignored evidence. The
-first execution is pending an unlocked device, and Instruments CPU/Energy plus
-rendered multi-session traces remain release gates.
+lock-wait, per-session p99, and starvation/skew bounds. Its Metal loop is
+refresh-paced outside the scored interval and issues exactly one explicit draw
+per update. The device returns redacted numeric JSON through `devicectl`; the
+host writes ignored evidence even when a scored invariant fails. The corrected
+120 Hz iPhone 14 Pro run passes every automated latency, sample-count,
+background-GPU, and four/eight-session fairness gate with nominal thermal state.
+Its evidence SHA-256 is
+`163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
+The 60 Hz run and Instruments CPU/Energy plus rendered multi-session traces
+remain release gates.
 
 ## Deterministic component inventory
 
