@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -36,6 +37,27 @@ impl TerminalRuntime {
     pub(crate) fn text_engine(&self) -> &Arc<Mutex<TextEngine>> {
         &self.text_engine
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextEnginePerformanceSnapshot {
+    pub sequence: u64,
+    pub acquisition_count: u64,
+    pub wait_nanoseconds: u64,
+    pub hold_nanoseconds: u64,
+}
+
+impl TextEnginePerformanceSnapshot {
+    pub(crate) fn record(&mut self, wait: Duration, hold: Duration) {
+        self.sequence = self.sequence.saturating_add(1);
+        self.acquisition_count = 1;
+        self.wait_nanoseconds = duration_nanoseconds(wait);
+        self.hold_nanoseconds = duration_nanoseconds(hold);
+    }
+}
+
+fn duration_nanoseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +118,7 @@ pub struct TerminalModel {
     terminal_revision: u64,
     frame_sequence: u64,
     latest_logical: Option<LogicalTerminalSnapshot>,
+    text_engine_performance: TextEnginePerformanceSnapshot,
 }
 
 impl TerminalModel {
@@ -120,6 +143,7 @@ impl TerminalModel {
             terminal_revision: 0,
             frame_sequence: 0,
             latest_logical: None,
+            text_engine_performance: TextEnginePerformanceSnapshot::default(),
         })
     }
 
@@ -129,6 +153,10 @@ impl TerminalModel {
 
     pub fn latest_logical(&self) -> Option<LogicalTerminalSnapshot> {
         self.latest_logical.clone()
+    }
+
+    pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
+        self.text_engine_performance
     }
 
     pub fn feed(&mut self, bytes: &[u8], render: RenderRequest) -> Result<TerminalUpdate> {
@@ -355,7 +383,7 @@ impl TerminalModel {
             style: snapshot.cursor.style,
             blinking: snapshot.cursor.blinking,
         };
-        let (shaped_rows, updated_rows, full_snapshot, new_definitions) = {
+        let (shaped_rows, updated_rows, full_snapshot, new_definitions, wait, hold) = {
             let cache = &mut self.render_cache;
             let row_count = snapshot.rows.len();
             let cache_resized = cache.rows.len() != row_count;
@@ -389,7 +417,10 @@ impl TerminalModel {
                 cache.reset_catalog = false;
             }
 
+            let wait_started = Instant::now();
             let mut engine = self.runtime.text_engine.lock().unwrap();
+            let wait = wait_started.elapsed();
+            let hold_started = Instant::now();
             for row_index in updated.iter().copied() {
                 let row = &snapshot.rows[row_index as usize];
                 let cells = &snapshot.cells[row_index as usize];
@@ -435,6 +466,8 @@ impl TerminalModel {
                     .with_context(|| format!("shape terminal row {row_index}"))?;
                 cache.rows[row_index as usize] = Some(CachedRow { key, shaped });
             }
+            drop(engine);
+            let hold = hold_started.elapsed();
             cache.force_full = false;
             let shaped_rows: Vec<_> = cache
                 .rows
@@ -458,8 +491,11 @@ impl TerminalModel {
                 updated.into_iter().collect::<Vec<_>>(),
                 full_snapshot,
                 new_definitions.into_values().collect::<Vec<_>>(),
+                wait,
+                hold,
             )
         };
+        self.text_engine_performance.record(wait, hold);
 
         encode_text_snapshot(TextSnapshot {
             session_handle: self.session_handle,
@@ -618,6 +654,10 @@ mod tests {
             attached.as_slice().last(),
             Some(TerminalEffect::FrameReady(_))
         ));
+        let performance = model.text_engine_performance();
+        assert_eq!(performance.sequence, 1);
+        assert_eq!(performance.acquisition_count, 1);
+        assert!(performance.hold_nanoseconds > 0);
     }
 
     #[test]

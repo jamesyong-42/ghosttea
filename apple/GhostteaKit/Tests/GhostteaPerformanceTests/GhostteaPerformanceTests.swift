@@ -48,3 +48,17 @@ func asyncMeasurement() async throws {
   #expect(value == 7)
   #expect(recorder.snapshot().summaries.first?.sampleCount == 1)
 }
+
+@Test("Native duration samples use the same bounded numeric evidence")
+func nativeDurationSample() throws {
+  let recorder = GhostteaPerformanceRecorder(maximumSamplesPerMetric: 4)
+  recorder.setEnabled(true)
+  recorder.record(.textEngineLockWait, durationNanoseconds: 123, byteCount: 9)
+
+  let summary = try #require(recorder.snapshot().summaries.first)
+  #expect(summary.metric == .textEngineLockWait)
+  #expect(summary.sampleCount == 1)
+  #expect(summary.byteCount == 9)
+  #expect(summary.p50Nanoseconds == 123)
+  #expect(summary.p99Nanoseconds == 123)
+}

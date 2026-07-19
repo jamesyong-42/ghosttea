@@ -16,7 +16,7 @@ use std::{
 use ghosttea_core::{
     ClipboardRequest, LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
-    TerminalUpdate,
+    TerminalUpdate, TextEnginePerformanceSnapshot,
 };
 use ghosttea_text::{FontResource, FontResources, TextEngine, TextMetrics};
 use serde_json::json;
@@ -138,6 +138,26 @@ impl GhostteaUpdate {
         effects: ptr::null(),
         effect_count: 0,
     };
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GhostteaTextEnginePerformance {
+    pub sequence: u64,
+    pub acquisition_count: u64,
+    pub wait_nanoseconds: u64,
+    pub hold_nanoseconds: u64,
+}
+
+impl From<TextEnginePerformanceSnapshot> for GhostteaTextEnginePerformance {
+    fn from(snapshot: TextEnginePerformanceSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            acquisition_count: snapshot.acquisition_count,
+            wait_nanoseconds: snapshot.wait_nanoseconds,
+            hold_nanoseconds: snapshot.hold_nanoseconds,
+        }
+    }
 }
 
 #[repr(C)]
@@ -639,6 +659,30 @@ pub extern "C" fn ghosttea_terminal_is_poisoned(terminal: *const GhostteaTermina
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_terminal_text_engine_performance(
+    terminal: *mut GhostteaTerminalHandle,
+    out: *mut GhostteaTextEnginePerformance,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("text-engine performance output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaTextEnginePerformance::default()) };
+    match terminal_operation(terminal, PanicScope::Terminal, |model| {
+        Ok(model.text_engine_performance())
+    }) {
+        Ok(snapshot) => {
+            // SAFETY: The output pointer remains writable for this call.
+            unsafe { out.write(snapshot.into()) };
+            GHOSTTEA_STATUS_OK
+        }
+        Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn ghosttea_replica_create(
     runtime: *mut GhostteaRuntimeHandle,
     session_handle: u64,
@@ -698,6 +742,28 @@ pub extern "C" fn ghosttea_replica_is_poisoned(replica: *const GhostteaReplicaHa
     // SAFETY: A non-null pointer is a live handle by contract.
     let replica = unsafe { &*replica };
     replica.poisoned.load(Ordering::Acquire) || replica.runtime.poisoned.load(Ordering::Acquire)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_text_engine_performance(
+    replica: *mut GhostteaReplicaHandle,
+    out: *mut GhostteaTextEnginePerformance,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("text-engine performance output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaTextEnginePerformance::default()) };
+    match replica_operation(replica, |model| Ok(model.text_engine_performance())) {
+        Ok(snapshot) => {
+            // SAFETY: The output pointer remains writable for this call.
+            unsafe { out.write(snapshot.into()) };
+            GHOSTTEA_STATUS_OK
+        }
+        Err(status) => status,
+    }
 }
 
 fn replica_update_operation(
@@ -1233,6 +1299,7 @@ mod tests {
     fn abi_layout_matches_header_assumptions() {
         assert_eq!(size_of::<GhostteaEffect>(), 16);
         assert_eq!(align_of::<GhostteaEffect>(), 4);
+        assert_eq!(size_of::<GhostteaTextEnginePerformance>(), 32);
         assert_eq!(ghosttea_abi_version(), 1);
     }
 
@@ -1399,6 +1466,57 @@ mod tests {
 
         assert_eq!(
             ghosttea_terminal_compress_scrollback_full(pointer, ptr::null_mut()),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn text_engine_performance_is_per_model_and_zeroes_invalid_outputs() {
+        let mut terminal = test_terminal();
+        let pointer = terminal.as_mut() as *mut GhostteaTerminalHandle;
+        let mut performance = GhostteaTextEnginePerformance {
+            sequence: u64::MAX,
+            acquisition_count: u64::MAX,
+            wait_nanoseconds: u64::MAX,
+            hold_nanoseconds: u64::MAX,
+        };
+        assert_eq!(
+            ghosttea_terminal_text_engine_performance(pointer, &mut performance),
+            GHOSTTEA_STATUS_OK
+        );
+        assert_eq!(performance, GhostteaTextEnginePerformance::default());
+
+        let bytes = b"performance";
+        let mut update = GhostteaUpdate::EMPTY;
+        assert_eq!(
+            ghosttea_terminal_feed(
+                pointer,
+                GhostteaBytesView {
+                    data: bytes.as_ptr(),
+                    len: bytes.len(),
+                },
+                2,
+                &mut update,
+            ),
+            GHOSTTEA_STATUS_OK
+        );
+        ghosttea_update_destroy(update);
+        assert_eq!(
+            ghosttea_terminal_text_engine_performance(pointer, &mut performance),
+            GHOSTTEA_STATUS_OK
+        );
+        assert_eq!(performance.sequence, 1);
+        assert_eq!(performance.acquisition_count, 1);
+        assert!(performance.hold_nanoseconds > 0);
+
+        performance.sequence = u64::MAX;
+        assert_eq!(
+            ghosttea_terminal_text_engine_performance(ptr::null_mut(), &mut performance),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(performance, GhostteaTextEnginePerformance::default());
+        assert_eq!(
+            ghosttea_terminal_text_engine_performance(pointer, ptr::null_mut()),
             GHOSTTEA_STATUS_INVALID_ARGUMENT
         );
     }

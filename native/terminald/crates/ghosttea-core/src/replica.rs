@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -9,7 +10,8 @@ use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
 
 use crate::{
     FrameCursor, LogicalCellStyle, LogicalRow, LogicalTerminalPatch, LogicalTerminalSnapshot,
-    TerminalEffect, TerminalRuntime, TerminalUpdate, TextSnapshot, encode_text_snapshot,
+    TerminalEffect, TerminalRuntime, TerminalUpdate, TextEnginePerformanceSnapshot, TextSnapshot,
+    encode_text_snapshot,
 };
 
 #[derive(Default)]
@@ -28,6 +30,7 @@ pub struct LogicalReplicaModel {
     latest: Option<LogicalTerminalSnapshot>,
     patch_sequence: u64,
     render_cache: ReplicaRenderCache,
+    text_engine_performance: TextEnginePerformanceSnapshot,
 }
 
 impl LogicalReplicaModel {
@@ -39,11 +42,16 @@ impl LogicalReplicaModel {
             latest: None,
             patch_sequence: 0,
             render_cache: ReplicaRenderCache::default(),
+            text_engine_performance: TextEnginePerformanceSnapshot::default(),
         }
     }
 
     pub fn latest(&self) -> Option<LogicalTerminalSnapshot> {
         self.latest.clone()
+    }
+
+    pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
+        self.text_engine_performance
     }
 
     pub fn publish(&mut self, snapshot: LogicalTerminalSnapshot) -> Result<TerminalUpdate> {
@@ -140,7 +148,10 @@ impl LogicalReplicaModel {
         }
 
         let mut definitions = BTreeMap::<u32, GlyphDefinition>::new();
+        let wait_started = Instant::now();
         let mut engine = self.runtime.text_engine().lock().unwrap();
+        let wait = wait_started.elapsed();
+        let hold_started = Instant::now();
         for row_index in updated_rows.iter().copied() {
             let logical = snapshot
                 .rows
@@ -159,6 +170,8 @@ impl LogicalReplicaModel {
             cache.shaped_rows[row_index as usize] = shaped;
         }
         drop(engine);
+        self.text_engine_performance
+            .record(wait, hold_started.elapsed());
 
         self.frame_sequence = self.frame_sequence.saturating_add(1);
         let definitions = definitions.into_values().collect::<Vec<_>>();
@@ -295,6 +308,10 @@ mod tests {
         assert_eq!(u64::from_le_bytes(frame[16..24].try_into().unwrap()), 42);
         assert_eq!(u64::from_le_bytes(frame[24..32].try_into().unwrap()), 7);
         assert_eq!(u64::from_le_bytes(frame[32..40].try_into().unwrap()), 3);
+        let performance = replica.text_engine_performance();
+        assert_eq!(performance.sequence, 1);
+        assert_eq!(performance.acquisition_count, 1);
+        assert!(performance.hold_nanoseconds > 0);
     }
 
     #[test]

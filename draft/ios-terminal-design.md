@@ -717,6 +717,13 @@ typedef struct {
   size_t effect_count;
 } ghosttea_update_t;
 
+typedef struct {
+  uint64_t sequence;
+  uint64_t acquisition_count;
+  uint64_t wait_nanoseconds;
+  uint64_t hold_nanoseconds;
+} ghosttea_text_engine_performance_t;
+
 ghosttea_status_t ghosttea_runtime_create(
     const ghosttea_runtime_config_t *config,
     ghosttea_runtime_t **out_runtime);
@@ -746,6 +753,10 @@ ghosttea_status_t ghosttea_terminal_encode_key(
     ghosttea_terminal_t *terminal,
     const ghosttea_key_event_t *event,
     ghosttea_owned_bytes_t *out_bytes);
+
+ghosttea_status_t ghosttea_terminal_text_engine_performance(
+    ghosttea_terminal_t *terminal,
+    ghosttea_text_engine_performance_t *out_performance);
 
 void ghosttea_owned_bytes_free(ghosttea_owned_bytes_t bytes);
 void ghosttea_update_destroy(ghosttea_update_t update);
@@ -2965,8 +2976,16 @@ submission. Its constant-time 2,048-sample-per-metric rings retain only numeric
 duration and byte-count summaries and are disabled by default. The scored
 physical-device protocol now fixes fixtures, thermal/power state, sample counts,
 60/120 Hz coverage, latency gates, background GPU activity, CPU/energy
-regression limits, and evidence retention. Physical baseline traces and native
-text-engine mutex wait/hold/fairness attribution remain open.
+regression limits, and evidence retention. Physical baseline traces and
+four/eight-session fairness qualification remain open.
+The sixteenth slice closes the native attribution gap. Local terminal and
+Truffle logical-replica models time their one coarse shared-text-engine mutex
+acquisition around row shaping and retain only the latest sequence, acquisition
+count, wait, and hold durations. Dedicated terminal/replica C ABI queries are
+zero-initializing and covered across Rust, FFI, and Swift. Swift polls them only
+when performance recording is enabled and emits bounded wait/hold samples;
+disabled production runs make no extra FFI call. Four/eight-session physical
+traces still decide whether measured fairness requires sharding or pooling.
 
 Deliverables:
 

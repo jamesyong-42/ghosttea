@@ -102,6 +102,15 @@ typedef struct ghosttea_update {
   size_t effect_count;
 } ghosttea_update_t;
 
+/* Latest completed coarse text-engine lock interval for one serialized model.
+ * sequence advances only when an operation acquires the shared text engine. */
+typedef struct ghosttea_text_engine_performance {
+  uint64_t sequence;
+  uint64_t acquisition_count;
+  uint64_t wait_nanoseconds;
+  uint64_t hold_nanoseconds;
+} ghosttea_text_engine_performance_t;
+
 typedef struct ghosttea_key_event {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -142,6 +151,9 @@ ghosttea_status_t ghosttea_terminal_create(ghosttea_runtime_t *runtime,
                                            ghosttea_terminal_t **out_terminal);
 void ghosttea_terminal_destroy(ghosttea_terminal_t *terminal);
 bool ghosttea_terminal_is_poisoned(const ghosttea_terminal_t *terminal);
+ghosttea_status_t ghosttea_terminal_text_engine_performance(
+    ghosttea_terminal_t *terminal,
+    ghosttea_text_engine_performance_t *out_performance);
 
 /* A replica consumes logical snapshot/patch JSON from a remote authoritative
  * Ghosttea session and renders local TRF1 with this runtime's fonts. */
@@ -150,6 +162,9 @@ ghosttea_status_t ghosttea_replica_create(ghosttea_runtime_t *runtime,
                                           ghosttea_replica_t **out_replica);
 void ghosttea_replica_destroy(ghosttea_replica_t *replica);
 bool ghosttea_replica_is_poisoned(const ghosttea_replica_t *replica);
+ghosttea_status_t ghosttea_replica_text_engine_performance(
+    ghosttea_replica_t *replica,
+    ghosttea_text_engine_performance_t *out_performance);
 ghosttea_status_t ghosttea_replica_publish_snapshot_json(
     ghosttea_replica_t *replica, ghosttea_bytes_view_t snapshot_json,
     ghosttea_update_t *out_update);

@@ -7,6 +7,8 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
   case inputToTransportWrite
   case receivedBytesToFrameDelivery
   case nativeFeed
+  case textEngineLockWait
+  case textEngineLockHold
   case frameDecode
   case metalSubmission
 
@@ -15,6 +17,8 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     case .inputToTransportWrite: "input_to_transport_write"
     case .receivedBytesToFrameDelivery: "received_bytes_to_frame_delivery"
     case .nativeFeed: "native_feed"
+    case .textEngineLockWait: "text_engine_lock_wait"
+    case .textEngineLockHold: "text_engine_lock_hold"
     case .frameDecode: "frame_decode"
     case .metalSubmission: "metal_submission"
     }
@@ -93,6 +97,26 @@ public final class GhostteaPerformanceRecorder: @unchecked Sendable {
     lock.withLock {
       buffers.removeAll(keepingCapacity: true)
     }
+  }
+
+  /// Records a duration measured by a native coarse boundary and emits a
+  /// numeric event signpost. Arbitrary labels are intentionally unsupported.
+  public func record(
+    _ metric: GhostteaPerformanceMetric,
+    durationNanoseconds: UInt64,
+    byteCount: Int = 0
+  ) {
+    guard isEnabled else { return }
+    let boundedBytes = UInt64(max(0, byteCount))
+    os_signpost(
+      .event,
+      log: log,
+      name: metric.signpostName,
+      "duration_ns=%{public}llu bytes=%{public}llu",
+      durationNanoseconds,
+      boundedBytes
+    )
+    record(metric, durationNanoseconds: durationNanoseconds, byteCount: boundedBytes)
   }
 
   @discardableResult

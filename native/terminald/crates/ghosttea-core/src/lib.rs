@@ -16,5 +16,8 @@ pub use logical::{
     AccessibilityRow, LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
     LogicalTerminalPatch, LogicalTerminalSnapshot, RowReplacement,
 };
-pub use model::{RenderRequest, TerminalModel, TerminalModelOptions, TerminalRuntime};
+pub use model::{
+    RenderRequest, TerminalModel, TerminalModelOptions, TerminalRuntime,
+    TextEnginePerformanceSnapshot,
+};
 pub use replica::LogicalReplicaModel;

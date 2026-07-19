@@ -27,6 +27,10 @@ import Testing
   #expect(String(decoding: selection, as: UTF8.self).contains("phase3"))
   #expect(!(await terminal.isPoisoned))
   #expect(!runtime.isPoisoned)
+  let performance = try await terminal.textEnginePerformanceSnapshot()
+  #expect(performance.sequence == 1)
+  #expect(performance.acquisitionCount == 1)
+  #expect(performance.holdNanoseconds > 0)
 }
 
 @Test func repeatedRuntimeTerminalAndArenaLifecycles() async throws {
@@ -102,6 +106,10 @@ import Testing
   let initial = try await replica.publishSnapshotJSON(snapshot)
   let initialFrame = try #require(initial.effects.onlyFrame)
   #expect(initialFrame.payload.starts(with: Data("TRF1".utf8)))
+  let performance = try await replica.textEnginePerformanceSnapshot()
+  #expect(performance.sequence == 1)
+  #expect(performance.acquisitionCount == 1)
+  #expect(performance.holdNanoseconds > 0)
 
   let patch = Data(
     """
@@ -139,8 +147,8 @@ import Testing
   #expect(!runtime.isPoisoned)
 }
 
-private extension [GhostteaOrderedEffect] {
-  var onlyFrame: GhostteaOrderedEffect? {
+extension [GhostteaOrderedEffect] {
+  fileprivate var onlyFrame: GhostteaOrderedEffect? {
     count == 1 && first?.kind == .frameReady ? first : nil
   }
 }

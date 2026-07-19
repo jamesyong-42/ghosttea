@@ -23,6 +23,8 @@ persisted automatically.
 | `inputToTransportWrite`        | public session input operation              | ordered transport write completes         |
 | `receivedBytesToFrameDelivery` | demanded transport bytes enter the session  | all ordered core effects are delivered    |
 | `nativeFeed`                   | Swift enters the coarse C ABI feed call     | owned effects and frame bytes are decoded |
+| `textEngineLockWait`           | native shaping requests the shared engine   | its mutex is acquired                     |
+| `textEngineLockHold`           | the shared engine mutex is acquired         | coarse row shaping releases it            |
 | `frameDecode`                  | a TRF1 frame enters retained-state apply    | retained CPU presentation state is ready  |
 | `metalSubmission`              | the view begins mesh/atlas/command encoding | the Metal command buffer is committed     |
 
@@ -93,7 +95,9 @@ trace, background submission count, main-thread violations, CPU time, Energy
 Impact, and a pass/fail reason for every gate. Hash every evidence file. Never
 attach terminal output or network payloads.
 
-Text-engine lock wait/hold/fairness is still a native instrumentation gap. It
-must be added before the four/eight-session contention gate can close; the
-current Swift intervals make the resulting stalls visible but cannot attribute
-them to the shared native mutex.
+Each serialized terminal and logical replica now exposes its latest completed
+native text-engine acquisition through a dedicated C ABI snapshot. Swift reads
+that snapshot only while profiling is enabled and records one wait/hold sample
+per new sequence; normal production execution makes no additional FFI call.
+The four/eight-session physical trace must still establish acceptable fairness
+and decide whether the shared engine requires sharding or pooling.

@@ -255,6 +255,20 @@ public struct GhostteaMouseEvent: Sendable {
   }
 }
 
+public struct GhostteaTextEnginePerformanceSnapshot: Equatable, Sendable {
+  public let sequence: UInt64
+  public let acquisitionCount: UInt64
+  public let waitNanoseconds: UInt64
+  public let holdNanoseconds: UInt64
+
+  fileprivate init(_ native: ghosttea_text_engine_performance_t) {
+    sequence = native.sequence
+    acquisitionCount = native.acquisition_count
+    waitNanoseconds = native.wait_nanoseconds
+    holdNanoseconds = native.hold_nanoseconds
+  }
+}
+
 private final class GhostteaNativeTerminalHandle: @unchecked Sendable {
   let pointer: OpaquePointer
 
@@ -282,6 +296,7 @@ private final class GhostteaNativeReplicaHandle: @unchecked Sendable {
 public actor GhostteaTerminal {
   public let runtime: GhostteaRuntime
   private let nativeHandle: GhostteaNativeTerminalHandle
+  private var lastTextEnginePerformanceSequence: UInt64 = 0
   private var handle: OpaquePointer { nativeHandle.pointer }
 
   public init(runtime: GhostteaRuntime, configuration: GhostteaTerminalConfiguration) throws {
@@ -307,6 +322,17 @@ public actor GhostteaTerminal {
 
   public var isPoisoned: Bool {
     ghosttea_terminal_is_poisoned(handle)
+  }
+
+  public func textEnginePerformanceSnapshot() throws -> GhostteaTextEnginePerformanceSnapshot {
+    var native = ghosttea_text_engine_performance_t(
+      sequence: 0,
+      acquisition_count: 0,
+      wait_nanoseconds: 0,
+      hold_nanoseconds: 0
+    )
+    try check(ghosttea_terminal_text_engine_performance(handle, &native))
+    return GhostteaTextEnginePerformanceSnapshot(native)
   }
 
   public func feed(_ bytes: Data, render: GhostteaRenderRequest = .damage) throws -> GhostteaUpdate
@@ -505,7 +531,27 @@ public actor GhostteaTerminal {
       try check(status)
       fatalError("unreachable")
     }
-    return try decodeUpdate(native)
+    let update = try decodeUpdate(native)
+    recordTextEnginePerformance()
+    return update
+  }
+
+  private func recordTextEnginePerformance() {
+    let recorder = GhostteaPerformanceRecorder.shared
+    guard recorder.isEnabled else { return }
+    var native = ghosttea_text_engine_performance_t(
+      sequence: 0,
+      acquisition_count: 0,
+      wait_nanoseconds: 0,
+      hold_nanoseconds: 0
+    )
+    guard ghosttea_terminal_text_engine_performance(handle, &native) == GHOSTTEA_STATUS_OK,
+      native.sequence != 0,
+      native.sequence != lastTextEnginePerformanceSequence
+    else { return }
+    lastTextEnginePerformanceSequence = native.sequence
+    recorder.record(.textEngineLockWait, durationNanoseconds: native.wait_nanoseconds)
+    recorder.record(.textEngineLockHold, durationNanoseconds: native.hold_nanoseconds)
   }
 
   private func performBytes(
@@ -530,6 +576,7 @@ public actor GhostteaTerminal {
 public actor GhostteaLogicalReplica {
   public let runtime: GhostteaRuntime
   private let nativeHandle: GhostteaNativeReplicaHandle
+  private var lastTextEnginePerformanceSequence: UInt64 = 0
   private var handle: OpaquePointer { nativeHandle.pointer }
 
   public init(runtime: GhostteaRuntime, sessionHandle: UInt64) throws {
@@ -544,6 +591,17 @@ public actor GhostteaLogicalReplica {
 
   public var isPoisoned: Bool {
     ghosttea_replica_is_poisoned(handle)
+  }
+
+  public func textEnginePerformanceSnapshot() throws -> GhostteaTextEnginePerformanceSnapshot {
+    var native = ghosttea_text_engine_performance_t(
+      sequence: 0,
+      acquisition_count: 0,
+      wait_nanoseconds: 0,
+      hold_nanoseconds: 0
+    )
+    try check(ghosttea_replica_text_engine_performance(handle, &native))
+    return GhostteaTextEnginePerformanceSnapshot(native)
   }
 
   public func publishSnapshotJSON(_ snapshot: Data) throws -> GhostteaUpdate {
@@ -590,7 +648,27 @@ public actor GhostteaLogicalReplica {
       try check(status)
       fatalError("unreachable")
     }
-    return try decodeUpdate(native)
+    let update = try decodeUpdate(native)
+    recordTextEnginePerformance()
+    return update
+  }
+
+  private func recordTextEnginePerformance() {
+    let recorder = GhostteaPerformanceRecorder.shared
+    guard recorder.isEnabled else { return }
+    var native = ghosttea_text_engine_performance_t(
+      sequence: 0,
+      acquisition_count: 0,
+      wait_nanoseconds: 0,
+      hold_nanoseconds: 0
+    )
+    guard ghosttea_replica_text_engine_performance(handle, &native) == GHOSTTEA_STATUS_OK,
+      native.sequence != 0,
+      native.sequence != lastTextEnginePerformanceSequence
+    else { return }
+    lastTextEnginePerformanceSequence = native.sequence
+    recorder.record(.textEngineLockWait, durationNanoseconds: native.wait_nanoseconds)
+    recorder.record(.textEngineLockHold, durationNanoseconds: native.hold_nanoseconds)
   }
 }
 

@@ -16,8 +16,10 @@ disabled by default. Package tests pass on the locked Xcode toolchain.
 
 Release qualification remains open until 60 Hz and 120 Hz physical-device
 traces establish the accepted latency/CPU/energy baseline. Native shared
-text-engine lock wait/hold/fairness instrumentation is also still required to
-attribute four/eight-session contention.
+text-engine lock wait/hold attribution is implemented per serialized terminal
+and replica through a dedicated snapshot ABI, with no additional call when
+profiling is disabled. Four/eight-session device evidence must still establish
+fairness and determine whether the engine needs sharding or pooling.
 
 ## Deterministic component inventory
 
