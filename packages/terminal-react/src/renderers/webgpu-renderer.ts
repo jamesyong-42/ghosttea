@@ -511,6 +511,8 @@ interface GeometryLayout {
   glyphInstanceCount: number;
   colorGlyphInstanceCount: number;
   fallbackGlyphInstanceCount: number;
+  cursorInstanceStart: number;
+  cursorInstanceCount: number;
 }
 
 interface CpuGeometry extends GeometryLayout {
@@ -576,16 +578,16 @@ function geometryCacheKey(
   ].join("|");
 }
 
-function buildCursorData(
+function pushCursorVertices(
+  vertices: number[],
   view: RenderView,
   renderRowSet: ReadonlySet<number>,
   scale: number,
   viewportWidth: number,
   viewportHeight: number,
-): Float32Array {
-  const vertices: number[] = [];
+): void {
   const cursorStyle = effectiveCursorStyle(view);
-  if (cursorStyle === null || !renderRowSet.has(view.cursor.y)) return new Float32Array();
+  if (cursorStyle === null || !renderRowSet.has(view.cursor.y)) return;
   const x = (ORIGIN_X + view.cursor.x * CELL_WIDTH) * scale;
   const y = (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * scale;
   const width = CELL_WIDTH * scale;
@@ -635,7 +637,6 @@ function buildCursorData(
   } else {
     pushRectangle(vertices, x, y, width, height, cursorColor, viewportWidth, viewportHeight);
   }
-  return new Float32Array(vertices);
 }
 
 function clipX(pixel: number, width: number): number {
@@ -1240,6 +1241,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     renderRows: readonly number[],
     rowCount: number,
     fullRedraw: boolean,
+    includeCursor: boolean,
+    renderRowSet: ReadonlySet<number>,
     hasNativeRows: boolean,
     scale: number,
     viewportWidth: number,
@@ -1464,6 +1467,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     const decorationInstanceStart = backgroundInstanceCount + selectionInstanceCount;
     const decorationInstanceCount = rectangleVertices.length / 10 - decorationInstanceStart;
+    const cursorInstanceStart = rectangleVertices.length / 10;
+    if (includeCursor) pushCursorVertices(rectangleVertices, view, renderRowSet, scale, viewportWidth, viewportHeight);
+    const cursorInstanceCount = rectangleVertices.length / 10 - cursorInstanceStart;
     return {
       rectangleData: new Float32Array(rectangleVertices),
       glyphData: new Float32Array(glyphVertices),
@@ -1477,6 +1483,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       glyphInstanceCount: glyphVertices.length / 12,
       colorGlyphInstanceCount: colorGlyphVertices.length / 12,
       fallbackGlyphInstanceCount: fallbackGlyphVertices.length / 12,
+      cursorInstanceStart,
+      cursorInstanceCount,
     };
   }
 
@@ -1503,6 +1511,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         damage.rows,
         rowCount,
         damage.full,
+        true,
+        renderRowSet,
         hasNativeRows,
         scale,
         viewportWidth,
@@ -1521,6 +1531,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         glyphInstanceCount: cpu.glyphInstanceCount,
         colorGlyphInstanceCount: cpu.colorGlyphInstanceCount,
         fallbackGlyphInstanceCount: cpu.fallbackGlyphInstanceCount,
+        cursorInstanceStart: cpu.cursorInstanceStart,
+        cursorInstanceCount: cpu.cursorInstanceCount,
       };
       geometryUploadBytes =
         cpu.rectangleData.byteLength +
@@ -1548,6 +1560,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           damage.rows,
           rowCount,
           false,
+          false,
+          renderRowSet,
           hasNativeRows,
           scale,
           viewportWidth,
@@ -1576,6 +1590,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           glyphInstanceCount: cpu.glyphInstanceCount,
           colorGlyphInstanceCount: cpu.colorGlyphInstanceCount,
           fallbackGlyphInstanceCount: cpu.fallbackGlyphInstanceCount,
+          cursorInstanceStart: cpu.cursorInstanceStart,
+          cursorInstanceCount: cpu.cursorInstanceCount,
         };
         geometryUploadBytes =
           cpu.rectangleData.byteLength +
@@ -1604,9 +1620,18 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       }
     }
 
-    const cursorData = buildCursorData(view, renderRowSet, scale, viewportWidth, viewportHeight);
-    const cursorBuffer = surface.cursorBuffer.write(cursorData);
-    const cursorInstanceCount = cursorData.length / 10;
+    let cursorData = new Float32Array();
+    let cursorBuffer = geometry.rectangleBuffer;
+    let cursorInstanceStart = geometry.cursorInstanceStart;
+    let cursorInstanceCount = geometry.cursorInstanceCount;
+    if (cacheEligible) {
+      const cursorVertices: number[] = [];
+      pushCursorVertices(cursorVertices, view, renderRowSet, scale, viewportWidth, viewportHeight);
+      cursorData = new Float32Array(cursorVertices);
+      cursorBuffer = surface.cursorBuffer.write(cursorData);
+      cursorInstanceStart = 0;
+      cursorInstanceCount = cursorData.length / 10;
+    }
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
       colorAttachments: [
@@ -1659,7 +1684,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (cursorBuffer && cursorInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, cursorBuffer);
-      pass.draw(6, cursorInstanceCount);
+      pass.draw(6, cursorInstanceCount, 0, cursorInstanceStart);
     }
     pass.end();
 
@@ -1706,7 +1731,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         Number(geometry.decorationInstanceCount > 0) +
         Number(cursorInstanceCount > 0) +
         1,
-      rectangleVertices: (geometry.rectangleInstanceCount + cursorInstanceCount) * 6,
+      rectangleVertices: (geometry.rectangleInstanceCount + (cacheEligible ? cursorInstanceCount : 0)) * 6,
       monoGlyphVertices: geometry.glyphInstanceCount * 6,
       colorGlyphVertices: geometry.colorGlyphInstanceCount * 6,
       fallbackGlyphVertices: geometry.fallbackGlyphInstanceCount * 6,
