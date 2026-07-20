@@ -204,3 +204,46 @@ The benchmark now treats source wire bytes as a performance metric rather than
 a correctness invariant. TRF1 bytes, received message counts, and revision
 checksums remain invariant across JSON and compact runs. Rust unit tests,
 benchmark tests, Clippy, and all 137 Apple package tests passed.
+
+## Retained optimization: reuse shaping for color-only rows
+
+The replica benchmark now attributes apply time to shared text-engine lock
+wait, text-engine hold/shaping, and remaining replica work. A 10-repetition
+compact-codec run showed where apply time actually goes:
+
+| Case                  |      Apply | Engine wait | Engine hold |    Other |
+| --------------------- | ---------: | ----------: | ----------: | -------: |
+| `sparse-replica-1`    |   74.51 ms |     0.01 ms |    74.00 ms |  0.50 ms |
+| `dense-replica-1`     |  805.02 ms |    <0.01 ms |   802.14 ms |  2.85 ms |
+| `truecolor-replica-1` |   96.13 ms |    <0.01 ms |    73.28 ms | 22.79 ms |
+| `resync-replica-1`    |  405.82 ms |    <0.01 ms |   404.08 ms |  1.69 ms |
+| `dense-replica-4`     | 6481.24 ms |  4836.50 ms |  1638.96 ms |  6.08 ms |
+
+Color changes do not affect glyph shaping; only row text and bold/italic span
+boundaries do. The replica cache now retains those shaping inputs separately
+from the full cell style. A color-only patch still converts cells and emits a
+new incremental TRF1 frame, but it reuses the existing `ShapedRow` and does not
+acquire the shared text engine. Full snapshots reset the cache, and text or
+font-style changes still shape normally. A regression test verifies that a
+foreground-only patch performs zero text-engine acquisitions.
+
+A clean 15-repetition comparison used separate worktrees at the attribution
+baseline (`d0be47b`) and final candidate (`bd3977b`). In the DOOM-fire-like
+`truecolor-replica-1` case, wall time fell from 127.81 to 59.41 ms (-53.5%),
+replica apply from 96.51 to 28.44 ms (-70.5%), engine hold from 73.58 to 2.36 ms
+(-96.8%), p99 from 8.72 to 5.55 ms (-36.4%), and user CPU from 126.97 to
+58.56 ms (-53.9%). The remaining engine time is the initial full snapshot.
+
+The decode-only control is neutral. Dense, resync, and four-view cases—whose
+text changes every update—are also neutral in end-to-end wall and user CPU.
+Cache checking raises measured non-engine work from 22.92 to 26.10 ms in the
+truecolor case, but the net apply and CPU gains already include that cost.
+Peak RSS rose by about 0.9 MB in the truecolor process; this is a lifetime
+high-water measurement and includes allocator granularity, but the retained
+shape-span cache is intentionally bounded by the visible cell grid and the
+increase should remain a memory guardrail.
+
+Across all retained Truffle changes, truecolor replica wall time is now 59.41
+ms versus the original 308.67 ms baseline (-80.8%), with p99 down from 20.56 to
+5.55 ms (-73.0%) and user CPU down from 307.70 to 58.56 ms (-81.0%). Workspace
+tests, workspace Clippy, and the benchmark harness tests pass.
