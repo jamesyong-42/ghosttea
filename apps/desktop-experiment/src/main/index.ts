@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerMonitor, screen } from "electron";
@@ -31,6 +31,9 @@ app.setName("Ghosttea Experiment");
 nativeTheme.themeSource = "dark";
 if (process.platform === "darwin") app.setActivationPolicy("regular");
 const profile = desktopProfile(app.getPath("userData"), process.env[PROFILE_ENV] ?? process.env[LEGACY_PROFILE_ENV]);
+const replicatedBenchmarkState = renderBenchmark?.replication
+  ? process.env.GHOSTTEA_TRUFFLE_BENCHMARK_STATE_DIR?.trim()
+  : undefined;
 mkdirSync(profile.electronData, { recursive: true, mode: 0o700 });
 if (profile.name !== "default") {
   app.setPath("userData", profile.electronData);
@@ -38,7 +41,7 @@ if (profile.name !== "default") {
   // A named profile is an isolation boundary. Do not allow a shared `.env`
   // value to collapse multiple peers onto the same Truffle identity.
   process.env.GHOSTTEA_TRUFFLE_DEVICE_NAME = `${hostname()} · ${profile.name}`;
-  process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
+  process.env.GHOSTTEA_TRUFFLE_STATE_DIR = replicatedBenchmarkState || profile.truffleState;
 } else if (!process.env.GHOSTTEA_TRUFFLE_STATE_DIR?.trim() && !process.env.TERMINALD_TRUFFLE_STATE_DIR?.trim()) {
   process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
 }
@@ -70,6 +73,28 @@ function takeElectronProcessSample(): ElectronProcessSample {
 }
 
 if (renderBenchmark) {
+  ipcMain.handle("render-benchmark-wait-for-completion", async (_event, key: unknown, timeoutMs: unknown) => {
+    const replication = renderBenchmark.replication;
+    if (!replication) throw new Error("The active rendering benchmark is not replicated");
+    if (typeof key !== "string" || !/^[A-Za-z0-9._-]{1,160}$/.test(key)) {
+      throw new Error("Invalid replicated benchmark completion key");
+    }
+    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("Invalid replicated benchmark completion timeout");
+    }
+    const completionPath = join(replication.completionDirectory, `${key}.json`);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        return JSON.parse(readFileSync(completionPath, "utf8")) as unknown;
+      } catch (error) {
+        if (error instanceof SyntaxError) throw error;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+    }
+    throw new Error(`Timed out waiting for replicated benchmark completion ${key}`);
+  });
+
   ipcMain.handle("render-benchmark-case-start", (_event, caseName: unknown, iteration: unknown) => {
     if (benchmarkSampler) throw new Error("A rendering benchmark case is already active");
     benchmarkCaseName = typeof caseName === "string" ? caseName : "unknown";
@@ -343,9 +368,19 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
       : []),
   ];
 
+  const windowWidth = renderBenchmark?.width ?? 800;
+  const windowHeight = renderBenchmark?.height ?? 600;
+  const replicatedRole = renderBenchmark?.replication?.role;
+  const workArea = replicatedRole ? screen.getPrimaryDisplay().workArea : undefined;
   const window = new BrowserWindow({
-    width: renderBenchmark?.width ?? 800,
-    height: renderBenchmark?.height ?? 600,
+    width: windowWidth,
+    height: windowHeight,
+    ...(workArea && replicatedRole
+      ? {
+          x: replicatedRole === "host" ? workArea.x + 20 : workArea.x + workArea.width - windowWidth - 20,
+          y: workArea.y + 40,
+        }
+      : {}),
     minWidth: 320,
     minHeight: 180,
     show: false,

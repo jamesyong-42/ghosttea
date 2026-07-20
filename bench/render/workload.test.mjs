@@ -40,13 +40,14 @@ test("DOOM fire payload is finite, frame-paced, and deterministic", () => {
 test("paced workload waits for its gate and reproduces payload bytes exactly", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ghosttea-render-workload-test-"));
   const path = join(directory, "payload.bin");
+  const completionPath = join(directory, "completion.json");
   const payload = Buffer.from("first\n\u001b[31msecond\u001b[0m\n日本語\n", "utf8");
   writeFileSync(path, payload);
   try {
     const chunkSequence = [2, 5, payload.byteLength - 7].join(",");
     const child = spawn(
       process.execPath,
-      [join(import.meta.dirname, "workload.mjs"), path, String(payload.byteLength), "1", chunkSequence],
+      [join(import.meta.dirname, "workload.mjs"), path, String(payload.byteLength), "1", chunkSequence, completionPath],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
     const chunks = [];
@@ -60,6 +61,12 @@ test("paced workload waits for its gate and reproduces payload bytes exactly", a
     });
     assert.equal(exitCode, 0);
     assert.deepEqual(Buffer.concat(chunks), payload);
+    const completion = JSON.parse(readFileSync(completionPath, "utf8"));
+    assert.equal(completion.schemaVersion, 1);
+    assert.equal(completion.payloadBytes, payload.byteLength);
+    assert.equal(completion.chunks, 3);
+    assert.equal(Number.isFinite(completion.durationMs), true);
+    assert.equal(Number.isFinite(completion.stdoutBackpressureMs), true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

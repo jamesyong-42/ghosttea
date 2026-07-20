@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { GhostteaWorkspace } from "@vibecook/ghosttea-react/workspace";
 import { handleDomEditCommand } from "./dom-edit-commands";
 import { RenderBenchmarkApp } from "./RenderBenchmarkApp";
+import { ReplicatedRenderBenchmarkApp } from "./ReplicatedRenderBenchmarkApp";
 
 export function App() {
   if (window.desktop.renderBenchmarkConfig) {
+    if (window.desktop.renderBenchmarkConfig.replication) {
+      return <ReplicatedRenderBenchmarkApp config={window.desktop.renderBenchmarkConfig} />;
+    }
     return <RenderBenchmarkApp config={window.desktop.renderBenchmarkConfig} />;
   }
   return <DesktopApp />;

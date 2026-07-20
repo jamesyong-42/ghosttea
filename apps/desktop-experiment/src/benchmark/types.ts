@@ -31,6 +31,12 @@ export interface RenderBenchmarkConfig {
   workloadScript: string;
   verifyPixels?: boolean;
   forceFullRendering?: boolean;
+  replication?: {
+    role: "host" | "viewer";
+    completionDirectory: string;
+    discoveryTimeoutMs: number;
+    workloadTimeoutMs: number;
+  };
   cases: RenderBenchmarkCase[];
   runner: Record<string, unknown>;
 }

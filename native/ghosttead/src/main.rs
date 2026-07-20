@@ -37,6 +37,9 @@ async fn main() -> Result<()> {
     if let Some(state_dir) = config.state_dir.as_deref() {
         builder = builder.state_dir(state_dir);
     }
+    if config.ephemeral {
+        builder = builder.ephemeral(true);
+    }
     let node = Arc::new(
         builder
             .build_with_auth_handler(|_| {
@@ -92,6 +95,7 @@ struct TruffleHostConfig {
     compact_port: u16,
     capability: Option<String>,
     allow_tailnet_write: bool,
+    ephemeral: bool,
 }
 
 impl TruffleHostConfig {
@@ -154,6 +158,8 @@ impl TruffleHostConfig {
                 "TERMINALD_TRUFFLE_ALLOW_WRITE",
             )?
             .unwrap_or(false),
+            ephemeral: env_bool("GHOSTTEA_TRUFFLE_EPHEMERAL", "TERMINALD_TRUFFLE_EPHEMERAL")?
+                .unwrap_or(false),
         }))
     }
 }

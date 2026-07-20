@@ -32,6 +32,12 @@ function processValue(iteration, selector) {
 export const METRICS = [
   { key: "endToIdleMs", label: "end-to-idle", unit: "ms", select: (iteration) => iteration.endToIdleMs },
   {
+    key: "producerDurationMs",
+    label: "host producer duration",
+    unit: "ms",
+    select: (iteration) => iteration.producer?.durationMs,
+  },
+  {
     key: "renderCpuMs",
     label: "worker render CPU",
     unit: "ms",
@@ -178,6 +184,7 @@ export function compareReports(baselineReport, candidateReport, noiseThresholdPe
     for (const metric of METRICS) {
       const baseline = baselineCases[caseName].map(metric.select).filter(Number.isFinite);
       const candidate = candidateCases[caseName].map(metric.select).filter(Number.isFinite);
+      if (baseline.length === 0 && candidate.length === 0) continue;
       comparisons.push({
         caseName,
         metric: metric.key,
@@ -205,6 +212,13 @@ function comparableConfiguration(report) {
     cooldownMs: config.cooldownMs,
     quietMs: config.quietMs,
     cases: (config.cases ?? []).map(({ payloadPath: _payloadPath, ...benchmarkCase }) => benchmarkCase),
+    replication: config.replication
+      ? {
+          role: config.replication.role,
+          discoveryTimeoutMs: config.replication.discoveryTimeoutMs,
+          workloadTimeoutMs: config.replication.workloadTimeoutMs,
+        }
+      : undefined,
     host: config.runner?.host,
     platform: config.runner?.platform,
     cpu: config.runner?.cpu,

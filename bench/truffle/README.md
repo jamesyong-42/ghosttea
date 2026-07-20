@@ -105,6 +105,67 @@ memory together; moving work from decode to apply is not a win.
 
 ## Live Truffle qualification
 
+### Visible end-to-end rendering benchmark
+
+The visible tier launches two real Electron applications side by side. The
+`HOST` window owns a real PTY and renders its local session; the `VIEWER`
+window discovers that session over Truffle, attaches a writable remote view,
+and renders the replicated frames through the production WebGPU surface. The
+labels at the top-left of each window show discovery, warmup, and measurement
+progress. This is intentionally not a headless benchmark.
+
+With a valid reusable/ephemeral Tailscale auth key:
+
+```sh
+TRUFFLE_TEST_AUTHKEY=... \
+TRUFFLE_SIDECAR_PATH=/absolute/path/to/truffle-sidecar \
+npm run bench:truffle:visible -- \
+  --output=bench/truffle/results-visible-baseline.json
+```
+
+Alternatively, seed the two temporary nodes from distinct authenticated
+Ghosttea profiles. The runner recursively copies both directories into its
+temporary workspace and never launches a daemon against the source profiles:
+
+```sh
+npm run bench:truffle:visible -- \
+  --host-state-dir="$HOME/Library/Application Support/Ghosttea/profiles/alpha/truffle" \
+  --viewer-state-dir="$HOME/Library/Application Support/Ghosttea/profiles/beta/truffle" \
+  --output=bench/truffle/results-visible-baseline.json
+```
+
+Do not use the same profile for both arguments: each side needs a distinct
+tailnet device identity. The default suite runs sparse, dense, and deterministic
+DOOM-fire streams with one warmup and three measured repetitions. A quick
+development smoke run is:
+
+```sh
+npm run bench:truffle:visible -- \
+  --allow-dirty \
+  --cases=sparse-remote-1 \
+  --iterations=1 --warmup=0 --scale=0.25 \
+  --output=/tmp/ghosttea-visible-smoke.json
+```
+
+The report records host producer duration/backpressure, viewer end-to-idle
+time, replicated frame counts, worker apply/render CPU, arrival-to-render
+latency, WebGPU backend selection, and Electron process CPU/memory samples.
+`--verify-pixels` additionally checks the partial result against a forced full
+redraw. A sibling `.log` captures prefixed host/viewer diagnostics. Compare
+clean reports with the rendering comparison gate:
+
+```sh
+npm run bench:render:compare -- \
+  bench/truffle/results-visible-baseline.json \
+  bench/truffle/results-visible-candidate.json
+```
+
+This tier exercises actual discovery, QUIC, remote replica application, and
+WebGPU rendering. It is sensitive to tailnet path and machine conditions, so
+record those conditions and compare repeated runs on the same setup.
+
+### Connectivity-only qualification
+
 The existing ignored integration test verifies that two ephemeral Truffle
 nodes can discover one another and carry a QUIC stream over the configured
 Tailscale control plane:

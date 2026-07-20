@@ -25,6 +25,7 @@ declare global {
       startRenderBenchmarkCase: (caseName: string, iteration: number) => Promise<void>;
       finishRenderBenchmarkCase: () => Promise<unknown>;
       renderBenchmarkFrameHash: () => Promise<string>;
+      waitForRenderBenchmarkCompletion: (key: string, timeoutMs: number) => Promise<unknown>;
       completeRenderBenchmark: (report: unknown) => Promise<void>;
       failRenderBenchmark: (message: string) => Promise<void>;
       onMenuAction: (listener: (action: "copy" | "paste" | "select-all" | "clear-screen") => void) => () => void;

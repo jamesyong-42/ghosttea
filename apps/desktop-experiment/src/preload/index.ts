@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.invoke("render-benchmark-case-start", caseName, iteration) as Promise<void>,
   finishRenderBenchmarkCase: () => ipcRenderer.invoke("render-benchmark-case-finish") as Promise<unknown>,
   renderBenchmarkFrameHash: () => ipcRenderer.invoke("render-benchmark-frame-hash") as Promise<string>,
+  waitForRenderBenchmarkCompletion: (key: string, timeoutMs: number) =>
+    ipcRenderer.invoke("render-benchmark-wait-for-completion", key, timeoutMs) as Promise<unknown>,
   completeRenderBenchmark: (report: unknown) =>
     ipcRenderer.invoke("render-benchmark-complete", report) as Promise<void>,
   failRenderBenchmark: (message: string) => ipcRenderer.invoke("render-benchmark-failed", message) as Promise<void>,

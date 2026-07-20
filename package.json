@@ -89,6 +89,7 @@
     "test:bench:render": "node --test bench/render/*.test.mjs",
     "bench:truffle": "node bench/truffle/run.mjs",
     "bench:truffle:compare": "node bench/truffle/compare.mjs",
+    "bench:truffle:visible": "node bench/truffle/visible-run.mjs",
     "test:bench:truffle": "cargo test -p ghosttea-truffle --bin replication_bench && node --test bench/truffle/*.test.mjs",
     "bench:ghostty-vt:apple": "node scripts/probe-ghostty-vt-memory-apple.mjs",
     "bench:ghostty-vt:apple:matrix": "node scripts/probe-ghostty-vt-memory-apple.mjs --matrix",
