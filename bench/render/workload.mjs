@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 
-const [path, chunkArgument = "8192", intervalArgument = "8"] = process.argv.slice(2);
-if (!path) throw new Error("Usage: workload.mjs payload-path [chunk-bytes] [interval-ms]");
+const [path, chunkArgument = "8192", intervalArgument = "8", chunkSequenceArgument = ""] = process.argv.slice(2);
+if (!path) throw new Error("Usage: workload.mjs payload-path [chunk-bytes] [interval-ms] [chunk-byte-sequence]");
 const chunkBytes = Math.max(1, Number(chunkArgument));
 const intervalMs = Math.max(0, Number(intervalArgument));
 if (!Number.isSafeInteger(chunkBytes) || !Number.isFinite(intervalMs)) throw new Error("Invalid workload pacing");
+const chunkByteSequence = chunkSequenceArgument
+  ? chunkSequenceArgument.split(",").map((value) => Number(value))
+  : undefined;
+if (chunkByteSequence?.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
+  throw new Error("Invalid workload chunk byte sequence");
+}
 
 async function waitForGate() {
   process.stdin.resume();
@@ -22,15 +28,27 @@ async function main() {
   await waitForGate();
   const file = openSync(path, "r");
   const length = statSync(path).size;
-  const buffer = Buffer.allocUnsafe(Math.min(chunkBytes, Math.max(1, length)));
+  if (chunkByteSequence && chunkByteSequence.reduce((total, value) => total + value, 0) !== length) {
+    throw new Error("Workload chunk byte sequence does not match payload length");
+  }
+  const largestChunk = chunkByteSequence ? Math.max(...chunkByteSequence) : chunkBytes;
+  const buffer = Buffer.allocUnsafe(Math.min(largestChunk, Math.max(1, length)));
   try {
     let offset = 0;
+    let chunkIndex = 0;
     let deadline = performance.now();
     while (offset < length) {
-      const read = readSync(file, buffer, 0, Math.min(buffer.length, length - offset), offset);
-      if (read === 0) break;
-      await write(buffer.subarray(0, read));
-      offset += read;
+      const target = chunkByteSequence?.[chunkIndex] ?? Math.min(buffer.length, length - offset);
+      let filled = 0;
+      while (filled < target) {
+        const read = readSync(file, buffer, filled, target - filled, offset + filled);
+        if (read === 0) break;
+        filled += read;
+      }
+      if (filled === 0) break;
+      await write(buffer.subarray(0, filled));
+      offset += filled;
+      chunkIndex += 1;
       deadline += intervalMs;
       const remaining = deadline - performance.now();
       if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));

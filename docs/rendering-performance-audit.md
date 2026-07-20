@@ -190,6 +190,7 @@ Every optimization must be evaluated across at least:
 - idle panes and cursor blinking;
 - typing/local echo;
 - localized sparse updates;
+- seeded, frame-paced full-screen truecolor animation;
 - single-pane scrolling flood;
 - simultaneous multi-pane flood;
 - full-screen redraw/control-sequence workload;

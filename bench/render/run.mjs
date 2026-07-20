@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { cpus, hostname, platform, arch, release, tmpdir } from "node:os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { payloadCatalog, scrollRegionPayload } from "../lib/payloads.mjs";
+import { DOOM_FIRE_SOURCE, doomFirePayload, payloadCatalog, scrollRegionPayload } from "../lib/payloads.mjs";
 import { median, percentile, sum } from "./lib/compare.mjs";
 
 const require = createRequire(import.meta.url);
@@ -30,6 +30,7 @@ function parseArgs(argv) {
       "sparse-1",
       "scroll-1",
       "dense-1",
+      "doom-fire-1",
       "unicode-1",
       "redraw-1",
       "scroll-4",
@@ -110,7 +111,7 @@ function main() {
   --iterations=5      Measured repetitions per case
   --warmup=1          Unmeasured repetitions per case
   --scale=1           Payload multiplier
-  --cases=list        idle-4,repaint-1,typing-1,sparse-1,visual-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
+  --cases=list        idle-4,repaint-1,typing-1,sparse-1,visual-1,scroll-1,dense-1,doom-fire-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
   --width=1200        Electron content window width
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
@@ -146,12 +147,18 @@ function main() {
       rows: 40,
       cols: 120,
     });
+    const doomFire = doomFirePayload({
+      frames: Math.max(60, Math.round(180 * options.scale)),
+      rows: 39,
+      cols: 120,
+    });
     const payloadFiles = {};
     for (const [name, payload] of Object.entries({
       scrolling: payloads.scrolling,
       sparse: payloads.sparse,
       visual: payloads.visual,
       dense: payloads.dense,
+      doomFire: doomFire.payload,
       unicode: payloads.unicode,
       redraw,
     })) {
@@ -211,6 +218,18 @@ function main() {
         payloadBytes: payloadFiles.dense.bytes,
         chunkBytes: 8192,
         intervalMs: 8,
+      },
+      "doom-fire-1": {
+        name: "doom-fire-1",
+        panes: 1,
+        kind: "payload",
+        payloadPath: payloadFiles.doomFire.path,
+        payloadBytes: payloadFiles.doomFire.bytes,
+        chunkBytesSequence: doomFire.frameByteLengths,
+        intervalMs: 16,
+        operations: doomFire.frameByteLengths.length,
+        seed: doomFire.seed,
+        source: DOOM_FIRE_SOURCE,
       },
       "unicode-1": {
         name: "unicode-1",

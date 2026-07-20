@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { sparseRowPayload, visualFixturePayload } from "../lib/payloads.mjs";
+import { doomFirePayload, sparseRowPayload, visualFixturePayload } from "../lib/payloads.mjs";
 
 test("sparse row payload emits one fixed-size cursor update per frame", () => {
   const payload = sparseRowPayload({ frames: 3, row: 10, width: 100 });
@@ -20,15 +20,35 @@ test("visual fixture preserves renderer features around sparse updates", () => {
   assert.equal(payload.split("\u001b[10;1H").length - 1, 2);
 });
 
+test("DOOM fire payload is finite, frame-paced, and deterministic", () => {
+  const first = doomFirePayload({ frames: 3, rows: 4, cols: 8, seed: 42 });
+  const repeated = doomFirePayload({ frames: 3, rows: 4, cols: 8, seed: 42 });
+  const different = doomFirePayload({ frames: 3, rows: 4, cols: 8, seed: 43 });
+  assert.deepEqual(first.frameByteLengths, repeated.frameByteLengths);
+  assert.deepEqual(first.payload, repeated.payload);
+  assert.equal(
+    first.frameByteLengths.reduce((total, value) => total + value, 0),
+    first.payload.byteLength,
+  );
+  assert.equal(first.payload.toString("utf8").split("\u001b[H").length - 1, 3);
+  assert.equal(first.payload.toString("utf8").split("▀").length - 1, 3 * 4 * 8);
+  assert.match(first.payload.toString("utf8"), /38;2;\d+;\d+;\d+m/);
+  assert.match(first.payload.toString("utf8"), /48;2;\d+;\d+;\d+m/);
+  assert.equal(first.payload.equals(different.payload), false);
+});
+
 test("paced workload waits for its gate and reproduces payload bytes exactly", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ghosttea-render-workload-test-"));
   const path = join(directory, "payload.bin");
   const payload = Buffer.from("first\n\u001b[31msecond\u001b[0m\n日本語\n", "utf8");
   writeFileSync(path, payload);
   try {
-    const child = spawn(process.execPath, [join(import.meta.dirname, "workload.mjs"), path, "3", "1"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const chunkSequence = [2, 5, payload.byteLength - 7].join(",");
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, "workload.mjs"), path, String(payload.byteLength), "1", chunkSequence],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
     const chunks = [];
     child.stdout.on("data", (chunk) => chunks.push(chunk));
     await new Promise((resolve) => setTimeout(resolve, 20));

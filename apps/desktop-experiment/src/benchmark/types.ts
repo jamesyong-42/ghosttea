@@ -6,8 +6,11 @@ export interface RenderBenchmarkCase {
   payloadBytes?: number;
   durationMs?: number;
   chunkBytes?: number;
+  chunkBytesSequence?: number[];
   intervalMs?: number;
   operations?: number;
+  seed?: number;
+  source?: string;
   resizeDelta?: number;
   inputText?: string;
 }

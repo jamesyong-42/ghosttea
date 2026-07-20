@@ -47,16 +47,27 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 | `visual-1`        | Pixel fixture for box/block, Unicode, theme, selection, and damage |
 | `scroll-1`        | One pane receiving a fast plain-text scrolling flood               |
 | `dense-1`         | One pane with dense SGR foreground/background changes              |
+| `doom-fire-1`     | Seeded full-screen half-block fire with frame-paced truecolor      |
 | `unicode-1`       | Native shaping, rasterization, atlas, emoji/CJK/combining pressure |
 | `redraw-1`        | Repeated cursor-home full-screen updates                           |
 | `scroll-4`        | Four simultaneous PTYs and pane surfaces sharing the worker/device |
 | `resize-1`        | Display-paced pane resizing and terminal reflow/resource churn     |
 | `resize-jitter-1` | Subpixel layout jitter that should not rebuild GPU resources       |
 
-Payload workloads are emitted by a small Node helper in fixed-size chunks on a
-monotonic interval. This prevents a fast `cat` from collapsing the whole input
-into a handful of terminald batches and makes scheduling/render pressure
-repeatable. The pacing configuration is embedded in each raw report.
+Payload workloads are emitted by a small Node helper on a monotonic interval.
+Most use fixed-size chunks; `doom-fire-1` preserves generated frame boundaries.
+This prevents a fast `cat` from collapsing the whole input into a handful of
+terminald batches and makes scheduling/render pressure repeatable. The pacing
+configuration is embedded in each raw report.
+
+`doom-fire-1` is an independently implemented, finite, seeded adaptation of the
+classic fire simulation, inspired by
+[DOOM-fire-zig](https://github.com/const-void/DOOM-fire-zig). It follows that
+program's terminal stress shape—two simulated pixels per `▀` cell with changing
+foreground and background colors—but does not vendor its GPL-3.0 source or
+palette. The benchmark needs neither Zig nor network access at runtime.
+Every raw report records the pinned upstream revision alongside the seed and
+exact generated frame byte lengths.
 
 Select a subset while developing:
 

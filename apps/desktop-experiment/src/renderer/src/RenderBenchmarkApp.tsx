@@ -105,6 +105,7 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
                     benchmarkCase.payloadPath ?? "",
                     String(benchmarkCase.chunkBytes ?? 8192),
                     String(benchmarkCase.intervalMs ?? 8),
+                    benchmarkCase.chunkBytesSequence?.join(",") ?? "",
                   ],
             environment: {
               mode: "clean",

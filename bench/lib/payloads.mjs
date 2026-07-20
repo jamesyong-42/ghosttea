@@ -5,6 +5,11 @@
 
 const RESET = "\u001b[0m";
 const CLEAR = "\u001b[2J\u001b[H";
+const HALF_BLOCK = "▀";
+
+export const DOOM_FIRE_SEED = 0x0d00f1ee;
+export const DOOM_FIRE_SOURCE =
+  "https://github.com/const-void/DOOM-fire-zig/tree/eb0631b141b5778eefc6f5767bb45f8974c1be71";
 
 export const MARKERS = {
   floodDone: "BENCH_FLOOD_DONE",
@@ -93,6 +98,102 @@ export function scrollRegionPayload({ frames = 200, rows = 40, cols = 100 } = {}
   }
   chunks.push(MARKERS.scrollDone);
   return Buffer.from(chunks.join(""), "utf8");
+}
+
+function firePalette(levels) {
+  const stops = [
+    [0, 0, 0],
+    [176, 0, 0],
+    [255, 80, 0],
+    [255, 224, 0],
+    [255, 255, 255],
+  ];
+  return Array.from({ length: levels }, (_, level) => {
+    const position = (level / (levels - 1)) * (stops.length - 1);
+    const lower = Math.min(stops.length - 2, Math.floor(position));
+    const fraction = position - lower;
+    return stops[lower].map((value, channel) => Math.round(value + (stops[lower + 1][channel] - value) * fraction));
+  });
+}
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+}
+
+/**
+ * Finite, deterministic terminal adaptation of the classic DOOM fire effect.
+ *
+ * The workload shape is inspired by DOOM-fire-zig: each terminal cell packs
+ * two simulated pixels into a colored upper-half block. This implementation is
+ * original and deliberately does not vendor the GPL-3.0 Zig source or palette.
+ */
+export function doomFirePayload({ frames = 180, rows = 39, cols = 120, seed = DOOM_FIRE_SEED } = {}) {
+  for (const [name, value] of Object.entries({ frames, rows, cols })) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`DOOM fire ${name} must be a positive integer`);
+  }
+  if (!Number.isSafeInteger(seed) || seed <= 0 || seed > 0xffffffff) {
+    throw new Error("DOOM fire seed must be a non-zero uint32");
+  }
+
+  const levels = 32;
+  const pixelRows = rows * 2;
+  const pixels = new Uint8Array(pixelRows * cols);
+  pixels.fill(levels - 1, (pixelRows - 1) * cols);
+  const random = seededRandom(seed);
+  const palette = firePalette(levels);
+  const foreground = palette.map(([red, green, blue]) => `\u001b[38;2;${red};${green};${blue}m`);
+  const background = palette.map(([red, green, blue]) => `\u001b[48;2;${red};${green};${blue}m`);
+
+  const spread = () => {
+    for (let y = 1; y < pixelRows; y += 1) {
+      for (let x = 0; x < cols; x += 1) {
+        const source = pixels[y * cols + x];
+        const drift = random() & 3;
+        const destinationX = (x + 1 - drift + cols) % cols;
+        pixels[(y - 1) * cols + destinationX] = Math.max(0, source - (drift & 1));
+      }
+    }
+  };
+
+  // Start measurements with a populated flame instead of benchmarking its
+  // empty-screen ramp-up.
+  for (let warmup = 0; warmup < pixelRows; warmup += 1) spread();
+
+  const encodedFrames = [];
+  let previousForeground = -1;
+  let previousBackground = -1;
+  for (let frame = 0; frame < frames; frame += 1) {
+    spread();
+    const chunks = [frame === 0 ? `\u001b[2J\u001b[?25l${RESET}` : "", "\u001b[H"];
+    for (let row = 0; row < rows; row += 1) {
+      const upper = row * 2 * cols;
+      const lower = upper + cols;
+      for (let col = 0; col < cols; col += 1) {
+        const foregroundLevel = pixels[upper + col];
+        const backgroundLevel = pixels[lower + col];
+        if (backgroundLevel !== previousBackground) chunks.push(background[backgroundLevel]);
+        if (foregroundLevel !== previousForeground) chunks.push(foreground[foregroundLevel]);
+        chunks.push(HALF_BLOCK);
+        previousForeground = foregroundLevel;
+        previousBackground = backgroundLevel;
+      }
+      if (row + 1 < rows) chunks.push("\r\n");
+    }
+    if (frame + 1 === frames) chunks.push(`${RESET}\u001b[?25h`);
+    encodedFrames.push(Buffer.from(chunks.join(""), "utf8"));
+  }
+
+  return {
+    payload: Buffer.concat(encodedFrames),
+    frameByteLengths: encodedFrames.map((frame) => frame.byteLength),
+    seed,
+  };
 }
 
 export function payloadCatalog(scale = 1) {
