@@ -754,25 +754,43 @@ const BOX_DIRECTIONS = new Map<string, string>([
 
 const ROUNDED_BOX_CORNERS = new Set(["╭", "╮", "╯", "╰"]);
 
-function boxDrawingCells(text: string): Map<number, string> {
-  const cells = new Map<number, string>();
-  let column = 0;
-  for (const grapheme of splitGraphemes(text)) {
-    if (BOX_DIRECTIONS.has(grapheme)) cells.set(column, grapheme);
-    column += graphemeCellWidth(grapheme);
-  }
-  return cells;
+export interface SpecialDrawingCells {
+  box: Map<number, string>;
+  block: Map<number, string>;
 }
 
-function blockElementCells(text: string): Map<number, string> {
-  const cells = new Map<number, string>();
+export function specialDrawingCells(text: string): SpecialDrawingCells {
+  const box = new Map<number, string>();
+  const block = new Map<number, string>();
   let column = 0;
+  let simple = true;
+  for (let index = 0; index < text.length; index += 1) {
+    const codepoint = text.charCodeAt(index);
+    if (codepoint <= 0x7f) {
+      column += 1;
+    } else if (codepoint >= 0x2580 && codepoint <= 0x259f) {
+      block.set(column, text[index]!);
+      column += 1;
+    } else if (BOX_DIRECTIONS.has(text[index]!)) {
+      box.set(column, text[index]!);
+      column += 1;
+    } else {
+      simple = false;
+      break;
+    }
+  }
+  if (simple) return { box, block };
+
+  box.clear();
+  block.clear();
+  column = 0;
   for (const grapheme of splitGraphemes(text)) {
     const codepoint = grapheme.codePointAt(0) ?? 0;
-    if (codepoint >= 0x2580 && codepoint <= 0x259f) cells.set(column, grapheme);
+    if (codepoint >= 0x2580 && codepoint <= 0x259f) block.set(column, grapheme);
+    else if (BOX_DIRECTIONS.has(grapheme)) box.set(column, grapheme);
     column += graphemeCellWidth(grapheme);
   }
-  return cells;
+  return { box, block };
 }
 
 function rgb(color: readonly [number, number, number]): Rgba {
@@ -780,6 +798,8 @@ function rgb(color: readonly [number, number, number]): Rgba {
 }
 
 function over(source: Rgba, backdrop: Rgba): Rgba {
+  if (source[3] >= 1) return source;
+  if (source[3] <= 0) return backdrop;
   const alpha = source[3] + backdrop[3] * (1 - source[3]);
   if (alpha <= Number.EPSILON) return [0, 0, 0, 0];
   return [
@@ -896,43 +916,48 @@ function pushBoxDrawing(
 
 type FractionRect = readonly [left: number, top: number, right: number, bottom: number];
 
-function blockElementRectangles(grapheme: string): FractionRect[] | null {
-  const codepoint = grapheme.codePointAt(0);
-  if (codepoint === undefined) return null;
-  if (codepoint === 0x2580) return [[0, 0, 1, 0.5]];
-  if (codepoint >= 0x2581 && codepoint <= 0x2587) {
-    const eighths = codepoint - 0x2580;
-    return [[0, 1 - eighths / 8, 1, 1]];
-  }
-  if (codepoint === 0x2588) return [[0, 0, 1, 1]];
-  if (codepoint >= 0x2589 && codepoint <= 0x258f) {
-    const eighths = 0x2590 - codepoint;
-    return [[0, 0, eighths / 8, 1]];
-  }
-  if (codepoint === 0x2590) return [[0.5, 0, 1, 1]];
-  if (codepoint === 0x2594) return [[0, 0, 1, 1 / 8]];
-  if (codepoint === 0x2595) return [[7 / 8, 0, 1, 1]];
-  const quadrants: Record<number, readonly number[]> = {
-    0x2596: [2],
-    0x2597: [3],
-    0x2598: [0],
-    0x2599: [0, 2, 3],
-    0x259a: [0, 3],
-    0x259b: [0, 1, 2],
-    0x259c: [0, 1, 3],
-    0x259d: [1],
-    0x259e: [1, 2],
-    0x259f: [1, 2, 3],
-  };
-  const selected = quadrants[codepoint];
-  if (!selected) return null;
-  const rectangles: FractionRect[] = [
-    [0, 0, 0.5, 0.5],
-    [0.5, 0, 1, 0.5],
-    [0, 0.5, 0.5, 1],
-    [0.5, 0.5, 1, 1],
-  ];
-  return selected.map((quadrant) => rectangles[quadrant]!);
+const LOWER_BLOCK_RECTANGLES = Array.from({ length: 7 }, (_, index): readonly FractionRect[] => [
+  [0, 1 - (index + 1) / 8, 1, 1],
+]);
+const LEFT_BLOCK_RECTANGLES = Array.from({ length: 7 }, (_, index): readonly FractionRect[] => [
+  [0, 0, (7 - index) / 8, 1],
+]);
+const FULL_BLOCK_RECTANGLES: readonly FractionRect[] = [[0, 0, 1, 1]];
+const RIGHT_HALF_RECTANGLES: readonly FractionRect[] = [[0.5, 0, 1, 1]];
+const UPPER_EIGHTH_RECTANGLES: readonly FractionRect[] = [[0, 0, 1, 1 / 8]];
+const RIGHT_EIGHTH_RECTANGLES: readonly FractionRect[] = [[7 / 8, 0, 1, 1]];
+const QUADRANT_RECTANGLES: readonly FractionRect[] = [
+  [0, 0, 0.5, 0.5],
+  [0.5, 0, 1, 0.5],
+  [0, 0.5, 0.5, 1],
+  [0.5, 0.5, 1, 1],
+];
+const QUADRANT_BLOCK_RECTANGLES = new Map<number, readonly FractionRect[]>(
+  [
+    [0x2596, [2]],
+    [0x2597, [3]],
+    [0x2598, [0]],
+    [0x2599, [0, 2, 3]],
+    [0x259a, [0, 3]],
+    [0x259b, [0, 1, 2]],
+    [0x259c, [0, 1, 3]],
+    [0x259d, [1]],
+    [0x259e, [1, 2]],
+    [0x259f, [1, 2, 3]],
+  ].map(([codepoint, quadrants]) => [
+    codepoint as number,
+    (quadrants as number[]).map((quadrant) => QUADRANT_RECTANGLES[quadrant]!),
+  ]),
+);
+
+function blockElementRectangles(codepoint: number): readonly FractionRect[] | undefined {
+  if (codepoint >= 0x2581 && codepoint <= 0x2587) return LOWER_BLOCK_RECTANGLES[codepoint - 0x2581];
+  if (codepoint === 0x2588) return FULL_BLOCK_RECTANGLES;
+  if (codepoint >= 0x2589 && codepoint <= 0x258f) return LEFT_BLOCK_RECTANGLES[codepoint - 0x2589];
+  if (codepoint === 0x2590) return RIGHT_HALF_RECTANGLES;
+  if (codepoint === 0x2594) return UPPER_EIGHTH_RECTANGLES;
+  if (codepoint === 0x2595) return RIGHT_EIGHTH_RECTANGLES;
+  return QUADRANT_BLOCK_RECTANGLES.get(codepoint);
 }
 
 function pushBlockElement(
@@ -945,12 +970,22 @@ function pushBlockElement(
   viewportWidth: number,
   viewportHeight: number,
 ): boolean {
-  const rectangles = blockElementRectangles(grapheme);
-  if (!rectangles) return false;
+  const codepoint = grapheme.charCodeAt(0);
+  if (codepoint < 0x2580 || codepoint > 0x259f) return false;
   const cellLeft = (ORIGIN_X + column * CELL_WIDTH) * scale;
   const cellRight = (ORIGIN_X + (column + 1) * CELL_WIDTH) * scale;
   const cellTop = (ORIGIN_Y + row * LINE_HEIGHT) * scale;
   const cellBottom = (ORIGIN_Y + (row + 1) * LINE_HEIGHT) * scale;
+  if (codepoint === 0x2580) {
+    const x0 = Math.round(cellLeft);
+    const x1 = Math.round(cellRight);
+    const y0 = Math.round(cellTop);
+    const y1 = Math.round(cellTop + (cellBottom - cellTop) * 0.5);
+    pushRectangle(output, x0, y0, x1 - x0, y1 - y0, color, viewportWidth, viewportHeight);
+    return true;
+  }
+  const rectangles = blockElementRectangles(codepoint);
+  if (!rectangles) return false;
   for (const [left, top, right, bottom] of rectangles) {
     const x0 = Math.round(cellLeft + (cellRight - cellLeft) * left);
     const x1 = Math.round(cellLeft + (cellRight - cellLeft) * right);
@@ -1350,8 +1385,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     if (hasNativeRows) {
       for (const row of renderRows) {
-        const boxCells = boxDrawingCells(view.rows[row] ?? "");
-        const blockCells = blockElementCells(view.rows[row] ?? "");
+        const { box: boxCells, block: blockCells } = specialDrawingCells(view.rows[row] ?? "");
         for (const instance of view.nativeRows[row] ?? []) {
           const definition = view.glyphDefinitions.get(instance.glyphId);
           if (!definition) continue;
@@ -1598,8 +1632,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     if (hasNativeRows) {
       for (const row of renderRows) {
-        const boxCells = boxDrawingCells(view.rows[row] ?? "");
-        const blockCells = blockElementCells(view.rows[row] ?? "");
+        const { box: boxCells, block: blockCells } = specialDrawingCells(view.rows[row] ?? "");
         for (const instance of view.nativeRows[row] ?? []) {
           const definition = view.glyphDefinitions.get(instance.glyphId);
           if (!definition) continue;
