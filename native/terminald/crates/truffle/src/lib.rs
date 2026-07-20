@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -2020,9 +2020,52 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+#[derive(Default)]
+struct ReadBuffer {
+    bytes: Vec<u8>,
+    start: usize,
+}
+
+impl ReadBuffer {
+    fn available(&self) -> usize {
+        self.bytes.len() - self.start
+    }
+
+    fn unread(&self, length: usize) -> &[u8] {
+        &self.bytes[self.start..self.start + length]
+    }
+
+    fn consume(&mut self, length: usize) {
+        self.start += length;
+        if self.start == self.bytes.len() {
+            self.bytes.clear();
+            self.start = 0;
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.start == 0 {
+            return;
+        }
+        self.bytes.copy_within(self.start.., 0);
+        self.bytes.truncate(self.available());
+        self.start = 0;
+    }
+
+    fn append(&mut self, chunk: Vec<u8>) {
+        if self.available() == 0 {
+            self.bytes = chunk;
+            self.start = 0;
+            return;
+        }
+        self.compact();
+        self.bytes.extend_from_slice(&chunk);
+    }
+}
+
 struct CompactProtocolStream<S> {
     stream: S,
-    buffered: VecDeque<u8>,
+    buffered: ReadBuffer,
 }
 
 impl<S> CompactProtocolStream<S>
@@ -2032,7 +2075,7 @@ where
     fn new(stream: S) -> Self {
         Self {
             stream,
-            buffered: VecDeque::new(),
+            buffered: ReadBuffer::default(),
         }
     }
 
@@ -2043,21 +2086,21 @@ where
     }
 
     async fn read_preface(&mut self) -> Result<StreamPreface> {
-        let header = self
-            .read_exact_bytes(16)
-            .await?
-            .context("EOF before compact-stream preface")?;
-        let metadata_len = u32::from_be_bytes(header[12..16].try_into().unwrap()) as usize;
+        if !self.fill(16).await? {
+            bail!("EOF before compact-stream preface");
+        }
+        let metadata_len =
+            u32::from_be_bytes(self.buffered.unread(16)[12..16].try_into().unwrap()) as usize;
         if metadata_len > ghosttea::tunnel_protocol::MAX_PREFACE_METADATA_BYTES {
             bail!("compact-stream preface metadata exceeds limit");
         }
-        let metadata = self
-            .read_exact_bytes(metadata_len)
-            .await?
-            .context("EOF in compact-stream preface metadata")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&metadata);
-        Ok(decode_preface(&encoded)?.0)
+        let total = 16 + metadata_len;
+        if !self.fill(total).await? {
+            bail!("EOF in compact-stream preface metadata");
+        }
+        let preface = decode_preface(self.buffered.unread(total))?.0;
+        self.buffered.consume(total);
+        Ok(preface)
     }
 
     async fn write_message<T: serde::Serialize>(
@@ -2075,20 +2118,21 @@ where
         &mut self,
         limit: usize,
     ) -> Result<Option<T>> {
-        let Some(header) = self.read_exact_bytes(4).await? else {
+        if !self.fill(4).await? {
             return Ok(None);
-        };
-        let payload_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        }
+        let payload_len =
+            u32::from_be_bytes(self.buffered.unread(4)[..4].try_into().unwrap()) as usize;
         if payload_len > limit {
             bail!("compact-stream terminal protocol message exceeds limit");
         }
-        let payload = self
-            .read_exact_bytes(payload_len)
-            .await?
-            .context("EOF in compact-stream terminal protocol message")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&payload);
-        Ok(Some(decode_message(&encoded, limit)?.0))
+        let total = 4 + payload_len;
+        if !self.fill(total).await? {
+            bail!("EOF in compact-stream terminal protocol message");
+        }
+        let message = decode_message(self.buffered.unread(total), limit)?.0;
+        self.buffered.consume(total);
+        Ok(Some(message))
     }
 
     async fn write_compact_message<T: serde::Serialize>(
@@ -2108,50 +2152,50 @@ where
         expected_channel: CompactChannel,
         limit: usize,
     ) -> Result<Option<T>> {
-        let Some(header) = self.read_exact_bytes(4).await? else {
+        if !self.fill(4).await? {
             return Ok(None);
-        };
-        let framed_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        }
+        let framed_len =
+            u32::from_be_bytes(self.buffered.unread(4)[..4].try_into().unwrap()) as usize;
         if framed_len == 0 || framed_len - 1 > limit {
             bail!("compact terminal message exceeds limit");
         }
-        let payload = self
-            .read_exact_bytes(framed_len)
-            .await?
-            .context("EOF in compact terminal protocol message")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&payload);
-        Ok(Some(
-            decode_compact_message(&encoded, expected_channel, limit)?.0,
-        ))
+        let total = 4 + framed_len;
+        if !self.fill(total).await? {
+            bail!("EOF in compact terminal protocol message");
+        }
+        let message =
+            decode_compact_message(self.buffered.unread(total), expected_channel, limit)?.0;
+        self.buffered.consume(total);
+        Ok(Some(message))
     }
 
-    async fn read_exact_bytes(&mut self, length: usize) -> Result<Option<Vec<u8>>> {
-        while self.buffered.len() < length {
-            let mut chunk = vec![0; 64 * 1024];
-            let read = self.stream.read(&mut chunk).await?;
+    async fn fill(&mut self, length: usize) -> Result<bool> {
+        while self.buffered.available() < length {
+            self.buffered.compact();
+            self.buffered.bytes.reserve(64 * 1024);
+            let read = self.stream.read_buf(&mut self.buffered.bytes).await?;
             if read == 0 {
-                if self.buffered.is_empty() {
-                    return Ok(None);
+                if self.buffered.available() == 0 {
+                    return Ok(false);
                 }
                 bail!("truncated compact terminal stream");
             }
-            self.buffered.extend(&chunk[..read]);
         }
-        Ok(Some(self.buffered.drain(..length).collect()))
+        Ok(true)
     }
 }
 
 struct ProtocolStream {
     stream: QuicStream,
-    buffered: VecDeque<u8>,
+    buffered: ReadBuffer,
 }
 
 impl ProtocolStream {
     fn new(stream: QuicStream) -> Self {
         Self {
             stream,
-            buffered: VecDeque::new(),
+            buffered: ReadBuffer::default(),
         }
     }
 
@@ -2161,21 +2205,21 @@ impl ProtocolStream {
     }
 
     async fn read_preface(&mut self) -> Result<StreamPreface> {
-        let header = self
-            .read_exact(16)
-            .await?
-            .context("EOF before stream preface")?;
-        let metadata_len = u32::from_be_bytes(header[12..16].try_into().unwrap()) as usize;
+        if !self.fill(16).await? {
+            bail!("EOF before stream preface");
+        }
+        let metadata_len =
+            u32::from_be_bytes(self.buffered.unread(16)[12..16].try_into().unwrap()) as usize;
         if metadata_len > ghosttea::tunnel_protocol::MAX_PREFACE_METADATA_BYTES {
             bail!("stream preface metadata exceeds limit");
         }
-        let metadata = self
-            .read_exact(metadata_len)
-            .await?
-            .context("EOF in stream preface metadata")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&metadata);
-        Ok(decode_preface(&encoded)?.0)
+        let total = 16 + metadata_len;
+        if !self.fill(total).await? {
+            bail!("EOF in stream preface metadata");
+        }
+        let preface = decode_preface(self.buffered.unread(total))?.0;
+        self.buffered.consume(total);
+        Ok(preface)
     }
 
     async fn write_message<T: serde::Serialize>(
@@ -2191,31 +2235,32 @@ impl ProtocolStream {
         &mut self,
         limit: usize,
     ) -> Result<Option<T>> {
-        let Some(header) = self.read_exact(4).await? else {
+        if !self.fill(4).await? {
             return Ok(None);
-        };
-        let payload_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        }
+        let payload_len =
+            u32::from_be_bytes(self.buffered.unread(4)[..4].try_into().unwrap()) as usize;
         if payload_len > limit {
             bail!("terminal protocol message exceeds limit");
         }
-        let payload = self
-            .read_exact(payload_len)
-            .await?
-            .context("EOF in terminal protocol message")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&payload);
-        Ok(Some(decode_message(&encoded, limit)?.0))
+        let total = 4 + payload_len;
+        if !self.fill(total).await? {
+            bail!("EOF in terminal protocol message");
+        }
+        let message = decode_message(self.buffered.unread(total), limit)?.0;
+        self.buffered.consume(total);
+        Ok(Some(message))
     }
 
-    async fn read_exact(&mut self, length: usize) -> Result<Option<Vec<u8>>> {
-        while self.buffered.len() < length {
+    async fn fill(&mut self, length: usize) -> Result<bool> {
+        while self.buffered.available() < length {
             match self.stream.read(64 * 1024).await? {
-                Some(chunk) => self.buffered.extend(chunk),
-                None if self.buffered.is_empty() => return Ok(None),
+                Some(chunk) => self.buffered.append(chunk),
+                None if self.buffered.available() == 0 => return Ok(false),
                 None => bail!("truncated QUIC stream"),
             }
         }
-        Ok(Some(self.buffered.drain(..length).collect()))
+        Ok(true)
     }
 }
 

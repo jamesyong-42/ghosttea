@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     env,
     sync::{
         Arc, Mutex,
@@ -208,7 +207,8 @@ struct ReceiverConfig {
 
 struct ProtocolReader {
     stream: DuplexStream,
-    buffered: VecDeque<u8>,
+    buffered: Vec<u8>,
+    start: usize,
     transport: Transport,
 }
 
@@ -216,16 +216,21 @@ impl ProtocolReader {
     fn new(stream: DuplexStream, transport: Transport) -> Self {
         Self {
             stream,
-            buffered: VecDeque::new(),
+            buffered: Vec::new(),
+            start: 0,
             transport,
         }
     }
 
     async fn read_message(&mut self) -> Result<Option<StateMessage>> {
-        let Some(header) = self.read_exact_bytes(4).await? else {
+        if !self.fill(4).await? {
             return Ok(None);
-        };
-        let framed_len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        }
+        let framed_len = u32::from_be_bytes(
+            self.buffered[self.start..self.start + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
         match self.transport {
             Transport::QuicProtocolLoopback if framed_len > MAX_STATE_MESSAGE_BYTES => {
                 bail!("terminal protocol message exceeds limit");
@@ -237,34 +242,52 @@ impl ProtocolReader {
             }
             _ => {}
         }
-        let payload = self
-            .read_exact_bytes(framed_len)
-            .await?
-            .context("EOF in terminal benchmark message")?;
-        let mut encoded = header;
-        encoded.extend_from_slice(&payload);
+        let total = 4 + framed_len;
+        if !self.fill(total).await? {
+            bail!("EOF in terminal benchmark message");
+        }
+        let encoded = &self.buffered[self.start..self.start + total];
         let message = match self.transport {
-            Transport::QuicProtocolLoopback => decode_message(&encoded, MAX_STATE_MESSAGE_BYTES)?.0,
+            Transport::QuicProtocolLoopback => decode_message(encoded, MAX_STATE_MESSAGE_BYTES)?.0,
             Transport::CompactLoopback => {
-                decode_compact_message(&encoded, CompactChannel::State, MAX_STATE_MESSAGE_BYTES)?.0
+                decode_compact_message(encoded, CompactChannel::State, MAX_STATE_MESSAGE_BYTES)?.0
             }
         };
+        self.consume(total);
         Ok(Some(message))
     }
 
-    async fn read_exact_bytes(&mut self, length: usize) -> Result<Option<Vec<u8>>> {
-        while self.buffered.len() < length {
-            let mut chunk = vec![0; 64 * 1024];
-            let read = self.stream.read(&mut chunk).await?;
+    async fn fill(&mut self, length: usize) -> Result<bool> {
+        while self.buffered.len() - self.start < length {
+            self.compact();
+            self.buffered.reserve(64 * 1024);
+            let read = self.stream.read_buf(&mut self.buffered).await?;
             if read == 0 {
-                if self.buffered.is_empty() {
-                    return Ok(None);
+                if self.buffered.len() == self.start {
+                    return Ok(false);
                 }
                 bail!("truncated terminal benchmark stream");
             }
-            self.buffered.extend(&chunk[..read]);
         }
-        Ok(Some(self.buffered.drain(..length).collect()))
+        Ok(true)
+    }
+
+    fn consume(&mut self, length: usize) {
+        self.start += length;
+        if self.start == self.buffered.len() {
+            self.buffered.clear();
+            self.start = 0;
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.start == 0 {
+            return;
+        }
+        let available = self.buffered.len() - self.start;
+        self.buffered.copy_within(self.start.., 0);
+        self.buffered.truncate(available);
+        self.start = 0;
     }
 }
 
