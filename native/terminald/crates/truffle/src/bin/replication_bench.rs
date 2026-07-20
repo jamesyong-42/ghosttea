@@ -91,6 +91,7 @@ struct Options {
     fanout: usize,
     warmup: usize,
     iterations: usize,
+    cooldown_ms: u64,
     duplex_bytes: usize,
 }
 
@@ -106,6 +107,7 @@ impl Default for Options {
             fanout: 1,
             warmup: 1,
             iterations: 5,
+            cooldown_ms: 250,
             duplex_bytes: 64 * 1024,
         }
     }
@@ -168,6 +170,7 @@ struct Report<'a> {
     fanout: usize,
     warmup_iterations: usize,
     measured_iterations: usize,
+    cooldown_ms: u64,
     duplex_bytes: usize,
     samples: Vec<Sample>,
 }
@@ -286,11 +289,13 @@ fn parse_options() -> Result<Options> {
             options.warmup = value.parse()?;
         } else if let Some(value) = argument.strip_prefix("--iterations=") {
             options.iterations = value.parse()?;
+        } else if let Some(value) = argument.strip_prefix("--cooldown-ms=") {
+            options.cooldown_ms = value.parse()?;
         } else if let Some(value) = argument.strip_prefix("--duplex-bytes=") {
             options.duplex_bytes = value.parse()?;
         } else if argument == "--help" || argument == "-h" {
             println!(
-                "Usage: replication_bench [--transport=quic-protocol-loopback|compact-loopback] [--workload=sparse|dense|truecolor|resync] [--apply=decode|replica] [--updates=180] [--fanout=1] [--warmup=1] [--iterations=5] [--cols=120] [--rows=40] [--duplex-bytes=65536]"
+                "Usage: replication_bench [--transport=quic-protocol-loopback|compact-loopback] [--workload=sparse|dense|truecolor|resync] [--apply=decode|replica] [--updates=180] [--fanout=1] [--warmup=1] [--iterations=5] [--cooldown-ms=250] [--cols=120] [--rows=40] [--duplex-bytes=65536]"
             );
             std::process::exit(0);
         } else {
@@ -716,10 +721,14 @@ async fn main() -> Result<()> {
     };
     for _ in 0..options.warmup {
         let _ = run_sample(&options, engine.clone()).await?;
+        tokio::time::sleep(Duration::from_millis(options.cooldown_ms)).await;
     }
     let mut samples = Vec::with_capacity(options.iterations);
-    for _ in 0..options.iterations {
+    for iteration in 0..options.iterations {
         samples.push(run_sample(&options, engine.clone()).await?);
+        if iteration + 1 < options.iterations {
+            tokio::time::sleep(Duration::from_millis(options.cooldown_ms)).await;
+        }
     }
     println!(
         "{}",
@@ -735,6 +744,7 @@ async fn main() -> Result<()> {
             fanout: options.fanout,
             warmup_iterations: options.warmup,
             measured_iterations: options.iterations,
+            cooldown_ms: options.cooldown_ms,
             duplex_bytes: options.duplex_bytes,
             samples,
         })?
@@ -755,6 +765,7 @@ mod tests {
             fanout: 1,
             warmup: 0,
             iterations: 1,
+            cooldown_ms: 0,
             ..Options::default()
         }
     }

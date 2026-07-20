@@ -24,6 +24,7 @@ function parseArgs(argv) {
     cases: Object.keys(catalog),
     iterations: 5,
     warmup: 1,
+    cooldownMs: 250,
     scale: 1,
     cols: 120,
     rows: 40,
@@ -38,6 +39,7 @@ function parseArgs(argv) {
     else if (argument.startsWith("--cases=")) options.cases = argument.slice(8).split(",").filter(Boolean);
     else if (argument.startsWith("--iterations=")) options.iterations = Number(argument.slice(13));
     else if (argument.startsWith("--warmup=")) options.warmup = Number(argument.slice(9));
+    else if (argument.startsWith("--cooldown-ms=")) options.cooldownMs = Number(argument.slice(14));
     else if (argument.startsWith("--scale=")) options.scale = Number(argument.slice(8));
     else if (argument.startsWith("--cols=")) options.cols = Number(argument.slice(7));
     else if (argument.startsWith("--rows=")) options.rows = Number(argument.slice(7));
@@ -86,6 +88,9 @@ function validate(options) {
   if (!Number.isInteger(options.iterations) || !Number.isInteger(options.warmup) || options.warmup < 0) {
     throw new Error("--iterations must be a positive integer and --warmup a non-negative integer");
   }
+  if (!Number.isInteger(options.cooldownMs) || options.cooldownMs < 0) {
+    throw new Error("--cooldown-ms must be a non-negative integer");
+  }
 }
 
 function gitState(options) {
@@ -121,6 +126,7 @@ function benchmarkCase(name, definition, options, executable) {
     `--fanout=${definition.fanout}`,
     `--warmup=${options.warmup}`,
     `--iterations=${options.iterations}`,
+    `--cooldown-ms=${options.cooldownMs}`,
     `--cols=${options.cols}`,
     `--rows=${options.rows}`,
     `--duplex-bytes=${options.duplexBytes}`,
@@ -156,6 +162,7 @@ function main() {
   --cases=list           ${Object.keys(catalog).join(",")}
   --iterations=5         Measured repetitions per case
   --warmup=1             Unmeasured repetitions per case
+  --cooldown-ms=250      Unmeasured delay between repetitions
   --scale=1              Update-count multiplier
   --cols=120 --rows=40   Logical terminal dimensions
   --duplex-bytes=65536   Bounded stream capacity
@@ -184,6 +191,7 @@ function main() {
     config: {
       iterations: options.iterations,
       warmup: options.warmup,
+      cooldownMs: options.cooldownMs,
       scale: options.scale,
       cols: options.cols,
       rows: options.rows,

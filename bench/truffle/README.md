@@ -45,7 +45,8 @@ npm run bench:truffle:compare -- \
 The runner rejects tracked modifications and unacknowledged untracked files.
 `--allow-dirty` exists only for harness smoke testing; comparison rejects such
 reports. Raw `results*.json` files are ignored because they are machine- and
-revision-specific.
+revision-specific. The default 250 ms unmeasured cooldown between repetitions
+reduces heat and scheduler carry-over; keep it identical across comparisons.
 
 Run the compact Apple route as a separate baseline; never compare it directly
 with the default QUIC-protocol report:

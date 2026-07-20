@@ -89,6 +89,7 @@ function comparableConfiguration(report) {
     rows: report.config?.rows,
     iterations: report.config?.iterations,
     warmup: report.config?.warmup,
+    cooldownMs: report.config?.cooldownMs,
     scale: report.config?.scale,
     duplexBytes: report.config?.duplexBytes,
     configuredTransport: report.config?.transport,

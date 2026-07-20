@@ -27,6 +27,7 @@ function report(values, overrides = {}) {
       rows: 40,
       iterations: values.length,
       warmup: 1,
+      cooldownMs: 250,
       scale: 1,
       duplexBytes: 65_536,
       transport: "quic-protocol-loopback",
