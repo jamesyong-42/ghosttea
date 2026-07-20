@@ -18,6 +18,7 @@ use crate::{
 struct ReplicaRenderCache {
     rows: Vec<String>,
     cells: Vec<Vec<TerminalCell>>,
+    shape_spans: Vec<Vec<(usize, usize, FontStyle)>>,
     shaped_rows: Vec<ShapedRow>,
     sent_glyphs: HashSet<u32>,
 }
@@ -168,6 +169,7 @@ impl LogicalReplicaModel {
         if full_snapshot {
             cache.rows = vec![String::new(); snapshot.rows.len()];
             cache.cells = vec![Vec::new(); snapshot.rows.len()];
+            cache.shape_spans = vec![Vec::new(); snapshot.rows.len()];
             cache.shaped_rows = vec![ShapedRow::default(); snapshot.rows.len()];
             cache.sent_glyphs.clear();
         } else {
@@ -177,31 +179,62 @@ impl LogicalReplicaModel {
             );
         }
 
-        let mut definitions = BTreeMap::<u32, GlyphDefinition>::new();
-        let wait_started = Instant::now();
-        let mut engine = self.runtime.text_engine().lock().unwrap();
-        let wait = wait_started.elapsed();
-        let hold_started = Instant::now();
+        let mut prepared = Vec::with_capacity(updated_rows.len());
         for row_index in updated_rows.iter().copied() {
             let logical = snapshot
                 .rows
                 .get(row_index as usize)
                 .context("remote terminal updated row is outside the snapshot")?;
-            let (text, cells, shaped) = shape_logical_row(&mut engine, logical)?;
-            for definition in &shaped.definitions {
+            let mut row = prepare_logical_row(row_index as usize, logical);
+            row.needs_shape = cache.rows[row.index] != row.text
+                || cache.shape_spans[row.index] != row.shape_spans;
+            prepared.push(row);
+        }
+
+        let mut shaped_updates = Vec::new();
+        if prepared.iter().any(|row| row.needs_shape) {
+            let wait_started = Instant::now();
+            let mut engine = self.runtime.text_engine().lock().unwrap();
+            let wait = wait_started.elapsed();
+            let hold_started = Instant::now();
+            for row in prepared.iter().filter(|row| row.needs_shape) {
+                let spans = row
+                    .shape_spans
+                    .iter()
+                    .map(|&(byte_start, byte_end, style)| StyleSpan {
+                        byte_start,
+                        byte_end,
+                        style,
+                    })
+                    .collect::<Vec<_>>();
+                shaped_updates.push((row.index, engine.shape_styled_row(&row.text, &spans)?));
+            }
+            drop(engine);
+            self.text_engine_performance
+                .record(wait, hold_started.elapsed());
+        } else {
+            self.text_engine_performance.record_no_acquisition();
+        }
+
+        for row in prepared {
+            cache.rows[row.index] = row.text;
+            cache.cells[row.index] = row.cells;
+            cache.shape_spans[row.index] = row.shape_spans;
+        }
+        for (index, shaped) in shaped_updates {
+            cache.shaped_rows[index] = shaped;
+        }
+
+        let mut definitions = BTreeMap::<u32, GlyphDefinition>::new();
+        for row_index in updated_rows.iter().copied() {
+            for definition in &cache.shaped_rows[row_index as usize].definitions {
                 if cache.sent_glyphs.insert(definition.id) {
                     definitions
                         .entry(definition.id)
                         .or_insert_with(|| definition.clone());
                 }
             }
-            cache.rows[row_index as usize] = text;
-            cache.cells[row_index as usize] = cells;
-            cache.shaped_rows[row_index as usize] = shaped;
         }
-        drop(engine);
-        self.text_engine_performance
-            .record(wait, hold_started.elapsed());
 
         self.frame_sequence = self.frame_sequence.saturating_add(1);
         let definitions = definitions.into_values().collect::<Vec<_>>();
@@ -238,10 +271,15 @@ impl LogicalReplicaModel {
     }
 }
 
-fn shape_logical_row(
-    engine: &mut ghosttea_text::TextEngine,
-    row: &LogicalRow,
-) -> Result<(String, Vec<TerminalCell>, ShapedRow)> {
+struct PreparedReplicaRow {
+    index: usize,
+    text: String,
+    cells: Vec<TerminalCell>,
+    shape_spans: Vec<(usize, usize, FontStyle)>,
+    needs_shape: bool,
+}
+
+fn prepare_logical_row(index: usize, row: &LogicalRow) -> PreparedReplicaRow {
     let text = row.text.clone();
     let cells = row
         .cells
@@ -254,7 +292,7 @@ fn shape_logical_row(
         })
         .collect::<Vec<_>>();
     let mut byte_offset = 0;
-    let spans = cells
+    let shape_spans = cells
         .iter()
         .filter_map(|cell| {
             if byte_offset >= text.len() {
@@ -262,18 +300,23 @@ fn shape_logical_row(
             }
             let byte_start = byte_offset;
             byte_offset = (byte_offset + cell.text.len()).min(text.len());
-            Some(StyleSpan {
+            Some((
                 byte_start,
-                byte_end: byte_offset,
-                style: FontStyle {
+                byte_offset,
+                FontStyle {
                     bold: cell.style.bold,
                     italic: cell.style.italic,
                 },
-            })
+            ))
         })
         .collect::<Vec<_>>();
-    let shaped = engine.shape_styled_row(&text, &spans)?;
-    Ok((text, cells, shaped))
+    PreparedReplicaRow {
+        index,
+        text,
+        cells,
+        shape_spans,
+        needs_shape: false,
+    }
 }
 
 fn cell_style(style: LogicalCellStyle) -> CellStyle {
@@ -377,6 +420,38 @@ mod tests {
         assert_eq!(u16::from_le_bytes(frame[6..8].try_into().unwrap()) & 1, 0);
         assert_eq!(u64::from_le_bytes(frame[48..56].try_into().unwrap()), 12);
         assert_eq!(u32::from_le_bytes(frame[108..112].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn color_only_patch_reuses_the_existing_row_shape() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut replica = LogicalReplicaModel::new(runtime, 42);
+        let initial = snapshot("hello");
+        replica.publish(initial.clone()).unwrap();
+        let mut replacement = initial.rows[0].clone();
+        replacement.cells[0].style.foreground = Some([1, 2, 3]);
+
+        replica
+            .publish_patch(LogicalTerminalPatch {
+                session_epoch: 7,
+                layout_epoch: 3,
+                patch_sequence: 1,
+                terminal_revision: 12,
+                row_replacements: vec![RowReplacement {
+                    row_index: 0,
+                    row_revision: 12,
+                    row: replacement,
+                }],
+                cursor: None,
+                mouse_tracking: None,
+                scrollbar: None,
+            })
+            .unwrap();
+
+        let performance = replica.text_engine_performance();
+        assert_eq!(performance.acquisition_count, 0);
+        assert_eq!(performance.wait_nanoseconds, 0);
+        assert_eq!(performance.hold_nanoseconds, 0);
     }
 
     #[test]

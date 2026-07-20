@@ -54,6 +54,13 @@ impl TextEnginePerformanceSnapshot {
         self.wait_nanoseconds = duration_nanoseconds(wait);
         self.hold_nanoseconds = duration_nanoseconds(hold);
     }
+
+    pub(crate) fn record_no_acquisition(&mut self) {
+        self.sequence = self.sequence.saturating_add(1);
+        self.acquisition_count = 0;
+        self.wait_nanoseconds = 0;
+        self.hold_nanoseconds = 0;
+    }
 }
 
 fn duration_nanoseconds(duration: Duration) -> u64 {
