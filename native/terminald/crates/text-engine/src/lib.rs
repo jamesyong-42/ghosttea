@@ -211,7 +211,7 @@ pub struct TextEngine {
 }
 
 const MAX_CACHED_GLYPHS: usize = 65_536;
-const MAX_CACHED_SHAPED_ROWS: usize = 512;
+const MAX_CACHED_SHAPED_ROWS: usize = 128;
 const MAX_SHAPED_ROW_CANDIDATES: usize = 1_024;
 
 impl TextEngine {
