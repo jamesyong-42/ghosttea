@@ -618,6 +618,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#postWorker({ type: "force-full-redraw", sessionHandle });
   }
 
+  forceRowRedraw(sessionHandle: string, row: number): void {
+    this.#postWorker({ type: "force-row-redraw", sessionHandle, row });
+  }
+
   setPartialRenderingEnabled(enabled: boolean): void {
     this.#postWorker({ type: "partial-rendering", enabled });
   }

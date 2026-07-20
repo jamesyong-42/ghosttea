@@ -131,6 +131,8 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(worker.messages.at(-1)).toEqual({ type: "partial-rendering", enabled: false });
     runtime.forceFullRedraw("pane-handle");
     expect(worker.messages.at(-1)).toEqual({ type: "force-full-redraw", sessionHandle: "pane-handle" });
+    runtime.forceRowRedraw("pane-handle", 7);
+    expect(worker.messages.at(-1)).toEqual({ type: "force-row-redraw", sessionHandle: "pane-handle", row: 7 });
 
     const started = runtime.startPerformanceMeasurement();
     const startMessage = worker.messages.at(-1) as { requestId: number; type: string };

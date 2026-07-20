@@ -624,6 +624,8 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       if (changesPixels) invalidateRows(message.sessionHandle, [value.cursor.y]);
     } else if (message.type === "force-full-redraw") {
       invalidateFull(message.sessionHandle);
+    } else if (message.type === "force-row-redraw") {
+      invalidateRows(message.sessionHandle, [message.row]);
     } else if (message.type === "performance-start") {
       void ensureRenderer()
         .then(() => {

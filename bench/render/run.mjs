@@ -110,7 +110,7 @@ function main() {
   --iterations=5      Measured repetitions per case
   --warmup=1          Unmeasured repetitions per case
   --scale=1           Payload multiplier
-  --cases=list        idle-4,typing-1,sparse-1,visual-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
+  --cases=list        idle-4,repaint-1,typing-1,sparse-1,visual-1,scroll-1,dense-1,unicode-1,redraw-1,scroll-4,resize-1,resize-jitter-1
   --width=1200        Electron content window width
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
@@ -161,6 +161,13 @@ function main() {
     }
     const catalog = {
       "idle-4": { name: "idle-4", panes: 4, kind: "idle", durationMs: 2_500 },
+      "repaint-1": {
+        name: "repaint-1",
+        panes: 1,
+        kind: "repaint",
+        operations: Math.max(60, Math.round(180 * options.scale)),
+        intervalMs: 16,
+      },
       "typing-1": {
         name: "typing-1",
         panes: 1,

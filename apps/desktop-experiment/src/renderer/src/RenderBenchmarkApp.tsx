@@ -86,14 +86,18 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
     };
 
     const createSessions = async (benchmarkCase: RenderBenchmarkCase): Promise<SessionSummary[]> => {
-      const idle = benchmarkCase.kind === "idle" || benchmarkCase.kind === "resize";
+      const repaint = benchmarkCase.kind === "repaint";
+      const idle = benchmarkCase.kind === "idle" || benchmarkCase.kind === "resize" || repaint;
       const interactive = benchmarkCase.kind === "interactive";
       const created = await Promise.all(
         Array.from({ length: benchmarkCase.panes }, () =>
           runtime.createSession({
             executable: idle ? "/bin/sh" : interactive ? "/bin/cat" : config.workloadExecutable,
             args: idle
-              ? ["-c", "IFS= read -r _"]
+              ? [
+                  "-c",
+                  repaint ? `printf '%s' 'row-geometry-cache-${"x".repeat(81)}'; IFS= read -r _` : "IFS= read -r _",
+                ]
               : interactive
                 ? []
                 : [
@@ -166,6 +170,12 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
 
       if (benchmarkCase.kind === "idle") {
         await delay(benchmarkCase.durationMs ?? 2_500);
+      } else if (benchmarkCase.kind === "repaint") {
+        const operations = benchmarkCase.operations ?? 180;
+        for (let operation = 0; operation < operations; operation += 1) {
+          for (const session of created) runtime.forceRowRedraw(session.handle, 0);
+          await delay(benchmarkCase.intervalMs ?? 16);
+        }
       } else if (benchmarkCase.kind === "resize") {
         const frames = benchmarkCase.operations ?? 180;
         const resizeDelta = benchmarkCase.resizeDelta ?? 37;

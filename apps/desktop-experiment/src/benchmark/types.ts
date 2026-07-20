@@ -1,7 +1,7 @@
 export interface RenderBenchmarkCase {
   name: string;
   panes: number;
-  kind: "idle" | "payload" | "interactive" | "resize";
+  kind: "idle" | "repaint" | "payload" | "interactive" | "resize";
   payloadPath?: string;
   payloadBytes?: number;
   durationMs?: number;

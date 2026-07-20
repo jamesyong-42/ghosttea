@@ -16,6 +16,7 @@ export type RendererToWorkerMessage =
   | { type: "focus"; sessionHandle: string; focused: boolean }
   | { type: "cursor-activity"; sessionHandle: string }
   | { type: "force-full-redraw"; sessionHandle: string }
+  | { type: "force-row-redraw"; sessionHandle: string; row: number }
   | { type: "performance-start"; requestId: number }
   | { type: "performance-finish"; requestId: number; quietMs: number; timeoutMs: number };
 

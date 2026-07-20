@@ -41,6 +41,7 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 | Case              | Purpose                                                            |
 | ----------------- | ------------------------------------------------------------------ |
 | `idle-4`          | Four mounted panes, no output; detects idle/cursor/background work |
+| `repaint-1`       | Repaints one unchanged populated row; isolates geometry reuse      |
 | `typing-1`        | Paced input/local echo; exposes redundant input and cursor renders |
 | `sparse-1`        | Replaces one row repeatedly; isolates persistent row-damage work   |
 | `visual-1`        | Pixel fixture for box/block, Unicode, theme, selection, and damage |
