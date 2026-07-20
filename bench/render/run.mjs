@@ -20,6 +20,7 @@ function parseArgs(argv) {
     height: 800,
     cooldownMs: 750,
     quietMs: 300,
+    startDelayMs: 0,
     build: true,
     allowUntracked: [],
     verifyPixels: false,
@@ -47,6 +48,7 @@ function parseArgs(argv) {
     else if (argument.startsWith("--height=")) options.height = Number(argument.slice(9));
     else if (argument.startsWith("--cooldown-ms=")) options.cooldownMs = Number(argument.slice(14));
     else if (argument.startsWith("--quiet-ms=")) options.quietMs = Number(argument.slice(11));
+    else if (argument.startsWith("--start-delay-ms=")) options.startDelayMs = Number(argument.slice(17));
     else if (argument.startsWith("--cases=")) options.cases = argument.slice(8).split(",").filter(Boolean);
     else if (argument.startsWith("--allow-untracked=")) {
       options.allowUntracked = argument.slice("--allow-untracked=".length).split(",").filter(Boolean);
@@ -85,6 +87,9 @@ function validate(options) {
   if (!Number.isInteger(options.iterations) || !Number.isInteger(options.warmup) || options.warmup < 0) {
     throw new Error("--iterations must be a positive integer and --warmup a non-negative integer");
   }
+  if (!Number.isFinite(options.startDelayMs) || options.startDelayMs < 0) {
+    throw new Error("--start-delay-ms must be non-negative");
+  }
 }
 
 function summarize(report) {
@@ -116,6 +121,7 @@ function main() {
   --height=800        Electron content window height
   --cooldown-ms=750   Delay between repetitions
   --quiet-ms=300      Required worker quiet period before capture
+  --start-delay-ms=0  Unmeasured delay before each workload (capture setup)
   --allow-untracked=  Explicit comma-separated untracked-file exceptions
   --no-build          Reuse existing release daemon and built Electron app
   --verify-pixels     Compare partial output with a forced full redraw
@@ -286,6 +292,7 @@ function main() {
       measuredIterations: options.iterations,
       cooldownMs: options.cooldownMs,
       quietMs: options.quietMs,
+      ...(options.startDelayMs ? { startDelayMs: options.startDelayMs } : {}),
       workloadExecutable: process.execPath,
       workloadScript: resolve(root, "bench/render/workload.mjs"),
       verifyPixels: options.verifyPixels,

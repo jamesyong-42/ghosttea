@@ -25,6 +25,7 @@ function renderBenchmarkConfiguration(): RenderBenchmarkConfig | undefined {
 
 const renderBenchmark = renderBenchmarkConfiguration();
 const renderBenchmarkOutput = process.env.GHOSTTEA_RENDER_BENCH_OUTPUT;
+const renderBenchmarkWindowIdOutput = process.env.GHOSTTEA_RENDER_BENCH_WINDOW_ID_OUTPUT;
 
 app.setName("Ghosttea Experiment");
 nativeTheme.themeSource = "dark";
@@ -366,6 +367,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     },
   });
   const record = tabs.add(window, tabId, groupId);
+  let wroteBenchmarkWindowId = false;
   if (options.tabOf && process.platform === "darwin" && !options.tabOf.isDestroyed()) {
     options.tabOf.addTabbedWindow(window);
   }
@@ -375,6 +377,13 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     if (process.platform === "darwin") app.focus({ steal: true });
     window.show();
     window.focus();
+    if (renderBenchmarkWindowIdOutput && !wroteBenchmarkWindowId) {
+      writeFileSync(
+        renderBenchmarkWindowIdOutput,
+        `${JSON.stringify({ mediaSourceId: window.getMediaSourceId(), processId: process.pid })}\n`,
+      );
+      wroteBenchmarkWindowId = true;
+    }
     if (!app.isPackaged) {
       const bounds = window.getBounds();
       console.log(

@@ -26,6 +26,7 @@ export interface RenderBenchmarkConfig {
   measuredIterations: number;
   cooldownMs: number;
   quietMs: number;
+  startDelayMs?: number;
   workloadExecutable: string;
   workloadScript: string;
   verifyPixels?: boolean;

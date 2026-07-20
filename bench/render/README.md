@@ -159,3 +159,24 @@ npm run check --workspace ghosttea-desktop-experiment
 The statistical comparison code has deterministic unit coverage. The actual
 render suite must run in a visible Electron window because hidden/headless
 Chromium can throttle or select a different rendering path.
+
+## External terminal smoke comparison
+
+`external-terminal-workload.mjs` emits the exact seeded `doom-fire-1` frame
+sequence to its stdout, paced one frame at a time. It is a low-level helper for
+running the workload inside another terminal emulator without involving
+Ghosttea's PTY or renderer:
+
+```sh
+node bench/render/external-terminal-workload.mjs \
+  /tmp/terminal-metrics.json /tmp/terminal-ready /tmp/terminal-go
+```
+
+The helper first writes the ready file, then waits for the gate file. This lets
+a recorder start after the terminal reaches exactly 120 columns by 40 rows.
+Its metrics distinguish producer throughput and stdout backpressure from
+visible rendering; accepting 62.5 frame writes per second does not prove that a
+terminal displayed 62.5 distinct frames.
+
+See [macOS terminal comparison](./macos-terminal-comparison.md) for the first
+single-sample smoke run and its measurement limitations.

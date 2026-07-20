@@ -165,6 +165,7 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
             )
           : undefined;
 
+      if (config.startDelayMs) await delay(config.startDelayMs);
       await runtime.startPerformanceMeasurement();
       if (measured) await window.desktop.startRenderBenchmarkCase(benchmarkCase.name, iteration);
       const startedAt = performance.now();
