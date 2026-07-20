@@ -10,8 +10,8 @@ logical snapshot/patch -> production protocol frame -> bounded stream
 It is deliberately separate from the Electron render benchmark. `decode` cases
 isolate protocol framing, stream copies, and decoding. `replica` cases continue
 through logical-state application, text shaping, and TRF1 publication. Fanout
-cases use concurrent publisher/receiver tasks per peer and the same shared
-`TextEngine` contention as the daemon.
+cases use concurrent publisher/receiver tasks per replicated view and the same
+shared `TextEngine` contention as a daemon displaying several remote views.
 
 The default `quic-protocol-loopback` transport uses the same length-prefixed
 JSON encoding as desktop-to-desktop Truffle QUIC sessions. The optional
