@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     sync::Arc,
 };
 
@@ -116,7 +117,7 @@ pub struct FontStyle {
     pub italic: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StyleSpan {
     pub byte_start: usize,
     pub byte_end: usize,
@@ -183,6 +184,12 @@ struct Grapheme<'a> {
     style: FontStyle,
 }
 
+struct CachedShapedRow {
+    text: String,
+    spans: Vec<StyleSpan>,
+    shaped: ShapedRow,
+}
+
 pub struct TextEngine {
     database: Database,
     primary_family: String,
@@ -194,6 +201,8 @@ pub struct TextEngine {
     glyph_ids: HashMap<GlyphKey, u32>,
     glyphs: HashMap<u32, GlyphDefinition>,
     next_glyph_id: u32,
+    shaped_rows: HashMap<u64, Vec<CachedShapedRow>>,
+    shaped_row_count: usize,
     scale_context: ScaleContext,
     metrics: TextMetrics,
     raster_scale: f32,
@@ -201,6 +210,7 @@ pub struct TextEngine {
 }
 
 const MAX_CACHED_GLYPHS: usize = 65_536;
+const MAX_CACHED_SHAPED_ROWS: usize = 512;
 
 impl TextEngine {
     pub fn discover() -> Result<Self> {
@@ -293,6 +303,8 @@ impl TextEngine {
             glyph_ids: HashMap::new(),
             glyphs: HashMap::new(),
             next_glyph_id: 1,
+            shaped_rows: HashMap::new(),
+            shaped_row_count: 0,
             scale_context: ScaleContext::new(),
             metrics: TextMetrics::default(),
             raster_scale: RASTER_SCALE,
@@ -377,6 +389,8 @@ impl TextEngine {
             glyph_ids: HashMap::new(),
             glyphs: HashMap::new(),
             next_glyph_id: 1,
+            shaped_rows: HashMap::new(),
+            shaped_row_count: 0,
             scale_context: ScaleContext::new(),
             metrics,
             raster_scale,
@@ -412,6 +426,18 @@ impl TextEngine {
     }
 
     pub fn shape_styled_row(&mut self, text: &str, spans: &[StyleSpan]) -> Result<ShapedRow> {
+        let cache_key = shaped_row_hash(text, spans);
+        if let Some(shaped) = self
+            .shaped_rows
+            .get(&cache_key)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.text == text && row.spans == spans)
+            })
+            .map(|row| row.shaped.clone())
+        {
+            return Ok(shaped);
+        }
         let graphemes = self.resolve_graphemes(text, spans)?;
         let mut output = ShapedRow::default();
         let mut used_definitions = HashSet::new();
@@ -442,6 +468,19 @@ impl TextEngine {
             .into_iter()
             .filter_map(|id| self.glyphs.get(&id).cloned())
             .collect();
+        if self.shaped_row_count >= MAX_CACHED_SHAPED_ROWS {
+            self.shaped_rows.clear();
+            self.shaped_row_count = 0;
+        }
+        self.shaped_rows
+            .entry(cache_key)
+            .or_default()
+            .push(CachedShapedRow {
+                text: text.to_owned(),
+                spans: spans.to_vec(),
+                shaped: output.clone(),
+            });
+        self.shaped_row_count += 1;
         Ok(output)
     }
 
@@ -676,6 +715,8 @@ impl TextEngine {
         if self.glyph_ids.len() >= MAX_CACHED_GLYPHS {
             self.glyph_ids.clear();
             self.glyphs.clear();
+            self.shaped_rows.clear();
+            self.shaped_row_count = 0;
         }
         if glyph_index > u16::MAX as u32 {
             bail!("glyph index exceeds OpenType range");
@@ -782,6 +823,13 @@ fn is_emoji(character: char) -> bool {
 
 fn style_id(style: FontStyle) -> u32 {
     u32::from(style.bold) | (u32::from(style.italic) << 1)
+}
+
+fn shaped_row_hash(text: &str, spans: &[StyleSpan]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    spans.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -966,5 +1014,23 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].x <= pair[1].x + CELL_WIDTH_PX)
         );
+    }
+
+    #[test]
+    fn repeated_rows_share_a_bounded_shape_cache() {
+        let mut engine = TextEngine::discover().unwrap();
+        let spans = [StyleSpan {
+            byte_start: 0,
+            byte_end: 6,
+            style: FontStyle::default(),
+        }];
+        engine.shape_styled_row("cached", &spans).unwrap();
+        assert_eq!(engine.shaped_row_count, 1);
+
+        engine.shape_styled_row("cached", &spans).unwrap();
+        assert_eq!(engine.shaped_row_count, 1);
+
+        engine.shape_row("different", FontStyle::default()).unwrap();
+        assert_eq!(engine.shaped_row_count, 2);
     }
 }
