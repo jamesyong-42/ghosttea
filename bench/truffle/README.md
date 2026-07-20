@@ -113,7 +113,9 @@ npm run bench:truffle -- \
   fanout, apply includes time waiting for the shared text-engine mutex and can
   exceed wall time; process user/system CPU are the actual CPU counters.
 - text-engine wait and hold split shared-lock contention from shaping work;
-  replica non-engine time is the remainder of apply after both.
+  row preparation and TRF1 encode split the largest parts of the remaining
+  work. Replica non-engine time is the full remainder of apply after engine
+  wait and hold, so it includes both attributed values.
 - enqueue-to-apply latency includes time waiting behind earlier messages in
   the burst; p95/p99 reveal queue buildup rather than interactive RTT.
 - wire throughput is aggregate bytes per wall second across receivers;

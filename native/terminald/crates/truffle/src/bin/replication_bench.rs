@@ -143,6 +143,8 @@ struct Sample {
     replica_apply_ms: f64,
     text_engine_wait_ms: f64,
     text_engine_hold_ms: f64,
+    replica_row_prepare_ms: f64,
+    trf1_encode_ms: f64,
     replica_other_ms: f64,
     wire_bytes: u64,
     source_wire_bytes: u64,
@@ -186,6 +188,8 @@ struct ReceiverResult {
     apply: Duration,
     text_engine_wait: Duration,
     text_engine_hold: Duration,
+    row_prepare: Duration,
+    frame_encode: Duration,
     messages: usize,
     snapshots: usize,
     patches: usize,
@@ -514,6 +518,8 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
         apply: Duration::ZERO,
         text_engine_wait: Duration::ZERO,
         text_engine_hold: Duration::ZERO,
+        row_prepare: Duration::ZERO,
+        frame_encode: Duration::ZERO,
         messages: 0,
         snapshots: 0,
         patches: 0,
@@ -560,6 +566,9 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
             let performance = replica.as_ref().unwrap().text_engine_performance();
             result.text_engine_wait += Duration::from_nanos(performance.wait_nanoseconds);
             result.text_engine_hold += Duration::from_nanos(performance.hold_nanoseconds);
+            let performance = replica.as_ref().unwrap().render_performance();
+            result.row_prepare += Duration::from_nanos(performance.row_prepare_nanoseconds);
+            result.frame_encode += Duration::from_nanos(performance.frame_encode_nanoseconds);
         }
         if let Some(frames) = frames.as_mut() {
             let frame = frames
@@ -680,6 +689,8 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
     let mut replica_apply = Duration::ZERO;
     let mut text_engine_wait = Duration::ZERO;
     let mut text_engine_hold = Duration::ZERO;
+    let mut row_prepare = Duration::ZERO;
+    let mut frame_encode = Duration::ZERO;
     let mut messages_received = 0;
     let mut snapshots = 0;
     let mut patches = 0;
@@ -696,6 +707,8 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
         replica_apply += result.apply;
         text_engine_wait += result.text_engine_wait;
         text_engine_hold += result.text_engine_hold;
+        row_prepare += result.row_prepare;
+        frame_encode += result.frame_encode;
         messages_received += result.messages;
         snapshots += result.snapshots;
         patches += result.patches;
@@ -716,6 +729,8 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
         replica_apply_ms: milliseconds(replica_apply),
         text_engine_wait_ms: milliseconds(text_engine_wait),
         text_engine_hold_ms: milliseconds(text_engine_hold),
+        replica_row_prepare_ms: milliseconds(row_prepare),
+        trf1_encode_ms: milliseconds(frame_encode),
         replica_other_ms: milliseconds(replica_other),
         wire_bytes,
         source_wire_bytes,

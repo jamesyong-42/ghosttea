@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
 use ghosttea_core::{
-    LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot, TerminalEffect,
-    TerminalRuntime, TerminalUpdate, TextEnginePerformanceSnapshot,
+    LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
+    ReplicaRenderPerformanceSnapshot, TerminalEffect, TerminalRuntime, TerminalUpdate,
+    TextEnginePerformanceSnapshot,
 };
 use ghosttea_text::TextEngine;
 use tokio::sync::broadcast;
@@ -88,6 +89,10 @@ impl RemoteReplica {
 
     pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
         self.model.lock().unwrap().text_engine_performance()
+    }
+
+    pub fn render_performance(&self) -> ReplicaRenderPerformanceSnapshot {
+        self.model.lock().unwrap().render_performance()
     }
 
     fn update_summary(&self, snapshot: Option<&LogicalTerminalSnapshot>) {

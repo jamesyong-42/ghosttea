@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -23,6 +23,13 @@ struct ReplicaRenderCache {
     sent_glyphs: HashSet<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplicaRenderPerformanceSnapshot {
+    pub sequence: u64,
+    pub row_prepare_nanoseconds: u64,
+    pub frame_encode_nanoseconds: u64,
+}
+
 /// Reconstructs and renders logical terminal state received from another host.
 pub struct LogicalReplicaModel {
     runtime: Arc<TerminalRuntime>,
@@ -32,6 +39,7 @@ pub struct LogicalReplicaModel {
     patch_sequence: u64,
     render_cache: ReplicaRenderCache,
     text_engine_performance: TextEnginePerformanceSnapshot,
+    render_performance: ReplicaRenderPerformanceSnapshot,
 }
 
 impl LogicalReplicaModel {
@@ -44,6 +52,7 @@ impl LogicalReplicaModel {
             patch_sequence: 0,
             render_cache: ReplicaRenderCache::default(),
             text_engine_performance: TextEnginePerformanceSnapshot::default(),
+            render_performance: ReplicaRenderPerformanceSnapshot::default(),
         }
     }
 
@@ -53,6 +62,10 @@ impl LogicalReplicaModel {
 
     pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
         self.text_engine_performance
+    }
+
+    pub fn render_performance(&self) -> ReplicaRenderPerformanceSnapshot {
+        self.render_performance
     }
 
     pub fn publish(&mut self, snapshot: LogicalTerminalSnapshot) -> Result<TerminalUpdate> {
@@ -179,6 +192,7 @@ impl LogicalReplicaModel {
             );
         }
 
+        let prepare_started = Instant::now();
         let mut prepared = Vec::with_capacity(updated_rows.len());
         for row_index in updated_rows.iter().copied() {
             let logical = snapshot
@@ -190,6 +204,7 @@ impl LogicalReplicaModel {
                 || !shape_spans_match(logical, &cache.shape_spans[index]);
             prepared.push(prepare_logical_row(index, logical, needs_shape));
         }
+        let mut prepare_duration = prepare_started.elapsed();
 
         let mut shaped_updates = Vec::new();
         if prepared.iter().any(|row| row.shape_spans.is_some()) {
@@ -218,6 +233,7 @@ impl LogicalReplicaModel {
             self.text_engine_performance.record_no_acquisition();
         }
 
+        let cache_started = Instant::now();
         for row in prepared {
             cache.rows[row.index] = row.text;
             cache.cells[row.index] = row.cells;
@@ -239,6 +255,7 @@ impl LogicalReplicaModel {
                 }
             }
         }
+        prepare_duration += cache_started.elapsed();
 
         self.frame_sequence = self.frame_sequence.saturating_add(1);
         let definitions = definitions.into_values().collect::<Vec<_>>();
@@ -254,7 +271,8 @@ impl LogicalReplicaModel {
             offset: snapshot.scrollbar.offset,
             len: snapshot.scrollbar.len,
         };
-        encode_text_snapshot(TextSnapshot {
+        let encode_started = Instant::now();
+        let frame = encode_text_snapshot(TextSnapshot {
             session_handle: self.session_handle,
             session_epoch: snapshot.session_epoch,
             layout_epoch: snapshot.layout_epoch,
@@ -271,8 +289,17 @@ impl LogicalReplicaModel {
             new_glyph_definitions: &definitions,
             clipboard: None,
             cursor: &cursor,
-        })
+        });
+        self.render_performance.sequence = self.render_performance.sequence.saturating_add(1);
+        self.render_performance.row_prepare_nanoseconds = duration_nanoseconds(prepare_duration);
+        self.render_performance.frame_encode_nanoseconds =
+            duration_nanoseconds(encode_started.elapsed());
+        frame
     }
+}
+
+fn duration_nanoseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 struct PreparedReplicaRow {

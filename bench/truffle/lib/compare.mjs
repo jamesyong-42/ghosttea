@@ -52,6 +52,20 @@ export const METRICS = [
     select: (sample) => sample.replicaOtherMs,
   },
   {
+    key: "replicaRowPrepareMs",
+    label: "replica row preparation",
+    unit: "ms",
+    direction: "lower",
+    select: (sample) => sample.replicaRowPrepareMs,
+  },
+  {
+    key: "trf1EncodeMs",
+    label: "TRF1 encode",
+    unit: "ms",
+    direction: "lower",
+    select: (sample) => sample.trf1EncodeMs,
+  },
+  {
     key: "latencyP50Ms",
     label: "enqueue→apply p50",
     unit: "ms",

@@ -12,6 +12,8 @@ function report(values, overrides = {}) {
     textEngineWaitMs: wallMs / 20,
     textEngineHoldMs: wallMs / 3,
     replicaOtherMs: wallMs / 8,
+    replicaRowPrepareMs: wallMs / 20,
+    trf1EncodeMs: wallMs / 12,
     latency: { p50Ms: wallMs / 4, p95Ms: wallMs / 3, p99Ms: wallMs / 2 },
     throughputMibPerSecond: 1_000 / wallMs,
     userCpuMs: wallMs / 2,

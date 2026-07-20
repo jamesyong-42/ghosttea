@@ -20,4 +20,4 @@ pub use model::{
     RenderRequest, TerminalModel, TerminalModelOptions, TerminalRuntime,
     TextEnginePerformanceSnapshot,
 };
-pub use replica::LogicalReplicaModel;
+pub use replica::{LogicalReplicaModel, ReplicaRenderPerformanceSnapshot};
