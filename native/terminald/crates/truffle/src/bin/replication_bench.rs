@@ -17,7 +17,7 @@ use ghosttea::tunnel_protocol::{
 use ghosttea::{RemoteReplica, TextEngine};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::sync::broadcast;
+use tokio::sync::{Barrier, broadcast};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -183,6 +183,13 @@ struct ReceiverResult {
     trf1_bytes: u64,
     latencies_ms: Vec<f64>,
     checksum: u64,
+}
+
+struct ProducerResult {
+    encode: Duration,
+    write: Duration,
+    wire_bytes: u64,
+    messages: usize,
 }
 
 #[derive(Clone)]
@@ -507,19 +514,54 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
     Ok(result)
 }
 
+async fn send(
+    mut stream: DuplexStream,
+    messages: Arc<Vec<StateMessage>>,
+    sent_at_ns: Arc<Vec<AtomicU64>>,
+    started: Instant,
+    transport: Transport,
+    start_barrier: Arc<Barrier>,
+) -> Result<ProducerResult> {
+    let mut result = ProducerResult {
+        encode: Duration::ZERO,
+        write: Duration::ZERO,
+        wire_bytes: 0,
+        messages: 0,
+    };
+    start_barrier.wait().await;
+    for (index, message) in messages.iter().enumerate() {
+        sent_at_ns[index].store(started.elapsed().as_nanos() as u64, Ordering::Release);
+        let encode_started = Instant::now();
+        let encoded = match transport {
+            Transport::QuicProtocolLoopback => encode_message(message, MAX_STATE_MESSAGE_BYTES)?,
+            Transport::CompactLoopback => {
+                encode_compact_message(CompactChannel::State, message, MAX_STATE_MESSAGE_BYTES)?
+            }
+        };
+        result.encode += encode_started.elapsed();
+        result.wire_bytes += encoded.len() as u64;
+        let write_started = Instant::now();
+        stream.write_all(&encoded).await?;
+        result.write += write_started.elapsed();
+        result.messages += 1;
+    }
+    stream.shutdown().await?;
+    Ok(result)
+}
+
 async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -> Result<Sample> {
-    let messages = messages(options);
-    let sent_at_ns = Arc::new(
-        (0..messages.len())
-            .map(|_| AtomicU64::new(0))
-            .collect::<Vec<_>>(),
-    );
-    let mut writers = Vec::with_capacity(options.fanout);
+    let messages = Arc::new(messages(options));
+    let start_barrier = Arc::new(Barrier::new(options.fanout + 1));
+    let mut producers = Vec::with_capacity(options.fanout);
     let mut receivers = Vec::with_capacity(options.fanout);
     let started = Instant::now();
     for _ in 0..options.fanout {
         let (writer, reader) = tokio::io::duplex(options.duplex_bytes);
-        writers.push(writer);
+        let sent_at_ns = Arc::new(
+            (0..messages.len())
+                .map(|_| AtomicU64::new(0))
+                .collect::<Vec<_>>(),
+        );
         receivers.push(tokio::spawn(receive(
             reader,
             ReceiverConfig {
@@ -532,38 +574,34 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
                 transport: options.transport,
             },
         )));
+        producers.push(tokio::spawn(send(
+            writer,
+            Arc::clone(&messages),
+            sent_at_ns,
+            started,
+            options.transport,
+            Arc::clone(&start_barrier),
+        )));
     }
     let resources_before = resource_usage();
+    start_barrier.wait().await;
     let mut encode = Duration::ZERO;
     let mut write = Duration::ZERO;
     let mut wire_bytes = 0_u64;
     let mut source_wire_bytes = 0_u64;
-    for (index, message) in messages.iter().enumerate() {
-        sent_at_ns[index].store(started.elapsed().as_nanos() as u64, Ordering::Release);
-        for (client, writer) in writers.iter_mut().enumerate() {
-            let encode_started = Instant::now();
-            let encoded = match options.transport {
-                Transport::QuicProtocolLoopback => {
-                    encode_message(message, MAX_STATE_MESSAGE_BYTES)?
-                }
-                Transport::CompactLoopback => {
-                    encode_compact_message(CompactChannel::State, message, MAX_STATE_MESSAGE_BYTES)?
-                }
-            };
-            encode += encode_started.elapsed();
-            if client == 0 {
-                source_wire_bytes += encoded.len() as u64;
-            }
-            wire_bytes += encoded.len() as u64;
-            let write_started = Instant::now();
-            writer.write_all(&encoded).await?;
-            write += write_started.elapsed();
+    let mut messages_sent = 0;
+    for (client, producer) in producers.into_iter().enumerate() {
+        let result = producer
+            .await
+            .context("replication producer task failed")??;
+        encode += result.encode;
+        write += result.write;
+        wire_bytes += result.wire_bytes;
+        messages_sent += result.messages;
+        if client == 0 {
+            source_wire_bytes = result.wire_bytes;
         }
     }
-    for writer in &mut writers {
-        writer.shutdown().await?;
-    }
-    drop(writers);
 
     let mut receiver_decode = Duration::ZERO;
     let mut replica_apply = Duration::ZERO;
@@ -600,7 +638,7 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
         replica_apply_ms: milliseconds(replica_apply),
         wire_bytes,
         source_wire_bytes,
-        messages_sent: messages.len() * options.fanout,
+        messages_sent,
         messages_received,
         snapshots,
         patches,
