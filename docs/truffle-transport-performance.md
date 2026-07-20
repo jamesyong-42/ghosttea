@@ -247,3 +247,48 @@ Across all retained Truffle changes, truecolor replica wall time is now 59.41
 ms versus the original 308.67 ms baseline (-80.8%), with p99 down from 20.56 to
 5.55 ms (-73.0%) and user CPU down from 307.70 to 58.56 ms (-81.0%). Workspace
 tests, workspace Clippy, and the benchmark harness tests pass.
+
+## Retained optimization: bounded shared row-shape cache
+
+Several replicas use the same shared `TextEngine`, but previously each pane
+ran HarfBuzz independently for identical row text and bold/italic spans. The
+engine now keeps an exact-key cache of at most 128 shaped rows. Cache lookup
+uses a hash bucket followed by full text-and-span equality, so a hash collision
+cannot return the wrong shape. The cache is invalidated with the glyph catalog.
+
+The first candidate admitted every shaped row. Although it cut four-view dense
+wall time about 67%, it regressed single-view dense wall time 3.8% and raised
+peak RSS 19-33%. That version was not retained. The final policy first records
+only a bounded hash candidate and admits the full row after its second
+observation. One-off terminal output therefore does not retain row text or a
+`ShapedRow`; repeated rows shared by panes do. Candidate hashes are capped at
+1,024 and the exact cache at 128 entries.
+
+A clean 15-repetition comparison used the pre-cache commit (`e7aa363`) and the
+final 128-entry candidate (`1dbc2d1`):
+
+| Metric           | `dense-replica-4` before → after |  Delta |
+| ---------------- | -------------------------------: | -----: |
+| Wall             |              1632.75 → 923.34 ms | -43.4% |
+| Replica apply    |             6443.93 → 3660.59 ms | -43.2% |
+| Engine lock wait |             4805.79 → 2732.60 ms | -43.1% |
+| Engine hold      |              1630.18 → 920.44 ms | -43.5% |
+| Queue p99        |               684.49 → 402.42 ms | -41.2% |
+| User CPU         |              1629.41 → 921.84 ms | -43.4% |
+
+Single-view dense wall and CPU changed -0.5% and -0.2%; resync changed -0.4%
+for both, all below the practical threshold. Truecolor receives a smaller
+steady-state benefit: wall falls another 4.8%, apply 7.7%, p99 32.1%, and user
+CPU 4.3%. Source bytes, TRF1 bytes, message counts, and checksums remain
+unchanged.
+
+Peak RSS in the four-view case rises from 14.52 to 17.86 MB (+3.34 MB, 23.0%).
+Single-view dense rises about 0.49 MB; resync and truecolor are neutral. The
+cache is deliberately small and bounded, but this memory-for-CPU tradeoff must
+remain in the multi-pane memory guardrails.
+
+Against the original baseline, the retained stack now reduces
+`dense-replica-4` wall time from 1647.06 to 923.34 ms (-43.9%) and user CPU from
+1646.25 to 921.84 ms (-44.0%). `truecolor-replica-1` reaches 57.02 ms wall
+(-81.5% from 308.67 ms), 3.98 ms p99 (-80.6% from 20.56 ms), and 56.53 ms user
+CPU (-81.6% from 307.70 ms).
