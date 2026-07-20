@@ -67,41 +67,54 @@ impl LogicalReplicaModel {
         Ok([TerminalEffect::FrameReady(frame)].into_iter().collect())
     }
 
-    pub fn publish_patch(&mut self, patch: LogicalTerminalPatch) -> Result<TerminalUpdate> {
+    pub fn publish_patch(&mut self, mut patch: LogicalTerminalPatch) -> Result<TerminalUpdate> {
         let expected_sequence = self.patch_sequence.saturating_add(1);
         ensure!(
             patch.patch_sequence == expected_sequence,
             "remote terminal patch sequence gap"
         );
-        let mut snapshot = self
+        let current = self
             .latest
-            .clone()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("remote terminal patch arrived before a snapshot"))?;
         ensure!(
-            patch.session_epoch == snapshot.session_epoch,
+            patch.session_epoch == current.session_epoch,
             "remote terminal session epoch changed"
         );
         ensure!(
-            patch.layout_epoch == snapshot.layout_epoch,
+            patch.layout_epoch == current.layout_epoch,
             "remote terminal layout epoch changed"
         );
         ensure!(
-            patch.terminal_revision > snapshot.terminal_revision,
+            patch.terminal_revision > current.terminal_revision,
             "stale remote terminal patch"
         );
-
-        let mut updated_rows = Vec::with_capacity(patch.row_replacements.len());
-        for replacement in patch.row_replacements {
+        for replacement in &patch.row_replacements {
             ensure!(
                 replacement.row_revision == patch.terminal_revision,
                 "remote terminal row revision does not match its patch"
             );
-            let row = snapshot
-                .rows
-                .get_mut(replacement.row_index as usize)
-                .context("remote terminal patch row is outside the snapshot")?;
-            *row = replacement.row;
-            updated_rows.push(replacement.row_index);
+            ensure!(
+                current.rows.get(replacement.row_index as usize).is_some(),
+                "remote terminal patch row is outside the snapshot"
+            );
+        }
+
+        let mut snapshot = self.latest.take().unwrap();
+        let previous_revision = snapshot.terminal_revision;
+        let previous_cursor = snapshot.cursor;
+        let previous_mouse_tracking = snapshot.mouse_tracking;
+        let previous_scrollbar = snapshot.scrollbar;
+        let updated_rows = patch
+            .row_replacements
+            .iter()
+            .map(|replacement| replacement.row_index)
+            .collect::<Vec<_>>();
+        for replacement in &mut patch.row_replacements {
+            std::mem::swap(
+                &mut snapshot.rows[replacement.row_index as usize],
+                &mut replacement.row,
+            );
         }
         if let Some(cursor) = patch.cursor {
             snapshot.cursor = cursor;
@@ -114,10 +127,27 @@ impl LogicalReplicaModel {
         }
         snapshot.terminal_revision = patch.terminal_revision;
 
-        let frame = self.render(&snapshot, &updated_rows, false)?;
-        self.latest = Some(snapshot);
-        self.patch_sequence = patch.patch_sequence;
-        Ok([TerminalEffect::FrameReady(frame)].into_iter().collect())
+        match self.render(&snapshot, &updated_rows, false) {
+            Ok(frame) => {
+                self.latest = Some(snapshot);
+                self.patch_sequence = patch.patch_sequence;
+                Ok([TerminalEffect::FrameReady(frame)].into_iter().collect())
+            }
+            Err(error) => {
+                for replacement in patch.row_replacements.iter_mut().rev() {
+                    std::mem::swap(
+                        &mut snapshot.rows[replacement.row_index as usize],
+                        &mut replacement.row,
+                    );
+                }
+                snapshot.terminal_revision = previous_revision;
+                snapshot.cursor = previous_cursor;
+                snapshot.mouse_tracking = previous_mouse_tracking;
+                snapshot.scrollbar = previous_scrollbar;
+                self.latest = Some(snapshot);
+                Err(error)
+            }
+        }
     }
 
     pub fn refresh(&mut self) -> Result<TerminalUpdate> {
@@ -367,5 +397,42 @@ mod tests {
 
         assert!(replica.publish_patch(patch).is_err());
         assert_eq!(replica.latest().unwrap().terminal_revision, 11);
+    }
+
+    #[test]
+    fn validates_every_replacement_before_mutating_state() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut replica = LogicalReplicaModel::new(runtime, 42);
+        replica.publish(snapshot("hello")).unwrap();
+        let replacement = |row_index| RowReplacement {
+            row_index,
+            row_revision: 12,
+            row: LogicalRow {
+                text: "world".into(),
+                cells: vec![],
+            },
+        };
+        let patch = |row_replacements| LogicalTerminalPatch {
+            session_epoch: 7,
+            layout_epoch: 3,
+            patch_sequence: 1,
+            terminal_revision: 12,
+            row_replacements,
+            cursor: None,
+            mouse_tracking: None,
+            scrollbar: None,
+        };
+
+        assert!(
+            replica
+                .publish_patch(patch(vec![replacement(0), replacement(1)]))
+                .is_err()
+        );
+        assert_eq!(replica.latest().unwrap().terminal_revision, 11);
+        assert_eq!(replica.latest().unwrap().rows[0].text, "hello");
+
+        replica.publish_patch(patch(vec![replacement(0)])).unwrap();
+        assert_eq!(replica.latest().unwrap().terminal_revision, 12);
+        assert_eq!(replica.latest().unwrap().rows[0].text, "world");
     }
 }
