@@ -1479,9 +1479,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     };
   }
 
-  #encodeRenderDynamic(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
+  #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
+    if (surface.sceneValid && view.damage && !view.damage.full && !view.damage.geometryChanged) {
+      return this.#encodeCachedRender(id, view, encoder);
+    }
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
     const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
     const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;
@@ -1914,12 +1917,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     };
   }
 
-  #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
+  #encodeCachedRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    if (!surface.sceneValid || !view.damage || view.damage.full || view.damage.geometryChanged) {
-      return this.#encodeRenderDynamic(id, view, encoder);
-    }
     const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
     const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
