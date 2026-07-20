@@ -121,3 +121,36 @@ allocations; it remains a coarse lifetime high-water mark, not evidence of a
 memory regression or win. Workspace tests, Truffle harness tests, and Clippy
 passed after the change, including a regression test that proves an invalid
 late row replacement cannot partially mutate replica state.
+
+## Retained optimization: reusable contiguous protocol buffers
+
+The next receive-side change preserves the JSON and framing contract but
+removes two copies per message. Previously both production readers and the
+benchmark accumulated bytes in a `VecDeque`, drained each payload into a new
+allocation, copied the header and payload into another allocation, and only
+then called the decoder. They now retain one contiguous buffer plus an unread
+offset and decode directly from that slice. An incoming QUIC allocation is
+adopted when the buffer is empty; otherwise only the small unread tail is
+compacted before appending another chunk. The compact Apple stream uses the
+same reusable-buffer policy without changing its channel framing.
+
+In an adjacent 15-repetition comparison, truecolor decode fell from 205.30 ms
+to 169.90 ms (-17.2%, bootstrap 95% interval -17.8% to -16.3%). Wall time fell
+17.1%, enqueue-to-apply p99 improved 20.7%, process user CPU fell 16.5%, and
+throughput increased 20.7%. The smaller-message controls improved even more:
+sparse decode fell 25.2% and dense decode 25.9%, with wall time down 24.5% and
+25.5% respectively. All source wire bytes, TRF1 bytes, message counts, and
+revision checksums remained identical.
+
+Across the full matrix versus the original clean baseline, the retained clone
+and buffer changes reduce truecolor replica wall time from 308.67 ms to 269.14
+ms (-12.8%), decode work 16.7%, apply work 5.0%, p99 7.8%, and process user CPU
+13.2%. Dense and four-view replication remain shaping/apply-bound: their decode
+work improves 29.1% and 24.0%, but wall time changes by only 2.0% and 1.7%, both
+below the practical threshold. Sparse replica wall time is neutral; its short
+p99 remains scheduler-sensitive and is not used to claim a latency change.
+
+The truecolor wire still carries roughly 32 MB of owned per-cell JSON and now
+spends about 171 ms in read/decode work. A compact state representation remains
+the next transport target, but it must be explicitly versioned and negotiated
+rather than silently changing the existing desktop and Apple protocol.
