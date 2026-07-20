@@ -141,6 +141,9 @@ struct Sample {
     producer_write_ms: f64,
     receiver_decode_ms: f64,
     replica_apply_ms: f64,
+    text_engine_wait_ms: f64,
+    text_engine_hold_ms: f64,
+    replica_other_ms: f64,
     wire_bytes: u64,
     source_wire_bytes: u64,
     messages_sent: usize,
@@ -181,6 +184,8 @@ struct Report<'a> {
 struct ReceiverResult {
     decode: Duration,
     apply: Duration,
+    text_engine_wait: Duration,
+    text_engine_hold: Duration,
     messages: usize,
     snapshots: usize,
     patches: usize,
@@ -507,6 +512,8 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
     let mut result = ReceiverResult {
         decode: Duration::ZERO,
         apply: Duration::ZERO,
+        text_engine_wait: Duration::ZERO,
+        text_engine_hold: Duration::ZERO,
         messages: 0,
         snapshots: 0,
         patches: 0,
@@ -524,6 +531,7 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
             .context("benchmark stream closed early")?;
         result.decode += decode_started.elapsed();
         let apply_started = Instant::now();
+        let mut rendered = false;
         let revision = match message {
             StateMessage::Snapshot(snapshot) => {
                 result.snapshots += 1;
@@ -531,6 +539,7 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
                 let revision = snapshot.terminal_revision;
                 if let Some(replica) = replica.as_ref() {
                     replica.publish(snapshot)?;
+                    rendered = true;
                 }
                 revision
             }
@@ -540,12 +549,18 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
                 let revision = patch.terminal_revision;
                 if let Some(replica) = replica.as_ref() {
                     replica.publish_patch(patch)?;
+                    rendered = true;
                 }
                 revision
             }
             StateMessage::ControlChanged { control_epoch, .. } => control_epoch,
         };
         result.apply += apply_started.elapsed();
+        if rendered {
+            let performance = replica.as_ref().unwrap().text_engine_performance();
+            result.text_engine_wait += Duration::from_nanos(performance.wait_nanoseconds);
+            result.text_engine_hold += Duration::from_nanos(performance.hold_nanoseconds);
+        }
         if let Some(frames) = frames.as_mut() {
             let frame = frames
                 .try_recv()
@@ -663,6 +678,8 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
 
     let mut receiver_decode = Duration::ZERO;
     let mut replica_apply = Duration::ZERO;
+    let mut text_engine_wait = Duration::ZERO;
+    let mut text_engine_hold = Duration::ZERO;
     let mut messages_received = 0;
     let mut snapshots = 0;
     let mut patches = 0;
@@ -677,6 +694,8 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
             .context("replication receiver task failed")??;
         receiver_decode += result.decode;
         replica_apply += result.apply;
+        text_engine_wait += result.text_engine_wait;
+        text_engine_hold += result.text_engine_hold;
         messages_received += result.messages;
         snapshots += result.snapshots;
         patches += result.patches;
@@ -688,12 +707,16 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
     }
     let wall = started.elapsed();
     let resources_after = resource_usage();
+    let replica_other = replica_apply.saturating_sub(text_engine_wait + text_engine_hold);
     Ok(Sample {
         wall_ms: milliseconds(wall),
         producer_encode_ms: milliseconds(encode),
         producer_write_ms: milliseconds(write),
         receiver_decode_ms: milliseconds(receiver_decode),
         replica_apply_ms: milliseconds(replica_apply),
+        text_engine_wait_ms: milliseconds(text_engine_wait),
+        text_engine_hold_ms: milliseconds(text_engine_hold),
+        replica_other_ms: milliseconds(replica_other),
         wire_bytes,
         source_wire_bytes,
         messages_sent,

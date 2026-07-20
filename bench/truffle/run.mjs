@@ -155,10 +155,11 @@ function printSummary(report) {
     const encode = median(samples.map((sample) => sample.producerEncodeMs));
     const decode = median(samples.map((sample) => sample.receiverDecodeMs));
     const apply = median(samples.map((sample) => sample.replicaApplyMs));
+    const shape = median(samples.map((sample) => sample.textEngineHoldMs));
     const p99 = median(samples.map((sample) => sample.latency.p99Ms));
     const throughput = median(samples.map((sample) => sample.throughputMibPerSecond));
     console.log(
-      `${name.padEnd(21)} wall ${wall.toFixed(2).padStart(9)} ms  encode ${encode.toFixed(2).padStart(8)}  decode ${decode.toFixed(2).padStart(8)}  apply ${apply.toFixed(2).padStart(8)}  p99 ${p99.toFixed(2).padStart(8)}  ${throughput.toFixed(1).padStart(8)} MiB/s`,
+      `${name.padEnd(21)} wall ${wall.toFixed(2).padStart(9)} ms  encode ${encode.toFixed(2).padStart(8)}  decode ${decode.toFixed(2).padStart(8)}  apply ${apply.toFixed(2).padStart(8)}  shape ${shape.toFixed(2).padStart(8)}  p99 ${p99.toFixed(2).padStart(8)}  ${throughput.toFixed(1).padStart(8)} MiB/s`,
     );
   }
 }

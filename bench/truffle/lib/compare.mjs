@@ -31,6 +31,27 @@ export const METRICS = [
     select: (sample) => sample.replicaApplyMs,
   },
   {
+    key: "textEngineWaitMs",
+    label: "text-engine lock wait",
+    unit: "ms",
+    direction: "lower",
+    select: (sample) => sample.textEngineWaitMs,
+  },
+  {
+    key: "textEngineHoldMs",
+    label: "text-engine shape hold",
+    unit: "ms",
+    direction: "lower",
+    select: (sample) => sample.textEngineHoldMs,
+  },
+  {
+    key: "replicaOtherMs",
+    label: "replica non-engine work",
+    unit: "ms",
+    direction: "lower",
+    select: (sample) => sample.replicaOtherMs,
+  },
+  {
     key: "latencyP50Ms",
     label: "enqueue→apply p50",
     unit: "ms",
