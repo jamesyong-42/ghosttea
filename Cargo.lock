@@ -719,6 +719,7 @@ dependencies = [
  "dotenvy",
  "ghosttea",
  "ghosttea-text",
+ "libc",
  "serde",
  "serde_json",
  "subtle",

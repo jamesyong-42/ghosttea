@@ -23,3 +23,4 @@ native/vendor/openssl/
 bench/results.json
 bench/results-*.json
 bench/render/results*.json
+bench/truffle/results*.json
