@@ -1216,7 +1216,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
     if (!this.#surfaces.has(id)) return;
     const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
-    const metrics = this.#encodeRender(id, view, encoder);
+    const metrics =
+      view.damage?.geometryChanged === false
+        ? this.#encodeCachedRender(id, view, encoder)
+        : this.#encodeRender(id, view, encoder);
     this.device.queue.submit([encoder.finish()]);
     if (metrics) metrics.queueSubmits = 1;
     return metrics;
@@ -1227,7 +1230,14 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (active.length === 0) return entries.map(() => undefined);
     const encoder = this.device.createCommandEncoder({ label: `terminal frame batch (${active.length} panes)` });
     const byId = new Map<string, TerminalRenderMetrics | undefined>();
-    for (const { id, view } of active) byId.set(id, this.#encodeRender(id, view, encoder));
+    for (const { id, view } of active) {
+      byId.set(
+        id,
+        view.damage?.geometryChanged === false
+          ? this.#encodeCachedRender(id, view, encoder)
+          : this.#encodeRender(id, view, encoder),
+      );
+    }
     this.device.queue.submit([encoder.finish()]);
     const firstMetrics = [...byId.values()].find((metrics) => metrics !== undefined);
     if (firstMetrics) firstMetrics.queueSubmits = 1;
@@ -1482,9 +1492,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    if (surface.sceneValid && view.damage && !view.damage.full && !view.damage.geometryChanged) {
-      return this.#encodeCachedRender(id, view, encoder);
-    }
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
     const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
     const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;
@@ -1920,6 +1927,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   #encodeCachedRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
+    if (!surface.sceneValid || !view.damage || view.damage.full) return this.#encodeRender(id, view, encoder);
     const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
     const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
@@ -1931,7 +1939,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const renderRowSet = new Set(damage.rows);
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
     let geometry: CachedGeometry;
-    let cacheHit = false;
     let geometryUploadBytes = 0;
     const generations = (): [number, number, number] => [
       this.#monoAtlas.generation,
@@ -1940,7 +1947,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     ];
     let key = geometryCacheKey(view, damage.rows, hasNativeRows, generations());
     const cached = surface.geometryCache.get(key);
-    cacheHit = cached !== undefined;
+    const cacheHit = cached !== undefined;
     if (cached) {
       geometry = cached;
       surface.geometryCache.delete(key);

@@ -9,7 +9,7 @@ import { sparseRowPayload, visualFixturePayload } from "../lib/payloads.mjs";
 test("sparse row payload emits one fixed-size cursor update per frame", () => {
   const payload = sparseRowPayload({ frames: 3, row: 10, width: 100 });
   assert.equal(payload.byteLength, 3 * 107);
-  assert.equal(payload.toString("utf8").match(/\u001b\[10;1H/g)?.length, 3);
+  assert.equal(payload.toString("utf8").split("\u001b[10;1H").length - 1, 3);
 });
 
 test("visual fixture preserves renderer features around sparse updates", () => {
@@ -17,7 +17,7 @@ test("visual fixture preserves renderer features around sparse updates", () => {
   assert.match(payload, /╭─+/);
   assert.match(payload, /░▒▓ █ ▄▀▐/);
   assert.match(payload, /日本語 e\u0301 😀/);
-  assert.equal(payload.match(/\u001b\[10;1H/g)?.length, 2);
+  assert.equal(payload.split("\u001b[10;1H").length - 1, 2);
 });
 
 test("paced workload waits for its gate and reproduces payload bytes exactly", async () => {
