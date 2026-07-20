@@ -3,6 +3,8 @@ export interface TerminalRenderMetrics {
   fullRenders: number;
   partialRenders: number;
   damagedRows: number;
+  geometryCacheHits: number;
+  geometryCacheMisses: number;
   canvasPixels: number;
   renderPasses: number;
   drawCalls: number;
@@ -41,6 +43,8 @@ export interface TerminalRenderPerformanceSnapshot {
     fullRenders: number;
     partialRenders: number;
     damagedRows: number;
+    geometryCacheHits: number;
+    geometryCacheMisses: number;
     canvasPixelFrames: number;
     renderPasses: number;
     drawCalls: number;
@@ -66,6 +70,8 @@ export function emptyRenderMetrics(): TerminalRenderMetrics {
     fullRenders: 0,
     partialRenders: 0,
     damagedRows: 0,
+    geometryCacheHits: 0,
+    geometryCacheMisses: 0,
     canvasPixels: 0,
     renderPasses: 0,
     drawCalls: 0,

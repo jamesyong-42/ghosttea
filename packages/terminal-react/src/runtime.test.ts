@@ -166,6 +166,8 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
         fullRenders: 1,
         partialRenders: 0,
         damagedRows: 24,
+        geometryCacheHits: 0,
+        geometryCacheMisses: 0,
         canvasPixelFrames: 100,
         renderPasses: 2,
         drawCalls: 2,

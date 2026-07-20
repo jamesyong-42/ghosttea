@@ -112,6 +112,8 @@ function beginPerformanceMeasurement(): void {
       fullRenders: 0,
       partialRenders: 0,
       damagedRows: 0,
+      geometryCacheHits: 0,
+      geometryCacheMisses: 0,
       canvasPixelFrames: 0,
       renderPasses: 0,
       drawCalls: 0,
@@ -139,6 +141,8 @@ function recordRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): vo
   target.fullRenders += metrics.fullRenders;
   target.partialRenders += metrics.partialRenders;
   target.damagedRows += metrics.damagedRows;
+  target.geometryCacheHits += metrics.geometryCacheHits;
+  target.geometryCacheMisses += metrics.geometryCacheMisses;
   target.canvasPixelFrames += metrics.canvasPixels;
   target.renderPasses += metrics.renderPasses;
   target.drawCalls += metrics.drawCalls;

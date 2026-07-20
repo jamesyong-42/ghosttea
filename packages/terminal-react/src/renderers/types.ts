@@ -32,8 +32,11 @@ export interface RenderView {
   rows: string[];
   nativeRows: GlyphInstance[][];
   nativeStyleRows: StyleRun[][];
+  rowRevisions: readonly bigint[];
   glyphDefinitions: Map<number, GlyphDefinition>;
   styleDefinitions: Map<number, StyleDefinition>;
+  sessionEpoch: bigint;
+  layoutEpoch: bigint;
   cursor: CursorState;
   focused: boolean;
   cursorBlinkVisible: boolean;
