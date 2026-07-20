@@ -88,3 +88,36 @@ Every candidate should be one committed change followed by the same full
 matrix and `npm run bench:truffle:compare`. A result remains inconclusive when
 the bootstrap interval crosses zero or the change is below the practical 3%
 threshold.
+
+## Retained optimization: clone-free replica patch state
+
+The first retained replica change removes two full logical-grid clones from
+the receive path. `LogicalReplicaModel::latest` now lends its snapshot when the
+desktop wrapper refreshes dimensions and metadata. Patch application validates
+every replacement before mutation, swaps owned replacement rows directly into
+the current snapshot, and keeps the displaced rows until rendering succeeds.
+If rendering fails, the swaps and scalar state are reversed before returning
+the error. Wire encoding, TRF1 output, message counts, and revision checksums
+are unchanged.
+
+A seven-repetition targeted comparison reduced median truecolor replica apply
+time from 105.64 ms to 98.74 ms (-6.5%, bootstrap 95% interval -7.9% to
+-2.5%). Enqueue-to-apply p50 improved 3.8%. Dense replica apply moved from
+816.64 ms to 806.82 ms (-1.2%, below the practical threshold), while its p99
+improved from 109.31 ms to 104.88 ms (-4.1%, supported).
+
+Because separate historical runs showed broad machine drift in decode-only
+controls, the truecolor target was also tested with pre-change and candidate
+release binaries back-to-back in both orders. Two 15-sample pairs measured
+100.99 ms versus 95.81 ms (-5.1%) and 100.51 ms versus 95.92 ms (-4.6%); all
+30 candidate apply samples were below all 30 baseline samples. End-to-end wall
+time improved only 1.4-2.2%, below the 3% practical threshold because JSON
+decode remains the larger cost.
+
+The historical resync baseline and one fresh baseline disagreed materially, so
+no resync improvement is claimed. Peak RSS also varied between fresh benchmark
+processes and moved adversely in one targeted comparison despite eliminating
+allocations; it remains a coarse lifetime high-water mark, not evidence of a
+memory regression or win. Workspace tests, Truffle harness tests, and Clippy
+passed after the change, including a regression test that proves an invalid
+late row replacement cannot partially mutate replica state.
