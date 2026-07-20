@@ -86,15 +86,21 @@ impl RemoteReplica {
         self.execute_update(update)
     }
 
-    fn update_summary(&self, snapshot: Option<LogicalTerminalSnapshot>) {
+    fn update_summary(&self, snapshot: Option<&LogicalTerminalSnapshot>) {
         let Some(snapshot) = snapshot else {
             return;
         };
         let mut summary = self.summary.lock().unwrap();
         summary.cols = snapshot.cols;
         summary.rows = snapshot.rows.len() as u16;
-        summary.title = snapshot.title.or_else(|| summary.title.clone());
-        summary.cwd = snapshot.cwd;
+        if let Some(title) = &snapshot.title {
+            if let Some(current) = &mut summary.title {
+                current.clone_from(title);
+            } else {
+                summary.title = Some(title.clone());
+            }
+        }
+        summary.cwd.clone_from(&snapshot.cwd);
     }
 
     fn execute_update(&self, update: TerminalUpdate) -> Result<()> {

@@ -46,8 +46,8 @@ impl LogicalReplicaModel {
         }
     }
 
-    pub fn latest(&self) -> Option<LogicalTerminalSnapshot> {
-        self.latest.clone()
+    pub fn latest(&self) -> Option<&LogicalTerminalSnapshot> {
+        self.latest.as_ref()
     }
 
     pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
