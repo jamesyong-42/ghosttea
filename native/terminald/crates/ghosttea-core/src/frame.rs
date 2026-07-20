@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use ghosttea_text::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
 use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub const FRAME_MAGIC: u32 = 0x3146_5254;
 pub const FRAME_HEADER_BYTES: usize = 64;
@@ -88,7 +88,9 @@ fn style_id(style: CellStyle) -> u32 {
     if hash == 0 { 1 } else { hash }
 }
 
-fn encode_style_definitions(styles: &[(u32, CellStyle)]) -> Vec<u8> {
+fn encode_style_definitions(
+    styles: impl ExactSizeIterator<Item = (u32, CellStyle)>,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4 + styles.len() * 16);
     bytes.extend_from_slice(&(styles.len() as u32).to_le_bytes());
     for (id, style) in styles {
@@ -112,24 +114,108 @@ fn encode_style_definitions(styles: &[(u32, CellStyle)]) -> Vec<u8> {
     bytes
 }
 
-struct PreparedRowStyles {
-    cell_ids: Vec<u32>,
-    column_ids: Vec<u32>,
+enum StyleDefinitions {
+    Ordered(BTreeMap<u32, CellStyle>),
+    Hashed(HashMap<u32, CellStyle>),
+}
+
+impl StyleDefinitions {
+    fn new(indexed: bool) -> Self {
+        if indexed {
+            let mut styles = HashMap::new();
+            styles.insert(0, CellStyle::default());
+            Self::Hashed(styles)
+        } else {
+            let mut styles = BTreeMap::new();
+            styles.insert(0, CellStyle::default());
+            Self::Ordered(styles)
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Ordered(styles) => styles.len(),
+            Self::Hashed(styles) => styles.len(),
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Ordered(styles) => {
+                encode_style_definitions(styles.iter().map(|(&id, &style)| (id, style)))
+            }
+            Self::Hashed(styles) => {
+                let mut sorted = styles
+                    .iter()
+                    .map(|(&id, &style)| (id, style))
+                    .collect::<Vec<_>>();
+                sorted.sort_unstable_by_key(|(id, _)| *id);
+                encode_style_definitions(sorted.into_iter())
+            }
+        }
+    }
+}
+
+enum PreparedRowStyles {
+    Linear,
+    Indexed {
+        cell_ids: Vec<u32>,
+        column_ids: Vec<u32>,
+    },
+}
+
+fn append_style_run(runs: &mut Vec<(u32, u16, u16)>, cell: &TerminalCell, id: u32) {
+    if id == 0 {
+        return;
+    }
+    if let Some((previous_id, start, span)) = runs.last_mut()
+        && *previous_id == id
+        && start.saturating_add(*span) == cell.column
+    {
+        *span = span.saturating_add(cell.span);
+        return;
+    }
+    runs.push((id, cell.column, cell.span));
 }
 
 fn prepare_row_styles(
     cells: &[TerminalCell],
     shaped: &ShapedRow,
-    styles: &mut HashMap<u32, CellStyle>,
+    styles: &mut StyleDefinitions,
 ) -> PreparedRowStyles {
-    let cell_ids = cells
-        .iter()
-        .map(|cell| {
-            let id = style_id(cell.style);
-            styles.entry(id).or_insert(cell.style);
-            id
-        })
-        .collect::<Vec<_>>();
+    if cells.len() < 8 {
+        match styles {
+            StyleDefinitions::Ordered(styles) => {
+                for cell in cells {
+                    styles.entry(style_id(cell.style)).or_insert(cell.style);
+                }
+            }
+            StyleDefinitions::Hashed(styles) => {
+                for cell in cells {
+                    styles.entry(style_id(cell.style)).or_insert(cell.style);
+                }
+            }
+        }
+        return PreparedRowStyles::Linear;
+    }
+    let cell_ids = match styles {
+        StyleDefinitions::Ordered(styles) => cells
+            .iter()
+            .map(|cell| {
+                let id = style_id(cell.style);
+                styles.entry(id).or_insert(cell.style);
+                id
+            })
+            .collect::<Vec<_>>(),
+        StyleDefinitions::Hashed(styles) => cells
+            .iter()
+            .map(|cell| {
+                let id = style_id(cell.style);
+                styles.entry(id).or_insert(cell.style);
+                id
+            })
+            .collect::<Vec<_>>(),
+    };
     let column_count = shaped
         .glyphs
         .iter()
@@ -144,7 +230,7 @@ fn prepare_row_styles(
         let end = (cell.column.saturating_add(cell.span) as usize).min(column_ids.len());
         column_ids[start..end].fill(*id);
     }
-    PreparedRowStyles {
+    PreparedRowStyles::Indexed {
         cell_ids,
         column_ids,
     }
@@ -205,8 +291,10 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     if rows.len() != shaped_rows.len() || rows.len() != cells.len() {
         bail!("text, shaped, and styled row counts differ");
     }
-    let mut styles = HashMap::new();
-    styles.insert(0, CellStyle::default());
+    let indexed_styles = updated_rows
+        .iter()
+        .any(|row| cells[*row as usize].len() >= 8);
+    let mut styles = StyleDefinitions::new(indexed_styles);
     let prepared_styles = updated_rows
         .iter()
         .map(|row| {
@@ -214,10 +302,8 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
             prepare_row_styles(&cells[index], &shaped_rows[index], &mut styles)
         })
         .collect::<Vec<_>>();
-    let mut sorted_styles = styles.iter().map(|(&id, &style)| (id, style)).collect::<Vec<_>>();
-    sorted_styles.sort_unstable_by_key(|(id, _)| *id);
     let (glyph_definitions, glyph_count) = encode_glyph_definitions(new_glyph_definitions)?;
-    let style_definitions = encode_style_definitions(&sorted_styles);
+    let style_definitions = styles.encode();
     let mut accessibility = Vec::new();
     accessibility.extend_from_slice(&(updated_rows.len() as u16).to_le_bytes());
     let mut replacements = Vec::new();
@@ -240,29 +326,43 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         replacements.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         replacements.extend_from_slice(&(shaped.glyphs.len() as u16).to_le_bytes());
         let mut runs: Vec<(u32, u16, u16)> = Vec::new();
-        for (cell, id) in row_cells.iter().zip(&row_styles.cell_ids) {
-            let id = *id;
-            if id == 0 {
-                continue;
+        match row_styles {
+            PreparedRowStyles::Linear => {
+                for cell in row_cells {
+                    append_style_run(&mut runs, cell, style_id(cell.style));
+                }
             }
-            if let Some((previous_id, start, span)) = runs.last_mut()
-                && *previous_id == id
-                && start.saturating_add(*span) == cell.column
-            {
-                *span = span.saturating_add(cell.span);
-                continue;
+            PreparedRowStyles::Indexed { cell_ids, .. } => {
+                for (cell, id) in row_cells.iter().zip(cell_ids) {
+                    append_style_run(&mut runs, cell, *id);
+                }
             }
-            runs.push((id, cell.column, cell.span));
         }
         replacements.extend_from_slice(&(runs.len() as u16).to_le_bytes());
         replacements.extend_from_slice(bytes);
-        for glyph in &shaped.glyphs {
-            let style_id = row_styles
-                .column_ids
-                .get(glyph.cell_start as usize)
-                .copied()
-                .unwrap_or(0);
-            encode_glyph_instance(&mut replacements, glyph, style_id);
+        match row_styles {
+            PreparedRowStyles::Linear => {
+                for glyph in &shaped.glyphs {
+                    let id = row_cells
+                        .iter()
+                        .find(|cell| {
+                            glyph.cell_start >= cell.column
+                                && glyph.cell_start < cell.column.saturating_add(cell.span)
+                        })
+                        .map(|cell| style_id(cell.style))
+                        .unwrap_or(0);
+                    encode_glyph_instance(&mut replacements, glyph, id);
+                }
+            }
+            PreparedRowStyles::Indexed { column_ids, .. } => {
+                for glyph in &shaped.glyphs {
+                    let id = column_ids
+                        .get(glyph.cell_start as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    encode_glyph_instance(&mut replacements, glyph, id);
+                }
+            }
         }
         for (style_id, cell_start, cell_span) in runs {
             replacements.extend_from_slice(&style_id.to_le_bytes());
@@ -412,19 +512,36 @@ mod tests {
                 style: styles[2],
             },
         ];
+        let cells = cells
+            .into_iter()
+            .chain((0..5).map(|column| TerminalCell {
+                column: column + 7,
+                span: 0,
+                text: String::new(),
+                style: CellStyle::default(),
+            }))
+            .collect::<Vec<_>>();
         let shaped = ShapedRow {
             glyphs: (0..=6).map(glyph_at).collect(),
             definitions: Vec::new(),
         };
-        let mut definitions = HashMap::new();
+        let mut definitions = StyleDefinitions::new(true);
         let prepared = prepare_row_styles(&cells, &shaped, &mut definitions);
 
+        let PreparedRowStyles::Indexed {
+            cell_ids,
+            column_ids,
+        } = &prepared
+        else {
+            panic!("style-dense rows should use the column index");
+        };
         assert_eq!(
-            prepared.cell_ids,
+            cell_ids.as_slice(),
             cells
                 .iter()
                 .map(|cell| style_id(cell.style))
                 .collect::<Vec<_>>()
+                .as_slice()
         );
         for glyph in &shaped.glyphs {
             let expected = cells
@@ -436,8 +553,7 @@ mod tests {
                 .map(|cell| style_id(cell.style))
                 .unwrap_or(0);
             assert_eq!(
-                prepared
-                    .column_ids
+                column_ids
                     .get(glyph.cell_start as usize)
                     .copied()
                     .unwrap_or(0),
