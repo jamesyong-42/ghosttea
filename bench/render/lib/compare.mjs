@@ -193,6 +193,7 @@ export function compareReports(baselineReport, candidateReport, noiseThresholdPe
 
 function comparableConfiguration(report) {
   const config = report.config ?? {};
+  const display = report.electron?.display ?? {};
   return {
     suite: config.suite,
     width: config.width,
@@ -209,7 +210,12 @@ function comparableConfiguration(report) {
     cpu: config.runner?.cpu,
     electron: report.electron?.versions?.electron,
     chrome: report.electron?.versions?.chrome,
-    display: report.electron?.display,
+    display: {
+      size: display.size,
+      scaleFactor: display.scaleFactor,
+      displayFrequency: display.displayFrequency,
+      colorSpace: display.colorSpace,
+    },
   };
 }
 

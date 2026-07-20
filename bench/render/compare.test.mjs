@@ -47,6 +47,15 @@ test("comparison gate rejects dirty or mismatched runs", () => {
   assert.deepEqual(validateComparableReports(report, mismatch), [
     "machine, display, runtime, suite, or workload configuration differs",
   ]);
+  const workAreaChange = structuredClone(report);
+  report.electron.display.workAreaSize = { width: 100, height: 90 };
+  workAreaChange.electron.display.workAreaSize = { width: 100, height: 89 };
+  assert.deepEqual(validateComparableReports(report, workAreaChange), []);
+  const refreshRateChange = structuredClone(report);
+  refreshRateChange.electron.display.displayFrequency = 60;
+  assert.deepEqual(validateComparableReports(report, refreshRateChange), [
+    "machine, display, runtime, suite, or workload configuration differs",
+  ]);
   const untracked = structuredClone(report);
   untracked.config.runner.gitUntrackedFiles = ["local.txt"];
   assert.deepEqual(validateComparableReports(report, untracked), [

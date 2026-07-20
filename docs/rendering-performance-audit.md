@@ -336,3 +336,33 @@ construction without putting abstraction overhead back on the measured dynamic
 hot path. The next row-oriented experiment is persistent per-row buffer regions
 for genuinely revised content, qualified by the same typing control and
 forced-full pixel gate rather than assuming fewer uploads improve latency.
+
+That persistent-row experiment was implemented and rejected. It reused typed
+geometry for unchanged neighboring rows, packed small damage bands into the
+existing shared buffers, and retained the direct path for broad damage. The
+five-run target cases were statistically neutral, typing Electron CPU regressed,
+and retained row/staging storage produced adverse working-set signals. The code
+was removed rather than retaining speculative complexity.
+
+The next retained change attacks allocation and segmentation inside the direct
+path. ASCII, box-drawing, and block-element rows now use one cell-classification
+pass instead of two `Intl.Segmenter` passes. Unicode, combining, and wide text
+fall back to grapheme-aware column accounting. Block-element fraction tables
+are allocated once, the common `▀` case has a direct geometry path, and opaque
+foreground compositing returns the existing color instead of allocating and
+mixing an identical result per cell.
+
+Against the clean pre-change report, five measured repetitions reduced median
+worker render CPU by 61.9% for typing, 35.2% for sparse updates, 67.3% for
+single-pane scrolling, 50.5% for dense output, 52.0% for `doom-fire-1`, and
+66.9% for four-pane scrolling. Aggregate Electron CPU improved 13.5-30.6% in
+all six cases. Dense and DOOM arrival-to-render p99 improved 11.4% and 9.5%,
+respectively. End-to-idle changed by only 0.2-2.0% and remained below the 3%
+practical threshold because these workloads are paced.
+
+Sparse output delivered 5.3% more render calls in the candidate sample, which
+also raised its pixel-frames and uploads by 5.3%; the per-render CPU still fell
+from about 0.187 ms to 0.115 ms. Working-set signals varied in both directions
+across cases and remain unsuitable for a memory claim. Partial and forced-full
+SHA-256 hashes matched for the visual, dense, and DOOM fixtures, while unit
+coverage verifies both the simple-cell fast path and Unicode/combining fallback.
