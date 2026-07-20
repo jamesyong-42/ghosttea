@@ -30,6 +30,7 @@ function parseArgs(argv) {
     rows: 40,
     duplexBytes: 64 * 1024,
     transport: "quic-protocol-loopback",
+    stateCodec: undefined,
     build: true,
     allowDirty: false,
     allowUntracked: [],
@@ -45,6 +46,7 @@ function parseArgs(argv) {
     else if (argument.startsWith("--rows=")) options.rows = Number(argument.slice(7));
     else if (argument.startsWith("--duplex-bytes=")) options.duplexBytes = Number(argument.slice(15));
     else if (argument.startsWith("--transport=")) options.transport = argument.slice(12);
+    else if (argument.startsWith("--state-codec=")) options.stateCodec = argument.slice(14);
     else if (argument.startsWith("--allow-untracked=")) {
       options.allowUntracked = argument.slice(18).split(",").filter(Boolean);
     } else if (argument === "--no-build") options.build = false;
@@ -75,6 +77,13 @@ function validate(options) {
   if (unknown.length > 0) throw new Error(`Unknown benchmark cases: ${unknown.join(", ")}`);
   if (!["quic-protocol-loopback", "compact-loopback"].includes(options.transport)) {
     throw new Error("--transport must be quic-protocol-loopback or compact-loopback");
+  }
+  options.stateCodec ??= options.transport === "compact-loopback" ? "json" : "compact-json-v1";
+  if (!["json", "compact-json-v1"].includes(options.stateCodec)) {
+    throw new Error("--state-codec must be json or compact-json-v1");
+  }
+  if (options.transport === "compact-loopback" && options.stateCodec !== "json") {
+    throw new Error("compact-loopback models the Apple state path and requires --state-codec=json");
   }
   for (const [name, value] of [
     ["iterations", options.iterations],
@@ -120,6 +129,7 @@ function benchmarkCase(name, definition, options, executable) {
   const updates = Math.max(1, Math.round(definition.updates * options.scale));
   const args = [
     `--transport=${options.transport}`,
+    `--state-codec=${options.stateCodec}`,
     `--workload=${definition.workload}`,
     `--apply=${definition.apply}`,
     `--updates=${updates}`,
@@ -167,6 +177,7 @@ function main() {
   --cols=120 --rows=40   Logical terminal dimensions
   --duplex-bytes=65536   Bounded stream capacity
   --transport=name       quic-protocol-loopback (default) or compact-loopback
+  --state-codec=name     compact-json-v1 (QUIC default) or json (compact default)
   --allow-untracked=list Explicit untracked-file exceptions
   --allow-dirty          Permit a non-evidence smoke run
   --no-build             Reuse target/release/replication_bench
@@ -188,6 +199,7 @@ function main() {
     schemaVersion: 1,
     suite: "ghosttea-truffle-replication-v1",
     transport: options.transport,
+    stateCodec: options.stateCodec,
     config: {
       iterations: options.iterations,
       warmup: options.warmup,
@@ -197,6 +209,7 @@ function main() {
       rows: options.rows,
       duplexBytes: options.duplexBytes,
       transport: options.transport,
+      stateCodec: options.stateCodec,
       cases: options.cases.map((name) => ({ name, ...catalog[name] })),
     },
     runner: {

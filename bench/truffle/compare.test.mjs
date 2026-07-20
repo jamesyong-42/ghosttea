@@ -54,11 +54,18 @@ test("comparison classifies lower latency and higher throughput as improvements"
   assert.equal(comparisons.find((metric) => metric.metric === "throughputMibPerSecond").assessment, "improved");
 });
 
-test("comparison rejects changed wire-output invariants", () => {
+test("comparison measures wire-size changes but rejects rendered-output changes", () => {
   const candidate = report([100, 101, 99, 102, 98]);
   candidate.results.cases.sparse.samples[0].sourceWireBytes += 1;
+  assert.deepEqual(validateComparableReports(report([100, 101, 99, 102, 98]), candidate), []);
+  assert.equal(
+    compareReports(report([100, 101, 99, 102, 98]), candidate).find((metric) => metric.metric === "sourceWireBytes")
+      .samples.candidate,
+    5,
+  );
+  candidate.results.cases.sparse.samples[0].trf1Bytes += 1;
   assert.deepEqual(validateComparableReports(report([100, 101, 99, 102, 98]), candidate), [
-    "sparse changed the sourceWireBytes correctness invariant",
+    "sparse changed the trf1Bytes correctness invariant",
   ]);
 });
 

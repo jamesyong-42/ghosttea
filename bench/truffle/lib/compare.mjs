@@ -59,6 +59,13 @@ export const METRICS = [
     select: (sample) => sample.throughputMibPerSecond,
   },
   {
+    key: "sourceWireBytes",
+    label: "source wire bytes",
+    unit: "bytes",
+    direction: "lower",
+    select: (sample) => sample.sourceWireBytes,
+  },
+  {
     key: "userCpuMs",
     label: "process user CPU",
     unit: "ms",
@@ -127,7 +134,7 @@ export function validateComparableReports(baseline, candidate) {
       issues.push(`candidate is missing case ${caseName}`);
       continue;
     }
-    for (const key of ["sourceWireBytes", "trf1Bytes", "messagesReceived", "checksum"]) {
+    for (const key of ["trf1Bytes", "messagesReceived", "checksum"]) {
       const left = invariantValues(baselineCases[caseName], key);
       const right = invariantValues(candidateCases[caseName], key);
       if (JSON.stringify(left) !== JSON.stringify(right)) {

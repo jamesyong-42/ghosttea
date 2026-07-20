@@ -27,9 +27,10 @@ use ghosttea::{
     tunnel_protocol::{
         CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-        RowReplacement, SessionControlMessage, SharedSessionSummary, StateMessage, StreamKind,
-        StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_compact_message,
-        decode_message, decode_preface, encode_compact_message, encode_message, encode_preface,
+        RowReplacement, SessionControlMessage, SharedSessionSummary, StateCodec, StateMessage,
+        StreamKind, StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_compact_message,
+        decode_message, decode_preface, decode_state_message, encode_compact_message,
+        encode_message, encode_preface, encode_state_message,
     },
 };
 
@@ -95,6 +96,7 @@ struct RemoteHostConnection {
     control: tokio::sync::Mutex<ProtocolStream>,
     incoming: tokio::sync::Mutex<()>,
     host_instance_id: String,
+    state_codec: StateCodec,
     healthy: AtomicBool,
 }
 
@@ -104,6 +106,14 @@ fn connection_is_reusable(
     advertised_host_instance_id: &str,
 ) -> bool {
     healthy && cached_host_instance_id == advertised_host_instance_id
+}
+
+fn negotiate_state_codec(offered: Option<Vec<StateCodec>>) -> StateCodec {
+    offered
+        .unwrap_or_default()
+        .into_iter()
+        .find(|codec| *codec == StateCodec::CompactJsonV1)
+        .unwrap_or(StateCodec::Json)
 }
 
 impl MeshRuntime {
@@ -383,7 +393,7 @@ impl MeshRuntime {
                         }
                         continue;
                     }
-                    message = state.read_message::<StateMessage>(MAX_STATE_MESSAGE_BYTES) => message,
+                    message = state.read_state_message(remote_host.state_codec) => message,
                 };
                 match message {
                     Ok(Some(StateMessage::Snapshot(snapshot))) => {
@@ -724,11 +734,12 @@ impl MeshRuntime {
                     host_instance_id: ready.host_instance_id,
                     local_device_id: ready.node.local_info().device_id,
                     nonce: nonce.clone(),
+                    state_codecs: Some(vec![StateCodec::CompactJsonV1]),
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
             .await?;
-        match tokio::time::timeout(
+        let state_codec = match tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
             control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
         )
@@ -741,17 +752,23 @@ impl MeshRuntime {
                 protocol_minor,
                 host_instance_id,
                 nonce: echoed_nonce,
+                state_codec,
             } if protocol_major == PROTOCOL_MAJOR
                 && protocol_minor >= PROTOCOL_MINOR
                 && echoed_nonce == nonce
-                && host_instance_id == advertisement.host_instance_id => {}
+                && host_instance_id == advertisement.host_instance_id
+                && state_codec.is_none_or(|codec| codec == StateCodec::CompactJsonV1) =>
+            {
+                state_codec.unwrap_or(StateCodec::Json)
+            }
             _ => bail!("remote host returned an invalid server hello"),
-        }
+        };
         let remote = Arc::new(RemoteHostConnection {
             connection,
             control: tokio::sync::Mutex::new(control),
             incoming: tokio::sync::Mutex::new(()),
             host_instance_id: advertisement.host_instance_id,
+            state_codec,
             healthy: AtomicBool::new(true),
         });
         connections.insert(device_id.to_owned(), Arc::clone(&remote));
@@ -1154,6 +1171,7 @@ where
                 protocol_minor: PROTOCOL_MINOR,
                 host_instance_id,
                 nonce: client_nonce,
+                state_codec: None,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1546,18 +1564,20 @@ async fn handle_connection(
     .await
     .context("timed out reading client hello")??
     .context("connection closed before client hello")?;
-    let client_nonce = match hello {
+    let (client_nonce, state_codec) = match hello {
         ConnectionMessage::ClientHello {
             protocol_major,
             protocol_minor,
             local_device_id,
             nonce,
+            state_codecs,
             ..
         } if protocol_major == PROTOCOL_MAJOR
             && protocol_minor >= PROTOCOL_MINOR
             && local_device_id == expected_device_id =>
         {
-            nonce
+            let state_codec = negotiate_state_codec(state_codecs);
+            (nonce, state_codec)
         }
         ConnectionMessage::ClientHello { .. } => {
             bail!("client hello identity or protocol mismatch")
@@ -1571,6 +1591,7 @@ async fn handle_connection(
                 protocol_minor: PROTOCOL_MINOR,
                 host_instance_id,
                 nonce: client_nonce,
+                state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1580,15 +1601,24 @@ async fn handle_connection(
     let streams_registry = registry.clone();
     let streams_config = config.clone();
     let streams_client_id = client_id.clone();
+    let streams_state_codec = state_codec;
     let streams = tokio::spawn(async move {
         while let Some(stream) = streams_connection.accept_stream().await? {
             let registry = streams_registry.clone();
             let config = streams_config.clone();
             let client_id = streams_client_id.clone();
+            let state_codec = streams_state_codec;
             let connection = Arc::clone(&streams_connection);
             tokio::spawn(async move {
-                if let Err(error) =
-                    handle_application_stream(connection, stream, registry, config, client_id).await
+                if let Err(error) = handle_application_stream(
+                    connection,
+                    stream,
+                    registry,
+                    config,
+                    client_id,
+                    state_codec,
+                )
+                .await
                 {
                     eprintln!("[terminal-mesh] stream closed: {error:#}");
                 }
@@ -1639,6 +1669,7 @@ async fn handle_application_stream(
     registry: Registry,
     config: TruffleTerminalConfig,
     client_id: String,
+    state_codec: StateCodec,
 ) -> Result<()> {
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
@@ -1696,6 +1727,7 @@ async fn handle_application_stream(
         Arc::clone(&session),
         &view_id,
         state_cancelled.clone(),
+        state_codec,
     )
     .await?;
 
@@ -1706,12 +1738,20 @@ async fn handle_application_stream(
         &client_id,
         &view_id,
         attachment_epoch,
-        state_cancelled,
+        StateStreamContext {
+            cancelled: state_cancelled,
+            codec: state_codec,
+        },
     )
     .await;
     state_cancel.send_replace(true);
     session.detach_view(&view_id, &client_id);
     result
+}
+
+struct StateStreamContext {
+    cancelled: tokio::sync::watch::Receiver<bool>,
+    codec: StateCodec,
 }
 
 async fn session_control_loop(
@@ -1721,7 +1761,7 @@ async fn session_control_loop(
     client_id: &str,
     attached_view_id: &str,
     attachment_epoch: u64,
-    state_cancelled: tokio::sync::watch::Receiver<bool>,
+    state_stream: StateStreamContext,
 ) -> Result<()> {
     while let Some(message) = control
         .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
@@ -1811,7 +1851,8 @@ async fn session_control_loop(
                     Arc::clone(&connection),
                     Arc::clone(&session),
                     attached_view_id,
-                    state_cancelled.clone(),
+                    state_stream.cancelled.clone(),
+                    state_stream.codec,
                 )
                 .await?;
             }
@@ -1855,6 +1896,7 @@ async fn spawn_state_stream(
     session: Arc<Session>,
     view_id: &str,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
+    state_codec: StateCodec,
 ) -> Result<()> {
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
@@ -1870,16 +1912,13 @@ async fn spawn_state_stream(
     let mut previous = session.logical_snapshot();
     if let Some(snapshot) = previous.as_ref() {
         state
-            .write_message(
-                &StateMessage::Snapshot(snapshot.clone()),
-                MAX_STATE_MESSAGE_BYTES,
-            )
+            .write_state_message(&StateMessage::Snapshot(snapshot.clone()), state_codec)
             .await?;
     }
     let (controller, cols, rows, layout_epoch) = session.control_state();
     if let Some(controller) = controller {
         state
-            .write_message(
+            .write_state_message(
                 &StateMessage::ControlChanged {
                     controller_view_id: controller.view_id,
                     control_epoch: controller.control_epoch,
@@ -1887,7 +1926,7 @@ async fn spawn_state_stream(
                     rows,
                     layout_epoch,
                 },
-                MAX_STATE_MESSAGE_BYTES,
+                state_codec,
             )
             .await?;
     }
@@ -1934,7 +1973,7 @@ async fn spawn_state_stream(
             };
             if let Some(message) = message {
                 if state
-                    .write_message(&message, MAX_STATE_MESSAGE_BYTES)
+                    .write_state_message(&message, state_codec)
                     .await
                     .is_err()
                 {
@@ -2231,6 +2270,21 @@ impl ProtocolStream {
         Ok(())
     }
 
+    async fn write_state_message(
+        &mut self,
+        message: &StateMessage,
+        codec: StateCodec,
+    ) -> Result<()> {
+        self.stream
+            .write(&encode_state_message(
+                message,
+                codec,
+                MAX_STATE_MESSAGE_BYTES,
+            )?)
+            .await?;
+        Ok(())
+    }
+
     async fn read_message<T: serde::de::DeserializeOwned>(
         &mut self,
         limit: usize,
@@ -2248,6 +2302,25 @@ impl ProtocolStream {
             bail!("EOF in terminal protocol message");
         }
         let message = decode_message(self.buffered.unread(total), limit)?.0;
+        self.buffered.consume(total);
+        Ok(Some(message))
+    }
+
+    async fn read_state_message(&mut self, codec: StateCodec) -> Result<Option<StateMessage>> {
+        if !self.fill(4).await? {
+            return Ok(None);
+        }
+        let payload_len =
+            u32::from_be_bytes(self.buffered.unread(4)[..4].try_into().unwrap()) as usize;
+        if payload_len > MAX_STATE_MESSAGE_BYTES {
+            bail!("terminal protocol state message exceeds limit");
+        }
+        let total = 4 + payload_len;
+        if !self.fill(total).await? {
+            bail!("EOF in terminal protocol state message");
+        }
+        let message =
+            decode_state_message(self.buffered.unread(total), codec, MAX_STATE_MESSAGE_BYTES)?.0;
         self.buffered.consume(total);
         Ok(Some(message))
     }
@@ -2416,6 +2489,19 @@ mod tests {
         assert!(same_ports.validate().is_err());
     }
 
+    #[test]
+    fn compact_state_codec_is_used_only_when_the_peer_offers_it() {
+        assert_eq!(negotiate_state_codec(None), StateCodec::Json);
+        assert_eq!(
+            negotiate_state_codec(Some(vec![StateCodec::Json])),
+            StateCodec::Json
+        );
+        assert_eq!(
+            negotiate_state_codec(Some(vec![StateCodec::Json, StateCodec::CompactJsonV1])),
+            StateCodec::CompactJsonV1
+        );
+    }
+
     #[tokio::test]
     async fn compact_stream_handshake_and_session_listing_match_apple_client() {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
@@ -2445,6 +2531,7 @@ mod tests {
                     host_instance_id: String::new(),
                     local_device_id: "ios-device".into(),
                     nonce: "fixed-nonce".into(),
+                    state_codecs: None,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -2462,6 +2549,7 @@ mod tests {
                 protocol_minor: PROTOCOL_MINOR,
                 ref host_instance_id,
                 ref nonce,
+                state_codec: None,
             } if host_instance_id == "desktop-instance" && nonce == "fixed-nonce"
         ));
 
@@ -2518,6 +2606,7 @@ mod tests {
                     host_instance_id: String::new(),
                     local_device_id: "claimed-device".into(),
                     nonce: "fixed-nonce".into(),
+                    state_codecs: None,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )

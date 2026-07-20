@@ -11,7 +11,8 @@ use anyhow::{Context, Result, bail};
 use ghosttea::tunnel_protocol::{
     CompactChannel, LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
     LogicalTerminalPatch, LogicalTerminalSnapshot, MAX_STATE_MESSAGE_BYTES, RowReplacement,
-    StateMessage, decode_compact_message, decode_message, encode_compact_message, encode_message,
+    StateCodec, StateMessage, decode_compact_message, decode_state_message, encode_compact_message,
+    encode_state_message,
 };
 use ghosttea::{RemoteReplica, TextEngine};
 use serde::Serialize;
@@ -82,6 +83,7 @@ impl ApplyMode {
 #[derive(Clone, Debug)]
 struct Options {
     transport: Transport,
+    state_codec: StateCodec,
     workload: Workload,
     apply: ApplyMode,
     updates: usize,
@@ -98,6 +100,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             transport: Transport::QuicProtocolLoopback,
+            state_codec: StateCodec::CompactJsonV1,
             workload: Workload::Sparse,
             apply: ApplyMode::Replica,
             updates: 180,
@@ -161,6 +164,7 @@ struct Report<'a> {
     schema_version: u32,
     suite: &'a str,
     transport: &'a str,
+    state_codec: &'a str,
     workload: Workload,
     apply: ApplyMode,
     updates: usize,
@@ -203,6 +207,7 @@ struct ReceiverConfig {
     cols: u16,
     rows: u16,
     transport: Transport,
+    state_codec: StateCodec,
 }
 
 struct ProtocolReader {
@@ -210,15 +215,17 @@ struct ProtocolReader {
     buffered: Vec<u8>,
     start: usize,
     transport: Transport,
+    state_codec: StateCodec,
 }
 
 impl ProtocolReader {
-    fn new(stream: DuplexStream, transport: Transport) -> Self {
+    fn new(stream: DuplexStream, transport: Transport, state_codec: StateCodec) -> Self {
         Self {
             stream,
             buffered: Vec::new(),
             start: 0,
             transport,
+            state_codec,
         }
     }
 
@@ -248,7 +255,9 @@ impl ProtocolReader {
         }
         let encoded = &self.buffered[self.start..self.start + total];
         let message = match self.transport {
-            Transport::QuicProtocolLoopback => decode_message(encoded, MAX_STATE_MESSAGE_BYTES)?.0,
+            Transport::QuicProtocolLoopback => {
+                decode_state_message(encoded, self.state_codec, MAX_STATE_MESSAGE_BYTES)?.0
+            }
             Transport::CompactLoopback => {
                 decode_compact_message(encoded, CompactChannel::State, MAX_STATE_MESSAGE_BYTES)?.0
             }
@@ -296,6 +305,12 @@ fn parse_options() -> Result<Options> {
     for argument in env::args().skip(1) {
         if let Some(value) = argument.strip_prefix("--transport=") {
             options.transport = Transport::parse(value)?;
+        } else if let Some(value) = argument.strip_prefix("--state-codec=") {
+            options.state_codec = match value {
+                "json" => StateCodec::Json,
+                "compact-json-v1" => StateCodec::CompactJsonV1,
+                _ => bail!("unknown state codec {value:?}"),
+            };
         } else if let Some(value) = argument.strip_prefix("--workload=") {
             options.workload = Workload::parse(value)?;
         } else if let Some(value) = argument.strip_prefix("--apply=") {
@@ -318,7 +333,7 @@ fn parse_options() -> Result<Options> {
             options.duplex_bytes = value.parse()?;
         } else if argument == "--help" || argument == "-h" {
             println!(
-                "Usage: replication_bench [--transport=quic-protocol-loopback|compact-loopback] [--workload=sparse|dense|truecolor|resync] [--apply=decode|replica] [--updates=180] [--fanout=1] [--warmup=1] [--iterations=5] [--cooldown-ms=250] [--cols=120] [--rows=40] [--duplex-bytes=65536]"
+                "Usage: replication_bench [--transport=quic-protocol-loopback|compact-loopback] [--state-codec=json|compact-json-v1] [--workload=sparse|dense|truecolor|resync] [--apply=decode|replica] [--updates=180] [--fanout=1] [--warmup=1] [--iterations=5] [--cooldown-ms=250] [--cols=120] [--rows=40] [--duplex-bytes=65536]"
             );
             std::process::exit(0);
         } else {
@@ -334,7 +349,17 @@ fn parse_options() -> Result<Options> {
     {
         bail!("updates, dimensions, fanout, iterations, and duplex capacity must be positive");
     }
+    if options.transport == Transport::CompactLoopback && options.state_codec != StateCodec::Json {
+        bail!("compact-loopback models the Apple JSON contract and requires --state-codec=json");
+    }
     Ok(options)
+}
+
+fn state_codec_label(codec: StateCodec) -> &'static str {
+    match codec {
+        StateCodec::Json => "json",
+        StateCodec::CompactJsonV1 => "compact-json-v1",
+    }
 }
 
 fn plain_row(cols: u16, row: usize, revision: u64) -> LogicalRow {
@@ -461,7 +486,7 @@ fn messages(options: &Options) -> Vec<StateMessage> {
 }
 
 async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<ReceiverResult> {
-    let mut reader = ProtocolReader::new(stream, config.transport);
+    let mut reader = ProtocolReader::new(stream, config.transport, config.state_codec);
     let mut replica = None;
     let mut frames = None;
     if config.apply == ApplyMode::Replica {
@@ -548,6 +573,7 @@ async fn send(
     sent_at_ns: Arc<Vec<AtomicU64>>,
     started: Instant,
     transport: Transport,
+    state_codec: StateCodec,
     start_barrier: Arc<Barrier>,
 ) -> Result<ProducerResult> {
     let mut result = ProducerResult {
@@ -561,7 +587,9 @@ async fn send(
         sent_at_ns[index].store(started.elapsed().as_nanos() as u64, Ordering::Release);
         let encode_started = Instant::now();
         let encoded = match transport {
-            Transport::QuicProtocolLoopback => encode_message(message, MAX_STATE_MESSAGE_BYTES)?,
+            Transport::QuicProtocolLoopback => {
+                encode_state_message(message, state_codec, MAX_STATE_MESSAGE_BYTES)?
+            }
             Transport::CompactLoopback => {
                 encode_compact_message(CompactChannel::State, message, MAX_STATE_MESSAGE_BYTES)?
             }
@@ -600,6 +628,7 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
                 cols: options.cols,
                 rows: options.rows,
                 transport: options.transport,
+                state_codec: options.state_codec,
             },
         )));
         producers.push(tokio::spawn(send(
@@ -608,6 +637,7 @@ async fn run_sample(options: &Options, engine: Option<Arc<Mutex<TextEngine>>>) -
             sent_at_ns,
             started,
             options.transport,
+            options.state_codec,
             Arc::clone(&start_barrier),
         )));
     }
@@ -759,6 +789,7 @@ async fn main() -> Result<()> {
             schema_version: 1,
             suite: "ghosttea-truffle-replication-v1",
             transport: options.transport.label(),
+            state_codec: state_codec_label(options.state_codec),
             workload: options.workload,
             apply: options.apply,
             updates: options.updates,
@@ -840,6 +871,11 @@ mod tests {
         options.fanout = 2;
         for transport in [Transport::QuicProtocolLoopback, Transport::CompactLoopback] {
             options.transport = transport;
+            options.state_codec = if transport == Transport::CompactLoopback {
+                StateCodec::Json
+            } else {
+                StateCodec::CompactJsonV1
+            };
             let sample = run_sample(&options, None).await?;
             assert_eq!(sample.messages_sent, 8);
             assert_eq!(sample.messages_received, 8);
