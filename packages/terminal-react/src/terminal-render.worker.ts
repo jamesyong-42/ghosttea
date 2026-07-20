@@ -50,7 +50,7 @@ interface Snapshot {
   sequence: bigint;
   awaitingResync: boolean;
   scrollbar: TerminalScrollbarState | null;
-  damage: { full: boolean; rows: Set<number> };
+  damage: { full: boolean; rows: Set<number>; geometryChanged: boolean };
 }
 
 interface MountedCanvas {
@@ -225,7 +225,7 @@ function snapshot(id: string): Snapshot {
       sequence: 0n,
       awaitingResync: false,
       scrollbar: null,
-      damage: { full: true, rows: new Set() },
+      damage: { full: true, rows: new Set(), geometryChanged: true },
     };
     snapshots.set(id, value);
   }
@@ -347,6 +347,7 @@ async function flush(): Promise<void> {
       for (const { view } of entries) {
         view.damage.full = false;
         view.damage.rows.clear();
+        view.damage.geometryChanged = false;
       }
       if (active && performanceMeasurement === active) {
         active.scheduling.renderCalls += entries.length;
@@ -381,16 +382,18 @@ function invalidateFull(id: string): void {
   const damage = snapshot(id).damage;
   damage.full = true;
   damage.rows.clear();
+  damage.geometryChanged = true;
   markDirty(id);
 }
 
-function invalidateRows(id: string, rows: Iterable<number>): void {
+function invalidateRows(id: string, rows: Iterable<number>, geometryChanged = false): void {
   if (!partialRenderingEnabled) {
     invalidateFull(id);
     return;
   }
   const damage = snapshot(id).damage;
   if (!damage.full) {
+    damage.geometryChanged ||= geometryChanged;
     for (const row of rows) {
       if (Number.isSafeInteger(row) && row >= 0) damage.rows.add(row);
     }
@@ -534,6 +537,7 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.nativeRows = nativeRows;
   previous.nativeStyleRows = nativeStyleRows;
   previous.rowRevisions = rowRevisions;
+  const geometryChanged = damagedRows.length > 0;
   const previousCursor = previous.cursor;
   const nextCursor = decodeCursorState(cursorSection);
   const cursorChanged =
@@ -553,7 +557,7 @@ function applyFrame(packet: ArrayBuffer): void {
     invalidateFull(id);
   } else {
     if (cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
-    if (damagedRows.length > 0) invalidateRows(id, damagedRows);
+    if (damagedRows.length > 0) invalidateRows(id, damagedRows, geometryChanged);
   }
   if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
 }

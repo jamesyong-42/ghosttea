@@ -48,6 +48,7 @@ export interface RenderView {
 export interface RenderDamage {
   full: boolean;
   rows: ReadonlySet<number>;
+  geometryChanged: boolean;
 }
 
 export function effectiveCursorStyle(view: RenderView): CursorStyle | null {

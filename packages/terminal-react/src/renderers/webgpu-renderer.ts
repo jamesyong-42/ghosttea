@@ -1493,15 +1493,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const viewportHeight = surface.canvas.height;
     const renderRowSet = new Set(damage.rows);
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
+    const cacheEligible = !damage.full && view.damage?.geometryChanged === false;
     let geometry: CachedGeometry;
     let cacheHit = false;
     let geometryUploadBytes = 0;
-    if (damage.full) {
+    if (!cacheEligible) {
       const cpu = this.#buildGeometry(
         view,
         damage.rows,
         rowCount,
-        true,
+        damage.full,
         hasNativeRows,
         scale,
         viewportWidth,
@@ -1692,8 +1693,8 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       fullRenders: Number(damage.full),
       partialRenders: Number(!damage.full),
       damagedRows: damage.rows.length,
-      geometryCacheHits: Number(!damage.full && cacheHit),
-      geometryCacheMisses: Number(!damage.full && !cacheHit),
+      geometryCacheHits: Number(cacheEligible && cacheHit),
+      geometryCacheMisses: Number(cacheEligible && !cacheHit),
       canvasPixels: viewportWidth * viewportHeight,
       renderPasses: 2,
       drawCalls:
