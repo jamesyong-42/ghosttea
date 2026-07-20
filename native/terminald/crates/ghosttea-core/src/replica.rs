@@ -185,21 +185,23 @@ impl LogicalReplicaModel {
                 .rows
                 .get(row_index as usize)
                 .context("remote terminal updated row is outside the snapshot")?;
-            let mut row = prepare_logical_row(row_index as usize, logical);
-            row.needs_shape = cache.rows[row.index] != row.text
-                || cache.shape_spans[row.index] != row.shape_spans;
-            prepared.push(row);
+            let index = row_index as usize;
+            let needs_shape = cache.rows[index] != logical.text
+                || !shape_spans_match(logical, &cache.shape_spans[index]);
+            prepared.push(prepare_logical_row(index, logical, needs_shape));
         }
 
         let mut shaped_updates = Vec::new();
-        if prepared.iter().any(|row| row.needs_shape) {
+        if prepared.iter().any(|row| row.shape_spans.is_some()) {
             let wait_started = Instant::now();
             let mut engine = self.runtime.text_engine().lock().unwrap();
             let wait = wait_started.elapsed();
             let hold_started = Instant::now();
-            for row in prepared.iter().filter(|row| row.needs_shape) {
+            for row in prepared.iter().filter(|row| row.shape_spans.is_some()) {
                 let spans = row
                     .shape_spans
+                    .as_ref()
+                    .unwrap()
                     .iter()
                     .map(|&(byte_start, byte_end, style)| StyleSpan {
                         byte_start,
@@ -219,7 +221,9 @@ impl LogicalReplicaModel {
         for row in prepared {
             cache.rows[row.index] = row.text;
             cache.cells[row.index] = row.cells;
-            cache.shape_spans[row.index] = row.shape_spans;
+            if let Some(shape_spans) = row.shape_spans {
+                cache.shape_spans[row.index] = shape_spans;
+            }
         }
         for (index, shaped) in shaped_updates {
             cache.shaped_rows[index] = shaped;
@@ -275,11 +279,10 @@ struct PreparedReplicaRow {
     index: usize,
     text: String,
     cells: Vec<TerminalCell>,
-    shape_spans: Vec<(usize, usize, FontStyle)>,
-    needs_shape: bool,
+    shape_spans: Option<Vec<(usize, usize, FontStyle)>>,
 }
 
-fn prepare_logical_row(index: usize, row: &LogicalRow) -> PreparedReplicaRow {
+fn prepare_logical_row(index: usize, row: &LogicalRow, needs_shape: bool) -> PreparedReplicaRow {
     let text = row.text.clone();
     let cells = row
         .cells
@@ -291,15 +294,25 @@ fn prepare_logical_row(index: usize, row: &LogicalRow) -> PreparedReplicaRow {
             style: cell_style(cell.style),
         })
         .collect::<Vec<_>>();
+    let shape_spans = needs_shape.then(|| logical_shape_spans(row));
+    PreparedReplicaRow {
+        index,
+        text,
+        cells,
+        shape_spans,
+    }
+}
+
+fn logical_shape_spans(row: &LogicalRow) -> Vec<(usize, usize, FontStyle)> {
     let mut byte_offset = 0;
-    let shape_spans = cells
+    row.cells
         .iter()
         .filter_map(|cell| {
-            if byte_offset >= text.len() {
+            if byte_offset >= row.text.len() {
                 return None;
             }
             let byte_start = byte_offset;
-            byte_offset = (byte_offset + cell.text.len()).min(text.len());
+            byte_offset = (byte_offset + cell.text.len()).min(row.text.len());
             Some((
                 byte_start,
                 byte_offset,
@@ -309,14 +322,32 @@ fn prepare_logical_row(index: usize, row: &LogicalRow) -> PreparedReplicaRow {
                 },
             ))
         })
-        .collect::<Vec<_>>();
-    PreparedReplicaRow {
-        index,
-        text,
-        cells,
-        shape_spans,
-        needs_shape: false,
+        .collect()
+}
+
+fn shape_spans_match(row: &LogicalRow, cached: &[(usize, usize, FontStyle)]) -> bool {
+    let mut byte_offset = 0;
+    let mut span_index = 0;
+    for cell in &row.cells {
+        if byte_offset >= row.text.len() {
+            break;
+        }
+        let byte_start = byte_offset;
+        byte_offset = (byte_offset + cell.text.len()).min(row.text.len());
+        let span = (
+            byte_start,
+            byte_offset,
+            FontStyle {
+                bold: cell.style.bold,
+                italic: cell.style.italic,
+            },
+        );
+        if cached.get(span_index) != Some(&span) {
+            return false;
+        }
+        span_index += 1;
     }
+    span_index == cached.len()
 }
 
 fn cell_style(style: LogicalCellStyle) -> CellStyle {
