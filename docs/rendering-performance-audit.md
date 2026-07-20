@@ -366,3 +366,8 @@ from about 0.187 ms to 0.115 ms. Working-set signals varied in both directions
 across cases and remain unsuitable for a memory claim. Partial and forced-full
 SHA-256 hashes matched for the visual, dense, and DOOM fixtures, while unit
 coverage verifies both the simple-cell fast path and Unicode/combining fallback.
+
+A targeted seven-run sparse repeat matched the baseline's median 94 render
+calls. Arrival-to-render p99 was 8.53 ms versus 8.73 ms in the baseline, and
+render CPU remained 11.8 ms versus 17.6 ms. The batch candidate's 9.40 ms p99
+signal therefore did not reproduce when render count was matched.
