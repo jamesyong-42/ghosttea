@@ -511,8 +511,6 @@ interface GeometryLayout {
   glyphInstanceCount: number;
   colorGlyphInstanceCount: number;
   fallbackGlyphInstanceCount: number;
-  cursorInstanceStart: number;
-  cursorInstanceCount: number;
 }
 
 interface CpuGeometry extends GeometryLayout {
@@ -1241,8 +1239,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     renderRows: readonly number[],
     rowCount: number,
     fullRedraw: boolean,
-    includeCursor: boolean,
-    renderRowSet: ReadonlySet<number>,
     hasNativeRows: boolean,
     scale: number,
     viewportWidth: number,
@@ -1467,9 +1463,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     const decorationInstanceStart = backgroundInstanceCount + selectionInstanceCount;
     const decorationInstanceCount = rectangleVertices.length / 10 - decorationInstanceStart;
-    const cursorInstanceStart = rectangleVertices.length / 10;
-    if (includeCursor) pushCursorVertices(rectangleVertices, view, renderRowSet, scale, viewportWidth, viewportHeight);
-    const cursorInstanceCount = rectangleVertices.length / 10 - cursorInstanceStart;
     return {
       rectangleData: new Float32Array(rectangleVertices),
       glyphData: new Float32Array(glyphVertices),
@@ -1483,155 +1476,326 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       glyphInstanceCount: glyphVertices.length / 12,
       colorGlyphInstanceCount: colorGlyphVertices.length / 12,
       fallbackGlyphInstanceCount: fallbackGlyphVertices.length / 12,
-      cursorInstanceStart,
-      cursorInstanceCount,
     };
   }
 
-  #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
+  #encodeRenderDynamic(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
-    const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
     const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
     const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;
     const scale = surface.dpr;
     const viewportWidth = surface.canvas.width;
     const viewportHeight = surface.canvas.height;
-    const renderRowSet = new Set(damage.rows);
-    const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
-    const cacheEligible = !damage.full && view.damage?.geometryChanged === false;
-    let geometry: CachedGeometry;
-    let cacheHit = false;
-    let geometryUploadBytes = 0;
-    if (!cacheEligible) {
-      const cpu = this.#buildGeometry(
-        view,
-        damage.rows,
-        rowCount,
-        damage.full,
-        true,
-        renderRowSet,
-        hasNativeRows,
-        scale,
-        viewportWidth,
-        viewportHeight,
-      );
-      geometry = {
-        rectangleBuffer: surface.rectangleBuffer.write(cpu.rectangleData),
-        glyphBuffer: surface.glyphBuffer.write(cpu.glyphData),
-        colorGlyphBuffer: surface.colorGlyphBuffer.write(cpu.colorGlyphData),
-        fallbackGlyphBuffer: surface.fallbackGlyphBuffer.write(cpu.fallbackGlyphData),
-        backgroundInstanceCount: cpu.backgroundInstanceCount,
-        selectionInstanceCount: cpu.selectionInstanceCount,
-        decorationInstanceStart: cpu.decorationInstanceStart,
-        decorationInstanceCount: cpu.decorationInstanceCount,
-        rectangleInstanceCount: cpu.rectangleInstanceCount,
-        glyphInstanceCount: cpu.glyphInstanceCount,
-        colorGlyphInstanceCount: cpu.colorGlyphInstanceCount,
-        fallbackGlyphInstanceCount: cpu.fallbackGlyphInstanceCount,
-        cursorInstanceStart: cpu.cursorInstanceStart,
-        cursorInstanceCount: cpu.cursorInstanceCount,
-      };
-      geometryUploadBytes =
-        cpu.rectangleData.byteLength +
-        cpu.glyphData.byteLength +
-        cpu.colorGlyphData.byteLength +
-        cpu.fallbackGlyphData.byteLength;
-    } else {
-      const generations = (): [number, number, number] => [
-        this.#monoAtlas.generation,
-        this.#colorAtlas.generation,
-        this.#fallbackAtlas.generation,
-      ];
-      let key = geometryCacheKey(view, damage.rows, hasNativeRows, generations());
-      const cached = surface.geometryCache.get(key);
-      cacheHit = cached !== undefined;
-      if (cached) {
-        geometry = cached;
-        surface.geometryCache.delete(key);
-        surface.geometryCache.set(key, cached);
-      } else {
-        const admitted = surface.geometryCandidates.has(key);
-        const candidateKey = key;
-        const cpu = this.#buildGeometry(
-          view,
-          damage.rows,
-          rowCount,
-          false,
-          false,
-          renderRowSet,
-          hasNativeRows,
-          scale,
+    const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
+    const { full: fullRedraw, rows: renderRows } = rowsForDamage(rowCount, view.damage, surface.sceneValid);
+    const renderRowSet = new Set(renderRows);
+    const rectangleVertices: number[] = [];
+    const glyphVertices: number[] = [];
+    const colorGlyphVertices: number[] = [];
+    const fallbackGlyphVertices: number[] = [];
+    const resolvedStyles = new Map<number, ResolvedStyle>();
+    const styleFor = (styleId: number): ResolvedStyle => {
+      const cached = resolvedStyles.get(styleId);
+      if (cached) return cached;
+      const resolved = resolveStyle(view.styleDefinitions.get(styleId), view.theme);
+      resolvedStyles.set(styleId, resolved);
+      return resolved;
+    };
+    const monoDefinitions = new Map<number, GlyphDefinition>();
+    const colorDefinitions = new Map<number, GlyphDefinition>();
+    for (const row of renderRows) {
+      for (const glyph of view.nativeRows[row] ?? []) {
+        const definition = view.glyphDefinitions.get(glyph.glyphId);
+        if (!definition) continue;
+        (definition.format === GlyphFormat.Rgba8Premultiplied ? colorDefinitions : monoDefinitions).set(
+          definition.id,
+          definition,
+        );
+      }
+    }
+    this.#monoAtlas.prepare(monoDefinitions.values());
+    this.#colorAtlas.prepare(colorDefinitions.values());
+
+    if (!fullRedraw) {
+      for (const row of renderRows) {
+        const top = row === 0 ? 0 : (ORIGIN_Y + row * LINE_HEIGHT) * scale;
+        const bottom =
+          row === rowCount - 1
+            ? viewportHeight
+            : Math.min(viewportHeight, (ORIGIN_Y + (row + 1) * LINE_HEIGHT) * scale);
+        pushRectangle(
+          rectangleVertices,
+          0,
+          top,
+          viewportWidth,
+          Math.max(0, bottom - top),
+          // The rectangle pipeline blends. Force the row reset opaque so it
+          // replaces stale scene pixels even when a theme carries alpha.
+          [view.theme.background[0], view.theme.background[1], view.theme.background[2], 1],
           viewportWidth,
           viewportHeight,
         );
-        key = geometryCacheKey(view, damage.rows, hasNativeRows, generations());
-        const promote = admitted && key === candidateKey;
-        geometry = {
-          rectangleBuffer: promote
-            ? createCachedVertexBuffer(this.device, `cached rectangles ${id}`, cpu.rectangleData)
-            : surface.rectangleBuffer.write(cpu.rectangleData),
-          glyphBuffer: promote
-            ? createCachedVertexBuffer(this.device, `cached glyphs ${id}`, cpu.glyphData)
-            : surface.glyphBuffer.write(cpu.glyphData),
-          colorGlyphBuffer: promote
-            ? createCachedVertexBuffer(this.device, `cached color glyphs ${id}`, cpu.colorGlyphData)
-            : surface.colorGlyphBuffer.write(cpu.colorGlyphData),
-          fallbackGlyphBuffer: promote
-            ? createCachedVertexBuffer(this.device, `cached fallback glyphs ${id}`, cpu.fallbackGlyphData)
-            : surface.fallbackGlyphBuffer.write(cpu.fallbackGlyphData),
-          backgroundInstanceCount: cpu.backgroundInstanceCount,
-          selectionInstanceCount: cpu.selectionInstanceCount,
-          decorationInstanceStart: cpu.decorationInstanceStart,
-          decorationInstanceCount: cpu.decorationInstanceCount,
-          rectangleInstanceCount: cpu.rectangleInstanceCount,
-          glyphInstanceCount: cpu.glyphInstanceCount,
-          colorGlyphInstanceCount: cpu.colorGlyphInstanceCount,
-          fallbackGlyphInstanceCount: cpu.fallbackGlyphInstanceCount,
-          cursorInstanceStart: cpu.cursorInstanceStart,
-          cursorInstanceCount: cpu.cursorInstanceCount,
-        };
-        geometryUploadBytes =
-          cpu.rectangleData.byteLength +
-          cpu.glyphData.byteLength +
-          cpu.colorGlyphData.byteLength +
-          cpu.fallbackGlyphData.byteLength;
-        if (promote) {
-          surface.geometryCandidates.delete(key);
-          surface.geometryCache.set(key, geometry);
-          while (surface.geometryCache.size > GEOMETRY_CACHE_LIMIT) {
-            const oldestKey = surface.geometryCache.keys().next().value as string | undefined;
-            if (oldestKey === undefined) break;
-            const oldest = surface.geometryCache.get(oldestKey);
-            if (oldest) destroyCachedGeometry(oldest);
-            surface.geometryCache.delete(oldestKey);
+      }
+    }
+
+    for (const row of renderRows) {
+      for (const run of view.nativeStyleRows[row] ?? []) {
+        const style = styleFor(run.styleId);
+        if (!style.background) continue;
+        pushRectangle(
+          rectangleVertices,
+          (ORIGIN_X + run.cellStart * CELL_WIDTH) * scale,
+          (ORIGIN_Y + row * LINE_HEIGHT) * scale,
+          run.cellSpan * CELL_WIDTH * scale,
+          LINE_HEIGHT * scale,
+          style.background,
+          viewportWidth,
+          viewportHeight,
+        );
+      }
+    }
+    const backgroundInstanceCount = rectangleVertices.length / 10;
+
+    const selection = ordered(view.selection);
+    if (selection) {
+      const [start, end] = selection;
+      for (const row of renderRows) {
+        if (row < start.row || row > end.row) continue;
+        const first = row === start.row ? start.column : 0;
+        const last = row === end.row ? end.column : Math.max(0, cellLength(view.rows[row] ?? "") - 1);
+        pushRectangle(
+          rectangleVertices,
+          (ORIGIN_X + first * CELL_WIDTH) * scale,
+          (ORIGIN_Y + row * LINE_HEIGHT) * scale,
+          Math.max(1, last - first + 1) * CELL_WIDTH * scale,
+          LINE_HEIGHT * scale,
+          view.theme.selection,
+          viewportWidth,
+          viewportHeight,
+        );
+      }
+    }
+    const selectionInstanceCount = rectangleVertices.length / 10 - backgroundInstanceCount;
+
+    const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
+    if (!hasNativeRows) {
+      this.#fallbackAtlas.prepare(
+        renderRows.flatMap((row) => splitGraphemes(view.rows[row] ?? "")),
+        scale,
+      );
+    }
+    if (hasNativeRows) {
+      for (const row of renderRows) {
+        const boxCells = boxDrawingCells(view.rows[row] ?? "");
+        const blockCells = blockElementCells(view.rows[row] ?? "");
+        for (const instance of view.nativeRows[row] ?? []) {
+          const definition = view.glyphDefinitions.get(instance.glyphId);
+          if (!definition) continue;
+          const style = styleFor(instance.styleId);
+          if (style.invisible) continue;
+          const isSelected = selectionContains(selection, row, instance.cellStart);
+          const foreground = isSelected ? view.theme.selectionForeground : style.foreground;
+          const boxDrawing = boxCells.get(instance.cellStart);
+          if (boxDrawing) {
+            let backdrop = style.background ?? view.theme.background;
+            if (isSelected) backdrop = view.theme.selection;
+            // Box glyphs are assembled from several overlapping primitives. Flatten
+            // faint opacity against the cell backdrop first so joins are blended once,
+            // instead of producing a brighter seam at every cell boundary.
+            const boxColor = over(foreground, backdrop);
+            pushBoxDrawing(
+              rectangleVertices,
+              boxDrawing,
+              instance.cellStart,
+              row,
+              scale,
+              boxColor,
+              viewportWidth,
+              viewportHeight,
+            );
+            continue;
           }
-        } else {
-          surface.geometryCandidates.delete(key);
-          surface.geometryCandidates.set(key, true);
-          while (surface.geometryCandidates.size > GEOMETRY_CACHE_LIMIT) {
-            const oldestKey = surface.geometryCandidates.keys().next().value as string | undefined;
-            if (oldestKey === undefined) break;
-            surface.geometryCandidates.delete(oldestKey);
+          const blockElement = blockCells.get(instance.cellStart);
+          if (blockElement) {
+            let backdrop = style.background ?? view.theme.background;
+            if (isSelected) backdrop = view.theme.selection;
+            const blockColor = over(foreground, backdrop);
+            if (
+              pushBlockElement(
+                rectangleVertices,
+                blockElement,
+                instance.cellStart,
+                row,
+                scale,
+                blockColor,
+                viewportWidth,
+                viewportHeight,
+              )
+            )
+              continue;
           }
+          const atlas = definition.format === GlyphFormat.Alpha8 ? this.#monoAtlas : this.#colorAtlas;
+          const vertices = definition.format === GlyphFormat.Alpha8 ? glyphVertices : colorGlyphVertices;
+          pushGlyph(
+            vertices,
+            (ORIGIN_X + instance.x) * scale,
+            (ORIGIN_Y + row * LINE_HEIGHT + instance.y) * scale,
+            instance.width * scale,
+            instance.height * scale,
+            atlas.glyph(definition),
+            foreground,
+            viewportWidth,
+            viewportHeight,
+          );
+        }
+      }
+    } else {
+      for (const row of renderRows) {
+        let column = 0;
+        for (const grapheme of splitGraphemes(view.rows[row] ?? "")) {
+          const glyph = this.#fallbackAtlas.glyph(grapheme, scale);
+          const cells = glyph?.cells ?? graphemeCellWidth(grapheme);
+          if (glyph) {
+            const foreground = selectionContains(selection, row, column)
+              ? view.theme.selectionForeground
+              : view.theme.foreground;
+            pushGlyph(
+              fallbackGlyphVertices,
+              (ORIGIN_X + column * CELL_WIDTH) * scale,
+              (ORIGIN_Y + row * LINE_HEIGHT) * scale,
+              CELL_WIDTH * cells * scale,
+              LINE_HEIGHT * scale,
+              glyph,
+              foreground,
+              viewportWidth,
+              viewportHeight,
+            );
+          }
+          column += cells;
         }
       }
     }
 
-    let cursorData = new Float32Array();
-    let cursorBuffer = geometry.rectangleBuffer;
-    let cursorInstanceStart = geometry.cursorInstanceStart;
-    let cursorInstanceCount = geometry.cursorInstanceCount;
-    if (cacheEligible) {
-      const cursorVertices: number[] = [];
-      pushCursorVertices(cursorVertices, view, renderRowSet, scale, viewportWidth, viewportHeight);
-      cursorData = new Float32Array(cursorVertices);
-      cursorBuffer = surface.cursorBuffer.write(cursorData);
-      cursorInstanceStart = 0;
-      cursorInstanceCount = cursorData.length / 10;
+    for (const row of renderRows) {
+      for (const run of view.nativeStyleRows[row] ?? []) {
+        const style = styleFor(run.styleId);
+        if (style.invisible) continue;
+        const x = (ORIGIN_X + run.cellStart * CELL_WIDTH) * scale;
+        const width = run.cellSpan * CELL_WIDTH * scale;
+        const rowTop = (ORIGIN_Y + row * LINE_HEIGHT) * scale;
+        const stroke = Math.max(1, Math.round(scale));
+        if (style.underline) {
+          pushRectangle(
+            rectangleVertices,
+            x,
+            Math.round(rowTop + 16 * scale),
+            width,
+            stroke,
+            style.foreground,
+            viewportWidth,
+            viewportHeight,
+          );
+        }
+        if (style.strikethrough) {
+          pushRectangle(
+            rectangleVertices,
+            x,
+            Math.round(rowTop + 9 * scale),
+            width,
+            stroke,
+            style.foreground,
+            viewportWidth,
+            viewportHeight,
+          );
+        }
+      }
     }
+    const decorationInstanceStart = backgroundInstanceCount + selectionInstanceCount;
+    const decorationInstanceCount = rectangleVertices.length / 10 - decorationInstanceStart;
+
+    const cursorStyle = effectiveCursorStyle(view);
+    if (cursorStyle !== null && renderRowSet.has(view.cursor.y)) {
+      const x = (ORIGIN_X + view.cursor.x * CELL_WIDTH) * scale;
+      const y = (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * scale;
+      const width = CELL_WIDTH * scale;
+      const height = LINE_HEIGHT * scale;
+      const stroke = Math.max(1, Math.round(scale));
+      const cursorColor: Rgba =
+        cursorStyle === CursorStyle.HollowBlock
+          ? [view.theme.cursor[0], view.theme.cursor[1], view.theme.cursor[2], 1]
+          : view.theme.cursor;
+      if (cursorStyle === CursorStyle.Bar) {
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y,
+          Math.max(2, Math.round(2 * scale)),
+          height,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+      } else if (cursorStyle === CursorStyle.Underline) {
+        const thickness = Math.max(2, Math.round(2 * scale));
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + height - thickness,
+          width,
+          thickness,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+      } else if (cursorStyle === CursorStyle.HollowBlock) {
+        pushRectangle(rectangleVertices, x, y, width, stroke, cursorColor, viewportWidth, viewportHeight);
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + height - stroke,
+          width,
+          stroke,
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+        pushRectangle(
+          rectangleVertices,
+          x,
+          y + stroke,
+          stroke,
+          Math.max(0, height - stroke * 2),
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+        pushRectangle(
+          rectangleVertices,
+          x + width - stroke,
+          y + stroke,
+          stroke,
+          Math.max(0, height - stroke * 2),
+          cursorColor,
+          viewportWidth,
+          viewportHeight,
+        );
+      } else {
+        pushRectangle(rectangleVertices, x, y, width, height, cursorColor, viewportWidth, viewportHeight);
+      }
+    }
+    const rectangleData = new Float32Array(rectangleVertices);
+    const glyphData = new Float32Array(glyphVertices);
+    const colorGlyphData = new Float32Array(colorGlyphVertices);
+    const fallbackGlyphData = new Float32Array(fallbackGlyphVertices);
+    const rectangleBuffer = surface.rectangleBuffer.write(rectangleData);
+    const glyphBuffer = surface.glyphBuffer.write(glyphData);
+    const colorGlyphBuffer = surface.colorGlyphBuffer.write(colorGlyphData);
+    const fallbackGlyphBuffer = surface.fallbackGlyphBuffer.write(fallbackGlyphData);
+    const cursorInstanceStart = decorationInstanceStart + decorationInstanceCount;
+    const cursorInstanceCount = rectangleVertices.length / 10 - cursorInstanceStart;
+
     const pass = encoder.beginRenderPass({
       label: `terminal pass ${id}`,
       colorAttachments: [
@@ -1643,7 +1807,225 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
             b: view.theme.background[2],
             a: view.theme.background[3],
           },
-          loadOp: damage.full ? "clear" : "load",
+          loadOp: fullRedraw ? "clear" : "load",
+          storeOp: "store",
+        },
+      ],
+    });
+    if (rectangleBuffer && backgroundInstanceCount > 0) {
+      pass.setPipeline(this.#rectanglePipeline);
+      pass.setVertexBuffer(0, rectangleBuffer);
+      pass.draw(6, backgroundInstanceCount);
+    }
+    if (rectangleBuffer && selectionInstanceCount > 0) {
+      pass.setPipeline(this.#rectanglePipeline);
+      pass.setVertexBuffer(0, rectangleBuffer);
+      pass.draw(6, selectionInstanceCount, 0, backgroundInstanceCount);
+    }
+    if (glyphBuffer && glyphData.length > 0) {
+      pass.setPipeline(this.#glyphPipeline);
+      pass.setBindGroup(0, this.#monoAtlas.bindGroup);
+      pass.setVertexBuffer(0, glyphBuffer);
+      pass.draw(6, glyphVertices.length / 12);
+    }
+    if (colorGlyphBuffer && colorGlyphData.length > 0) {
+      pass.setPipeline(this.#colorGlyphPipeline);
+      pass.setBindGroup(0, this.#colorAtlas.bindGroup);
+      pass.setVertexBuffer(0, colorGlyphBuffer);
+      pass.draw(6, colorGlyphVertices.length / 12);
+    }
+    if (fallbackGlyphBuffer && fallbackGlyphData.length > 0) {
+      pass.setPipeline(this.#fallbackGlyphPipeline);
+      pass.setBindGroup(0, this.#fallbackAtlas.bindGroup);
+      pass.setVertexBuffer(0, fallbackGlyphBuffer);
+      pass.draw(6, fallbackGlyphVertices.length / 12);
+    }
+    if (rectangleBuffer && decorationInstanceCount > 0) {
+      pass.setPipeline(this.#rectanglePipeline);
+      pass.setVertexBuffer(0, rectangleBuffer);
+      pass.draw(6, decorationInstanceCount, 0, decorationInstanceStart);
+    }
+    if (rectangleBuffer && cursorInstanceCount > 0) {
+      pass.setPipeline(this.#rectanglePipeline);
+      pass.setVertexBuffer(0, rectangleBuffer);
+      pass.draw(6, cursorInstanceCount, 0, cursorInstanceStart);
+    }
+    pass.end();
+
+    const postProcessPass = encoder.beginRenderPass({
+      label: `Ghostty custom shader pass ${id}`,
+      colorAttachments: [
+        {
+          view: surface.context.getCurrentTexture().createView(),
+          clearValue: {
+            r: view.theme.background[0],
+            g: view.theme.background[1],
+            b: view.theme.background[2],
+            a: 1,
+          },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    postProcessPass.setPipeline(this.#postProcessPipeline);
+    postProcessPass.setBindGroup(0, surface.postProcessBindGroup);
+    postProcessPass.draw(3);
+    postProcessPass.end();
+    surface.sceneValid = true;
+    if (!this.#performanceMeasurementEnabled) return undefined;
+    const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
+    const colorUploadsAfter = this.#colorAtlas.uploadMetrics();
+    const fallbackUploadsAfter = this.#fallbackAtlas.uploadMetrics();
+    return {
+      queueSubmits: 0,
+      fullRenders: Number(fullRedraw),
+      partialRenders: Number(!fullRedraw),
+      damagedRows: renderRows.length,
+      geometryCacheHits: 0,
+      geometryCacheMisses: 0,
+      canvasPixels: viewportWidth * viewportHeight,
+      renderPasses: 2,
+      drawCalls:
+        Number(backgroundInstanceCount > 0) +
+        Number(selectionInstanceCount > 0) +
+        Number(glyphData.length > 0) +
+        Number(colorGlyphData.length > 0) +
+        Number(fallbackGlyphData.length > 0) +
+        Number(decorationInstanceCount > 0) +
+        Number(cursorInstanceCount > 0) +
+        1,
+      rectangleVertices: (rectangleVertices.length / 10) * 6,
+      monoGlyphVertices: (glyphVertices.length / 12) * 6,
+      colorGlyphVertices: (colorGlyphVertices.length / 12) * 6,
+      fallbackGlyphVertices: (fallbackGlyphVertices.length / 12) * 6,
+      vertexUploadBytes:
+        rectangleData.byteLength + glyphData.byteLength + colorGlyphData.byteLength + fallbackGlyphData.byteLength,
+      atlasUploadBytes:
+        monoUploadsAfter.bytes -
+        monoUploadsBefore!.bytes +
+        (colorUploadsAfter.bytes - colorUploadsBefore!.bytes) +
+        (fallbackUploadsAfter.bytes - fallbackUploadsBefore!.bytes),
+      atlasUploadCalls:
+        monoUploadsAfter.calls -
+        monoUploadsBefore!.calls +
+        (colorUploadsAfter.calls - colorUploadsBefore!.calls) +
+        (fallbackUploadsAfter.calls - fallbackUploadsBefore!.calls),
+    };
+  }
+
+  #encodeRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
+    const surface = this.#surfaces.get(id);
+    if (!surface) return;
+    if (!surface.sceneValid || !view.damage || view.damage.full || view.damage.geometryChanged) {
+      return this.#encodeRenderDynamic(id, view, encoder);
+    }
+    const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
+    const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
+    const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
+    const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
+    const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;
+    const scale = surface.dpr;
+    const viewportWidth = surface.canvas.width;
+    const viewportHeight = surface.canvas.height;
+    const renderRowSet = new Set(damage.rows);
+    const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
+    let geometry: CachedGeometry;
+    let cacheHit = false;
+    let geometryUploadBytes = 0;
+    const generations = (): [number, number, number] => [
+      this.#monoAtlas.generation,
+      this.#colorAtlas.generation,
+      this.#fallbackAtlas.generation,
+    ];
+    let key = geometryCacheKey(view, damage.rows, hasNativeRows, generations());
+    const cached = surface.geometryCache.get(key);
+    cacheHit = cached !== undefined;
+    if (cached) {
+      geometry = cached;
+      surface.geometryCache.delete(key);
+      surface.geometryCache.set(key, cached);
+    } else {
+      const admitted = surface.geometryCandidates.has(key);
+      const candidateKey = key;
+      const cpu = this.#buildGeometry(
+        view,
+        damage.rows,
+        rowCount,
+        false,
+        hasNativeRows,
+        scale,
+        viewportWidth,
+        viewportHeight,
+      );
+      key = geometryCacheKey(view, damage.rows, hasNativeRows, generations());
+      const promote = admitted && key === candidateKey;
+      geometry = {
+        rectangleBuffer: promote
+          ? createCachedVertexBuffer(this.device, `cached rectangles ${id}`, cpu.rectangleData)
+          : surface.rectangleBuffer.write(cpu.rectangleData),
+        glyphBuffer: promote
+          ? createCachedVertexBuffer(this.device, `cached glyphs ${id}`, cpu.glyphData)
+          : surface.glyphBuffer.write(cpu.glyphData),
+        colorGlyphBuffer: promote
+          ? createCachedVertexBuffer(this.device, `cached color glyphs ${id}`, cpu.colorGlyphData)
+          : surface.colorGlyphBuffer.write(cpu.colorGlyphData),
+        fallbackGlyphBuffer: promote
+          ? createCachedVertexBuffer(this.device, `cached fallback glyphs ${id}`, cpu.fallbackGlyphData)
+          : surface.fallbackGlyphBuffer.write(cpu.fallbackGlyphData),
+        backgroundInstanceCount: cpu.backgroundInstanceCount,
+        selectionInstanceCount: cpu.selectionInstanceCount,
+        decorationInstanceStart: cpu.decorationInstanceStart,
+        decorationInstanceCount: cpu.decorationInstanceCount,
+        rectangleInstanceCount: cpu.rectangleInstanceCount,
+        glyphInstanceCount: cpu.glyphInstanceCount,
+        colorGlyphInstanceCount: cpu.colorGlyphInstanceCount,
+        fallbackGlyphInstanceCount: cpu.fallbackGlyphInstanceCount,
+      };
+      geometryUploadBytes =
+        cpu.rectangleData.byteLength +
+        cpu.glyphData.byteLength +
+        cpu.colorGlyphData.byteLength +
+        cpu.fallbackGlyphData.byteLength;
+      if (promote) {
+        surface.geometryCandidates.delete(key);
+        surface.geometryCache.set(key, geometry);
+        while (surface.geometryCache.size > GEOMETRY_CACHE_LIMIT) {
+          const oldestKey = surface.geometryCache.keys().next().value as string | undefined;
+          if (oldestKey === undefined) break;
+          const oldest = surface.geometryCache.get(oldestKey);
+          if (oldest) destroyCachedGeometry(oldest);
+          surface.geometryCache.delete(oldestKey);
+        }
+      } else {
+        surface.geometryCandidates.delete(key);
+        surface.geometryCandidates.set(key, true);
+        while (surface.geometryCandidates.size > GEOMETRY_CACHE_LIMIT) {
+          const oldestKey = surface.geometryCandidates.keys().next().value as string | undefined;
+          if (oldestKey === undefined) break;
+          surface.geometryCandidates.delete(oldestKey);
+        }
+      }
+    }
+
+    const cursorVertices: number[] = [];
+    pushCursorVertices(cursorVertices, view, renderRowSet, scale, viewportWidth, viewportHeight);
+    const cursorData = new Float32Array(cursorVertices);
+    const cursorBuffer = surface.cursorBuffer.write(cursorData);
+    const cursorInstanceStart = 0;
+    const cursorInstanceCount = cursorData.length / 10;
+    const pass = encoder.beginRenderPass({
+      label: `terminal pass ${id}`,
+      colorAttachments: [
+        {
+          view: surface.sceneTexture.createView(),
+          clearValue: {
+            r: view.theme.background[0],
+            g: view.theme.background[1],
+            b: view.theme.background[2],
+            a: view.theme.background[3],
+          },
+          loadOp: "load",
           storeOp: "store",
         },
       ],
@@ -1715,11 +2097,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const fallbackUploadsAfter = this.#fallbackAtlas.uploadMetrics();
     return {
       queueSubmits: 0,
-      fullRenders: Number(damage.full),
-      partialRenders: Number(!damage.full),
+      fullRenders: 0,
+      partialRenders: 1,
       damagedRows: damage.rows.length,
-      geometryCacheHits: Number(cacheEligible && cacheHit),
-      geometryCacheMisses: Number(cacheEligible && !cacheHit),
+      geometryCacheHits: Number(cacheHit),
+      geometryCacheMisses: Number(!cacheHit),
       canvasPixels: viewportWidth * viewportHeight,
       renderPasses: 2,
       drawCalls:
@@ -1731,7 +2113,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         Number(geometry.decorationInstanceCount > 0) +
         Number(cursorInstanceCount > 0) +
         1,
-      rectangleVertices: (geometry.rectangleInstanceCount + (cacheEligible ? cursorInstanceCount : 0)) * 6,
+      rectangleVertices: (geometry.rectangleInstanceCount + cursorInstanceCount) * 6,
       monoGlyphVertices: geometry.glyphInstanceCount * 6,
       colorGlyphVertices: geometry.colorGlyphInstanceCount * 6,
       fallbackGlyphVertices: geometry.fallbackGlyphInstanceCount * 6,
