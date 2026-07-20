@@ -292,3 +292,51 @@ Against the original baseline, the retained stack now reduces
 1646.25 to 921.84 ms (-44.0%). `truecolor-replica-1` reaches 57.02 ms wall
 (-81.5% from 308.67 ms), 3.98 ms p99 (-80.6% from 20.56 ms), and 56.53 ms user
 CPU (-81.6% from 307.70 ms).
+
+## Retained optimization: adaptive TRF1 style indexing
+
+The replica benchmark now splits non-engine apply work into logical-row
+preparation and TRF1 frame encoding. A clean 15-sample attribution run showed
+that the remaining truecolor apply cost was not shaping: row preparation took
+3.45 ms, while TRF1 encoding took 21.47 ms. The old encoder recomputed style
+IDs while collecting definitions and building runs, then linearly searched as
+many as 120 cells and recomputed the matched style ID for every glyph.
+
+Style-dense frames now compute each cell ID once and build a direct
+column-to-style index per updated row. The index is filled in reverse cell
+order so malformed or overlapping cells retain the old first-match behavior.
+Style definitions use a hash table during collection and are sorted by ID
+before encoding, preserving the byte-level TRF1 order. Frames whose updated
+rows all contain fewer than eight cells keep the original ordered-map and
+linear lookup path; the one-cell dense and resync workloads therefore avoid
+the index allocations entirely. Unit coverage compares indexed lookup against
+the old overlap predicate, and the existing golden TRF1 fixture remains exact.
+
+A clean 15-repetition comparison used the attribution commit (`be1a012`) and
+the final frame-level adaptive candidate (`66fd6f2`), with two warmups and a
+150 ms cooldown:
+
+| Metric                | `truecolor-replica-1` before → after |  Delta |
+| --------------------- | -----------------------------------: | -----: |
+| Wall                  |                    61.60 → 44.67 ms | -27.5% |
+| Replica apply         |                    28.46 → 12.70 ms | -55.4% |
+| TRF1 encode           |                     23.01 → 7.52 ms | -67.3% |
+| Queue p99             |                      5.09 → 3.26 ms | -35.9% |
+| Wire throughput       |                 105.13 → 144.97 MiB/s | +37.9% |
+| Process user CPU      |                    60.99 → 44.36 ms | -27.3% |
+
+All listed deltas have bootstrap 95% intervals wholly beyond the 3% practical
+threshold. The truecolor decode-only control is neutral: wall changes 33.26 to
+33.43 ms (+0.5%) and decode work changes 31.77 to 31.93 ms (+0.5%). Single-pane
+dense wall changes -0.8%, resync -1.4%, and four-pane dense -2.7%; their CPU,
+apply, and TRF1 changes are also below the practical threshold. The dense
+single-pane process records a 0.42 MB (+3.4%) higher peak RSS, while resync is
+neutral and four-pane RSS is lower. Because this is a lifetime allocator
+high-water mark rather than retained-size attribution, the increase is not
+called a regression, but remains a memory guardrail.
+
+Source bytes, TRF1 bytes, message counts, and revision checksums are identical
+between the clean reports. Relative to the earlier retained median, truecolor
+replica wall moves from 57.02 to 44.67 ms and user CPU from 56.53 to 44.36 ms.
+Against the original 308.67 ms baseline, the retained stack has reduced
+truecolor replica wall time by about 85.5%.

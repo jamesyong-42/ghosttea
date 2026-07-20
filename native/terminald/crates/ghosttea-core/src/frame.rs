@@ -88,9 +88,7 @@ fn style_id(style: CellStyle) -> u32 {
     if hash == 0 { 1 } else { hash }
 }
 
-fn encode_style_definitions(
-    styles: impl ExactSizeIterator<Item = (u32, CellStyle)>,
-) -> Vec<u8> {
+fn encode_style_definitions(styles: impl ExactSizeIterator<Item = (u32, CellStyle)>) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4 + styles.len() * 16);
     bytes.extend_from_slice(&(styles.len() as u32).to_le_bytes());
     for (id, style) in styles {
