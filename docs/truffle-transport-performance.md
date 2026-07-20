@@ -154,3 +154,53 @@ The truecolor wire still carries roughly 32 MB of owned per-cell JSON and now
 spends about 171 ms in read/decode work. A compact state representation remains
 the next transport target, but it must be explicitly versioned and negotiated
 rather than silently changing the existing desktop and Apple protocol.
+
+## Retained optimization: negotiated compact state encoding
+
+Desktop peers now advertise state-codec capabilities in the existing Truffle
+hello and select `compact-json-v1` only when both sides support it. Missing
+capability and selection fields mean legacy JSON, so older desktop peers and
+the Apple compact-stream client keep their existing contract without a
+protocol-version bump. The selected codec changes only live state messages;
+control messages and the four-byte length framing remain unchanged.
+
+The compact representation preserves the logical model but serializes state
+variants, snapshots, patches, rows, cells, styles, cursors, and scrollbars as
+short tagged tuples. Cell booleans use a validated bit field. Encoding borrows
+the production state directly instead of cloning it into an intermediate DTO;
+decoding produces the same owned logical snapshot or patch. Unsupported style
+or extension bits fail closed. Round-trip tests cover snapshots, patches, and
+control changes, while the shared Apple fixture verifies that omitted
+negotiation fields retain the old wire shape.
+
+An adjacent 15-repetition same-binary comparison isolated the codec on sparse,
+dense, and truecolor decode cases. Values below are medians; deltas have
+bootstrap 95% intervals wholly on the improving side of zero.
+
+| Case                 |        Wall JSON → compact |      Decode JSON → compact |    Encode JSON → compact | Source bytes |
+| -------------------- | -------------------------: | -------------------------: | -----------------------: | -----------: |
+| `sparse-decode-1`    |  58.70 → 22.67 ms (-61.4%) |  56.16 → 20.19 ms (-64.1%) | 15.54 → 7.21 ms (-53.6%) |       -52.5% |
+| `dense-decode-1`     |  57.45 → 16.03 ms (-72.1%) |  56.14 → 14.65 ms (-73.9%) | 16.05 → 8.92 ms (-44.4%) |       -43.9% |
+| `truecolor-decode-1` | 172.33 → 31.77 ms (-81.6%) | 170.89 → 30.34 ms (-82.2%) | 24.80 → 6.56 ms (-73.5%) |       -79.0% |
+
+The 10-repetition full matrix confirms the user-visible target:
+`truecolor-replica-1` wall time falls from 269.22 to 127.43 ms (-52.7%), p99
+from 18.14 to 8.66 ms (-52.3%), user CPU from 266.85 to 126.67 ms (-52.5%),
+and source bytes from 32.30 MB to 6.79 MB (-79.0%). Compared with the original
+clean baseline before the clone and buffer work, truecolor replica wall time is
+down from 308.67 to 127.43 ms (-58.7%).
+
+The full matrix also exposes the next bottleneck rather than hiding it. Sparse,
+dense, resync, and four-view replica bursts are dominated by shaping and TRF1
+publication, so their total wall time changes by only -0.7% to -1.7%. Their
+enqueue-to-apply p99 rises 56-61% because smaller frames no longer backpressure
+the producer as early; more already-generated updates can queue ahead of the
+apply stage. This is not a codec CPU regression—their decode work falls
+64-68%—but it is a real saturated-queue behavior. The next experiment should
+bound or coalesce pending state at the publish/receive boundary while
+preserving patch ordering and resynchronization semantics.
+
+The benchmark now treats source wire bytes as a performance metric rather than
+a correctness invariant. TRF1 bytes, received message counts, and revision
+checksums remain invariant across JSON and compact runs. Rust unit tests,
+benchmark tests, Clippy, and all 137 Apple package tests passed.

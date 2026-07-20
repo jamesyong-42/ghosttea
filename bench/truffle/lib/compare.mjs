@@ -100,6 +100,7 @@ function comparableConfiguration(report) {
     scale: report.config?.scale,
     duplexBytes: report.config?.duplexBytes,
     configuredTransport: report.config?.transport,
+    // Intentionally omit the codec so same-binary codec A/B runs compare.
     cases: report.config?.cases,
     host: report.runner?.host,
     platform: report.runner?.platform,

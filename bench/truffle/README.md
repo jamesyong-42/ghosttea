@@ -13,15 +13,17 @@ through logical-state application, text shaping, and TRF1 publication. Fanout
 cases use concurrent publisher/receiver tasks per replicated view and the same
 shared `TextEngine` contention as a daemon displaying several remote views.
 
-The default `quic-protocol-loopback` transport uses the same length-prefixed
-JSON encoding as desktop-to-desktop Truffle QUIC sessions. The optional
-`compact-loopback` transport adds the channel-byte framing from the Apple
-raw-stream path. Both run over an in-process bounded duplex stream. They are
-stable microbenchmarks for code changes in the Truffle adapter, but they do **not**
-include Tailscale discovery, encryption, congestion control, packet loss, or an
-actual QUIC socket. Do not describe its latency or throughput as tailnet
-performance. The optional live Truffle qualification is documented below and
-must be reported separately.
+The default `quic-protocol-loopback` transport uses the same length prefix and
+negotiated `compact-json-v1` state encoding as desktop-to-desktop Truffle QUIC
+sessions. Pass `--state-codec=json` for the legacy desktop encoding. The
+optional `compact-loopback` transport uses the channel-byte framing and legacy
+JSON state contract from the Apple raw-stream path; it therefore requires
+`--state-codec=json`. Both run over an in-process bounded duplex stream. They
+are stable microbenchmarks for code changes in the Truffle adapter, but they do
+**not** include Tailscale discovery, encryption, congestion control, packet
+loss, or an actual QUIC socket. Do not describe their latency or throughput as
+tailnet performance. The optional live Truffle qualification is documented
+below and must be reported separately.
 
 ## Baseline workflow
 
@@ -48,6 +50,23 @@ reports. Raw `results*.json` files are ignored because they are machine- and
 revision-specific. The default 250 ms unmeasured cooldown between repetitions
 reduces heat and scheduler carry-over; keep it identical across comparisons.
 
+To compare the negotiated desktop state codecs on one committed binary, run
+the same cases once with each codec. Codec identity is recorded but
+intentionally excluded from the comparison configuration gate:
+
+```sh
+npm run bench:truffle -- \
+  --allow-untracked=pnpm-lock.yaml,pnpm-workspace.yaml \
+  --state-codec=json \
+  --output=bench/truffle/results-codec-json.json
+
+npm run bench:truffle -- \
+  --no-build \
+  --allow-untracked=pnpm-lock.yaml,pnpm-workspace.yaml \
+  --state-codec=compact-json-v1 \
+  --output=bench/truffle/results-codec-compact.json
+```
+
 Run the compact Apple route as a separate baseline; never compare it directly
 with the default QUIC-protocol report:
 
@@ -73,8 +92,9 @@ npm run bench:truffle -- \
 Every case begins with a full snapshot. The remaining messages are patches,
 except `resync`, which intentionally sends only snapshots. Workloads are
 deterministic and report source wire bytes, TRF1 bytes, message counts, and a
-revision checksum. The comparison gate rejects candidates that change those
-invariants.
+revision checksum. Source wire size is a lower-is-better performance metric so
+representation experiments can change it. The comparison gate still rejects
+changes to TRF1 bytes, received message counts, and revision checksums.
 
 Useful development subsets:
 
@@ -94,7 +114,10 @@ npm run bench:truffle -- \
   exceed wall time; process user/system CPU are the actual CPU counters.
 - enqueue-to-apply latency includes time waiting behind earlier messages in
   the burst; p95/p99 reveal queue buildup rather than interactive RTT.
-- wire throughput is aggregate across receivers. `sourceWireBytes` is one peer.
+- wire throughput is aggregate bytes per wall second across receivers;
+  reducing frame size can lower this value in an apply-bound case even when
+  the codec improves. `sourceWireBytes` is the lower-is-better size for one
+  peer.
 - user/system CPU come from `getrusage`; peak RSS is the process lifetime high
   water mark, so use it as a coarse regression signal.
 
