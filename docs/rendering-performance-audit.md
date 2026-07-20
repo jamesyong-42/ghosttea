@@ -1,6 +1,6 @@
 # Per-pane rendering performance audit
 
-Status: architectural audit plus the first measured optimization cycle.
+Status: architectural audit plus measured optimization cycles.
 
 The current per-pane canvas model is viable. All pane canvases in a renderer
 window share one render worker and one WebGPU device, while each pane owns its
@@ -14,7 +14,7 @@ qualification gate: capture a baseline, change one behavior, compare repeated
 samples on the same machine, and reject changes that merely move cost between
 latency, CPU, GPU backlog, and memory.
 
-## Current hot path
+## Original hot path
 
 ```text
 PTY output
@@ -30,8 +30,9 @@ PTY output
   -> complete pane CRT post-process pass into the canvas
 ```
 
-Damage starts narrow, but full-state cloning and full rendering widen it again
-at both ends of the pipeline.
+This was the baseline at the start of the audit. The retained changes in the
+measured log now preserve row damage through the worker and first WebGPU pass;
+full-state native cloning and the full-pane post-process remain.
 
 ## Findings
 
@@ -275,6 +276,15 @@ Retained changes:
    renderer recovery, and explicit verification requests remain full redraws.
    A benchmark switch promotes every invalidation to full damage for controlled
    same-build A/B runs.
+9. Repeated, unchanged partial repaints can reuse GPU-ready geometry. A new
+   deterministic `repaint-1` case requests 180 redraws of one populated row
+   without changing its content. Each pane keeps an eight-entry LRU keyed by
+   session/layout epoch, damaged-row revisions, theme, selection, native versus
+   fallback text mode, and atlas generations. Entries require a second sighting
+   before allocating persistent GPU buffers, so one-off damage signatures do
+   not accumulate resources. Full frames and content-revised rows use the
+   original compact dynamic renderer directly; the cache reported zero hits and
+   misses in the typing control.
 
 The row-damage correctness gate captures the complete Electron window, hashes
 its bitmap, forces a full redraw of every pane, and requires an exact SHA-256
@@ -307,9 +317,21 @@ and are not used to claim a memory win. The explicit atlas allocation reduction
 is deterministic, but the next harness iteration should add GPU allocation
 counters and per-process lifetime normalization.
 
-The next row-oriented step is persistent GPU geometry by row revision. The
-current change avoids rebuilding clean rows on sparse frames, but it still
-allocates fresh JavaScript arrays and rewrites compact buffers for the damaged
-rows, and the CRT post-process remains full-pane. Any row-geometry cache should
-use the same forced-full pixel gate and controlled full-damage baseline rather
-than assuming fewer uploads automatically improve end-to-idle latency.
+For the unchanged-row cache, seven clean measured repetitions reduced median
+worker render CPU from 33.7 ms to 19.6 ms (-41.8%, supported) and vertex uploads
+from 907,200 to 38,560 bytes (-95.7%, supported). Aggregate Electron CPU fell
+14.5%; end-to-idle improved only 1.0% and is correctly classified as
+inconclusive because the workload is paced. The cache stabilized at 178 hits
+and two admission misses in every measured repetition. The five-run typing
+control was neutral: render CPU moved from 103.2 ms to 102.1 ms (-1.1%) and
+end-to-idle by -0.5%, with both confidence intervals crossing zero. The visual
+fixture again produced identical partial and forced-full SHA-256 hashes.
+
+The cache is deliberately narrow. Content-changing rows still allocate fresh
+JavaScript arrays and rewrite compact buffers, while the CRT post-process
+remains full-pane. Keeping separate cached and dynamic builders also grows the
+minified worker bundle to 116.29 kB, so a future refactor should share geometry
+construction without putting abstraction overhead back on the measured dynamic
+hot path. The next row-oriented experiment is persistent per-row buffer regions
+for genuinely revised content, qualified by the same typing control and
+forced-full pixel gate rather than assuming fewer uploads improve latency.

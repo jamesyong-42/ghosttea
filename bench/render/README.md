@@ -99,8 +99,8 @@ Each measured repetition preserves raw data rather than only a headline FPS:
 - worker frame-application and render CPU samples;
 - dirty-to-render and frame-arrival-to-render distributions;
 - flushes, render calls, and panes per flush;
-- canvas pixel-frames, passes, draw calls, vertices, vertex bytes, and atlas
-  upload bytes/calls;
+- canvas pixel-frames, passes, draw calls, vertices, vertex bytes, geometry-cache
+  hits/misses, and atlas upload bytes/calls;
 - final `GPUQueue.onSubmittedWorkDone()` drain time;
 - 100 ms Electron process CPU and resident-set samples, including the GPU and
   utility processes;
