@@ -203,6 +203,7 @@ pub struct TextEngine {
     next_glyph_id: u32,
     shaped_rows: HashMap<u64, Vec<CachedShapedRow>>,
     shaped_row_count: usize,
+    shaped_row_candidates: HashSet<u64>,
     scale_context: ScaleContext,
     metrics: TextMetrics,
     raster_scale: f32,
@@ -211,6 +212,7 @@ pub struct TextEngine {
 
 const MAX_CACHED_GLYPHS: usize = 65_536;
 const MAX_CACHED_SHAPED_ROWS: usize = 512;
+const MAX_SHAPED_ROW_CANDIDATES: usize = 1_024;
 
 impl TextEngine {
     pub fn discover() -> Result<Self> {
@@ -305,6 +307,7 @@ impl TextEngine {
             next_glyph_id: 1,
             shaped_rows: HashMap::new(),
             shaped_row_count: 0,
+            shaped_row_candidates: HashSet::new(),
             scale_context: ScaleContext::new(),
             metrics: TextMetrics::default(),
             raster_scale: RASTER_SCALE,
@@ -391,6 +394,7 @@ impl TextEngine {
             next_glyph_id: 1,
             shaped_rows: HashMap::new(),
             shaped_row_count: 0,
+            shaped_row_candidates: HashSet::new(),
             scale_context: ScaleContext::new(),
             metrics,
             raster_scale,
@@ -468,19 +472,26 @@ impl TextEngine {
             .into_iter()
             .filter_map(|id| self.glyphs.get(&id).cloned())
             .collect();
-        if self.shaped_row_count >= MAX_CACHED_SHAPED_ROWS {
-            self.shaped_rows.clear();
-            self.shaped_row_count = 0;
+        if self.shaped_row_candidates.remove(&cache_key) {
+            if self.shaped_row_count >= MAX_CACHED_SHAPED_ROWS {
+                self.shaped_rows.clear();
+                self.shaped_row_count = 0;
+            }
+            self.shaped_rows
+                .entry(cache_key)
+                .or_default()
+                .push(CachedShapedRow {
+                    text: text.to_owned(),
+                    spans: spans.to_vec(),
+                    shaped: output.clone(),
+                });
+            self.shaped_row_count += 1;
+        } else {
+            if self.shaped_row_candidates.len() >= MAX_SHAPED_ROW_CANDIDATES {
+                self.shaped_row_candidates.clear();
+            }
+            self.shaped_row_candidates.insert(cache_key);
         }
-        self.shaped_rows
-            .entry(cache_key)
-            .or_default()
-            .push(CachedShapedRow {
-                text: text.to_owned(),
-                spans: spans.to_vec(),
-                shaped: output.clone(),
-            });
-        self.shaped_row_count += 1;
         Ok(output)
     }
 
@@ -717,6 +728,7 @@ impl TextEngine {
             self.glyphs.clear();
             self.shaped_rows.clear();
             self.shaped_row_count = 0;
+            self.shaped_row_candidates.clear();
         }
         if glyph_index > u16::MAX as u32 {
             bail!("glyph index exceeds OpenType range");
@@ -1025,12 +1037,15 @@ mod tests {
             style: FontStyle::default(),
         }];
         engine.shape_styled_row("cached", &spans).unwrap();
+        assert_eq!(engine.shaped_row_count, 0);
+
+        engine.shape_styled_row("cached", &spans).unwrap();
         assert_eq!(engine.shaped_row_count, 1);
 
         engine.shape_styled_row("cached", &spans).unwrap();
         assert_eq!(engine.shaped_row_count, 1);
 
         engine.shape_row("different", FontStyle::default()).unwrap();
-        assert_eq!(engine.shaped_row_count, 2);
+        assert_eq!(engine.shaped_row_count, 1);
     }
 }
