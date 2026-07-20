@@ -114,38 +114,34 @@ fn encode_style_definitions(
     bytes
 }
 
-enum StyleDefinitions {
-    Ordered(BTreeMap<u32, CellStyle>),
-    Hashed(HashMap<u32, CellStyle>),
+struct PreparedRowStyles {
+    cell_ids: Vec<u32>,
+    column_ids: Vec<u32>,
 }
 
-impl StyleDefinitions {
-    fn new(indexed: bool) -> Self {
-        if indexed {
-            let mut styles = HashMap::new();
-            styles.insert(0, CellStyle::default());
-            Self::Hashed(styles)
-        } else {
-            let mut styles = BTreeMap::new();
-            styles.insert(0, CellStyle::default());
-            Self::Ordered(styles)
-        }
-    }
+enum PreparedFrameStyles {
+    Linear(BTreeMap<u32, CellStyle>),
+    Indexed {
+        definitions: HashMap<u32, CellStyle>,
+        rows: Vec<PreparedRowStyles>,
+    },
+}
 
+impl PreparedFrameStyles {
     fn len(&self) -> usize {
         match self {
-            Self::Ordered(styles) => styles.len(),
-            Self::Hashed(styles) => styles.len(),
+            Self::Linear(styles) => styles.len(),
+            Self::Indexed { definitions, .. } => definitions.len(),
         }
     }
 
     fn encode(&self) -> Vec<u8> {
         match self {
-            Self::Ordered(styles) => {
+            Self::Linear(styles) => {
                 encode_style_definitions(styles.iter().map(|(&id, &style)| (id, style)))
             }
-            Self::Hashed(styles) => {
-                let mut sorted = styles
+            Self::Indexed { definitions, .. } => {
+                let mut sorted = definitions
                     .iter()
                     .map(|(&id, &style)| (id, style))
                     .collect::<Vec<_>>();
@@ -154,14 +150,6 @@ impl StyleDefinitions {
             }
         }
     }
-}
-
-enum PreparedRowStyles {
-    Linear,
-    Indexed {
-        cell_ids: Vec<u32>,
-        column_ids: Vec<u32>,
-    },
 }
 
 fn append_style_run(runs: &mut Vec<(u32, u16, u16)>, cell: &TerminalCell, id: u32) {
@@ -181,41 +169,16 @@ fn append_style_run(runs: &mut Vec<(u32, u16, u16)>, cell: &TerminalCell, id: u3
 fn prepare_row_styles(
     cells: &[TerminalCell],
     shaped: &ShapedRow,
-    styles: &mut StyleDefinitions,
+    styles: &mut HashMap<u32, CellStyle>,
 ) -> PreparedRowStyles {
-    if cells.len() < 8 {
-        match styles {
-            StyleDefinitions::Ordered(styles) => {
-                for cell in cells {
-                    styles.entry(style_id(cell.style)).or_insert(cell.style);
-                }
-            }
-            StyleDefinitions::Hashed(styles) => {
-                for cell in cells {
-                    styles.entry(style_id(cell.style)).or_insert(cell.style);
-                }
-            }
-        }
-        return PreparedRowStyles::Linear;
-    }
-    let cell_ids = match styles {
-        StyleDefinitions::Ordered(styles) => cells
-            .iter()
-            .map(|cell| {
-                let id = style_id(cell.style);
-                styles.entry(id).or_insert(cell.style);
-                id
-            })
-            .collect::<Vec<_>>(),
-        StyleDefinitions::Hashed(styles) => cells
-            .iter()
-            .map(|cell| {
-                let id = style_id(cell.style);
-                styles.entry(id).or_insert(cell.style);
-                id
-            })
-            .collect::<Vec<_>>(),
-    };
+    let cell_ids = cells
+        .iter()
+        .map(|cell| {
+            let id = style_id(cell.style);
+            styles.entry(id).or_insert(cell.style);
+            id
+        })
+        .collect::<Vec<_>>();
     let column_count = shaped
         .glyphs
         .iter()
@@ -230,7 +193,7 @@ fn prepare_row_styles(
         let end = (cell.column.saturating_add(cell.span) as usize).min(column_ids.len());
         column_ids[start..end].fill(*id);
     }
-    PreparedRowStyles::Indexed {
+    PreparedRowStyles {
         cell_ids,
         column_ids,
     }
@@ -294,16 +257,31 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     let indexed_styles = updated_rows
         .iter()
         .any(|row| cells[*row as usize].len() >= 8);
-    let mut styles = StyleDefinitions::new(indexed_styles);
-    let prepared_styles = updated_rows
-        .iter()
-        .map(|row| {
-            let index = *row as usize;
-            prepare_row_styles(&cells[index], &shaped_rows[index], &mut styles)
-        })
-        .collect::<Vec<_>>();
+    let prepared_styles = if indexed_styles {
+        let mut definitions = HashMap::new();
+        definitions.insert(0, CellStyle::default());
+        let rows = updated_rows
+            .iter()
+            .map(|row| {
+                let index = *row as usize;
+                prepare_row_styles(&cells[index], &shaped_rows[index], &mut definitions)
+            })
+            .collect::<Vec<_>>();
+        PreparedFrameStyles::Indexed { definitions, rows }
+    } else {
+        let mut definitions = BTreeMap::new();
+        definitions.insert(0, CellStyle::default());
+        for row in updated_rows {
+            for cell in &cells[*row as usize] {
+                definitions
+                    .entry(style_id(cell.style))
+                    .or_insert(cell.style);
+            }
+        }
+        PreparedFrameStyles::Linear(definitions)
+    };
     let (glyph_definitions, glyph_count) = encode_glyph_definitions(new_glyph_definitions)?;
-    let style_definitions = styles.encode();
+    let style_definitions = prepared_styles.encode();
     let mut accessibility = Vec::new();
     accessibility.extend_from_slice(&(updated_rows.len() as u16).to_le_bytes());
     let mut replacements = Vec::new();
@@ -313,7 +291,6 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         let text = &rows[row_index];
         let shaped = &shaped_rows[row_index];
         let row_cells = &cells[row_index];
-        let row_styles = &prepared_styles[updated_index];
         let bytes = text.as_bytes();
         if bytes.len() > u32::MAX as usize {
             bail!("row is too large");
@@ -326,22 +303,22 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         replacements.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         replacements.extend_from_slice(&(shaped.glyphs.len() as u16).to_le_bytes());
         let mut runs: Vec<(u32, u16, u16)> = Vec::new();
-        match row_styles {
-            PreparedRowStyles::Linear => {
+        match &prepared_styles {
+            PreparedFrameStyles::Linear(_) => {
                 for cell in row_cells {
                     append_style_run(&mut runs, cell, style_id(cell.style));
                 }
             }
-            PreparedRowStyles::Indexed { cell_ids, .. } => {
-                for (cell, id) in row_cells.iter().zip(cell_ids) {
+            PreparedFrameStyles::Indexed { rows, .. } => {
+                for (cell, id) in row_cells.iter().zip(&rows[updated_index].cell_ids) {
                     append_style_run(&mut runs, cell, *id);
                 }
             }
         }
         replacements.extend_from_slice(&(runs.len() as u16).to_le_bytes());
         replacements.extend_from_slice(bytes);
-        match row_styles {
-            PreparedRowStyles::Linear => {
+        match &prepared_styles {
+            PreparedFrameStyles::Linear(_) => {
                 for glyph in &shaped.glyphs {
                     let id = row_cells
                         .iter()
@@ -354,7 +331,8 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
                     encode_glyph_instance(&mut replacements, glyph, id);
                 }
             }
-            PreparedRowStyles::Indexed { column_ids, .. } => {
+            PreparedFrameStyles::Indexed { rows, .. } => {
+                let column_ids = &rows[updated_index].column_ids;
                 for glyph in &shaped.glyphs {
                     let id = column_ids
                         .get(glyph.cell_start as usize)
@@ -428,7 +406,7 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     put_u16(&mut packet, 80, STYLE_DEFINITIONS);
     put_u32(&mut packet, 84, style_offset as u32);
     put_u32(&mut packet, 88, style_definitions.len() as u32);
-    put_u32(&mut packet, 92, styles.len() as u32);
+    put_u32(&mut packet, 92, prepared_styles.len() as u32);
     put_u16(&mut packet, 96, ROW_REPLACEMENTS);
     put_u16(
         &mut packet,
@@ -525,23 +503,16 @@ mod tests {
             glyphs: (0..=6).map(glyph_at).collect(),
             definitions: Vec::new(),
         };
-        let mut definitions = StyleDefinitions::new(true);
+        let mut definitions = HashMap::new();
+        definitions.insert(0, CellStyle::default());
         let prepared = prepare_row_styles(&cells, &shaped, &mut definitions);
 
-        let PreparedRowStyles::Indexed {
-            cell_ids,
-            column_ids,
-        } = &prepared
-        else {
-            panic!("style-dense rows should use the column index");
-        };
         assert_eq!(
-            cell_ids.as_slice(),
+            prepared.cell_ids,
             cells
                 .iter()
                 .map(|cell| style_id(cell.style))
                 .collect::<Vec<_>>()
-                .as_slice()
         );
         for glyph in &shaped.glyphs {
             let expected = cells
@@ -553,7 +524,8 @@ mod tests {
                 .map(|cell| style_id(cell.style))
                 .unwrap_or(0);
             assert_eq!(
-                column_ids
+                prepared
+                    .column_ids
                     .get(glyph.cell_start as usize)
                     .copied()
                     .unwrap_or(0),
