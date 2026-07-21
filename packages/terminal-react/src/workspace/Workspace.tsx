@@ -23,6 +23,7 @@ import {
   leaves,
   pane,
   persistedWorkspace,
+  placeSessionInPane,
   removePane,
   resizeForPane,
   restoreNode,
@@ -63,11 +64,19 @@ export interface GhostteaWorkspacePlatform {
   onMenuAction: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
 
+export interface GhostteaWorkspacePane {
+  id: string;
+  session: SessionSummary;
+}
+
 export interface GhostteaWorkspaceContext {
+  activePaneId: string | undefined;
   activeSession: SessionSummary | undefined;
+  panes: readonly GhostteaWorkspacePane[];
   sessions: readonly SessionSummary[];
   addSession: (session: SessionSummary, axis?: SplitAxis) => void;
   activateSession: (sessionId: string) => void;
+  placeSession: (session: SessionSummary) => void;
 }
 
 export interface GhostteaWorkspacePaneDecoration {
@@ -80,7 +89,7 @@ export interface GhostteaWorkspaceProps {
   storageKey?: string;
   sidebar?: ComponentType<{ workspace: GhostteaWorkspaceContext }>;
   theme?: TerminalTheme;
-  decoratePane?: ((session: SessionSummary) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
+  decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
@@ -178,7 +187,7 @@ interface SplitViewProps {
   platform: GhostteaWorkspacePlatform;
   theme: TerminalTheme;
   onActivate: (paneId: string) => void;
-  decoratePane?: ((session: SessionSummary) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
+  decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onRatio: (splitId: string, ratio: number) => void;
 }
 
@@ -199,10 +208,8 @@ function SplitView({
   if (node.kind === "pane") {
     const active = workspaceActive && node.id === activePaneId;
     const zoomed = node.id === zoomedPaneId;
-    const decoration = decoratePane?.(node.session);
-    const paneStyle = decoration?.color
-      ? ({ "--ghostty-pane-color": decoration.color } as CSSProperties)
-      : undefined;
+    const decoration = decoratePane?.(node.session, node.id);
+    const paneStyle = decoration?.color ? ({ "--ghostty-pane-color": decoration.color } as CSSProperties) : undefined;
     return (
       <div
         className={`ghostty-pane${active ? " is-active" : ""}${zoomed ? " is-zoomed" : ""}`}
@@ -329,7 +336,11 @@ export function GhostteaWorkspace({
     () => leaves(layout).find((candidate) => candidate.id === activePaneId),
     [layout, activePaneId],
   );
-  const sessions = useMemo(() => leaves(layout).map((leaf) => leaf.session), [layout]);
+  const panes = useMemo<readonly GhostteaWorkspacePane[]>(
+    () => leaves(layout).map((leaf) => ({ id: leaf.id, session: leaf.session })),
+    [layout],
+  );
+  const sessions = useMemo(() => panes.map((leaf) => leaf.session), [panes]);
   const title = useMemo(() => windowTitle(activePane?.session), [activePane?.session]);
 
   useEffect(() => {
@@ -417,6 +428,22 @@ export function GhostteaWorkspace({
       if (target) activatePane(target.id);
     },
     [activatePane],
+  );
+
+  const placeSession = useCallback(
+    (session: SessionSummary): void => {
+      terminalRuntime.registerSession(session);
+      const current = layoutRef.current;
+      const paneId = activePaneIdRef.current;
+      if (!current || !paneId) return;
+      const updated = placeSessionInPane(current, paneId, session);
+      layoutRef.current = updated;
+      setLayout(updated);
+      setZoomedPaneId(null);
+      setOperationError(undefined);
+      activatePane(paneId);
+    },
+    [activatePane, terminalRuntime],
   );
 
   const addSession = useCallback(
@@ -621,8 +648,16 @@ export function GhostteaWorkspace({
   ]);
 
   const workspaceContext = useMemo<GhostteaWorkspaceContext>(
-    () => ({ activeSession: activePane?.session, sessions, addSession, activateSession }),
-    [activePane?.session, activateSession, addSession, sessions],
+    () => ({
+      activePaneId,
+      activeSession: activePane?.session,
+      panes,
+      sessions,
+      addSession,
+      activateSession,
+      placeSession,
+    }),
+    [activePane?.session, activePaneId, activateSession, addSession, panes, placeSession, sessions],
   );
 
   return (

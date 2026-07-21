@@ -88,6 +88,16 @@ export function insertPane(
   });
 }
 
+export function placeSessionInPane(root: PaneNode, paneId: string, session: SessionSummary): PaneNode {
+  const panes = leaves(root);
+  const target = panes.find((candidate) => candidate.id === paneId);
+  if (!target) return root;
+  const existing = panes.find((candidate) => candidate.session.id === session.id);
+  if (existing?.id === target.id) return replacePane(root, target.id, { ...target, session });
+  const moved = existing ? replacePane(root, existing.id, { ...existing, session: target.session }) : root;
+  return replacePane(moved, target.id, { ...target, session });
+}
+
 export function updateSession(node: PaneNode, session: SessionSummary): PaneNode {
   if (node.kind === "pane") return node.session.id === session.id ? { ...node, session } : node;
   return { ...node, first: updateSession(node.first, session), second: updateSession(node.second, session) };

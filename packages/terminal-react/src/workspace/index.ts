@@ -1,6 +1,7 @@
 export {
   GhostteaWorkspace,
   type GhostteaWorkspaceContext,
+  type GhostteaWorkspacePane,
   type GhostteaWorkspacePaneDecoration,
   type GhostteaWorkspacePlatform,
   type GhostteaWorkspaceProps,
@@ -14,6 +15,7 @@ export {
   leaves,
   pane,
   persistedWorkspace,
+  placeSessionInPane,
   removePane,
   replacePane,
   resizeForPane,

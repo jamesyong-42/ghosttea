@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
-import { insertPane, leaves, pane, persistedWorkspace, restoreNode } from "./pane-layout";
+import { insertPane, leaves, pane, persistedWorkspace, placeSessionInPane, restoreNode } from "./pane-layout";
 
 function session(id: string): SessionSummary {
   return {
@@ -58,5 +58,22 @@ describe("insertPane", () => {
     expect(serialized).not.toContain("private");
     expect(serialized).not.toContain("live-owner-claim");
     expect(restoreNode(document.root, new Map([[sensitive.id, sensitive]]))).toEqual(first);
+  });
+});
+
+describe("placeSessionInPane", () => {
+  it("moves an existing session into the target pane and preserves both pane colors by identity", () => {
+    const first = pane("pane-1", session("one"));
+    const layout = insertPane(first, pane("pane-2", session("two")), first.id, "horizontal", "split-1");
+    const placed = placeSessionInPane(layout, "pane-1", session("two"));
+    expect(leaves(placed).map((leaf) => [leaf.id, leaf.session.id])).toEqual([
+      ["pane-1", "two"],
+      ["pane-2", "one"],
+    ]);
+  });
+
+  it("replaces the target when the session is not already visible", () => {
+    const layout = pane("pane-1", session("one"));
+    expect(leaves(placeSessionInPane(layout, "pane-1", session("three")))[0]?.session.id).toBe("three");
   });
 });
