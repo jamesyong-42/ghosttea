@@ -246,13 +246,14 @@ baseline.
 
 ### Measured optimization 1: identical geometry reuse
 
-The renderer now retains one encoded geometry entry per surface. Its key covers
-the terminal session/epoch/frame sequence, viewport, scale, theme, content
-insets, selection, focus, cursor blink visibility, and both atlas reset
-generations. An identical redraw reuses immutable Metal buffers; any input that
-can affect pixels or atlas coordinates invalidates the entry. The cache remains
-strictly bounded and is released with the renderer during suspension or memory
-pressure.
+The renderer can retain one encoded geometry entry per surface after the exact
+same key is observed twice consecutively. Its key covers the terminal
+session/epoch/frame sequence, viewport, scale, theme, content insets, selection,
+focus, cursor blink visibility, and both atlas reset generations. Subsequent
+identical redraws reuse immutable Metal buffers; any input that can affect
+pixels or atlas coordinates invalidates the entry. One-off changing frames are
+never admitted. The cache remains strictly bounded and is released with the
+renderer during suspension or memory pressure.
 
 The first iPhone smoke reduced the scaled unchanged-repaint workload from about
 15 ms to 1.3 ms and eliminated measured mesh construction, vertex uploads, and

@@ -809,6 +809,7 @@ private func productionFrame() async throws -> Data {
   let target = try #require(runtime.device.makeTexture(descriptor: descriptor))
 
   let first = try renderer.render(state: state, target: target)
+  let admitted = try renderer.render(state: state, target: target)
   let cached = try renderer.render(state: state, target: target)
   let selected = try renderer.render(
     state: state,
@@ -821,6 +822,8 @@ private func productionFrame() async throws -> Data {
 
   #expect(first.vertexUploadBytes > 0)
   #expect(first.bufferAllocationCount > 0)
+  #expect(admitted.vertexUploadBytes == first.vertexUploadBytes)
+  #expect(admitted.bufferAllocationCount == first.bufferAllocationCount)
   #expect(cached.vertexUploadBytes == 0)
   #expect(cached.bufferAllocationCount == 0)
   #expect(cached.drawCallCount == first.drawCallCount)

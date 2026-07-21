@@ -135,6 +135,7 @@ final class GhostteaMetalRenderer {
   private let colorGlyphPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
   private var geometryCache: GhostteaMetalGeometryCache?
+  private var pendingGeometryKey: GhostteaMetalGeometryKey?
 
   init(runtime: GhostteaMetalRuntime, alphaAtlasSize: Int = 2048, colorAtlasSize: Int = 2048) throws
   {
@@ -290,6 +291,7 @@ final class GhostteaMetalRenderer {
         try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
       }
     } else {
+      geometryCache = nil
       let visibleDefinitions = try recorder.measure(.glyphVisibility) {
         try visibleGlyphDefinitions(state)
       }
@@ -320,20 +322,23 @@ final class GhostteaMetalRenderer {
         try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
         return encodedMesh
       }
-      geometryCache = GhostteaMetalGeometryCache(
-        key: geometryKey(
-          state: state,
-          width: width,
-          height: height,
-          scale: scale,
-          theme: theme,
-          contentInsets: contentInsets,
-          selection: selection,
-          focused: focused,
-          cursorBlinkVisible: cursorBlinkVisible
-        ),
-        mesh: encodedMesh
+      let completedKey = geometryKey(
+        state: state,
+        width: width,
+        height: height,
+        scale: scale,
+        theme: theme,
+        contentInsets: contentInsets,
+        selection: selection,
+        focused: focused,
+        cursorBlinkVisible: cursorBlinkVisible
       )
+      if pendingGeometryKey == completedKey {
+        geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
+        pendingGeometryKey = nil
+      } else {
+        pendingGeometryKey = completedKey
+      }
       vertexUploadBytes = encodedMesh.uploadedBytes
       bufferAllocationCount = encodedMesh.allocationCount
     }
