@@ -74,6 +74,53 @@ private struct GhostteaMetalMesh {
   var cursor: [Float] = []
 }
 
+private struct GhostteaMetalGeometryKey: Equatable {
+  let sessionHandle: UInt64
+  let sessionEpoch: UInt64
+  let layoutEpoch: UInt64
+  let frameSequence: UInt64
+  let width: Int
+  let height: Int
+  let scale: Float
+  let theme: GhostteaMetalTheme
+  let contentInsets: GhostteaTerminalContentInsets
+  let selection: GhostteaMetalSelection?
+  let focused: Bool
+  let cursorBlinkVisible: Bool
+  let alphaAtlasResetCount: Int
+  let colorAtlasResetCount: Int
+}
+
+private struct GhostteaMetalBufferSlice {
+  let buffer: any MTLBuffer
+  let vertexCount: Int
+}
+
+private struct GhostteaMetalEncodedMesh {
+  let backgrounds: GhostteaMetalBufferSlice?
+  let selection: GhostteaMetalBufferSlice?
+  let alphaGlyphs: GhostteaMetalBufferSlice?
+  let colorGlyphs: GhostteaMetalBufferSlice?
+  let decorations: GhostteaMetalBufferSlice?
+  let cursor: GhostteaMetalBufferSlice?
+  let rectangleVertexCount: Int
+  let alphaGlyphVertexCount: Int
+  let colorGlyphVertexCount: Int
+  let uploadedBytes: Int
+
+  var allocationCount: Int {
+    [backgrounds, selection, alphaGlyphs, colorGlyphs, decorations, cursor]
+      .compactMap { $0 }.count
+  }
+
+  var drawCallCount: Int { allocationCount }
+}
+
+private struct GhostteaMetalGeometryCache {
+  let key: GhostteaMetalGeometryKey
+  let mesh: GhostteaMetalEncodedMesh
+}
+
 final class GhostteaMetalRenderer {
   static let cellWidth = GhostteaTerminalLayout.cellWidth
   static let lineHeight = GhostteaTerminalLayout.lineHeight
@@ -87,6 +134,7 @@ final class GhostteaMetalRenderer {
   private let alphaGlyphPipeline: any MTLRenderPipelineState
   private let colorGlyphPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
+  private var geometryCache: GhostteaMetalGeometryCache?
 
   init(runtime: GhostteaMetalRuntime, alphaAtlasSize: Int = 2048, colorAtlasSize: Int = 2048) throws
   {
@@ -207,55 +255,126 @@ final class GhostteaMetalRenderer {
       throw GhostteaMetalError.invalidViewport
     }
     let recorder = GhostteaPerformanceRecorder.shared
-    let visibleDefinitions = try recorder.measure(.glyphVisibility) {
-      try visibleGlyphDefinitions(state)
-    }
-    let atlasStarted = recorder.isEnabled ? DispatchTime.now().uptimeNanoseconds : nil
-    let atlasUpload = try atlases.synchronize(visible: visibleDefinitions)
-    if let atlasStarted {
-      recorder.record(
-        .atlasSynchronization,
-        durationNanoseconds: DispatchTime.now().uptimeNanoseconds &- atlasStarted,
-        byteCount: atlasUpload.uploadedBytes
+    let lookupKey = geometryKey(
+      state: state,
+      width: width,
+      height: height,
+      scale: scale,
+      theme: theme,
+      contentInsets: contentInsets,
+      selection: selection,
+      focused: focused,
+      cursorBlinkVisible: cursorBlinkVisible
+    )
+    let encodedMesh: GhostteaMetalEncodedMesh
+    let atlasUpload: GhostteaMetalUploadResult
+    let vertexUploadBytes: Int
+    let bufferAllocationCount: Int
+    if let geometryCache, geometryCache.key == lookupKey {
+      if recorder.isEnabled {
+        recorder.record(.glyphVisibility, durationNanoseconds: 0)
+        recorder.record(.atlasSynchronization, durationNanoseconds: 0)
+        recorder.record(.meshBuild, durationNanoseconds: 0)
+      }
+      encodedMesh = geometryCache.mesh
+      atlasUpload = GhostteaMetalUploadResult(
+        uploadedBytes: 0,
+        alphaGlyphCount: atlases.alpha.glyphCount,
+        colorGlyphCount: atlases.color.glyphCount,
+        alphaReset: false,
+        colorReset: false
       )
-    }
-    let mesh = try recorder.measure(.meshBuild) {
-      try buildMesh(
-        state: state,
-        width: width,
-        height: height,
-        scale: scale,
-        theme: theme,
-        contentInsets: contentInsets,
-        selection: selection,
-        focused: focused,
-        cursorBlinkVisible: cursorBlinkVisible
+      vertexUploadBytes = 0
+      bufferAllocationCount = 0
+      try recorder.measure(.metalEncoding) {
+        try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
+      }
+    } else {
+      let visibleDefinitions = try recorder.measure(.glyphVisibility) {
+        try visibleGlyphDefinitions(state)
+      }
+      let atlasStarted = recorder.isEnabled ? DispatchTime.now().uptimeNanoseconds : nil
+      atlasUpload = try atlases.synchronize(visible: visibleDefinitions)
+      if let atlasStarted {
+        recorder.record(
+          .atlasSynchronization,
+          durationNanoseconds: DispatchTime.now().uptimeNanoseconds &- atlasStarted,
+          byteCount: atlasUpload.uploadedBytes
+        )
+      }
+      let mesh = try recorder.measure(.meshBuild) {
+        try buildMesh(
+          state: state,
+          width: width,
+          height: height,
+          scale: scale,
+          theme: theme,
+          contentInsets: contentInsets,
+          selection: selection,
+          focused: focused,
+          cursorBlinkVisible: cursorBlinkVisible
+        )
+      }
+      encodedMesh = try recorder.measure(.metalEncoding) {
+        let encodedMesh = try makeEncodedMesh(mesh)
+        try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
+        return encodedMesh
+      }
+      geometryCache = GhostteaMetalGeometryCache(
+        key: geometryKey(
+          state: state,
+          width: width,
+          height: height,
+          scale: scale,
+          theme: theme,
+          contentInsets: contentInsets,
+          selection: selection,
+          focused: focused,
+          cursorBlinkVisible: cursorBlinkVisible
+        ),
+        mesh: encodedMesh
       )
-    }
-    try recorder.measure(.metalEncoding) {
-      try encode(mesh: mesh, target: target, theme: theme, presenting: drawable)
-    }
-    let arrays = [
-      mesh.backgrounds,
-      mesh.selection,
-      mesh.alphaGlyphs,
-      mesh.colorGlyphs,
-      mesh.decorations,
-      mesh.cursor,
-    ]
-    let nonemptyArrays = arrays.reduce(into: 0) { count, values in
-      if !values.isEmpty { count += 1 }
+      vertexUploadBytes = encodedMesh.uploadedBytes
+      bufferAllocationCount = encodedMesh.allocationCount
     }
     return GhostteaMetalDrawResult(
-      rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count + mesh.decorations.count
-        + mesh.cursor.count) / 6,
-      alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
-      colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
+      rectangleVertexCount: encodedMesh.rectangleVertexCount,
+      alphaGlyphVertexCount: encodedMesh.alphaGlyphVertexCount,
+      colorGlyphVertexCount: encodedMesh.colorGlyphVertexCount,
       atlasUpload: atlasUpload,
-      vertexUploadBytes: arrays.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride },
-      bufferAllocationCount: nonemptyArrays,
-      drawCallCount: nonemptyArrays,
+      vertexUploadBytes: vertexUploadBytes,
+      bufferAllocationCount: bufferAllocationCount,
+      drawCallCount: encodedMesh.drawCallCount,
       commandBufferCount: 1
+    )
+  }
+
+  private func geometryKey(
+    state: RetainedTRF1State,
+    width: Int,
+    height: Int,
+    scale: Float,
+    theme: GhostteaMetalTheme,
+    contentInsets: GhostteaTerminalContentInsets,
+    selection: GhostteaMetalSelection?,
+    focused: Bool,
+    cursorBlinkVisible: Bool
+  ) -> GhostteaMetalGeometryKey {
+    GhostteaMetalGeometryKey(
+      sessionHandle: state.sessionHandle,
+      sessionEpoch: state.sessionEpoch,
+      layoutEpoch: state.layoutEpoch,
+      frameSequence: state.sequence,
+      width: width,
+      height: height,
+      scale: scale,
+      theme: theme,
+      contentInsets: contentInsets,
+      selection: selection,
+      focused: focused,
+      cursorBlinkVisible: cursorBlinkVisible,
+      alphaAtlasResetCount: atlases.alpha.resetCount,
+      colorAtlasResetCount: atlases.color.resetCount
     )
   }
 
@@ -415,8 +534,32 @@ final class GhostteaMetalRenderer {
     return mesh
   }
 
+  private func makeEncodedMesh(_ mesh: GhostteaMetalMesh) throws -> GhostteaMetalEncodedMesh {
+    let arrays = [
+      mesh.backgrounds,
+      mesh.selection,
+      mesh.alphaGlyphs,
+      mesh.colorGlyphs,
+      mesh.decorations,
+      mesh.cursor,
+    ]
+    return try GhostteaMetalEncodedMesh(
+      backgrounds: makeBufferSlice(mesh.backgrounds, label: "backgrounds", stride: 6),
+      selection: makeBufferSlice(mesh.selection, label: "selection", stride: 6),
+      alphaGlyphs: makeBufferSlice(mesh.alphaGlyphs, label: "alpha glyphs", stride: 8),
+      colorGlyphs: makeBufferSlice(mesh.colorGlyphs, label: "color glyphs", stride: 8),
+      decorations: makeBufferSlice(mesh.decorations, label: "decorations", stride: 6),
+      cursor: makeBufferSlice(mesh.cursor, label: "cursor", stride: 6),
+      rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count
+        + mesh.decorations.count + mesh.cursor.count) / 6,
+      alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
+      colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
+      uploadedBytes: arrays.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride }
+    )
+  }
+
   private func encode(
-    mesh: GhostteaMetalMesh,
+    mesh: GhostteaMetalEncodedMesh,
     target: any MTLTexture,
     theme: GhostteaMetalTheme,
     presenting drawable: (any MTLDrawable)?
@@ -438,29 +581,22 @@ final class GhostteaMetalRenderer {
       throw GhostteaMetalError.renderTargetUnavailable
     }
     encoder.label = "Ghosttea terminal pass"
-    try draw(
-      mesh.backgrounds, label: "backgrounds", pipeline: rectanglePipeline, encoder: encoder,
-      stride: 6)
-    try draw(
-      mesh.selection, label: "selection", pipeline: rectanglePipeline, encoder: encoder, stride: 6)
-    try drawGlyphs(
+    draw(mesh.backgrounds, pipeline: rectanglePipeline, encoder: encoder)
+    draw(mesh.selection, pipeline: rectanglePipeline, encoder: encoder)
+    drawGlyphs(
       mesh.alphaGlyphs,
-      label: "alpha glyphs",
       pipeline: alphaGlyphPipeline,
       texture: atlases.alpha.texture,
       encoder: encoder
     )
-    try drawGlyphs(
+    drawGlyphs(
       mesh.colorGlyphs,
-      label: "color glyphs",
       pipeline: colorGlyphPipeline,
       texture: atlases.color.texture,
       encoder: encoder
     )
-    try draw(
-      mesh.decorations, label: "decorations", pipeline: rectanglePipeline, encoder: encoder,
-      stride: 6)
-    try draw(mesh.cursor, label: "cursor", pipeline: rectanglePipeline, encoder: encoder, stride: 6)
+    draw(mesh.decorations, pipeline: rectanglePipeline, encoder: encoder)
+    draw(mesh.cursor, pipeline: rectanglePipeline, encoder: encoder)
     encoder.endEncoding()
     if GhostteaPerformanceRecorder.shared.isEnabled {
       let started = DispatchTime.now().uptimeNanoseconds
@@ -484,36 +620,34 @@ final class GhostteaMetalRenderer {
   }
 
   private func draw(
-    _ vertices: [Float],
-    label: String,
+    _ slice: GhostteaMetalBufferSlice?,
     pipeline: any MTLRenderPipelineState,
-    encoder: any MTLRenderCommandEncoder,
-    stride: Int
-  ) throws {
-    guard !vertices.isEmpty else { return }
-    let buffer = try makeBuffer(vertices, label: label)
+    encoder: any MTLRenderCommandEncoder
+  ) {
+    guard let slice else { return }
     encoder.setRenderPipelineState(pipeline)
-    encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count / stride)
+    encoder.setVertexBuffer(slice.buffer, offset: 0, index: 0)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: slice.vertexCount)
   }
 
   private func drawGlyphs(
-    _ vertices: [Float],
-    label: String,
+    _ slice: GhostteaMetalBufferSlice?,
     pipeline: any MTLRenderPipelineState,
     texture: any MTLTexture,
     encoder: any MTLRenderCommandEncoder
-  ) throws {
-    guard !vertices.isEmpty else { return }
-    let buffer = try makeBuffer(vertices, label: label)
+  ) {
+    guard let slice else { return }
     encoder.setRenderPipelineState(pipeline)
-    encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+    encoder.setVertexBuffer(slice.buffer, offset: 0, index: 0)
     encoder.setFragmentTexture(texture, index: 0)
     encoder.setFragmentSamplerState(sampler, index: 0)
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count / 8)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: slice.vertexCount)
   }
 
-  private func makeBuffer(_ vertices: [Float], label: String) throws -> any MTLBuffer {
+  private func makeBufferSlice(
+    _ vertices: [Float], label: String, stride: Int
+  ) throws -> GhostteaMetalBufferSlice? {
+    guard !vertices.isEmpty else { return nil }
     let buffer = vertices.withUnsafeBufferPointer { values in
       runtime.device.makeBuffer(
         bytes: values.baseAddress!,
@@ -523,7 +657,7 @@ final class GhostteaMetalRenderer {
     }
     guard let buffer else { throw GhostteaMetalError.bufferUnavailable(label) }
     buffer.label = "Ghosttea \(label) vertices"
-    return buffer
+    return GhostteaMetalBufferSlice(buffer: buffer, vertexCount: vertices.count / stride)
   }
 
   private static func makeRectanglePipeline(

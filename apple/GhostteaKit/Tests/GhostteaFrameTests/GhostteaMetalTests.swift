@@ -791,6 +791,45 @@ private func productionFrame() async throws -> Data {
   #expect(selectedAgain.pixelHash == selected.pixelHash)
 }
 
+@Test func metalRendererReusesEncodedGeometryUntilRenderInputsChange() async throws {
+  let frame = try await productionFrame()
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  let runtime = try GhostteaMetalRuntime()
+  let renderer = try GhostteaMetalRenderer(
+    runtime: runtime, alphaAtlasSize: 512, colorAtlasSize: 512)
+  let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+    pixelFormat: .rgba8Unorm,
+    width: 420,
+    height: 100,
+    mipmapped: false
+  )
+  descriptor.storageMode = .shared
+  descriptor.usage = [.renderTarget]
+  let target = try #require(runtime.device.makeTexture(descriptor: descriptor))
+
+  let first = try renderer.render(state: state, target: target)
+  let cached = try renderer.render(state: state, target: target)
+  let selected = try renderer.render(
+    state: state,
+    target: target,
+    selection: GhostteaMetalSelection(
+      anchor: GhostteaMetalCellPoint(column: 0, row: 0),
+      focus: GhostteaMetalCellPoint(column: 4, row: 0)
+    )
+  )
+
+  #expect(first.vertexUploadBytes > 0)
+  #expect(first.bufferAllocationCount > 0)
+  #expect(cached.vertexUploadBytes == 0)
+  #expect(cached.bufferAllocationCount == 0)
+  #expect(cached.drawCallCount == first.drawCallCount)
+  #expect(cached.rectangleVertexCount == first.rectangleVertexCount)
+  #expect(selected.vertexUploadBytes > 0)
+  #expect(selected.bufferAllocationCount > 0)
+  #expect(selected.rectangleVertexCount == first.rectangleVertexCount + 6)
+}
+
 @Test func metalAtlasesUseTheRequiredFormatsAndDeterministicShelfPlacement() throws {
   let runtime = try GhostteaMetalRuntime()
   let atlases = try GhostteaMetalAtlasSet(runtime: runtime, alphaSize: 8, colorSize: 8)

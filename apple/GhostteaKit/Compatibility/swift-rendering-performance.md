@@ -244,6 +244,22 @@ dirty-worktree baseline candidate; after these harness changes land, rerun the
 same suite from the clean revision to produce the comparator-eligible Slice 1
 baseline.
 
+### Measured optimization 1: identical geometry reuse
+
+The renderer now retains one encoded geometry entry per surface. Its key covers
+the terminal session/epoch/frame sequence, viewport, scale, theme, content
+insets, selection, focus, cursor blink visibility, and both atlas reset
+generations. An identical redraw reuses immutable Metal buffers; any input that
+can affect pixels or atlas coordinates invalidates the entry. The cache remains
+strictly bounded and is released with the renderer during suspension or memory
+pressure.
+
+The first iPhone smoke reduced the scaled unchanged-repaint workload from about
+15 ms to 1.3 ms and eliminated measured mesh construction, vertex uploads, and
+buffer allocations after warmup. Cursor and typing workloads continued to miss
+the cache and render normally. The complete clean-revision comparison is the
+acceptance gate before retaining this optimization.
+
 ### Slice 2: compact Truffle state on Apple
 
 - Extend optional handshake negotiation on the compact listener and Swift
