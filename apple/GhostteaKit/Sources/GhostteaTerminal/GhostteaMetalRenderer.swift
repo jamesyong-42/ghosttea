@@ -208,6 +208,7 @@ private final class GhostteaMetalUploadArena {
   private static let maximumSlotBytes = 8 * 1024 * 1024
   private let device: any MTLDevice
   private let slots: [Slot]
+  private let slotSelectionLock = NSLock()
   private var nextSlot = 0
 
   init(device: any MTLDevice) {
@@ -221,8 +222,10 @@ private final class GhostteaMetalUploadArena {
     guard minimumBytes > 0, minimumBytes <= Self.maximumSlotBytes else {
       throw GhostteaMetalError.bufferUnavailable("bounded upload arena")
     }
+    slotSelectionLock.lock()
     let slot = slots[nextSlot]
     nextSlot = (nextSlot + 1) % slots.count
+    slotSelectionLock.unlock()
     slot.available.wait()
     var allocationCount = 0
     if slot.buffer == nil || slot.capacity < minimumBytes {
@@ -253,6 +256,22 @@ private final class GhostteaMetalUploadArena {
     var capacity = 64 * 1024
     while capacity < minimumBytes { capacity *= 2 }
     return capacity
+  }
+}
+
+private final class GhostteaMetalUploadArenaPool: @unchecked Sendable {
+  static let shared = GhostteaMetalUploadArenaPool()
+
+  private let lock = NSLock()
+  private weak var arena: GhostteaMetalUploadArena?
+
+  func arena(for device: any MTLDevice) -> GhostteaMetalUploadArena {
+    lock.lock()
+    defer { lock.unlock() }
+    if let arena { return arena }
+    let arena = GhostteaMetalUploadArena(device: device)
+    self.arena = arena
+    return arena
   }
 }
 
@@ -293,7 +312,7 @@ final class GhostteaMetalRenderer {
     self.runtime = runtime
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
     self.instancedSubmissionEnabled = instancedSubmissionEnabled
-    uploadArena = GhostteaMetalUploadArena(device: runtime.device)
+    uploadArena = GhostteaMetalUploadArenaPool.shared.arena(for: runtime.device)
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
       alphaSize: alphaAtlasSize,

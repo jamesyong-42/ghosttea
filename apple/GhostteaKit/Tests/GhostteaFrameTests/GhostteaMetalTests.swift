@@ -892,10 +892,10 @@ private func productionFrame() async throws -> Data {
   )
 
   #expect(first.vertexUploadBytes > 0)
-  #expect(first.bufferAllocationCount > 0)
+  #expect(first.bufferAllocationCount <= 1)
   #expect(first.damage == submittedDamage)
   #expect(admitted.vertexUploadBytes == first.vertexUploadBytes)
-  #expect(admitted.bufferAllocationCount == first.bufferAllocationCount)
+  #expect(admitted.bufferAllocationCount == 1)
   #expect(cached.vertexUploadBytes == 0)
   #expect(cached.bufferAllocationCount == 0)
   #expect(cached.drawCallCount == first.drawCallCount)
@@ -912,11 +912,11 @@ private func productionFrame() async throws -> Data {
       target: target,
       cursorBlinkVisible: false
     )
-    #expect(hiddenFirst.bufferAllocationCount == first.bufferAllocationCount)
+    #expect(hiddenFirst.bufferAllocationCount <= 1)
     #expect(hiddenFirst.vertexUploadBytes < first.vertexUploadBytes)
   }
   #expect(selected.vertexUploadBytes > 0)
-  #expect(selected.bufferAllocationCount > 0)
+  #expect(selected.bufferAllocationCount <= 1)
   #expect(selected.rectangleVertexCount == first.rectangleVertexCount + 6)
 }
 
@@ -944,12 +944,15 @@ private func productionFrame() async throws -> Data {
   let first = try renderer.render(state: state, target: target)
   let second = try renderer.render(state: state, target: target)
   let third = try renderer.render(state: state, target: target)
+  let fourth = try renderer.render(state: state, target: target)
 
   #expect(first.vertexUploadBytes > 0)
   #expect(second.vertexUploadBytes == first.vertexUploadBytes)
   #expect(third.vertexUploadBytes == first.vertexUploadBytes)
-  #expect(second.bufferAllocationCount == first.bufferAllocationCount)
-  #expect(third.bufferAllocationCount == first.bufferAllocationCount)
+  #expect(first.bufferAllocationCount <= 1)
+  #expect(second.bufferAllocationCount <= 1)
+  #expect(third.bufferAllocationCount <= 1)
+  #expect(fourth.bufferAllocationCount == 0)
   #expect(second.drawCallCount == first.drawCallCount)
   #expect(third.rectangleVertexCount == first.rectangleVertexCount)
 }

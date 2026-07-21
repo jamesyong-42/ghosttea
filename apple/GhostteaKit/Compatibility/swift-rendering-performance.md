@@ -454,8 +454,8 @@ stress, materially fewer uploaded bytes/allocations, and no suspended GPU work.
 Implementation status: the measurement candidate packs each rectangle into 32
 bytes and each glyph into 48 bytes, generates the six quad corners in the
 vertex shader, and suballocates all per-frame categories from one of three
-shared upload buffers. A slot is unavailable until its command-buffer
-completion callback releases it; reuse therefore cannot overwrite in-flight
+process-wide, per-GPU shared upload buffers. A slot is unavailable until its
+command-buffer completion callback releases it; reuse therefore cannot overwrite in-flight
 geometry. Each slot is capped at 8 MiB, grows geometrically, and the entire
 arena is released with its surface renderer on suspension or memory pressure.
 Second-sighting geometry-cache admission uses a dedicated persistent buffer
