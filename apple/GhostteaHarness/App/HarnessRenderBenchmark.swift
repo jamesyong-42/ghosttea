@@ -402,7 +402,7 @@ enum HarnessRenderBenchmark {
     }
     let expectedCommandBufferCommits =
       displayLinkedSchedulingEnabled && spec.kind != .repaint
-      ? operationCount : expectedRendered
+      ? operationCount * ((spec.surfaceCount + 2) / 3) : expectedRendered
     if renderer.commandBufferCommits != UInt64(expectedCommandBufferCommits) {
       failures.append("command-buffer commit count does not match rendered frames")
     }

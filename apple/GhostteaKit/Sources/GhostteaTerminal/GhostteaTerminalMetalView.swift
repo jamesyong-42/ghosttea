@@ -1430,20 +1430,24 @@
       let views = pending.allObjects
       pending.removeAllObjects()
       displayLink.isPaused = true
-      guard let first = views.first,
-        let commandBuffer = first.scheduledCommandQueue.makeCommandBuffer()
-      else { return }
+      let limit = GhostteaMetalSubmissionPolicy.maximumLeasedUploadsPerCommandBuffer
+      for start in stride(from: 0, to: views.count, by: limit) {
+        let end = min(start + limit, views.count)
+        let batch = views[start..<end]
+        guard let first = batch.first,
+          let commandBuffer = first.scheduledCommandQueue.makeCommandBuffer()
+        else { continue }
 
-      var rendered: [GhostteaTerminalMetalView] = []
-      rendered.reserveCapacity(views.count)
-      for view in views where view.device === first.device {
-        if view.renderCurrentDrawable(commandBuffer: commandBuffer) {
-          rendered.append(view)
+        var commitOwner: GhostteaTerminalMetalView?
+        for view in batch where view.device === first.device {
+          if view.renderCurrentDrawable(commandBuffer: commandBuffer) {
+            commitOwner = commitOwner ?? view
+          }
         }
+        guard let commitOwner else { continue }
+        commandBuffer.commit()
+        commitOwner.recordScheduledCommandBufferCommit()
       }
-      guard let commitOwner = rendered.first else { return }
-      commandBuffer.commit()
-      commitOwner.recordScheduledCommandBufferCommit()
     }
   }
 

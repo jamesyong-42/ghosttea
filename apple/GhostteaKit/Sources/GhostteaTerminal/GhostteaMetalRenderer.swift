@@ -236,6 +236,16 @@ private final class GhostteaMetalUploadLease: @unchecked Sendable {
   deinit { release() }
 }
 
+enum GhostteaMetalSubmissionPolicy {
+  static let maximumLeasedUploadsPerCommandBuffer = 3
+
+  static func commandBufferCount(surfaceCount: Int) -> Int {
+    guard surfaceCount > 0 else { return 0 }
+    return (surfaceCount + maximumLeasedUploadsPerCommandBuffer - 1)
+      / maximumLeasedUploadsPerCommandBuffer
+  }
+}
+
 private final class GhostteaMetalUploadArena {
   private final class Slot: @unchecked Sendable {
     let available = DispatchSemaphore(value: 1)
@@ -249,7 +259,6 @@ private final class GhostteaMetalUploadArena {
     let lease: GhostteaMetalUploadLease
   }
 
-  private static let slotCount = 3
   private static let maximumSlotBytes = 8 * 1024 * 1024
   private let device: any MTLDevice
   private let slots: [Slot]
@@ -258,7 +267,9 @@ private final class GhostteaMetalUploadArena {
 
   init(device: any MTLDevice) {
     self.device = device
-    slots = (0..<Self.slotCount).map { _ in Slot() }
+    slots = (0..<GhostteaMetalSubmissionPolicy.maximumLeasedUploadsPerCommandBuffer).map {
+      _ in Slot()
+    }
   }
 
   var residentBytes: Int { slots.reduce(0) { $0 + $1.capacity } }
