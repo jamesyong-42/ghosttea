@@ -31,6 +31,8 @@ export const METRICS = [
     select: (sample) => milliseconds(sample.operationP99Nanoseconds),
   },
   ...[
+    ["truffleStateDecode", "Truffle state decode"],
+    ["truffleReplicaPublication", "Truffle replica publication"],
     ["nativeFeed", "native feed"],
     ["textEngineLockWait", "text-engine wait"],
     ["textEngineLockHold", "text-engine hold"],
@@ -48,6 +50,13 @@ export const METRICS = [
     direction: "lower",
     select: (sample) => milliseconds(metricSummary(sample, key)?.totalNanoseconds),
   })),
+  {
+    key: "sourceBytes",
+    label: "source payload",
+    unit: "bytes",
+    direction: "lower",
+    select: (sample) => sample.sourceBytes,
+  },
   {
     key: "metalGPUCompletionP99Ms",
     label: "GPU completion p99",
@@ -95,6 +104,7 @@ export const METRICS = [
 function comparableConfiguration(report, options = {}) {
   const configuration = structuredClone(report.config);
   if (options.allowGeometryReuseDifference) delete configuration?.encodedGeometryReuseEnabled;
+  if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,
     configuration,
@@ -159,7 +169,10 @@ export function validateComparableReports(baseline, candidate, options = {}) {
       issues.push(`candidate is missing case ${caseName}`);
       continue;
     }
-    for (const key of invariantKeys) {
+    const comparableInvariantKeys = options.allowStateCodecDifference
+      ? invariantKeys.filter((key) => key !== "sourceBytes")
+      : invariantKeys;
+    for (const key of comparableInvariantKeys) {
       const left = baselineCase.samples.map((sample) => sample[key]);
       const right = candidateCase.samples.map((sample) => sample[key]);
       if (JSON.stringify(left) !== JSON.stringify(right)) {

@@ -18,6 +18,23 @@ public struct GhostteaLogicalSnapshot: Codable, Equatable, Sendable {
   public let scrollbar: GhostteaLogicalScrollbar
   public let title: String?
   public let cwd: String?
+
+  public init(
+    sessionEpoch: UInt64, layoutEpoch: UInt64, terminalRevision: UInt64, cols: UInt16,
+    rows: [GhostteaLogicalRow], cursor: GhostteaLogicalCursor, mouseTracking: Bool,
+    scrollbar: GhostteaLogicalScrollbar, title: String?, cwd: String?
+  ) {
+    self.sessionEpoch = sessionEpoch
+    self.layoutEpoch = layoutEpoch
+    self.terminalRevision = terminalRevision
+    self.cols = cols
+    self.rows = rows
+    self.cursor = cursor
+    self.mouseTracking = mouseTracking
+    self.scrollbar = scrollbar
+    self.title = title
+    self.cwd = cwd
+  }
 }
 
 public struct GhostteaLogicalPatch: Codable, Equatable, Sendable {
@@ -29,12 +46,33 @@ public struct GhostteaLogicalPatch: Codable, Equatable, Sendable {
   public let cursor: GhostteaLogicalCursor?
   public let mouseTracking: Bool?
   public let scrollbar: GhostteaLogicalScrollbar?
+
+  public init(
+    sessionEpoch: UInt64, layoutEpoch: UInt64, patchSequence: UInt64,
+    terminalRevision: UInt64, rowReplacements: [GhostteaRowReplacement],
+    cursor: GhostteaLogicalCursor?, mouseTracking: Bool?, scrollbar: GhostteaLogicalScrollbar?
+  ) {
+    self.sessionEpoch = sessionEpoch
+    self.layoutEpoch = layoutEpoch
+    self.patchSequence = patchSequence
+    self.terminalRevision = terminalRevision
+    self.rowReplacements = rowReplacements
+    self.cursor = cursor
+    self.mouseTracking = mouseTracking
+    self.scrollbar = scrollbar
+  }
 }
 
 public struct GhostteaRowReplacement: Codable, Equatable, Sendable {
   public let rowIndex: UInt16
   public let rowRevision: UInt64
   public let row: GhostteaLogicalRow
+
+  public init(rowIndex: UInt16, rowRevision: UInt64, row: GhostteaLogicalRow) {
+    self.rowIndex = rowIndex
+    self.rowRevision = rowRevision
+    self.row = row
+  }
 }
 
 public struct GhostteaLogicalScrollbar: Codable, Equatable, Sendable {
@@ -64,6 +102,13 @@ public struct GhostteaLogicalCell: Codable, Equatable, Sendable {
   public let span: UInt16
   public let text: String
   public let style: GhostteaLogicalCellStyle
+
+  public init(column: UInt16, span: UInt16, text: String, style: GhostteaLogicalCellStyle) {
+    self.column = column
+    self.span = span
+    self.text = text
+    self.style = style
+  }
 }
 
 public struct GhostteaLogicalCellStyle: Codable, Equatable, Sendable {
@@ -76,6 +121,21 @@ public struct GhostteaLogicalCellStyle: Codable, Equatable, Sendable {
   public let underline: Bool
   public let foreground: [UInt8]?
   public let background: [UInt8]?
+
+  public init(
+    bold: Bool, italic: Bool, faint: Bool, inverse: Bool, invisible: Bool,
+    strikethrough: Bool, underline: Bool, foreground: [UInt8]?, background: [UInt8]?
+  ) {
+    self.bold = bold
+    self.italic = italic
+    self.faint = faint
+    self.inverse = inverse
+    self.invisible = invisible
+    self.strikethrough = strikethrough
+    self.underline = underline
+    self.foreground = foreground
+    self.background = background
+  }
 }
 
 public struct GhostteaLogicalCursor: Codable, Equatable, Sendable {

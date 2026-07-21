@@ -26,6 +26,7 @@
 		100000000000000000000017 /* HarnessPerformanceGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* HarnessPerformanceGate.swift */; };
 		100000000000000000000018 /* GhostteaPerformance in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000013 /* GhostteaPerformance */; };
 		100000000000000000000019 /* HarnessRenderBenchmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* HarnessRenderBenchmark.swift */; };
+		100000000000000000000020 /* GhostteaTruffle in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* GhostteaTruffle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +55,7 @@
 				100000000000000000000015 /* GhostteaConnectionProfiles in Frameworks */,
 				100000000000000000000016 /* GhostteaConnectionProfilesUI in Frameworks */,
 				100000000000000000000018 /* GhostteaPerformance in Frameworks */,
+				100000000000000000000020 /* GhostteaTruffle in Frameworks */,
 				100000000000000000000005 /* GhosttyVtProof in Frameworks */,
 				100000000000000000000006 /* GhostteaSSH in Frameworks */,
 			);
@@ -121,6 +123,7 @@
 				A00000000000000000000011 /* GhostteaConnectionProfiles */,
 				A00000000000000000000012 /* GhostteaConnectionProfilesUI */,
 				A00000000000000000000013 /* GhostteaPerformance */,
+				A00000000000000000000014 /* GhostteaTruffle */,
 			);
 			productName = GhostteaHarness;
 			productReference = 200000000000000000000005 /* GhostteaHarness.app */;
@@ -373,6 +376,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaPerformance;
+		};
+		A00000000000000000000014 /* GhostteaTruffle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaTruffle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

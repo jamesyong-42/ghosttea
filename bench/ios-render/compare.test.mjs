@@ -47,6 +47,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       scale: 1,
       cases: ["typing-1"],
       encodedGeometryReuseEnabled: true,
+      truffleStateCodec: "json",
     },
     runner: {
       gitDirty: false,
@@ -101,6 +102,28 @@ test("comparison allows only an explicit encoded-geometry A/B difference", () =>
   assert.deepEqual(
     validateComparableReports(disabled, enabled, { allowGeometryReuseDifference: true }),
     [],
+  );
+});
+
+test("comparison allows only codec and source-byte differences for an explicit codec A/B", () => {
+  const json = report();
+  const compact = structuredClone(json);
+  compact.config.truffleStateCodec = "compact-json-v1";
+  for (const sample of compact.results.cases["typing-1"].samples) sample.sourceBytes = 400;
+
+  assert.ok(
+    validateComparableReports(json, compact).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.ok(validateComparableReports(json, compact).includes("typing-1 changed the sourceBytes correctness invariant"));
+  assert.deepEqual(validateComparableReports(json, compact, { allowStateCodecDifference: true }), []);
+
+  compact.results.cases["typing-1"].samples[0].trf1Bytes += 1;
+  assert.ok(
+    validateComparableReports(json, compact, { allowStateCodecDifference: true }).includes(
+      "typing-1 changed the trf1Bytes correctness invariant",
+    ),
   );
 });
 

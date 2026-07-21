@@ -3,6 +3,7 @@ import Foundation
 import GhostteaCore
 import GhostteaPerformance
 import GhostteaTerminal
+import GhostteaTruffle
 import UIKit
 
 struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
@@ -13,6 +14,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let scale: Double
   let cases: [String]
   let encodedGeometryReuseEnabled: Bool?
+  let truffleStateCodec: GhostteaStateCodec?
 }
 
 struct HarnessRenderBenchmarkDevice: Codable, Sendable {
@@ -100,12 +102,18 @@ private struct HarnessRenderCaseSpec: Sendable {
     case feed
     case repaint
     case resizeJitter
+    case truffleDoomFire
   }
 
   let name: String
   let surfaceCount: Int
   let baseOperations: Int
   let kind: Kind
+}
+
+private struct HarnessTruffleDoomPayload: Sendable {
+  let json: Data
+  let compact: Data
 }
 
 @MainActor
@@ -150,6 +158,7 @@ enum HarnessRenderBenchmark {
           iteration: -1,
           scale: configuration.scale,
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
+          truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
           validatePixels: false
@@ -164,6 +173,7 @@ enum HarnessRenderBenchmark {
           iteration: iteration,
           scale: configuration.scale,
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
+          truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
           validatePixels: true
@@ -199,11 +209,24 @@ enum HarnessRenderBenchmark {
     iteration: Int,
     scale: Double,
     encodedGeometryReuseEnabled: Bool,
+    truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
   ) async throws -> HarnessRenderBenchmarkSample {
     let operationCount = max(1, Int((Double(spec.baseOperations) * scale).rounded()))
+    if case .truffleDoomFire = spec.kind {
+      return try await runTruffleDoomSample(
+        spec: spec,
+        iteration: iteration,
+        operationCount: operationCount,
+        codec: truffleStateCodec,
+        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
+        pacingNanoseconds: pacingNanoseconds,
+        window: window,
+        validatePixels: validatePixels
+      )
+    }
     let runtime = try GhostteaRuntime()
     let terminals = try (0..<spec.surfaceCount).map { index in
       try GhostteaTerminal(
@@ -280,6 +303,8 @@ enum HarnessRenderBenchmark {
           surface.layoutIfNeeded()
           surface.draw(in: surface)
         }
+      case .truffleDoomFire:
+        preconditionFailure("Truffle samples use their dedicated path")
       }
       operationDurations.append(DispatchTime.now().uptimeNanoseconds &- started)
     }
@@ -369,6 +394,207 @@ enum HarnessRenderBenchmark {
     )
   }
 
+  /// Measures the production shared-session receive path independently from
+  /// network variability: state bytes -> negotiated decoder -> logical replica
+  /// -> TRF1 -> Metal. JSON and compact runs use identical logical fire frames.
+  private static func runTruffleDoomSample(
+    spec: HarnessRenderCaseSpec,
+    iteration: Int,
+    operationCount: Int,
+    codec: GhostteaStateCodec,
+    encodedGeometryReuseEnabled: Bool,
+    pacingNanoseconds: UInt64,
+    window: UIWindow,
+    validatePixels: Bool
+  ) async throws -> HarnessRenderBenchmarkSample {
+    let payloads = try makeTruffleDoomPayloads(frames: operationCount)
+    let parityFrames = try await validateTruffleDoomParity(payloads)
+    let runtime = try GhostteaRuntime()
+    let replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: 84_001)
+    let surface = try GhostteaTerminalMetalView(
+      terminalFrame: .zero,
+      encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+    )
+    surface.isPaused = true
+    surface.enableSetNeedsDisplay = false
+    surface.includesSafeAreaInsets = false
+    layout(surfaces: [surface], in: window.bounds)
+    window.addSubview(surface)
+    defer {
+      surface.suspendGPU()
+      surface.removeFromSuperview()
+    }
+    surface.layoutIfNeeded()
+
+    let baselineDiagnostics = aggregateDiagnostics([surface])
+    let footprintBefore = try stablePhysicalFootprintBytes()
+    let thermalBefore = thermalStateName(ProcessInfo.processInfo.thermalState)
+    let recorder = GhostteaPerformanceRecorder.shared
+    recorder.reset()
+    let encoder = JSONEncoder()
+    var sourceBytes: UInt64 = 0
+    var trf1Bytes: UInt64 = 0
+    var operationDurations: [UInt64] = []
+    operationDurations.reserveCapacity(operationCount)
+    var finalFrame = Data()
+    let elapsedStarted = DispatchTime.now().uptimeNanoseconds
+
+    for (index, payload) in payloads.enumerated() {
+      try await Task.sleep(for: .nanoseconds(Int64(pacingNanoseconds)))
+      let started = DispatchTime.now().uptimeNanoseconds
+      let encoded = codec == .json ? payload.json : payload.compact
+      let message = try recorder.measure(.truffleStateDecode, byteCount: encoded.count) {
+        try GhostteaTerminalStateCodec.decode(encoded, codec: codec)
+      }
+      let update = try await recorder.measure(.truffleReplicaPublication) {
+        try await publish(message, to: replica, encoder: encoder)
+      }
+      guard let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload else {
+        throw HarnessRenderBenchmarkError.frameMissing
+      }
+      guard frame == parityFrames[index] else {
+        throw HarnessRenderBenchmarkError.invalidConfiguration(
+          "selected Truffle codec produced different TRF1"
+        )
+      }
+      guard try surface.apply(frame: frame) else {
+        throw HarnessRenderBenchmarkError.frameMissing
+      }
+      surface.draw(in: surface)
+      sourceBytes &+= UInt64(encoded.count)
+      trf1Bytes &+= UInt64(frame.count)
+      finalFrame = frame
+      operationDurations.append(DispatchTime.now().uptimeNanoseconds &- started)
+    }
+    let elapsed = DispatchTime.now().uptimeNanoseconds &- elapsedStarted
+    try await Task.sleep(for: .nanoseconds(Int64(pacingNanoseconds * 3)))
+    let performance = recorder.snapshot()
+    let footprintAfter = try stablePhysicalFootprintBytes()
+    let thermalAfter = thermalStateName(ProcessInfo.processInfo.thermalState)
+    let renderer = diagnosticDelta(
+      from: baselineDiagnostics,
+      to: aggregateDiagnostics([surface])
+    )
+    let sortedDurations = operationDurations.sorted()
+
+    recorder.setEnabled(false)
+    let proof = validatePixels ? try GhostteaMetalProof.run(frame: finalFrame) : nil
+    recorder.setEnabled(true)
+
+    var failures: [String] = []
+    if renderer.renderedFrames != operationCount || renderer.acceptedFrames != operationCount {
+      failures.append(
+        "Truffle renderer accepted/rendered \(renderer.acceptedFrames)/\(renderer.renderedFrames) of \(operationCount) frames"
+      )
+    }
+    if renderer.staleFrames != 0 || renderer.fullRefreshRequests != 0 {
+      failures.append("renderer reported stale frames or requested a full refresh")
+    }
+    if renderer.commandBufferCommits != UInt64(operationCount) {
+      failures.append("command-buffer commit count does not match rendered frames")
+    }
+    let expectedMetrics: [(GhostteaPerformanceMetric, String)] = [
+      (.truffleStateDecode, "Truffle state decode"),
+      (.truffleReplicaPublication, "Truffle replica publication"),
+      (.frameDecode, "TRF1 apply"),
+      (.metalSubmission, "Metal submission"),
+    ]
+    for (metric, label) in expectedMetrics {
+      guard let summary = performance.summaries.first(where: { $0.metric == metric }) else {
+        failures.append("\(label) samples are missing")
+        continue
+      }
+      if summary.sampleCount != operationCount || summary.droppedSampleCount != 0 {
+        failures.append("\(label) samples are incomplete or dropped")
+      }
+    }
+    if performance.summaries.contains(where: { $0.droppedSampleCount != 0 }) {
+      failures.append("one or more performance metrics dropped samples")
+    }
+    if proof?.cachedUploadBytes != 0 {
+      failures.append("identical correctness render unexpectedly re-uploaded glyphs")
+    }
+    if ProcessInfo.processInfo.isLowPowerModeEnabled {
+      failures.append("Low Power Mode is enabled")
+    }
+    if [thermalBefore, thermalAfter].contains(where: { $0 != "nominal" }) {
+      failures.append("thermal state was not nominal for the complete sample")
+    }
+
+    return HarnessRenderBenchmarkSample(
+      iteration: iteration,
+      operations: operationCount,
+      surfaceCount: spec.surfaceCount,
+      sourceBytes: sourceBytes,
+      trf1Bytes: trf1Bytes,
+      elapsedNanoseconds: elapsed,
+      activeNanoseconds: operationDurations.reduce(0, &+),
+      operationP50Nanoseconds: percentile(sortedDurations, 50),
+      operationP99Nanoseconds: percentile(sortedDurations, 99),
+      operationMaximumNanoseconds: sortedDurations.last ?? 0,
+      footprintBeforeBytes: footprintBefore,
+      footprintAfterBytes: footprintAfter,
+      thermalStateBefore: thermalBefore,
+      thermalStateAfter: thermalAfter,
+      performance: performance,
+      renderer: renderer,
+      pixelHash: proof?.pixelHash ?? 0,
+      nonBackgroundPixelCount: proof?.nonBackgroundPixelCount ?? 0,
+      failures: failures
+    )
+  }
+
+  private static func publish(
+    _ message: GhostteaTerminalStateMessage,
+    to replica: GhostteaLogicalReplica,
+    encoder: JSONEncoder
+  ) async throws -> GhostteaUpdate {
+    switch message {
+    case .snapshot(let snapshot):
+      return try await replica.publishSnapshotJSON(encoder.encode(snapshot))
+    case .patch(let patch):
+      return try await replica.publishPatchJSON(encoder.encode(patch))
+    case .controlChanged:
+      throw HarnessRenderBenchmarkError.invalidConfiguration(
+        "control messages cannot produce replica frames"
+      )
+    }
+  }
+
+  private static func validateTruffleDoomParity(
+    _ payloads: [HarnessTruffleDoomPayload]
+  ) async throws -> [Data] {
+    let jsonReplica = try GhostteaLogicalReplica(runtime: GhostteaRuntime(), sessionHandle: 84_001)
+    let compactReplica = try GhostteaLogicalReplica(
+      runtime: GhostteaRuntime(), sessionHandle: 84_001)
+    let encoder = JSONEncoder()
+    var frames: [Data] = []
+    frames.reserveCapacity(payloads.count)
+    for payload in payloads {
+      let json = try GhostteaTerminalStateCodec.decode(payload.json, codec: .json)
+      let compact = try GhostteaTerminalStateCodec.decode(
+        payload.compact, codec: .compactJSONV1)
+      guard json == compact else {
+        throw HarnessRenderBenchmarkError.invalidConfiguration(
+          "JSON and compact Doom state decoded differently"
+        )
+      }
+      let jsonUpdate = try await publish(json, to: jsonReplica, encoder: encoder)
+      let compactUpdate = try await publish(compact, to: compactReplica, encoder: encoder)
+      guard
+        let jsonFrame = jsonUpdate.effects.last(where: { $0.kind == .frameReady })?.payload,
+        let compactFrame = compactUpdate.effects.last(where: { $0.kind == .frameReady })?.payload,
+        jsonFrame == compactFrame
+      else {
+        throw HarnessRenderBenchmarkError.invalidConfiguration(
+          "JSON and compact Doom state produced different TRF1"
+        )
+      }
+      frames.append(jsonFrame)
+    }
+    return frames
+  }
+
   private static func feed(
     terminals: [GhostteaTerminal],
     payload: Data,
@@ -400,6 +626,8 @@ enum HarnessRenderBenchmark {
     case "dense-1": .init(name: name, surfaceCount: 1, baseOperations: 45, kind: .feed)
     case "truecolor-1": .init(name: name, surfaceCount: 1, baseOperations: 45, kind: .feed)
     case "doom-fire-1": .init(name: name, surfaceCount: 1, baseOperations: 180, kind: .feed)
+    case "doom-fire-truffle-1":
+      .init(name: name, surfaceCount: 1, baseOperations: 45, kind: .truffleDoomFire)
     case "unicode-1": .init(name: name, surfaceCount: 1, baseOperations: 60, kind: .feed)
     case "scroll-4": .init(name: name, surfaceCount: 4, baseOperations: 60, kind: .feed)
     case "scroll-8": .init(name: name, surfaceCount: 8, baseOperations: 45, kind: .feed)
@@ -622,6 +850,192 @@ enum HarnessRenderBenchmark {
       encoded.append(Data(output.utf8))
     }
     return encoded
+  }
+
+  private static func makeTruffleDoomPayloads(
+    frames: Int
+  ) throws -> [HarnessTruffleDoomPayload] {
+    let fireRows = Int(rows) - 1
+    let fireColumns = Int(columns)
+    let levels = 32
+    let pixelRows = fireRows * 2
+    var pixels = [UInt8](repeating: 0, count: pixelRows * fireColumns)
+    pixels.replaceSubrange(
+      (pixelRows - 1) * fireColumns..<pixelRows * fireColumns,
+      with: repeatElement(UInt8(levels - 1), count: fireColumns)
+    )
+    var random = HarnessDoomFireRandom(state: 0x0d00_f1ee)
+    let paletteStops = [
+      (0.0, 0.0, 0.0),
+      (176.0, 0.0, 0.0),
+      (255.0, 80.0, 0.0),
+      (255.0, 224.0, 0.0),
+      (255.0, 255.0, 255.0),
+    ]
+    let palette: [[UInt8]] = (0..<levels).map { level in
+      let position = Double(level) / Double(levels - 1) * Double(paletteStops.count - 1)
+      let lower = min(paletteStops.count - 2, Int(floor(position)))
+      let fraction = position - Double(lower)
+      let start = paletteStops[lower]
+      let end = paletteStops[lower + 1]
+      return [
+        UInt8((start.0 + (end.0 - start.0) * fraction).rounded()),
+        UInt8((start.1 + (end.1 - start.1) * fraction).rounded()),
+        UInt8((start.2 + (end.2 - start.2) * fraction).rounded()),
+      ]
+    }
+    func spread() {
+      for y in 1..<pixelRows {
+        for x in 0..<fireColumns {
+          let source = pixels[y * fireColumns + x]
+          let drift = Int(random.next() & 3)
+          let destinationX = (x + 1 - drift + fireColumns) % fireColumns
+          pixels[(y - 1) * fireColumns + destinationX] =
+            source &- min(source, UInt8(drift & 1))
+        }
+      }
+    }
+    for _ in 0..<pixelRows { spread() }
+
+    let encoder = JSONEncoder()
+    var payloads: [HarnessTruffleDoomPayload] = []
+    payloads.reserveCapacity(frames)
+    for frameIndex in 0..<frames {
+      spread()
+      let logicalRows = (0..<fireRows).map { rowIndex in
+        let upper = rowIndex * 2 * fireColumns
+        let lower = upper + fireColumns
+        let cells = (0..<fireColumns).map { columnIndex in
+          GhostteaLogicalCell(
+            column: UInt16(columnIndex),
+            span: 1,
+            text: "▀",
+            style: GhostteaLogicalCellStyle(
+              bold: false,
+              italic: false,
+              faint: false,
+              inverse: false,
+              invisible: false,
+              strikethrough: false,
+              underline: false,
+              foreground: palette[Int(pixels[upper + columnIndex])],
+              background: palette[Int(pixels[lower + columnIndex])]
+            )
+          )
+        }
+        return GhostteaLogicalRow(text: String(repeating: "▀", count: fireColumns), cells: cells)
+      }
+      let revision = UInt64(frameIndex + 1)
+      let message: GhostteaTerminalStateMessage
+      if frameIndex == 0 {
+        message = .snapshot(
+          GhostteaLogicalSnapshot(
+            sessionEpoch: 1,
+            layoutEpoch: 1,
+            terminalRevision: revision,
+            cols: columns,
+            rows: logicalRows,
+            cursor: GhostteaLogicalCursor(
+              x: 0, y: UInt16(fireRows - 1), visible: false, style: 0, blinking: false),
+            mouseTracking: false,
+            scrollbar: GhostteaLogicalScrollbar(
+              total: UInt64(fireRows), offset: 0, len: UInt64(fireRows)),
+            title: "DOOM Fire",
+            cwd: nil
+          )
+        )
+      } else {
+        message = .patch(
+          GhostteaLogicalPatch(
+            sessionEpoch: 1,
+            layoutEpoch: 1,
+            patchSequence: UInt64(frameIndex),
+            terminalRevision: revision,
+            rowReplacements: logicalRows.enumerated().map { rowIndex, row in
+              GhostteaRowReplacement(
+                rowIndex: UInt16(rowIndex), rowRevision: revision, row: row)
+            },
+            cursor: nil,
+            mouseTracking: nil,
+            scrollbar: nil
+          )
+        )
+      }
+      payloads.append(
+        HarnessTruffleDoomPayload(
+          json: try encoder.encode(message),
+          compact: try JSONSerialization.data(withJSONObject: compactStateObject(message))
+        )
+      )
+    }
+    return payloads
+  }
+
+  private static func compactStateObject(_ message: GhostteaTerminalStateMessage) -> [String: Any] {
+    switch message {
+    case .snapshot(let snapshot):
+      return [
+        "s": [
+          snapshot.sessionEpoch,
+          snapshot.layoutEpoch,
+          snapshot.terminalRevision,
+          snapshot.cols,
+          snapshot.rows.map(compactRow),
+          compactCursor(snapshot.cursor),
+          snapshot.mouseTracking,
+          compactScrollbar(snapshot.scrollbar),
+          snapshot.title.map { $0 as Any } ?? NSNull(),
+          snapshot.cwd.map { $0 as Any } ?? NSNull(),
+        ]
+      ]
+    case .patch(let patch):
+      return [
+        "p": [
+          patch.sessionEpoch,
+          patch.layoutEpoch,
+          patch.patchSequence,
+          patch.terminalRevision,
+          patch.rowReplacements.map { replacement in
+            [replacement.rowIndex, replacement.rowRevision, compactRow(replacement.row)]
+          },
+          patch.cursor.map { compactCursor($0) as Any } ?? NSNull(),
+          patch.mouseTracking.map { $0 as Any } ?? NSNull(),
+          patch.scrollbar.map { compactScrollbar($0) as Any } ?? NSNull(),
+          0,
+        ]
+      ]
+    case .controlChanged(let viewID, let epoch, let cols, let rows, let layout):
+      return ["c": [viewID, epoch, cols, rows, layout]]
+    }
+  }
+
+  private static func compactRow(_ row: GhostteaLogicalRow) -> [Any] {
+    [
+      row.text,
+      row.cells.map { cell in
+        [cell.column, cell.span, cell.text, compactStyle(cell.style)] as [Any]
+      },
+    ]
+  }
+
+  private static func compactStyle(_ style: GhostteaLogicalCellStyle) -> [Any] {
+    var flags: UInt8 = 0
+    if style.bold { flags |= 1 }
+    if style.italic { flags |= 2 }
+    if style.faint { flags |= 4 }
+    if style.inverse { flags |= 8 }
+    if style.invisible { flags |= 16 }
+    if style.strikethrough { flags |= 32 }
+    if style.underline { flags |= 64 }
+    return [flags, style.foreground ?? NSNull(), style.background ?? NSNull()]
+  }
+
+  private static func compactCursor(_ cursor: GhostteaLogicalCursor) -> [Any] {
+    [cursor.x, cursor.y, cursor.visible, cursor.style, cursor.blinking]
+  }
+
+  private static func compactScrollbar(_ scrollbar: GhostteaLogicalScrollbar) -> [UInt64] {
+    [scrollbar.total, scrollbar.offset, scrollbar.len]
   }
 
   private static func fnv1a64(_ data: Data) -> UInt64 {

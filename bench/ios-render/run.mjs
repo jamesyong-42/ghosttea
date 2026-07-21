@@ -39,6 +39,7 @@ function parseArgs(argv) {
     build: true,
     allowUntracked: [],
     geometryReuse: true,
+    stateCodec: "json",
   };
   for (const argument of argv) {
     if (argument.startsWith("--output=")) options.output = resolve(root, argument.slice(9));
@@ -53,6 +54,11 @@ function parseArgs(argv) {
       const value = argument.slice(17);
       if (value !== "on" && value !== "off") throw new Error("--geometry-reuse must be on or off");
       options.geometryReuse = value === "on";
+    } else if (argument.startsWith("--state-codec=")) {
+      options.stateCodec = argument.slice(14);
+      if (!["json", "compact-json-v1"].includes(options.stateCodec)) {
+        throw new Error("--state-codec must be json or compact-json-v1");
+      }
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -218,6 +224,7 @@ function main() {
   --scale=1           Operation-count multiplier
   --cases=list        Comma-separated benchmark cases
   --geometry-reuse=on Enable or disable encoded geometry reuse
+  --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
     return;
@@ -274,6 +281,7 @@ function main() {
     scale: options.scale,
     cases: options.cases,
     encodedGeometryReuseEnabled: options.geometryReuse,
+    truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");
   const launch = execute(
