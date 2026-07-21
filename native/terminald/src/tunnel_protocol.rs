@@ -1121,6 +1121,22 @@ mod tests {
     }
 
     #[test]
+    fn compact_state_fixture_is_canonical_rust_encoding() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../apple/GhostteaKit/Tests/GhostteaTruffleTests/Fixtures/compact-state-v1.json"
+        ))
+        .unwrap();
+        for key in ["snapshot", "patch", "controlChanged"] {
+            let compact: CompactStateMessage =
+                serde_json::from_value(fixture[key].clone()).unwrap();
+            let state = StateMessage::try_from(compact).unwrap();
+            let encoded = encode_state_message(&state, StateCodec::CompactJsonV1, 4096).unwrap();
+            let encoded_value: serde_json::Value = serde_json::from_slice(&encoded[4..]).unwrap();
+            assert_eq!(encoded_value, fixture[key], "fixture mismatch for {key}");
+        }
+    }
+
+    #[test]
     fn unknown_protocol_major_is_rejected_before_json() {
         let mut encoded = encode_preface(&StreamPreface {
             stream_kind: StreamKind::ConnectionControl,

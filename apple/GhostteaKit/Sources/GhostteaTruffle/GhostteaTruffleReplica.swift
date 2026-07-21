@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaCore
+import GhostteaPerformance
 
 public enum GhostteaRenderedAttachmentEvent: Sendable {
   case frame(GhostteaUpdate, fullSnapshot: Bool)
@@ -45,7 +46,11 @@ public actor GhostteaTruffleReplicaPump {
         layoutEpoch: layout
       )
     case .state(.snapshot(let snapshot)):
-      let update = try await replica.publishSnapshotJSON(encoder.encode(snapshot))
+      let update = try await GhostteaPerformanceRecorder.shared.measure(
+        .truffleReplicaPublication
+      ) {
+        try await replica.publishSnapshotJSON(encoder.encode(snapshot))
+      }
       try await attachment.acknowledge(
         sessionEpoch: snapshot.sessionEpoch,
         layoutEpoch: snapshot.layoutEpoch,
@@ -56,7 +61,11 @@ public actor GhostteaTruffleReplicaPump {
     case .state(.patch(let patch)):
       let update: GhostteaUpdate
       do {
-        update = try await replica.publishPatchJSON(encoder.encode(patch))
+        update = try await GhostteaPerformanceRecorder.shared.measure(
+          .truffleReplicaPublication
+        ) {
+          try await replica.publishPatchJSON(encoder.encode(patch))
+        }
       } catch {
         if await replica.isPoisoned {
           // The ABI contract permits only destruction after a caught panic;

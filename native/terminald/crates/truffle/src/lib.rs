@@ -1143,12 +1143,13 @@ where
     .await
     .context("timed out reading compact-stream client hello")??
     .context("compact stream closed before client hello")?;
-    let client_nonce = match hello {
+    let (client_nonce, state_codec) = match hello {
         ConnectionMessage::ClientHello {
             protocol_major,
             protocol_minor,
             local_device_id,
             nonce,
+            state_codecs,
             ..
         } if protocol_major == PROTOCOL_MAJOR
             && protocol_minor >= PROTOCOL_MINOR
@@ -1157,7 +1158,7 @@ where
                 .as_deref()
                 .is_none_or(|expected| expected == local_device_id) =>
         {
-            nonce
+            (nonce, negotiate_state_codec(state_codecs))
         }
         ConnectionMessage::ClientHello { .. } => {
             bail!("compact-stream client hello identity or protocol mismatch")
@@ -1171,7 +1172,7 @@ where
                 protocol_minor: PROTOCOL_MINOR,
                 host_instance_id,
                 nonce: client_nonce,
-                state_codec: None,
+                state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1213,8 +1214,15 @@ where
             }
         }
         StreamKind::SessionControl => {
-            handle_compact_session_protocol(&mut control, preface, registry, config, client_id)
-                .await?;
+            handle_compact_session_protocol(
+                &mut control,
+                preface,
+                registry,
+                config,
+                client_id,
+                state_codec,
+            )
+            .await?;
         }
         _ => bail!("compact stream kind is not client-openable"),
     }
@@ -1227,6 +1235,7 @@ async fn handle_compact_session_protocol<S>(
     registry: Registry,
     config: TruffleTerminalConfig,
     client_id: String,
+    state_codec: StateCodec,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -1291,18 +1300,16 @@ where
         let mut patch_sequence = 0_u64;
         if let Some(snapshot) = previous.as_ref() {
             control
-                .write_compact_message(
-                    CompactChannel::State,
+                .write_compact_state_message(
                     &StateMessage::Snapshot(snapshot.clone()),
-                    MAX_STATE_MESSAGE_BYTES,
+                    state_codec,
                 )
                 .await?;
         }
         let (controller, cols, rows, layout_epoch) = session.control_state();
         if let Some(controller) = controller {
             control
-                .write_compact_message(
-                    CompactChannel::State,
+                .write_compact_state_message(
                     &StateMessage::ControlChanged {
                         controller_view_id: controller.view_id,
                         control_epoch: controller.control_epoch,
@@ -1310,7 +1317,7 @@ where
                         rows,
                         layout_epoch,
                     },
-                    MAX_STATE_MESSAGE_BYTES,
+                    state_codec,
                 )
                 .await?;
         }
@@ -1396,10 +1403,9 @@ where
                                 .context("shared terminal has no logical snapshot")?;
                             previous = Some(snapshot.clone());
                             patch_sequence = 0;
-                            control.write_compact_message(
-                                CompactChannel::State,
+                            control.write_compact_state_message(
                                 &StateMessage::Snapshot(snapshot),
-                                MAX_STATE_MESSAGE_BYTES,
+                                state_codec,
                             ).await?;
                         }
                         SessionControlMessage::StateAck { .. } => {}
@@ -1460,10 +1466,9 @@ where
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
-                    control.write_compact_message(
-                        CompactChannel::State,
+                    control.write_compact_state_message(
                         &message,
-                        MAX_STATE_MESSAGE_BYTES,
+                        state_codec,
                     ).await?;
                 }
                 changed = controls.recv() => {
@@ -1475,8 +1480,7 @@ where
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
-                    control.write_compact_message(
-                        CompactChannel::State,
+                    control.write_compact_state_message(
                         &StateMessage::ControlChanged {
                             controller_view_id: changed.controller.view_id,
                             control_epoch: changed.controller.control_epoch,
@@ -1484,7 +1488,7 @@ where
                             rows: changed.rows,
                             layout_epoch: changed.layout_epoch,
                         },
-                        MAX_STATE_MESSAGE_BYTES,
+                        state_codec,
                     ).await?;
                 }
             }
@@ -2186,6 +2190,25 @@ where
         Ok(())
     }
 
+    async fn write_compact_state_message(
+        &mut self,
+        message: &StateMessage,
+        codec: StateCodec,
+    ) -> Result<()> {
+        let encoded = encode_state_message(message, codec, MAX_STATE_MESSAGE_BYTES)?;
+        let payload = &encoded[4..];
+        let framed_len = payload
+            .len()
+            .checked_add(1)
+            .context("compact state message length overflow")?;
+        let mut framed = Vec::with_capacity(4 + framed_len);
+        framed.extend_from_slice(&u32::try_from(framed_len)?.to_be_bytes());
+        framed.push(CompactChannel::State.as_byte());
+        framed.extend_from_slice(payload);
+        self.stream.write_all(&framed).await?;
+        Ok(())
+    }
+
     async fn read_compact_message<T: serde::de::DeserializeOwned>(
         &mut self,
         expected_channel: CompactChannel,
@@ -2503,6 +2526,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_stream_frames_negotiated_state_payloads() {
+        let (server_io, mut client_io) = tokio::io::duplex(4096);
+        let mut server = CompactProtocolStream::new(server_io);
+        server
+            .write_compact_state_message(
+                &StateMessage::ControlChanged {
+                    controller_view_id: "view".into(),
+                    control_epoch: 9,
+                    cols: 120,
+                    rows: 40,
+                    layout_epoch: 3,
+                },
+                StateCodec::CompactJsonV1,
+            )
+            .await
+            .unwrap();
+
+        let mut header = [0_u8; 4];
+        client_io.read_exact(&mut header).await.unwrap();
+        let framed_len = u32::from_be_bytes(header) as usize;
+        let mut framed = vec![0_u8; framed_len];
+        client_io.read_exact(&mut framed).await.unwrap();
+        assert_eq!(framed[0], CompactChannel::State.as_byte());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&framed[1..]).unwrap(),
+            serde_json::json!({"c": ["view", 9, 120, 40, 3]})
+        );
+    }
+
+    #[tokio::test]
     async fn compact_stream_handshake_and_session_listing_match_apple_client() {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let registry = Registry::default();
@@ -2531,7 +2584,7 @@ mod tests {
                     host_instance_id: String::new(),
                     local_device_id: "ios-device".into(),
                     nonce: "fixed-nonce".into(),
-                    state_codecs: None,
+                    state_codecs: Some(vec![StateCodec::CompactJsonV1]),
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -2549,7 +2602,7 @@ mod tests {
                 protocol_minor: PROTOCOL_MINOR,
                 ref host_instance_id,
                 ref nonce,
-                state_codec: None,
+                state_codec: Some(StateCodec::CompactJsonV1),
             } if host_instance_id == "desktop-instance" && nonce == "fixed-nonce"
         ));
 

@@ -238,19 +238,26 @@ public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
   }
 }
 
+public enum GhostteaStateCodec: String, Codable, Equatable, Sendable {
+  case json
+  case compactJSONV1 = "compact-json-v1"
+}
+
 public enum GhostteaConnectionMessage: Codable, Equatable, Sendable {
   case clientHello(
     protocolMajor: UInt16,
     protocolMinor: UInt16,
     hostInstanceID: String,
     localDeviceID: String,
-    nonce: String
+    nonce: String,
+    stateCodecs: [GhostteaStateCodec]?
   )
   case serverHello(
     protocolMajor: UInt16,
     protocolMinor: UInt16,
     hostInstanceID: String,
-    nonce: String
+    nonce: String,
+    stateCodec: GhostteaStateCodec?
   )
   case listSessions(requestID: String)
   case sessions(requestID: String, sessions: [GhostteaSharedSessionSummary])
@@ -263,6 +270,8 @@ public enum GhostteaConnectionMessage: Codable, Equatable, Sendable {
     case hostInstanceID = "hostInstanceId"
     case localDeviceID = "localDeviceId"
     case nonce
+    case stateCodecs
+    case stateCodec
     case requestID = "requestId"
     case sessions
     case code
@@ -278,14 +287,16 @@ public enum GhostteaConnectionMessage: Codable, Equatable, Sendable {
         protocolMinor: values.decode(UInt16.self, forKey: .protocolMinor),
         hostInstanceID: values.decode(String.self, forKey: .hostInstanceID),
         localDeviceID: values.decode(String.self, forKey: .localDeviceID),
-        nonce: values.decode(String.self, forKey: .nonce)
+        nonce: values.decode(String.self, forKey: .nonce),
+        stateCodecs: values.decodeIfPresent([GhostteaStateCodec].self, forKey: .stateCodecs)
       )
     case "server-hello":
       self = try .serverHello(
         protocolMajor: values.decode(UInt16.self, forKey: .protocolMajor),
         protocolMinor: values.decode(UInt16.self, forKey: .protocolMinor),
         hostInstanceID: values.decode(String.self, forKey: .hostInstanceID),
-        nonce: values.decode(String.self, forKey: .nonce)
+        nonce: values.decode(String.self, forKey: .nonce),
+        stateCodec: values.decodeIfPresent(GhostteaStateCodec.self, forKey: .stateCodec)
       )
     case "list-sessions":
       self = try .listSessions(requestID: values.decode(String.self, forKey: .requestID))
@@ -308,19 +319,21 @@ public enum GhostteaConnectionMessage: Codable, Equatable, Sendable {
   public func encode(to encoder: Encoder) throws {
     var values = encoder.container(keyedBy: CodingKeys.self)
     switch self {
-    case .clientHello(let major, let minor, let host, let local, let nonce):
+    case .clientHello(let major, let minor, let host, let local, let nonce, let stateCodecs):
       try values.encode("client-hello", forKey: .type)
       try values.encode(major, forKey: .protocolMajor)
       try values.encode(minor, forKey: .protocolMinor)
       try values.encode(host, forKey: .hostInstanceID)
       try values.encode(local, forKey: .localDeviceID)
       try values.encode(nonce, forKey: .nonce)
-    case .serverHello(let major, let minor, let host, let nonce):
+      try values.encodeIfPresent(stateCodecs, forKey: .stateCodecs)
+    case .serverHello(let major, let minor, let host, let nonce, let stateCodec):
       try values.encode("server-hello", forKey: .type)
       try values.encode(major, forKey: .protocolMajor)
       try values.encode(minor, forKey: .protocolMinor)
       try values.encode(host, forKey: .hostInstanceID)
       try values.encode(nonce, forKey: .nonce)
+      try values.encodeIfPresent(stateCodec, forKey: .stateCodec)
     case .listSessions(let requestID):
       try values.encode("list-sessions", forKey: .type)
       try values.encode(requestID, forKey: .requestID)
@@ -444,13 +457,14 @@ public actor GhostteaTruffleHostClient {
         protocolMinor: GhostteaTruffleContract.protocolMinor,
         hostInstanceID: "",
         localDeviceID: localDeviceID,
-        nonce: nonce
+        nonce: nonce,
+        stateCodecs: [.compactJSONV1]
       )
     )
 
     let response: GhostteaConnectionMessage = try await read()
     switch response {
-    case .serverHello(let major, let minor, let host, let echoedNonce):
+    case .serverHello(let major, let minor, let host, let echoedNonce, _):
       guard major == GhostteaTruffleContract.protocolMajor,
         minor >= GhostteaTruffleContract.protocolMinor
       else {

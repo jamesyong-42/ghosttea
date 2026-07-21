@@ -24,7 +24,7 @@ private struct ConnectionControlFixture: Decodable {
   )
 
   guard
-    case .clientHello(let major, let minor, let host, let device, let nonce) =
+    case .clientHello(let major, let minor, let host, let device, let nonce, let stateCodecs) =
       fixture.clientHello
   else {
     Issue.record("expected client hello")
@@ -35,6 +35,7 @@ private struct ConnectionControlFixture: Decodable {
   #expect(host == "desktop-instance")
   #expect(device == "01J4K9M2Z8AB3RNYQPW6H5TC0X")
   #expect(nonce == "nonce-1")
+  #expect(stateCodecs == nil)
 
   guard case .sessions(let requestID, let sessions) = fixture.sessions else {
     Issue.record("expected sessions")
@@ -70,7 +71,8 @@ private struct ConnectionControlFixture: Decodable {
     protocolMinor: 3,
     hostInstanceID: "local-host",
     localDeviceID: "device-1",
-    nonce: "nonce-1"
+    nonce: "nonce-1",
+    stateCodecs: [.compactJSONV1]
   )
   let frame = try GhostteaTerminalProtocolCodec.encodeFrame(message)
   let payload = frame.dropFirst(4)
@@ -84,12 +86,84 @@ private struct ConnectionControlFixture: Decodable {
   #expect(object["hostInstanceId"] as? String == "local-host")
   #expect(object["localDeviceId"] as? String == "device-1")
   #expect(object["nonce"] as? String == "nonce-1")
+  #expect(object["stateCodecs"] as? [String] == ["compact-json-v1"])
   #expect(
     try GhostteaTerminalProtocolCodec.decodeFrame(
       GhostteaConnectionMessage.self,
       from: frame
     ) == message
   )
+}
+
+@Test func compactStateFixtureMatchesTheCanonicalRustTupleSchema() throws {
+  let url = try #require(
+    Bundle.module.url(
+      forResource: "compact-state-v1",
+      withExtension: "json",
+      subdirectory: "Fixtures"
+    )
+  )
+  let fixture = try #require(
+    JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+  )
+  func payload(_ key: String) throws -> Data {
+    try JSONSerialization.data(withJSONObject: try #require(fixture[key]))
+  }
+
+  let snapshot = try GhostteaTerminalStateCodec.decode(
+    payload("snapshot"), codec: .compactJSONV1)
+  guard case .snapshot(let value) = snapshot else {
+    Issue.record("expected compact snapshot")
+    return
+  }
+  #expect(value.sessionEpoch == 7)
+  #expect(value.terminalRevision == 11)
+  #expect(value.cols == 3)
+  #expect(value.rows.first?.text == "a界́")
+  #expect(value.rows.first?.cells.first?.style.bold == true)
+  #expect(value.rows.first?.cells.first?.style.underline == true)
+  #expect(value.rows.first?.cells.first?.style.foreground == [1, 2, 3])
+  #expect(value.rows.first?.cells.last?.style.strikethrough == true)
+  #expect(value.rows.first?.cells.last?.span == 2)
+  #expect(value.rows.first?.cells.last?.text == "界́")
+  #expect(value.cursor == GhostteaLogicalCursor(x: 1, y: 0, visible: true, style: 2, blinking: true))
+  #expect(value.scrollbar == GhostteaLogicalScrollbar(total: 20, offset: 10, len: 1))
+  #expect(value.title == "title")
+  #expect(value.cwd == "/cwd")
+
+  let patch = try GhostteaTerminalStateCodec.decode(payload("patch"), codec: .compactJSONV1)
+  guard case .patch(let value) = patch else {
+    Issue.record("expected compact patch")
+    return
+  }
+  #expect(value.patchSequence == 1)
+  #expect(value.terminalRevision == 12)
+  #expect(value.rowReplacements.first?.rowRevision == 12)
+  #expect(value.mouseTracking == false)
+
+  let control = try GhostteaTerminalStateCodec.decode(
+    payload("controlChanged"), codec: .compactJSONV1)
+  #expect(control == .controlChanged(
+    controllerViewID: "view",
+    controlEpoch: 9,
+    cols: 2,
+    rows: 1,
+    layoutEpoch: 3
+  ))
+}
+
+@Test func compactStateDecoderRejectsExtensionsFlagsAndMalformedColors() {
+  let malformed = [
+    #"{"p":[1,1,1,1,[],null,null,null,1]}"#,
+    #"{"s":[1,1,1,1,[["x",[[0,1,"x",[128,null,null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#,
+    #"{"s":[1,1,1,1,[["x",[[0,1,"x",[0,[1,2],null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#,
+  ]
+  for value in malformed {
+    do {
+      _ = try GhostteaTerminalStateCodec.decode(Data(value.utf8), codec: .compactJSONV1)
+      Issue.record("accepted malformed compact state")
+    } catch {}
+  }
 }
 
 @Test func sessionControlMessagesUseDesktopCamelCaseIDKeys() throws {
@@ -162,10 +236,11 @@ private struct ConnectionControlFixture: Decodable {
     let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
     let nonce: String
     switch hello {
-    case .clientHello(let major, let minor, _, let localDeviceID, let value):
+    case .clientHello(let major, let minor, _, let localDeviceID, let value, let codecs):
       #expect(major == 1)
       #expect(minor == 3)
       #expect(localDeviceID == "ios-device")
+      #expect(codecs == [.compactJSONV1])
       nonce = value
     default:
       Issue.record("expected client hello")
@@ -178,7 +253,8 @@ private struct ConnectionControlFixture: Decodable {
           protocolMajor: 1,
           protocolMinor: 3,
           hostInstanceID: "desktop-instance",
-          nonce: nonce
+          nonce: nonce,
+          stateCodec: .compactJSONV1
         )
       )
     )
@@ -237,7 +313,8 @@ private struct ConnectionControlFixture: Decodable {
           protocolMajor: 1,
           protocolMinor: 3,
           hostInstanceID: "desktop-instance",
-          nonce: "wrong"
+          nonce: "wrong",
+          stateCodec: nil
         )
       )
     )
@@ -278,7 +355,7 @@ private struct ConnectionControlFixture: Decodable {
     let header = try await readExactly(16, from: serverConnection)
     _ = try await readExactly(Int(readUInt32(header, at: 12)), from: serverConnection)
     let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
-    guard case .clientHello(_, _, _, _, let nonce) = hello else {
+    guard case .clientHello(_, _, _, _, let nonce, _) = hello else {
       Issue.record("expected client hello")
       return
     }
@@ -288,7 +365,8 @@ private struct ConnectionControlFixture: Decodable {
           protocolMajor: 1,
           protocolMinor: 3,
           hostInstanceID: "desktop-instance",
-          nonce: nonce
+          nonce: nonce,
+          stateCodec: nil
         )
       )
     )
@@ -324,8 +402,9 @@ private struct ConnectionControlFixture: Decodable {
 
     let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
     let nonce: String
-    if case .clientHello(_, _, _, let deviceID, let value) = hello {
+    if case .clientHello(_, _, _, let deviceID, let value, let codecs) = hello {
       #expect(deviceID == "ios-device")
+      #expect(codecs == [.compactJSONV1])
       nonce = value
     } else {
       Issue.record("expected client hello")
@@ -337,7 +416,8 @@ private struct ConnectionControlFixture: Decodable {
           protocolMajor: 1,
           protocolMinor: 3,
           hostInstanceID: "desktop-instance",
-          nonce: nonce
+          nonce: nonce,
+          stateCodec: nil
         )
       )
     )
@@ -477,6 +557,7 @@ private struct ConnectionControlFixture: Decodable {
   #expect(await attachment.info.hostInstanceID == "desktop-instance")
   #expect(await attachment.info.attachmentEpoch == 11)
   #expect(await attachment.info.readWrite)
+  #expect(await attachment.stateCodec == .json)
 
   let event = try await attachment.nextEvent()
   #expect(
@@ -511,6 +592,84 @@ private struct ConnectionControlFixture: Decodable {
     Issue.record("expected a snapshot resynchronization request")
   }
   try await attachment.send(.text("echo shared\n"), sequence: 1)
+  await attachment.detach()
+  try await server.value
+}
+
+@Test func attachmentUsesNegotiatedCompactStateAndKeepsControlJSON() async throws {
+  let (clientConnection, serverConnection) = LoopbackConnection.makePair()
+  let server = Task {
+    let header = try await readExactly(16, from: serverConnection)
+    _ = try await readExactly(Int(readUInt32(header, at: 12)), from: serverConnection)
+    let hello: GhostteaConnectionMessage = try await readFrame(from: serverConnection)
+    guard case .clientHello(_, _, _, _, let nonce, let codecs) = hello else {
+      Issue.record("expected client hello")
+      return
+    }
+    #expect(codecs == [.compactJSONV1])
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeFrame(
+        GhostteaConnectionMessage.serverHello(
+          protocolMajor: 1,
+          protocolMinor: 3,
+          hostInstanceID: "desktop-instance",
+          nonce: nonce,
+          stateCodec: .compactJSONV1
+        )
+      )
+    )
+
+    let (_, attachPayload) = try await readCompact(from: serverConnection)
+    let attach = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: attachPayload)
+    guard case .attachView(let requestID, _, _, _, _, _) = attach else {
+      Issue.record("expected attach-view")
+      return
+    }
+    try await serverConnection.write(
+      GhostteaTerminalProtocolCodec.encodeCompactFrame(
+        .control,
+        GhostteaSessionControlMessage.viewAttached(
+          requestID: requestID,
+          sessionEpoch: 7,
+          layoutEpoch: 3,
+          attachmentEpoch: 11,
+          cols: 100,
+          rows: 30,
+          readWrite: true
+        )
+      )
+    )
+    try await writeCompactJSON(
+      #"{"c":["desktop-view",12,120,40,4]}"#,
+      channel: .state,
+      to: serverConnection
+    )
+    _ = try await readCompact(from: serverConnection)
+  }
+
+  let attachment = try await GhostteaTruffleAttachment.connect(
+    over: clientConnection,
+    localDeviceID: "ios-device",
+    sessionID: "session-1",
+    viewID: "ios-view",
+    cols: 100,
+    rows: 30,
+    nonce: "compact-nonce",
+    requestID: "compact-request"
+  )
+  #expect(await attachment.stateCodec == .compactJSONV1)
+  #expect(
+    try await attachment.nextEvent()
+      == .state(
+        .controlChanged(
+          controllerViewID: "desktop-view",
+          controlEpoch: 12,
+          cols: 120,
+          rows: 40,
+          layoutEpoch: 4
+        )
+      )
+  )
   await attachment.detach()
   try await server.value
 }

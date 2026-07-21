@@ -129,6 +129,7 @@ let package = Package(
       name: "GhostteaTruffle",
       dependencies: [
         "GhostteaCore",
+        "GhostteaPerformance",
         .product(name: "Truffle", package: "apple"),
         .product(name: "TruffleTailscale", package: "apple"),
       ]

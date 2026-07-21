@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaPerformance
 import Truffle
 
 public enum GhostteaCompactChannel: UInt8, Sendable {
@@ -467,6 +468,7 @@ public actor GhostteaTruffleAttachment {
   public let sessionID: String
   public let viewID: String
   public let info: GhostteaAttachmentInfo
+  public let stateCodec: GhostteaStateCodec
 
   private let connection: any MeshConnection
   private var buffer = Data()
@@ -474,12 +476,13 @@ public actor GhostteaTruffleAttachment {
 
   private init(
     connection: any MeshConnection, sessionID: String, viewID: String, info: GhostteaAttachmentInfo,
-    buffer: Data
+    stateCodec: GhostteaStateCodec, buffer: Data
   ) {
     self.connection = connection
     self.sessionID = sessionID
     self.viewID = viewID
     self.info = info
+    self.stateCodec = stateCodec
     self.buffer = buffer
   }
 
@@ -490,9 +493,9 @@ public actor GhostteaTruffleAttachment {
   ) async throws -> GhostteaTruffleAttachment {
     let wire = GhostteaAttachmentHandshake(connection: connection)
     do {
-      let host: String
+      let hello: (host: String, stateCodec: GhostteaStateCodec)
       do {
-        host = try await wire.handshake(
+        hello = try await wire.handshake(
           localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce)
       } catch {
         throw GhostteaTruffleError.handshakeRejected(
@@ -524,9 +527,9 @@ public actor GhostteaTruffleAttachment {
       return GhostteaTruffleAttachment(
         connection: connection, sessionID: sessionID, viewID: viewID,
         info: GhostteaAttachmentInfo(
-          hostInstanceID: host, sessionEpoch: sessionEpoch, layoutEpoch: layoutEpoch,
+          hostInstanceID: hello.host, sessionEpoch: sessionEpoch, layoutEpoch: layoutEpoch,
           attachmentEpoch: attachmentEpoch, cols: actualCols, rows: actualRows, readWrite: readWrite
-        ), buffer: remainder)
+        ), stateCodec: hello.stateCodec, buffer: remainder)
     } catch {
       await connection.close()
       throw error
@@ -537,7 +540,14 @@ public actor GhostteaTruffleAttachment {
     let (channel, payload) = try await readCompact()
     switch channel {
     case .state:
-      return .state(try JSONDecoder().decode(GhostteaTerminalStateMessage.self, from: payload))
+      return try .state(
+        GhostteaPerformanceRecorder.shared.measure(
+          .truffleStateDecode,
+          byteCount: payload.count
+        ) {
+          try GhostteaTerminalStateCodec.decode(payload, codec: stateCodec)
+        }
+      )
     case .control:
       let message = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: payload)
       guard case .selectionTextResult(let requestID, let text) = message else {
@@ -681,7 +691,7 @@ private actor GhostteaAttachmentHandshake {
   init(connection: any MeshConnection) { self.connection = connection }
 
   func handshake(localDeviceID: String, sessionID: String, viewID: String, nonce: String)
-    async throws -> String
+    async throws -> (host: String, stateCodec: GhostteaStateCodec)
   {
     try await connection.write(
       try GhostteaTerminalProtocolCodec.encodePreface(
@@ -691,13 +701,14 @@ private actor GhostteaAttachmentHandshake {
         GhostteaConnectionMessage.clientHello(
           protocolMajor: GhostteaTruffleContract.protocolMajor,
           protocolMinor: GhostteaTruffleContract.protocolMinor, hostInstanceID: "",
-          localDeviceID: localDeviceID, nonce: nonce)))
+          localDeviceID: localDeviceID, nonce: nonce,
+          stateCodecs: [.compactJSONV1])))
     let response: GhostteaConnectionMessage = try await readFrame()
-    guard case .serverHello(let major, let minor, let host, let echoed) = response,
+    guard case .serverHello(let major, let minor, let host, let echoed, let stateCodec) = response,
       major == GhostteaTruffleContract.protocolMajor,
       minor >= GhostteaTruffleContract.protocolMinor, echoed == nonce, !host.isEmpty
     else { throw GhostteaTruffleError.mismatchedResponse }
-    return host
+    return (host, stateCodec ?? .json)
   }
 
   func writeCompact<T: Encodable>(_ channel: GhostteaCompactChannel, _ value: T) async throws {

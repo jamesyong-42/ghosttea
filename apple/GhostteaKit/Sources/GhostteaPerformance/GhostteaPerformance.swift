@@ -7,6 +7,8 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
   case inputToTransportWrite
   case receivedBytesToFrameDelivery
   case receivedBytesToMetalSubmission
+  case truffleStateDecode
+  case truffleReplicaPublication
   case nativeFeed
   case textEngineLockWait
   case textEngineLockHold
@@ -25,6 +27,8 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     case .inputToTransportWrite: "input_to_transport_write"
     case .receivedBytesToFrameDelivery: "received_bytes_to_frame_delivery"
     case .receivedBytesToMetalSubmission: "received_bytes_to_metal_submission"
+    case .truffleStateDecode: "truffle_state_decode"
+    case .truffleReplicaPublication: "truffle_replica_publication"
     case .nativeFeed: "native_feed"
     case .textEngineLockWait: "text_engine_lock_wait"
     case .textEngineLockHold: "text_engine_lock_hold"
