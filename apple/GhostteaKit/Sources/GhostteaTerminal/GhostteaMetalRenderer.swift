@@ -86,7 +86,6 @@ private struct GhostteaMetalGeometryKey: Equatable {
   let contentInsets: GhostteaTerminalContentInsets
   let selection: GhostteaMetalSelection?
   let focused: Bool
-  let cursorBlinkVisible: Bool
   let alphaAtlasResetCount: Int
   let colorAtlasResetCount: Int
 }
@@ -113,7 +112,13 @@ private struct GhostteaMetalEncodedMesh {
       .compactMap { $0 }.count
   }
 
-  var drawCallCount: Int { allocationCount }
+  func drawCallCount(showCursor: Bool) -> Int {
+    allocationCount - (!showCursor && cursor != nil ? 1 : 0)
+  }
+
+  func rectangleVertexCount(showCursor: Bool) -> Int {
+    rectangleVertexCount - (!showCursor ? cursor?.vertexCount ?? 0 : 0)
+  }
 }
 
 private struct GhostteaMetalGeometryCache {
@@ -255,6 +260,10 @@ final class GhostteaMetalRenderer {
     guard width > 0, height > 0, target.pixelFormat == .rgba8Unorm, scale.isFinite, scale > 0 else {
       throw GhostteaMetalError.invalidViewport
     }
+    let showCursor =
+      state.cursor.map {
+        $0.visible && (!$0.blinking || cursorBlinkVisible)
+      } ?? false
     let recorder = GhostteaPerformanceRecorder.shared
     let lookupKey = geometryKey(
       state: state,
@@ -264,8 +273,7 @@ final class GhostteaMetalRenderer {
       theme: theme,
       contentInsets: contentInsets,
       selection: selection,
-      focused: focused,
-      cursorBlinkVisible: cursorBlinkVisible
+      focused: focused
     )
     let encodedMesh: GhostteaMetalEncodedMesh
     let atlasUpload: GhostteaMetalUploadResult
@@ -288,7 +296,13 @@ final class GhostteaMetalRenderer {
       vertexUploadBytes = 0
       bufferAllocationCount = 0
       try recorder.measure(.metalEncoding) {
-        try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
+        try encode(
+          mesh: encodedMesh,
+          target: target,
+          theme: theme,
+          showCursor: showCursor,
+          presenting: drawable
+        )
       }
     } else {
       geometryCache = nil
@@ -313,13 +327,18 @@ final class GhostteaMetalRenderer {
           theme: theme,
           contentInsets: contentInsets,
           selection: selection,
-          focused: focused,
-          cursorBlinkVisible: cursorBlinkVisible
+          focused: focused
         )
       }
       encodedMesh = try recorder.measure(.metalEncoding) {
         let encodedMesh = try makeEncodedMesh(mesh)
-        try encode(mesh: encodedMesh, target: target, theme: theme, presenting: drawable)
+        try encode(
+          mesh: encodedMesh,
+          target: target,
+          theme: theme,
+          showCursor: showCursor,
+          presenting: drawable
+        )
         return encodedMesh
       }
       let completedKey = geometryKey(
@@ -330,8 +349,7 @@ final class GhostteaMetalRenderer {
         theme: theme,
         contentInsets: contentInsets,
         selection: selection,
-        focused: focused,
-        cursorBlinkVisible: cursorBlinkVisible
+        focused: focused
       )
       if pendingGeometryKey == completedKey {
         geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
@@ -343,13 +361,13 @@ final class GhostteaMetalRenderer {
       bufferAllocationCount = encodedMesh.allocationCount
     }
     return GhostteaMetalDrawResult(
-      rectangleVertexCount: encodedMesh.rectangleVertexCount,
+      rectangleVertexCount: encodedMesh.rectangleVertexCount(showCursor: showCursor),
       alphaGlyphVertexCount: encodedMesh.alphaGlyphVertexCount,
       colorGlyphVertexCount: encodedMesh.colorGlyphVertexCount,
       atlasUpload: atlasUpload,
       vertexUploadBytes: vertexUploadBytes,
       bufferAllocationCount: bufferAllocationCount,
-      drawCallCount: encodedMesh.drawCallCount,
+      drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
       commandBufferCount: 1
     )
   }
@@ -362,8 +380,7 @@ final class GhostteaMetalRenderer {
     theme: GhostteaMetalTheme,
     contentInsets: GhostteaTerminalContentInsets,
     selection: GhostteaMetalSelection?,
-    focused: Bool,
-    cursorBlinkVisible: Bool
+    focused: Bool
   ) -> GhostteaMetalGeometryKey {
     GhostteaMetalGeometryKey(
       sessionHandle: state.sessionHandle,
@@ -377,7 +394,6 @@ final class GhostteaMetalRenderer {
       contentInsets: contentInsets,
       selection: selection,
       focused: focused,
-      cursorBlinkVisible: cursorBlinkVisible,
       alphaAtlasResetCount: atlases.alpha.resetCount,
       colorAtlasResetCount: atlases.color.resetCount
     )
@@ -411,8 +427,7 @@ final class GhostteaMetalRenderer {
     theme: GhostteaMetalTheme,
     contentInsets: GhostteaTerminalContentInsets,
     selection: GhostteaMetalSelection?,
-    focused: Bool,
-    cursorBlinkVisible: Bool
+    focused: Bool
   ) throws -> GhostteaMetalMesh {
     var mesh = GhostteaMetalMesh()
     let originX = Self.originX + contentInsets.left
@@ -517,7 +532,7 @@ final class GhostteaMetalRenderer {
         }
       }
     }
-    if let cursor = state.cursor, cursor.visible, !cursor.blinking || cursorBlinkVisible {
+    if let cursor = state.cursor, cursor.visible {
       guard Int(cursor.x) < Int(state.columns), Int(cursor.y) < state.rows.count else {
         throw TRF1DecodingError("cursor exceeds viewport")
       }
@@ -567,6 +582,7 @@ final class GhostteaMetalRenderer {
     mesh: GhostteaMetalEncodedMesh,
     target: any MTLTexture,
     theme: GhostteaMetalTheme,
+    showCursor: Bool,
     presenting drawable: (any MTLDrawable)?
   ) throws {
     guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
@@ -601,7 +617,9 @@ final class GhostteaMetalRenderer {
       encoder: encoder
     )
     draw(mesh.decorations, pipeline: rectanglePipeline, encoder: encoder)
-    draw(mesh.cursor, pipeline: rectanglePipeline, encoder: encoder)
+    if showCursor {
+      draw(mesh.cursor, pipeline: rectanglePipeline, encoder: encoder)
+    }
     encoder.endEncoding()
     if GhostteaPerformanceRecorder.shared.isEnabled {
       let started = DispatchTime.now().uptimeNanoseconds

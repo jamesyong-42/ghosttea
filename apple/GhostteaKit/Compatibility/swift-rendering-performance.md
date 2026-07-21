@@ -249,17 +249,28 @@ baseline.
 The renderer can retain one encoded geometry entry per surface after the exact
 same key is observed twice consecutively. Its key covers the terminal
 session/epoch/frame sequence, viewport, scale, theme, content insets, selection,
-focus, cursor blink visibility, and both atlas reset generations. Subsequent
+focus, and both atlas reset generations. Subsequent
 identical redraws reuse immutable Metal buffers; any input that can affect
 pixels or atlas coordinates invalidates the entry. One-off changing frames are
 never admitted. The cache remains strictly bounded and is released with the
 renderer during suspension or memory pressure.
+
+Cursor blink visibility is applied when encoding the cursor draw rather than
+being part of the geometry key. Cursor geometry remains pixel-identical and is
+still invalidated by cursor state, focus, viewport, theme, or frame changes, but
+the normal blink timer no longer rebuilds and uploads the entire terminal mesh.
 
 The first iPhone smoke reduced the scaled unchanged-repaint workload from about
 15 ms to 1.3 ms and eliminated measured mesh construction, vertex uploads, and
 buffer allocations after warmup. Cursor and typing workloads continued to miss
 the cache and render normally. The complete clean-revision comparison is the
 acceptance gate before retaining this optimization.
+
+After bounded admission and cursor draw gating, a focused five-sample device
+run measured unchanged-repaint active time at 32.9 ms for 120 draws with a
+0.30 ms operation p99 and one 0.5 MiB admission upload. The committed baseline
+measured 761.8 ms, 7.97 ms, and 58.9 MiB respectively. The full clean-revision
+suite remains the final acceptance gate.
 
 ### Slice 2: compact Truffle state on Apple
 

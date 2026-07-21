@@ -811,6 +811,11 @@ private func productionFrame() async throws -> Data {
   let first = try renderer.render(state: state, target: target)
   let admitted = try renderer.render(state: state, target: target)
   let cached = try renderer.render(state: state, target: target)
+  let blinkHidden = try renderer.render(
+    state: state,
+    target: target,
+    cursorBlinkVisible: false
+  )
   let selected = try renderer.render(
     state: state,
     target: target,
@@ -828,6 +833,12 @@ private func productionFrame() async throws -> Data {
   #expect(cached.bufferAllocationCount == 0)
   #expect(cached.drawCallCount == first.drawCallCount)
   #expect(cached.rectangleVertexCount == first.rectangleVertexCount)
+  #expect(blinkHidden.vertexUploadBytes == 0)
+  #expect(blinkHidden.bufferAllocationCount == 0)
+  if state.cursor?.blinking == true {
+    #expect(blinkHidden.drawCallCount == cached.drawCallCount - 1)
+    #expect(blinkHidden.rectangleVertexCount == cached.rectangleVertexCount - 6)
+  }
   #expect(selected.vertexUploadBytes > 0)
   #expect(selected.bufferAllocationCount > 0)
   #expect(selected.rectangleVertexCount == first.rectangleVertexCount + 6)
