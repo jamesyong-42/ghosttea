@@ -185,7 +185,6 @@
     private let instancedSubmissionEnabled: Bool
     private let rowGeometryReuseEnabled: Bool
     private let lazyColorAtlasEnabled: Bool
-    private let displayLinkedSchedulingEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -262,8 +261,7 @@
       inPlaceRetainedStateCommitEnabled: Bool = true,
       instancedSubmissionEnabled: Bool = true,
       rowGeometryReuseEnabled: Bool = true,
-      lazyColorAtlasEnabled: Bool = true,
-      displayLinkedSchedulingEnabled: Bool = false
+      lazyColorAtlasEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
@@ -272,7 +270,6 @@
       self.instancedSubmissionEnabled = instancedSubmissionEnabled
       self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
       self.lazyColorAtlasEnabled = lazyColorAtlasEnabled
-      self.displayLinkedSchedulingEnabled = displayLinkedSchedulingEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1103,9 +1100,6 @@
     public func suspendGPU() {
       guard !gpuSuspended else { return }
       gpuSuspended = true
-      if displayLinkedSchedulingEnabled {
-        GhostteaTerminalDisplayScheduler.shared.cancel(self)
-      }
       updateCursorBlinkSurfaceVisibility()
       evictRendererResources()
     }
@@ -1123,27 +1117,8 @@
     }
 
     public func draw(in view: MTKView) {
-      _ = renderCurrentDrawable(commandBuffer: nil)
-    }
-
-    /// Forces pending display-linked surfaces into one Metal command buffer.
-    /// The benchmark harness uses this to measure batching without adding an
-    /// arbitrary run-loop sleep; normal clients should let CADisplayLink flush.
-    public static func flushDisplayLinkedRenders() {
-      GhostteaTerminalDisplayScheduler.shared.flush()
-    }
-
-    fileprivate var scheduledCommandQueue: (any MTLCommandQueue) {
-      metalRuntime.commandQueue
-    }
-
-    fileprivate func renderCurrentDrawable(
-      commandBuffer: (any MTLCommandBuffer)?
-    ) -> Bool {
-      guard !gpuSuspended, !awaitingMemoryPressureRefresh,
-        retainedState.sessionHandle != 0, let drawable = currentDrawable
-      else {
-        return false
+      guard !gpuSuspended, retainedState.sessionHandle != 0, let drawable = currentDrawable else {
+        return
       }
       do {
         let submittedDamage = pendingDamage.isEmpty ? .full : pendingDamage
@@ -1158,7 +1133,6 @@
             focused: terminalFocused,
             cursorBlinkVisible: cursorBlinkVisible,
             damage: submittedDamage,
-            commandBuffer: commandBuffer,
             presenting: drawable
           )
         }
@@ -1196,15 +1170,9 @@
           clearError: true
         )
         _ = draw
-        return true
       } catch {
         updateDiagnostics(lastError: "Metal render failed")
-        return false
       }
-    }
-
-    fileprivate func recordScheduledCommandBufferCommit() {
-      updateDiagnostics(commandBufferCommits: diagnostics.commandBufferCommits + 1)
     }
 
     private func renderer() throws -> GhostteaMetalRenderer {
@@ -1227,11 +1195,7 @@
     private func requestEventDrivenDraw(damage: GhostteaTerminalRenderDamage = .full) {
       pendingDamage.formUnion(damage)
       guard !gpuSuspended, !awaitingMemoryPressureRefresh else { return }
-      if displayLinkedSchedulingEnabled {
-        GhostteaTerminalDisplayScheduler.shared.request(self)
-      } else {
-        setNeedsDisplay()
-      }
+      setNeedsDisplay()
     }
 
     private func updateCursorBlinkSurfaceVisibility() {
@@ -1373,9 +1337,6 @@
     }
 
     @objc private func applicationDidReceiveMemoryWarning() {
-      if displayLinkedSchedulingEnabled {
-        GhostteaTerminalDisplayScheduler.shared.cancel(self)
-      }
       let refreshAlreadyRequested = awaitingMemoryPressureRefresh
       let released = retainedState.evictReconstructibleRenderState()
       awaitingMemoryPressureRefresh = retainedState.awaitingResync
@@ -1384,66 +1345,6 @@
         residentGlyphBytes: 0,
         reconstructibleBytesEvicted: diagnostics.reconstructibleBytesEvicted + released)
       if awaitingMemoryPressureRefresh, !refreshAlreadyRequested { requestFullRefresh() }
-    }
-  }
-
-  @MainActor
-  private final class GhostteaTerminalDisplayLinkTarget: NSObject {
-    weak var scheduler: GhostteaTerminalDisplayScheduler?
-
-    @objc func displayLinkDidFire() {
-      scheduler?.flush()
-    }
-  }
-
-  /// Coalesces dirty terminal surfaces at the display boundary and encodes all
-  /// surfaces for the same Metal device into a single command buffer. Logical
-  /// TRF1 state is still applied immediately and independently per session.
-  @MainActor
-  private final class GhostteaTerminalDisplayScheduler {
-    static let shared = GhostteaTerminalDisplayScheduler()
-
-    private let target = GhostteaTerminalDisplayLinkTarget()
-    private lazy var displayLink = CADisplayLink(
-      target: target,
-      selector: #selector(GhostteaTerminalDisplayLinkTarget.displayLinkDidFire)
-    )
-    private let pending = NSHashTable<GhostteaTerminalMetalView>.weakObjects()
-
-    private init() {
-      target.scheduler = self
-      displayLink.add(to: .main, forMode: .common)
-      displayLink.isPaused = true
-    }
-
-    func request(_ view: GhostteaTerminalMetalView) {
-      pending.add(view)
-      displayLink.isPaused = false
-    }
-
-    func cancel(_ view: GhostteaTerminalMetalView) {
-      pending.remove(view)
-      if pending.allObjects.isEmpty { displayLink.isPaused = true }
-    }
-
-    func flush() {
-      let views = pending.allObjects
-      pending.removeAllObjects()
-      displayLink.isPaused = true
-      guard let first = views.first,
-        let commandBuffer = first.scheduledCommandQueue.makeCommandBuffer()
-      else { return }
-
-      var rendered: [GhostteaTerminalMetalView] = []
-      rendered.reserveCapacity(views.count)
-      for view in views where view.device === first.device {
-        if view.renderCurrentDrawable(commandBuffer: commandBuffer) {
-          rendered.append(view)
-        }
-      }
-      guard let commitOwner = rendered.first else { return }
-      commandBuffer.commit()
-      commitOwner.recordScheduledCommandBufferCommit()
     }
   }
 

@@ -43,7 +43,6 @@ function parseArgs(argv) {
     instancedSubmission: true,
     rowGeometryReuse: true,
     lazyColorAtlas: true,
-    displayLinkedScheduling: false,
     stateCodec: "json",
   };
   for (const argument of argv) {
@@ -88,12 +87,6 @@ function parseArgs(argv) {
         throw new Error("--lazy-color-atlas must be on or off");
       }
       options.lazyColorAtlas = value === "on";
-    } else if (argument.startsWith("--display-linked-scheduling=")) {
-      const value = argument.slice(28);
-      if (value !== "on" && value !== "off") {
-        throw new Error("--display-linked-scheduling must be on or off");
-      }
-      options.displayLinkedScheduling = value === "on";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -263,7 +256,6 @@ function main() {
   --instanced-submission=on  Use packed instances/arena or expanded vertex buffers
   --row-geometry-reuse=on  Enable or disable bounded damaged-row geometry reuse
   --lazy-color-atlas=on  Allocate the color-glyph atlas only when first used
-  --display-linked-scheduling=off  Batch dirty surfaces once per display turn
   --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
@@ -325,7 +317,6 @@ function main() {
     instancedSubmissionEnabled: options.instancedSubmission,
     rowGeometryReuseEnabled: options.rowGeometryReuse,
     lazyColorAtlasEnabled: options.lazyColorAtlas,
-    displayLinkedSchedulingEnabled: options.displayLinkedScheduling,
     truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");
