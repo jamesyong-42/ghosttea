@@ -1,6 +1,7 @@
 export {
   GhostteaWorkspace,
   type GhostteaWorkspaceContext,
+  type GhostteaWorkspacePaneDecoration,
   type GhostteaWorkspacePlatform,
   type GhostteaWorkspaceProps,
 } from "./Workspace.js";

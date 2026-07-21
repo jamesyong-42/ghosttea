@@ -70,11 +70,17 @@ export interface GhostteaWorkspaceContext {
   activateSession: (sessionId: string) => void;
 }
 
+export interface GhostteaWorkspacePaneDecoration {
+  color?: string;
+  label?: string;
+}
+
 export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
   sidebar?: ComponentType<{ workspace: GhostteaWorkspaceContext }>;
   theme?: TerminalTheme;
+  decoratePane?: ((session: SessionSummary) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
@@ -172,6 +178,7 @@ interface SplitViewProps {
   platform: GhostteaWorkspacePlatform;
   theme: TerminalTheme;
   onActivate: (paneId: string) => void;
+  decoratePane?: ((session: SessionSummary) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onRatio: (splitId: string, ratio: number) => void;
 }
 
@@ -183,6 +190,7 @@ function SplitView({
   platform,
   theme,
   onActivate,
+  decoratePane,
   onRatio,
 }: SplitViewProps) {
   const splitRef = useRef<HTMLDivElement>(null);
@@ -191,10 +199,16 @@ function SplitView({
   if (node.kind === "pane") {
     const active = workspaceActive && node.id === activePaneId;
     const zoomed = node.id === zoomedPaneId;
+    const decoration = decoratePane?.(node.session);
+    const paneStyle = decoration?.color
+      ? ({ "--ghostty-pane-color": decoration.color } as CSSProperties)
+      : undefined;
     return (
       <div
         className={`ghostty-pane${active ? " is-active" : ""}${zoomed ? " is-zoomed" : ""}`}
         data-pane-id={node.id}
+        data-pane-accent={decoration?.color ? "true" : undefined}
+        style={paneStyle}
         onPointerDown={() => onActivate(node.id)}
       >
         <TerminalSurface
@@ -210,6 +224,7 @@ function SplitView({
           onToggleFullscreen={platform.toggleFullscreen}
           onMenuAction={platform.onMenuAction}
         />
+        {decoration?.label ? <span className="ghostty-pane-badge">{decoration.label}</span> : null}
         {!node.session.readWrite ? <span className="ghostty-pane-access">View only</span> : null}
       </div>
     );
@@ -234,7 +249,17 @@ function SplitView({
     <div ref={splitRef} className={`ghostty-split is-${node.axis}`} style={style as CSSProperties}>
       <SplitView
         key={node.first.id}
-        {...{ node: node.first, activePaneId, workspaceActive, zoomedPaneId, platform, theme, onActivate, onRatio }}
+        {...{
+          node: node.first,
+          activePaneId,
+          workspaceActive,
+          zoomedPaneId,
+          platform,
+          theme,
+          onActivate,
+          decoratePane,
+          onRatio,
+        }}
       />
       <div
         className="ghostty-split-divider"
@@ -255,7 +280,17 @@ function SplitView({
       />
       <SplitView
         key={node.second.id}
-        {...{ node: node.second, activePaneId, workspaceActive, zoomedPaneId, platform, theme, onActivate, onRatio }}
+        {...{
+          node: node.second,
+          activePaneId,
+          workspaceActive,
+          zoomedPaneId,
+          platform,
+          theme,
+          onActivate,
+          decoratePane,
+          onRatio,
+        }}
       />
     </div>
   );
@@ -266,6 +301,7 @@ export function GhostteaWorkspace({
   storageKey = DEFAULT_STORAGE_KEY,
   sidebar,
   theme = TERMINAL_THEMES.midnight,
+  decoratePane,
   onActiveSessionChange,
   createSplitSession,
   enableRemoteSessions = true,
@@ -612,6 +648,7 @@ export function GhostteaWorkspace({
               platform={platform}
               theme={theme}
               onActivate={activatePane}
+              decoratePane={decoratePane}
               onRatio={(splitId, ratio) =>
                 setLayout((current) =>
                   current ? updateSplit(current, splitId, (split) => ({ ...split, ratio })) : current,

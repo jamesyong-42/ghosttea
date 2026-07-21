@@ -112,6 +112,36 @@ body {
   background: #282c34;
 }
 
+.ghostty-pane[data-pane-accent]::before {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid transparent;
+  content: "";
+  pointer-events: none;
+}
+
+.ghostty-pane.is-active[data-pane-accent]::before {
+  border-color: var(--ghostty-pane-color);
+}
+
+.ghostty-pane-badge {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  max-width: 60%;
+  padding: 2px 8px;
+  overflow: hidden;
+  border-bottom-left-radius: 6px;
+  color: #fff;
+  background: var(--ghostty-pane-color, #111);
+  font: 700 10px/1.4 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .ghostty-pane-access {
   position: absolute;
   top: 8px;
