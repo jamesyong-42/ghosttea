@@ -1,5 +1,9 @@
 # Terminal benchmark harness
 
+For the Swift retained-TRF1 and Metal pipeline on a connected physical iOS
+device, use the separate
+[`ios-render`](ios-render/README.md) baseline/comparison harness.
+
 Reproducible comparison of:
 
 | Target               | What is measured                                                                                                                         |

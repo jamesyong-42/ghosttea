@@ -3082,6 +3082,24 @@ The immutable lock records this evidence and remains unapproved. Phase 9 will
 consume a fixed upstream release or an independently reviewed backport, never
 rename the broad development branch as a security-only update.
 
+**Accepted release-only deferrals (2026-07-20):** continued implementation and
+optimization do not wait on five account, hardware, or toolchain boundaries:
+Xcode 26.6 adoption plus the sanitizer/Instruments reruns; a fixed libssh2
+release or reviewed minimal backport; the complete 24-scenario physical beta
+matrix; genuine OS-delivered memory-warning and jetsam evidence; and final
+App Store/privacy/export/signing decisions plus a validated distribution IPA.
+These remain fail-closed pre-release gates and cannot be satisfied by proxy
+evidence. The consolidated contract lives in
+[`apple/GhostteaKit/Compatibility/release-hardening.md`](../apple/GhostteaKit/Compatibility/release-hardening.md).
+
+Swift rendering and replication optimization proceeds under the measurement
+and pixel-parity plan in
+[`apple/GhostteaKit/Compatibility/swift-rendering-performance.md`](../apple/GhostteaKit/Compatibility/swift-rendering-performance.md).
+It carries the measured desktop/native work into Apple compact-state decoding,
+retained TRF1 application, damage tracking, instanced Metal submission, bounded
+row reuse, and atlas/multi-surface memory policy without weakening the release
+deferrals above.
+
 Deliverables:
 
 - performance and energy profiling;

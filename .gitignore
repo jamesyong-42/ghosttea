@@ -24,3 +24,4 @@ bench/results.json
 bench/results-*.json
 bench/render/results*.json
 bench/truffle/results*.json
+bench/ios-render/results*.json

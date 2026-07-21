@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaFrame
+import GhostteaPerformance
 import Metal
 
 struct GhostteaMetalColor: Equatable, Sendable {
@@ -50,6 +51,10 @@ struct GhostteaMetalDrawResult: Equatable, Sendable {
   let alphaGlyphVertexCount: Int
   let colorGlyphVertexCount: Int
   let atlasUpload: GhostteaMetalUploadResult
+  let vertexUploadBytes: Int
+  let bufferAllocationCount: Int
+  let drawCallCount: Int
+  let commandBufferCount: Int
 }
 
 private struct GhostteaResolvedMetalStyle {
@@ -201,26 +206,56 @@ final class GhostteaMetalRenderer {
     guard width > 0, height > 0, target.pixelFormat == .rgba8Unorm, scale.isFinite, scale > 0 else {
       throw GhostteaMetalError.invalidViewport
     }
-    let visibleDefinitions = try visibleGlyphDefinitions(state)
+    let recorder = GhostteaPerformanceRecorder.shared
+    let visibleDefinitions = try recorder.measure(.glyphVisibility) {
+      try visibleGlyphDefinitions(state)
+    }
+    let atlasStarted = recorder.isEnabled ? DispatchTime.now().uptimeNanoseconds : nil
     let atlasUpload = try atlases.synchronize(visible: visibleDefinitions)
-    let mesh = try buildMesh(
-      state: state,
-      width: width,
-      height: height,
-      scale: scale,
-      theme: theme,
-      contentInsets: contentInsets,
-      selection: selection,
-      focused: focused,
-      cursorBlinkVisible: cursorBlinkVisible
-    )
-    try encode(mesh: mesh, target: target, theme: theme, presenting: drawable)
+    if let atlasStarted {
+      recorder.record(
+        .atlasSynchronization,
+        durationNanoseconds: DispatchTime.now().uptimeNanoseconds &- atlasStarted,
+        byteCount: atlasUpload.uploadedBytes
+      )
+    }
+    let mesh = try recorder.measure(.meshBuild) {
+      try buildMesh(
+        state: state,
+        width: width,
+        height: height,
+        scale: scale,
+        theme: theme,
+        contentInsets: contentInsets,
+        selection: selection,
+        focused: focused,
+        cursorBlinkVisible: cursorBlinkVisible
+      )
+    }
+    try recorder.measure(.metalEncoding) {
+      try encode(mesh: mesh, target: target, theme: theme, presenting: drawable)
+    }
+    let arrays = [
+      mesh.backgrounds,
+      mesh.selection,
+      mesh.alphaGlyphs,
+      mesh.colorGlyphs,
+      mesh.decorations,
+      mesh.cursor,
+    ]
+    let nonemptyArrays = arrays.reduce(into: 0) { count, values in
+      if !values.isEmpty { count += 1 }
+    }
     return GhostteaMetalDrawResult(
       rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count + mesh.decorations.count
         + mesh.cursor.count) / 6,
       alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
       colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
-      atlasUpload: atlasUpload
+      atlasUpload: atlasUpload,
+      vertexUploadBytes: arrays.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride },
+      bufferAllocationCount: nonemptyArrays,
+      drawCallCount: nonemptyArrays,
+      commandBufferCount: 1
     )
   }
 
@@ -427,6 +462,15 @@ final class GhostteaMetalRenderer {
       stride: 6)
     try draw(mesh.cursor, label: "cursor", pipeline: rectanglePipeline, encoder: encoder, stride: 6)
     encoder.endEncoding()
+    if GhostteaPerformanceRecorder.shared.isEnabled {
+      let started = DispatchTime.now().uptimeNanoseconds
+      commandBuffer.addCompletedHandler { _ in
+        GhostteaPerformanceRecorder.shared.record(
+          .metalGPUCompletion,
+          durationNanoseconds: DispatchTime.now().uptimeNanoseconds &- started
+        )
+      }
+    }
     if let drawable {
       commandBuffer.present(drawable)
       commandBuffer.commit()

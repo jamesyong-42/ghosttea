@@ -4,6 +4,36 @@
 
 **Started:** 2026-07-18
 
+## Accepted release-only deferrals
+
+The following qualification work is deliberately deferred as of 2026-07-20 so
+implementation and optimization can continue. These are release-only
+deferrals, not waivers: ordinary development and internal device builds may
+proceed, but `npm run check:ios-release-ready` must continue to fail while any
+item is open. No App Store or external beta artifact may be described as
+release-eligible until all five are closed against the same clean release
+revision and signed artifact:
+
+1. adopt and review-lock Xcode 26.6 or later, then rerun the one-hour Swift/TRF1
+   sanitizer campaign and the complete physical-device Instruments capture;
+2. replace libssh2 1.11.1 with a fixed upstream release or a separately reviewed
+   minimal backport, rebuild every Apple slice, and rerun the SSH/security
+   validation matrix;
+3. complete the checked 24-scenario physical beta matrix across compact and
+   large iPhones, iPads, 60 Hz and 120 Hz hardware, including Stage Manager and
+   hardware-input coverage;
+4. capture genuine OS-delivered memory-warning and system-pressure/jetsam
+   restoration evidence, rather than treating deterministic warning and
+   host-termination proxies as equivalent; and
+5. resolve the account-owned privacy, encryption/export, review-access, signing,
+   and distribution decisions, then produce and validate a clean Apple
+   Distribution archive and IPA with retained provenance.
+
+The fail-closed contracts, manifests, recorders, and proxy gates already in the
+repository remain active. Work may reduce risk ahead of release, but it must not
+change a required release result to `passed`, weaken a verifier, or relabel proxy
+evidence to satisfy one of these deferred items.
+
 ## Performance and energy
 
 [`performance-and-energy.md`](performance-and-energy.md) defines the physical

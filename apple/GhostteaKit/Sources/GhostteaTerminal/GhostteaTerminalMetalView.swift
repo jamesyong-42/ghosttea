@@ -14,6 +14,11 @@
     public let residentAtlasBytes: Int
     public let residentGlyphBytes: Int
     public let reconstructibleBytesEvicted: Int
+    public let vertexUploadBytes: UInt64
+    public let atlasUploadBytes: UInt64
+    public let bufferAllocations: UInt64
+    public let drawCalls: UInt64
+    public let commandBufferCommits: UInt64
     public let lastError: String?
 
     init(
@@ -26,6 +31,11 @@
       residentAtlasBytes: Int = 0,
       residentGlyphBytes: Int = 0,
       reconstructibleBytesEvicted: Int = 0,
+      vertexUploadBytes: UInt64 = 0,
+      atlasUploadBytes: UInt64 = 0,
+      bufferAllocations: UInt64 = 0,
+      drawCalls: UInt64 = 0,
+      commandBufferCommits: UInt64 = 0,
       lastError: String? = nil
     ) {
       self.acceptedFrames = acceptedFrames
@@ -37,6 +47,11 @@
       self.residentAtlasBytes = residentAtlasBytes
       self.residentGlyphBytes = residentGlyphBytes
       self.reconstructibleBytesEvicted = reconstructibleBytesEvicted
+      self.vertexUploadBytes = vertexUploadBytes
+      self.atlasUploadBytes = atlasUploadBytes
+      self.bufferAllocations = bufferAllocations
+      self.drawCalls = drawCalls
+      self.commandBufferCommits = commandBufferCommits
       self.lastError = lastError
     }
   }
@@ -515,10 +530,12 @@
     }
 
     private func updateAccessibilitySnapshot() {
-      let next = GhostteaTerminalAccessibilitySnapshot(
-        retainedState: retainedState,
-        selection: absoluteSelection
-      )
+      let next = GhostteaPerformanceRecorder.shared.measure(.accessibilityUpdate) {
+        GhostteaTerminalAccessibilitySnapshot(
+          retainedState: retainedState,
+          selection: absoluteSelection
+        )
+      }
       guard next != accessibilitySnapshot else { return }
       accessibilitySnapshot = next
       scheduleAccessibilityElementUpdate()
@@ -1040,6 +1057,15 @@
         updateDiagnostics(
           renderedFrames: diagnostics.renderedFrames + 1,
           residentAtlasBytes: renderer.atlases.residentBytes,
+          vertexUploadBytes: diagnostics.vertexUploadBytes
+            &+ UInt64(max(0, draw.vertexUploadBytes)),
+          atlasUploadBytes: diagnostics.atlasUploadBytes
+            &+ UInt64(max(0, draw.atlasUpload.uploadedBytes)),
+          bufferAllocations: diagnostics.bufferAllocations
+            &+ UInt64(max(0, draw.bufferAllocationCount)),
+          drawCalls: diagnostics.drawCalls &+ UInt64(max(0, draw.drawCallCount)),
+          commandBufferCommits: diagnostics.commandBufferCommits
+            &+ UInt64(max(0, draw.commandBufferCount)),
           clearError: true
         )
         _ = draw
@@ -1125,6 +1151,11 @@
       residentAtlasBytes: Int? = nil,
       residentGlyphBytes: Int? = nil,
       reconstructibleBytesEvicted: Int? = nil,
+      vertexUploadBytes: UInt64? = nil,
+      atlasUploadBytes: UInt64? = nil,
+      bufferAllocations: UInt64? = nil,
+      drawCalls: UInt64? = nil,
+      commandBufferCommits: UInt64? = nil,
       lastError: String? = nil,
       clearError: Bool = false
     ) {
@@ -1139,6 +1170,11 @@
         residentGlyphBytes: residentGlyphBytes ?? diagnostics.residentGlyphBytes,
         reconstructibleBytesEvicted: reconstructibleBytesEvicted
           ?? diagnostics.reconstructibleBytesEvicted,
+        vertexUploadBytes: vertexUploadBytes ?? diagnostics.vertexUploadBytes,
+        atlasUploadBytes: atlasUploadBytes ?? diagnostics.atlasUploadBytes,
+        bufferAllocations: bufferAllocations ?? diagnostics.bufferAllocations,
+        drawCalls: drawCalls ?? diagnostics.drawCalls,
+        commandBufferCommits: commandBufferCommits ?? diagnostics.commandBufferCommits,
         lastError: clearError ? nil : (lastError ?? diagnostics.lastError)
       )
     }

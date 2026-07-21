@@ -85,6 +85,41 @@ counts with zero drops, the 120 suspended draws produced zero submissions, and
 both shared-engine scenarios passed. The redacted JSON evidence SHA-256 is
 `163b312644886f0a4678d06969a409252256eb270fe87dbeff96edfaac5eab9b`.
 
+## Optimization benchmark
+
+The strict latency gate above answers whether the product meets its absolute
+budget. Swift rendering optimization uses a separate automated physical-device
+benchmark under [`bench/ios-render`](../../../bench/ios-render/README.md). It
+keeps the production core, retained TRF1 state, UIKit surface, packaged Metal
+renderer, and real `CAMetalDrawable` path while adding the controls needed for
+trustworthy A/B work:
+
+- configurable untimed warmups, measured repetitions, cooldown, scale, and
+  selected cases;
+- refresh-paced repaint, cursor, typing, sparse, scrolling, dense, truecolor,
+  Unicode, fractional-resize, and one/four/eight-surface workloads;
+- numeric totals and percentiles for native feed, text-engine contention, TRF1
+  apply, accessibility, glyph visibility, atlas synchronization, mesh build,
+  Metal encoding/submission, and GPU completion;
+- cumulative vertex-upload, atlas-upload, transient-buffer, draw-call, command
+  commit, atlas residency, glyph residency, and process-footprint counters; and
+- exact operation, source-byte, TRF1-byte, accepted/rendered-frame, and final
+  offscreen pixel-hash invariants.
+
+The host builds a signed Release harness, discovers exactly one connected and
+unlocked physical iOS device, installs and launches through `devicectl`, retains
+the redacted JSON report, and records source/toolchain state. The comparator
+rejects dirty tracked captures, unaccepted untracked files, device, iOS, Xcode,
+refresh-rate or workload drift, Low Power Mode, non-nominal thermal samples,
+failed/incomplete samples, and any correctness-invariant change. Accepted
+metric claims require both a deterministic bootstrap 95% interval and a 3%
+practical threshold, matching the desktop rendering harness.
+
+This benchmark is the required first step for Swift rendering work. Its report
+is development evidence rather than App Store qualification; Instruments
+CPU/GPU/Energy traces remain the release authority for energy and system-level
+GPU behavior.
+
 Run the same release build, fixture, duration, power state, thermal state, and
 display refresh mode on each comparison. Record the source revision, archive
 evidence hash, iOS/Xcode versions, device model, available refresh rates,

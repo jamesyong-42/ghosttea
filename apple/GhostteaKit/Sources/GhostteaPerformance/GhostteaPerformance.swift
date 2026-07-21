@@ -11,6 +11,12 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
   case textEngineLockWait
   case textEngineLockHold
   case frameDecode
+  case accessibilityUpdate
+  case glyphVisibility
+  case atlasSynchronization
+  case meshBuild
+  case metalEncoding
+  case metalGPUCompletion
   case metalSubmission
   case qualificationWorkload
 
@@ -23,6 +29,12 @@ public enum GhostteaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     case .textEngineLockWait: "text_engine_lock_wait"
     case .textEngineLockHold: "text_engine_lock_hold"
     case .frameDecode: "frame_decode"
+    case .accessibilityUpdate: "accessibility_update"
+    case .glyphVisibility: "glyph_visibility"
+    case .atlasSynchronization: "atlas_synchronization"
+    case .meshBuild: "mesh_build"
+    case .metalEncoding: "metal_encoding"
+    case .metalGPUCompletion: "metal_gpu_completion"
     case .metalSubmission: "metal_submission"
     case .qualificationWorkload: "qualification_workload"
     }
@@ -34,6 +46,7 @@ public struct GhostteaPerformanceSummary: Codable, Equatable, Sendable {
   public let sampleCount: Int
   public let droppedSampleCount: Int
   public let byteCount: UInt64
+  public let totalNanoseconds: UInt64
   public let p50Nanoseconds: UInt64
   public let p99Nanoseconds: UInt64
   public let maximumNanoseconds: UInt64
@@ -43,7 +56,7 @@ public struct GhostteaPerformanceSnapshot: Codable, Equatable, Sendable {
   public let schemaVersion: Int
   public let summaries: [GhostteaPerformanceSummary]
 
-  public init(schemaVersion: Int = 1, summaries: [GhostteaPerformanceSummary]) {
+  public init(schemaVersion: Int = 2, summaries: [GhostteaPerformanceSummary]) {
     self.schemaVersion = schemaVersion
     self.summaries = summaries
   }
@@ -202,6 +215,7 @@ public final class GhostteaPerformanceRecorder: @unchecked Sendable {
             sampleCount: durations.count,
             droppedSampleCount: buffer.droppedSampleCount,
             byteCount: metricSamples.reduce(0) { $0 &+ $1.byteCount },
+            totalNanoseconds: durations.reduce(0, &+),
             p50Nanoseconds: percentile(durations, numerator: 50, denominator: 100),
             p99Nanoseconds: percentile(durations, numerator: 99, denominator: 100),
             maximumNanoseconds: durations[durations.count - 1]

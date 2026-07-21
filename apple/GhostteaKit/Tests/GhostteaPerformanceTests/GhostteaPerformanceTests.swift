@@ -22,11 +22,12 @@ func boundedNumericSummary() throws {
 
   let snapshot = recorder.snapshot()
   let summary = try #require(snapshot.summaries.first)
-  #expect(snapshot.schemaVersion == 1)
+  #expect(snapshot.schemaVersion == 2)
   #expect(summary.metric == .frameDecode)
   #expect(summary.sampleCount == 2)
   #expect(summary.droppedSampleCount == 1)
   #expect(summary.byteCount == 5)
+  #expect(summary.totalNanoseconds >= summary.p50Nanoseconds)
   #expect(summary.p50Nanoseconds <= summary.p99Nanoseconds)
   #expect(summary.p99Nanoseconds <= summary.maximumNanoseconds)
 
@@ -59,6 +60,7 @@ func nativeDurationSample() throws {
   #expect(summary.metric == .textEngineLockWait)
   #expect(summary.sampleCount == 1)
   #expect(summary.byteCount == 9)
+  #expect(summary.totalNanoseconds == 123)
   #expect(summary.p50Nanoseconds == 123)
   #expect(summary.p99Nanoseconds == 123)
 }

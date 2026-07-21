@@ -222,6 +222,8 @@ final class HarnessModel: ObservableObject {
   private var disposableFixtureHost = "10.0.0.103"
   private let performanceAutomation =
     ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_PERFORMANCE_GATE"] == "1"
+  private let renderBenchmarkAutomation =
+    ProcessInfo.processInfo.environment["GHOSTTEA_AUTORUN_RENDER_BENCHMARK"] == "1"
   private let performanceTraceScenario =
     ProcessInfo.processInfo.environment["GHOSTTEA_PERFORMANCE_TRACE_SCENARIO"]
 
@@ -238,6 +240,13 @@ final class HarnessModel: ObservableObject {
         guard let self else { return }
         self.handleNetworkPathChange(path)
       }
+    }
+    if renderBenchmarkAutomation {
+      Task { [weak self] in
+        await Task.yield()
+        await self?.runRenderBenchmarkAutomation()
+      }
+      return
     }
     if performanceAutomation {
       Task { [weak self] in
@@ -285,6 +294,33 @@ final class HarnessModel: ObservableObject {
       Darwin.exit(result.passed ? 0 : 1)
     } catch {
       print("GHOSTTEA_PERFORMANCE_ERROR \(error)")
+      fflush(nil)
+      Darwin.exit(2)
+    }
+  }
+
+  private func runRenderBenchmarkAutomation() async {
+    do {
+      guard
+        let encoded = ProcessInfo.processInfo.environment["GHOSTTEA_RENDER_BENCHMARK_CONFIG"],
+        let data = Data(base64Encoded: encoded)
+      else {
+        throw CocoaError(.coderReadCorrupt)
+      }
+      let configuration = try JSONDecoder().decode(
+        HarnessRenderBenchmarkConfiguration.self,
+        from: data
+      )
+      let result = try await HarnessRenderBenchmark.run(configuration: configuration)
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      let payload = try encoder.encode(result).base64EncodedString()
+      print("GHOSTTEA_RENDER_BENCHMARK_REPORT \(payload)")
+      print(result.passed ? "GHOSTTEA_RENDER_BENCHMARK_PASS" : "GHOSTTEA_RENDER_BENCHMARK_FAIL")
+      fflush(nil)
+      Darwin.exit(result.passed ? 0 : 1)
+    } catch {
+      print("GHOSTTEA_RENDER_BENCHMARK_ERROR \(error)")
       fflush(nil)
       Darwin.exit(2)
     }

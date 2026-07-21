@@ -64,6 +64,11 @@ The harness provides:
   attribution, concurrent four/eight-terminal shared-engine fairness, and a
   zero-background-submission assertion. It emits only redacted numeric JSON
   evidence.
+- a separate repeatable physical-device rendering benchmark with warmups and
+  measured repetitions for repaint, cursor, typing, sparse, scrolling, dense,
+  truecolor, Unicode, fractional-resize, and one/four/eight-surface workloads.
+  It reports stage timing, upload/allocation counters, memory, thermal state,
+  and pixel/TRF1 invariants for baseline-versus-candidate comparison.
 
 The harness is diagnostic scaffolding, not the production terminal UI. Its
 offscreen and preview surfaces render TRF1 only for conformance; it does not
@@ -100,6 +105,18 @@ npm run test:ios:performance
 Passing evidence is written under ignored
 `native/build/ios-performance-device/evidence.json`. Energy Log, Time Profiler,
 and rendered multi-session scoring remain separate release evidence.
+
+Run the optimization benchmark and compare two same-device reports with:
+
+```sh
+npm run bench:ios-render -- --output=bench/ios-render/results-baseline.json
+npm run bench:ios-render:compare -- \
+  bench/ios-render/results-baseline.json \
+  bench/ios-render/results-candidate.json
+```
+
+The complete workload and comparison contract is documented in
+[`../../bench/ios-render/README.md`](../../bench/ios-render/README.md).
 
 Capture the repeatable idle and sustained rendered-output Instruments subset
 with an unlocked physical device and a device-compatible Xcode:
