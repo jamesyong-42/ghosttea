@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** Slice 4 complete; Slice 5 next
+**Status:** Slice 5 complete; Slice 6 next
 
 **Recorded:** 2026-07-20
 
@@ -496,6 +496,63 @@ expanded reference path remains available for future qualification.
 Exit gate: sparse, typing, scroll, dense, Unicode, and four/eight-surface tests
 stay pixel exact; the candidate improves CPU/GPU or energy without an adverse
 working-set signal.
+
+Implementation status: the retained renderer now keys visible-row CPU geometry
+by session/layout epoch, physical viewport, scale, theme, insets, selection,
+atlas generation, row index, and native row revision. Rows are admitted only on
+their second unchanged observation. The cache is capped at 128 rows and 4 MiB
+of packed instance payload per renderer, and full/geometry/atlas damage or a
+change affecting at least half the viewport takes the direct path and clears
+the cache. Diagnostics and the physical-device report expose hits, admissions,
+and evictions. The renderer still composes a complete drawable; no presented
+drawable contents are retained.
+
+A clean same-signed-binary A/B at revision `fd1ab94` ran five Release samples
+per path on the iPhone 14 Pro at 120 Hz. All 146 Apple tests and both iOS SDK
+builds passed. The eight physical workloads preserved operation counts, TRF1
+bytes, accepted/rendered frames, damage counts, uploads, allocations, atlas
+residency, final pixel hashes, and non-background pixel counts.
+
+| Workload             |          Cache activity per median sample |                   Mesh build |             Metal submission | Process footprint |
+| -------------------- | ----------------------------------------: | ---------------------------: | ---------------------------: | ----------------: |
+| typing               | 3,335 hits / 87 admissions / 58 evictions |   91.80 -> 14.59 ms (-84.1%) |  150.72 -> 75.73 ms (-49.8%) |    +1.0%, neutral |
+| sparse               |  2,581 hits / 29 admissions / 0 evictions |    77.19 -> 8.63 ms (-88.8%) |  121.25 -> 56.81 ms (-53.1%) |    -0.1%, neutral |
+| scroll               |                             no admissions |   16.00 -> 15.12 ms, neutral |   26.57 -> 24.81 ms, neutral |    -0.3%, neutral |
+| dense                |                             no admissions |      7.35 -> 7.01 ms (-4.7%) |    11.96 -> 11.12 ms (-7.0%) |    +0.3%, neutral |
+| Unicode              |                             no admissions |     3.29 -> 3.42 ms, neutral |     5.54 -> 5.48 ms, neutral |    +0.1%, neutral |
+| DOOM Fire            |                             no admissions | 137.20 -> 137.14 ms, neutral | 166.68 -> 165.59 ms, neutral |           neutral |
+| four-surface scroll  |                             no admissions |   38.99 -> 39.97 ms, neutral |   61.74 -> 62.57 ms, neutral |    -0.4%, neutral |
+| eight-surface scroll |                             no admissions |   50.91 -> 51.20 ms, neutral |   79.04 -> 79.73 ms, neutral |    -0.3%, neutral |
+
+The targeted mesh and submission intervals exclude zero for typing and sparse.
+End-to-end wall time remained neutral. Operation p99 moved in opposite
+directions for typing (+22.5%) and sparse (-11.4%), while native feed, retained
+apply, and atlas timing shifted with the same run-order bias despite being
+outside the changed path; broad-churn p99 results were neutral. The cache is
+accepted for its large, directly attributed Swift CPU win, bounded footprint,
+and deliberately neutral behavior when admission cannot help. Vertex uploads
+remain unchanged because full drawable composition is retained.
+
+A persistent-scene alternative was then implemented and measured at revision
+`8808698`. It stored one private RGBA8 scene texture per surface, expanded row
+and cursor damage by one row for glyph overhang, cleared and redrew only the
+resulting band, and presented the retained scene through an exact full-screen
+texture read. Full, incremental cursor/row, selection, and resized-geometry
+pixel comparisons passed. The same eight-workload, five-sample device A/B also
+passed every correctness invariant, but the performance and memory result was
+decisive:
+
+- the scene consumed about 12.1 MiB at the tested physical viewport;
+- one-surface process footprint increased 15.6-21.3%, and eight-surface
+  footprint increased 5.7%;
+- draw calls increased 58-126%;
+- Metal encoding regressed 19-33% in the statistically stable workloads;
+- GPU-completion p99 increased 8-32%; and
+- no workload had a statistically stable end-to-end improvement.
+
+The persistent-scene implementation and its runtime switch were removed in
+`2a1435d`. Slice 5 therefore retains only bounded CPU row-geometry reuse and is
+complete.
 
 ### Slice 6: atlas and multi-surface policy
 
