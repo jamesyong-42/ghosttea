@@ -113,6 +113,9 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowInstancedSubmissionDifference) {
     delete configuration?.instancedSubmissionEnabled;
   }
+  if (options.allowRowGeometryReuseDifference) {
+    delete configuration?.rowGeometryReuseEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

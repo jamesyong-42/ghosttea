@@ -849,6 +849,82 @@ private func productionFrame() async throws -> Data {
   #expect(instanced.bufferAllocationCount < expanded.bufferAllocationCount)
 }
 
+@Test func boundedRowGeometryReuseMatchesDirectPixelsAndAdmitsOnSecondSighting() async throws {
+  let terminal = try GhostteaTerminal(
+    runtime: GhostteaRuntime(),
+    configuration: .init(sessionHandle: 913, columns: 40, rows: 6)
+  )
+  var state = RetainedTRF1State()
+  let runtime = try GhostteaMetalRuntime()
+  let cachedRenderer = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    encodedGeometryReuseEnabled: false,
+    rowGeometryReuseEnabled: true
+  )
+  let directRenderer = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    encodedGeometryReuseEnabled: false,
+    rowGeometryReuseEnabled: false
+  )
+
+  let initialUpdate = try await terminal.feed(
+    Data("row-0\r\nrow-1\r\nrow-2\r\nrow-3".utf8), render: .full)
+  let initial = try #require(
+    initialUpdate.effects.first { $0.kind == .frameReady }?.payload)
+  guard case .applied(_, let initialRows, _, _) = try state.apply(initial) else {
+    Issue.record("initial row-cache frame was not applied")
+    return
+  }
+  var damage = GhostteaTerminalRenderDamage.full
+  damage.rows = Set(initialRows)
+  var cached = try cachedRenderer.render(
+    state: state,
+    width: 420,
+    height: 140,
+    damage: damage
+  )
+  var direct = try directRenderer.render(
+    state: state,
+    width: 420,
+    height: 140,
+    damage: damage
+  )
+  #expect(cached.pixelHash == direct.pixelHash)
+
+  var admissions = 0
+  for text in ["A", "B"] {
+    let update = try await terminal.feed(Data(text.utf8), render: .damage)
+    let patch = try #require(update.effects.first { $0.kind == .frameReady }?.payload)
+    guard case .applied(_, let changedRows, _, _) = try state.apply(patch) else {
+      Issue.record("incremental row-cache frame was not applied")
+      return
+    }
+    damage = .rows(changedRows)
+    cached = try cachedRenderer.render(
+      state: state,
+      width: 420,
+      height: 140,
+      damage: damage
+    )
+    direct = try directRenderer.render(
+      state: state,
+      width: 420,
+      height: 140,
+      damage: damage
+    )
+    #expect(cached.pixelHash == direct.pixelHash)
+    #expect(cached.visualFingerprint == direct.visualFingerprint)
+    admissions += cached.rowCacheAdmissions
+  }
+
+  #expect(cached.rowCacheHits > 0)
+  #expect(admissions > 0)
+}
+
 @Test func metalRendererReusesEncodedGeometryUntilRenderInputsChange() async throws {
   let frame = try await productionFrame()
   var state = RetainedTRF1State()

@@ -25,6 +25,9 @@
     public let cursorDamageSubmissions: Int
     public let selectionDamageSubmissions: Int
     public let geometryDamageSubmissions: Int
+    public let rowCacheHits: Int
+    public let rowCacheAdmissions: Int
+    public let rowCacheEvictions: Int
     public let lastError: String?
 
     init(
@@ -48,6 +51,9 @@
       cursorDamageSubmissions: Int = 0,
       selectionDamageSubmissions: Int = 0,
       geometryDamageSubmissions: Int = 0,
+      rowCacheHits: Int = 0,
+      rowCacheAdmissions: Int = 0,
+      rowCacheEvictions: Int = 0,
       lastError: String? = nil
     ) {
       self.acceptedFrames = acceptedFrames
@@ -70,6 +76,9 @@
       self.cursorDamageSubmissions = cursorDamageSubmissions
       self.selectionDamageSubmissions = selectionDamageSubmissions
       self.geometryDamageSubmissions = geometryDamageSubmissions
+      self.rowCacheHits = rowCacheHits
+      self.rowCacheAdmissions = rowCacheAdmissions
+      self.rowCacheEvictions = rowCacheEvictions
       self.lastError = lastError
     }
   }
@@ -174,6 +183,7 @@
     private let encodedGeometryReuseEnabled: Bool
     private let inPlaceRetainedStateCommitEnabled: Bool
     private let instancedSubmissionEnabled: Bool
+    private let rowGeometryReuseEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -248,13 +258,15 @@
       terminalFrame: CGRect = .zero,
       encodedGeometryReuseEnabled: Bool = true,
       inPlaceRetainedStateCommitEnabled: Bool = true,
-      instancedSubmissionEnabled: Bool = true
+      instancedSubmissionEnabled: Bool = true,
+      rowGeometryReuseEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
       self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
       self.instancedSubmissionEnabled = instancedSubmissionEnabled
+      self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1149,6 +1161,9 @@
             + (completedDamage.flags.contains(.selection) ? 1 : 0),
           geometryDamageSubmissions: diagnostics.geometryDamageSubmissions
             + (completedDamage.flags.contains(.geometry) ? 1 : 0),
+          rowCacheHits: diagnostics.rowCacheHits + draw.rowCacheHits,
+          rowCacheAdmissions: diagnostics.rowCacheAdmissions + draw.rowCacheAdmissions,
+          rowCacheEvictions: diagnostics.rowCacheEvictions + draw.rowCacheEvictions,
           clearError: true
         )
         _ = draw
@@ -1162,7 +1177,8 @@
       let renderer = try GhostteaMetalRenderer(
         runtime: metalRuntime,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
-        instancedSubmissionEnabled: instancedSubmissionEnabled
+        instancedSubmissionEnabled: instancedSubmissionEnabled,
+        rowGeometryReuseEnabled: rowGeometryReuseEnabled
       )
       terminalRenderer = renderer
       updateDiagnostics(
@@ -1270,6 +1286,9 @@
       cursorDamageSubmissions: Int? = nil,
       selectionDamageSubmissions: Int? = nil,
       geometryDamageSubmissions: Int? = nil,
+      rowCacheHits: Int? = nil,
+      rowCacheAdmissions: Int? = nil,
+      rowCacheEvictions: Int? = nil,
       lastError: String? = nil,
       clearError: Bool = false
     ) {
@@ -1297,6 +1316,9 @@
           ?? diagnostics.selectionDamageSubmissions,
         geometryDamageSubmissions: geometryDamageSubmissions
           ?? diagnostics.geometryDamageSubmissions,
+        rowCacheHits: rowCacheHits ?? diagnostics.rowCacheHits,
+        rowCacheAdmissions: rowCacheAdmissions ?? diagnostics.rowCacheAdmissions,
+        rowCacheEvictions: rowCacheEvictions ?? diagnostics.rowCacheEvictions,
         lastError: clearError ? nil : (lastError ?? diagnostics.lastError)
       )
     }

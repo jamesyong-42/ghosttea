@@ -77,6 +77,9 @@ struct GhostteaMetalRenderResult: Equatable, Sendable {
   let atlasUpload: GhostteaMetalUploadResult
   let vertexUploadBytes: Int
   let bufferAllocationCount: Int
+  let rowCacheHits: Int
+  let rowCacheAdmissions: Int
+  let rowCacheEvictions: Int
   let residentBytes: Int
 }
 
@@ -90,6 +93,9 @@ struct GhostteaMetalDrawResult: Equatable, Sendable {
   let drawCallCount: Int
   let commandBufferCount: Int
   let damage: GhostteaTerminalRenderDamage
+  let rowCacheHits: Int
+  let rowCacheAdmissions: Int
+  let rowCacheEvictions: Int
 }
 
 private struct GhostteaResolvedMetalStyle {
@@ -107,6 +113,45 @@ private struct GhostteaMetalMesh {
   var colorGlyphs: [GhostteaMetalGlyphInstance] = []
   var decorations: [GhostteaMetalRectangleInstance] = []
   var cursor: [GhostteaMetalRectangleInstance] = []
+}
+
+private struct GhostteaMetalRowMesh {
+  var backgrounds: [GhostteaMetalRectangleInstance] = []
+  var alphaGlyphs: [GhostteaMetalGlyphInstance] = []
+  var colorGlyphs: [GhostteaMetalGlyphInstance] = []
+  var decorations: [GhostteaMetalRectangleInstance] = []
+
+  var residentBytes: Int {
+    backgrounds.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + alphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + colorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + decorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+  }
+}
+
+private struct GhostteaMetalRowCacheContext: Equatable {
+  let sessionHandle: UInt64
+  let sessionEpoch: UInt64
+  let layoutEpoch: UInt64
+  let width: Int
+  let height: Int
+  let scale: Float
+  let theme: GhostteaMetalTheme
+  let contentInsets: GhostteaTerminalContentInsets
+  let selection: GhostteaMetalSelection?
+  let alphaAtlasResetCount: Int
+  let colorAtlasResetCount: Int
+}
+
+private struct GhostteaMetalRowCacheEntry {
+  let revision: UInt64
+  let mesh: GhostteaMetalRowMesh
+}
+
+private struct GhostteaMetalRowCacheActivity {
+  var hits = 0
+  var admissions = 0
+  var evictions = 0
 }
 
 private struct GhostteaMetalRectangleInstance {
@@ -298,20 +343,27 @@ final class GhostteaMetalRenderer {
   private let sampler: any MTLSamplerState
   private let encodedGeometryReuseEnabled: Bool
   private let instancedSubmissionEnabled: Bool
+  private let rowGeometryReuseEnabled: Bool
   private let uploadArena: GhostteaMetalUploadArena
   private var geometryCache: GhostteaMetalGeometryCache?
   private var pendingGeometryKey: GhostteaMetalGeometryKey?
+  private var rowCacheContext: GhostteaMetalRowCacheContext?
+  private var rowCache: [Int: GhostteaMetalRowCacheEntry] = [:]
+  private var pendingRowRevisions: [Int: UInt64] = [:]
+  private var rowCacheBytes = 0
 
   init(
     runtime: GhostteaMetalRuntime,
     alphaAtlasSize: Int = 2048,
     colorAtlasSize: Int = 2048,
     encodedGeometryReuseEnabled: Bool = true,
-    instancedSubmissionEnabled: Bool = true
+    instancedSubmissionEnabled: Bool = true,
+    rowGeometryReuseEnabled: Bool = true
   ) throws {
     self.runtime = runtime
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
     self.instancedSubmissionEnabled = instancedSubmissionEnabled
+    self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
     uploadArena = GhostteaMetalUploadArenaPool.shared.arena(for: runtime.device)
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
@@ -428,6 +480,9 @@ final class GhostteaMetalRenderer {
       atlasUpload: draw.atlasUpload,
       vertexUploadBytes: draw.vertexUploadBytes,
       bufferAllocationCount: draw.bufferAllocationCount,
+      rowCacheHits: draw.rowCacheHits,
+      rowCacheAdmissions: draw.rowCacheAdmissions,
+      rowCacheEvictions: draw.rowCacheEvictions,
       residentBytes: atlases.residentBytes + pixels.count
     )
   }
@@ -470,6 +525,7 @@ final class GhostteaMetalRenderer {
     let atlasUpload: GhostteaMetalUploadResult
     let vertexUploadBytes: Int
     let bufferAllocationCount: Int
+    let rowCacheActivity: GhostteaMetalRowCacheActivity
     if let lookupKey, let geometryCache, geometryCache.key == lookupKey {
       if recorder.isEnabled {
         recorder.record(.glyphVisibility, durationNanoseconds: 0)
@@ -486,6 +542,7 @@ final class GhostteaMetalRenderer {
       )
       vertexUploadBytes = 0
       bufferAllocationCount = 0
+      rowCacheActivity = GhostteaMetalRowCacheActivity()
       try recorder.measure(.metalEncoding) {
         try encode(
           mesh: encodedMesh,
@@ -522,7 +579,7 @@ final class GhostteaMetalRenderer {
           focused: focused
         ) : nil
       let willAdmit = completedKey.map { pendingGeometryKey == $0 } ?? false
-      let mesh = try recorder.measure(.meshBuild) {
+      let meshBuild = try recorder.measure(.meshBuild) {
         try buildMesh(
           state: state,
           width: width,
@@ -531,9 +588,12 @@ final class GhostteaMetalRenderer {
           theme: theme,
           contentInsets: contentInsets,
           selection: selection,
-          focused: focused
+          focused: focused,
+          damage: damage
         )
       }
+      let mesh = meshBuild.mesh
+      rowCacheActivity = meshBuild.activity
       encodedMesh = try recorder.measure(.metalEncoding) {
         let encodedMesh = try makeEncodedMesh(
           mesh,
@@ -567,7 +627,10 @@ final class GhostteaMetalRenderer {
       bufferAllocationCount: bufferAllocationCount,
       drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
       commandBufferCount: 1,
-      damage: damage
+      damage: damage,
+      rowCacheHits: rowCacheActivity.hits,
+      rowCacheAdmissions: rowCacheActivity.admissions,
+      rowCacheEvictions: rowCacheActivity.evictions
     )
   }
 
@@ -626,29 +689,87 @@ final class GhostteaMetalRenderer {
     theme: GhostteaMetalTheme,
     contentInsets: GhostteaTerminalContentInsets,
     selection: GhostteaMetalSelection?,
-    focused: Bool
-  ) throws -> GhostteaMetalMesh {
+    focused: Bool,
+    damage: GhostteaTerminalRenderDamage
+  ) throws -> (mesh: GhostteaMetalMesh, activity: GhostteaMetalRowCacheActivity) {
     var mesh = GhostteaMetalMesh()
+    var activity = GhostteaMetalRowCacheActivity()
     let originX = Self.originX + contentInsets.left
     let originY = Self.originY + contentInsets.top
     let orderedSelection = ordered(selection)
-    for (rowIndex, row) in state.rows.enumerated() {
-      for run in row.styles {
-        let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
-        if let background = style.background {
-          pushRectangle(
-            into: &mesh.backgrounds,
-            x: (originX + Float(run.cellStart) * Self.cellWidth) * scale,
-            y: (originY + Float(rowIndex) * Self.lineHeight) * scale,
-            width: Float(run.cellSpan) * Self.cellWidth * scale,
-            height: Self.lineHeight * scale,
-            color: background,
-            viewportWidth: width,
-            viewportHeight: height
-          )
-        }
-      }
+    let context = GhostteaMetalRowCacheContext(
+      sessionHandle: state.sessionHandle,
+      sessionEpoch: state.sessionEpoch,
+      layoutEpoch: state.layoutEpoch,
+      width: width,
+      height: height,
+      scale: scale,
+      theme: theme,
+      contentInsets: contentInsets,
+      selection: orderedSelection,
+      alphaAtlasResetCount: atlases.alpha.resetCount,
+      colorAtlasResetCount: atlases.color.resetCount
+    )
+    let contextChanged = context != rowCacheContext
+    if contextChanged {
+      activity.evictions += clearRowCache()
+      pendingRowRevisions.removeAll(keepingCapacity: true)
+      rowCacheContext = context
     }
+    let broadDamage =
+      !rowGeometryReuseEnabled || contextChanged
+      || !damage.flags.intersection([.full, .geometry, .atlas]).isEmpty
+      || damage.rows.count * 2 >= state.rows.count
+    if broadDamage, !contextChanged {
+      activity.evictions += clearRowCache()
+      pendingRowRevisions.removeAll(keepingCapacity: true)
+    }
+
+    for (rowIndex, row) in state.rows.enumerated() {
+      let rowDamaged = damage.rows.contains(UInt16(clamping: rowIndex))
+      if !broadDamage, !rowDamaged, let entry = rowCache[rowIndex],
+        entry.revision == row.revision
+      {
+        append(entry.mesh, to: &mesh)
+        activity.hits += 1
+        continue
+      }
+      if let removed = rowCache.removeValue(forKey: rowIndex) {
+        rowCacheBytes -= removed.mesh.residentBytes
+        activity.evictions += 1
+      }
+      let rowMesh = try buildRowMesh(
+        row,
+        rowIndex: rowIndex,
+        state: state,
+        width: width,
+        height: height,
+        scale: scale,
+        theme: theme,
+        originX: originX,
+        originY: originY,
+        selection: orderedSelection
+      )
+      append(rowMesh, to: &mesh)
+      if !broadDamage, pendingRowRevisions[rowIndex] == row.revision,
+        rowCache.count < 128,
+        rowCacheBytes + rowMesh.residentBytes <= 4 * 1024 * 1024
+      {
+        rowCache[rowIndex] = GhostteaMetalRowCacheEntry(
+          revision: row.revision,
+          mesh: rowMesh
+        )
+        rowCacheBytes += rowMesh.residentBytes
+        activity.admissions += 1
+      }
+      pendingRowRevisions[rowIndex] = row.revision
+    }
+    if broadDamage, rowGeometryReuseEnabled {
+      pendingRowRevisions = Dictionary(
+        uniqueKeysWithValues: state.rows.enumerated().map { ($0.offset, $0.element.revision) }
+      )
+    }
+
     if let orderedSelection {
       for row in Int(orderedSelection.anchor.row)...Int(orderedSelection.focus.row) {
         guard row < state.rows.count else { break }
@@ -670,67 +791,6 @@ final class GhostteaMetalRenderer {
         )
       }
     }
-    for (rowIndex, row) in state.rows.enumerated() {
-      for instance in row.glyphs {
-        guard let definition = state.glyphDefinitions[instance.glyphID] else { continue }
-        let style = resolveStyle(state.styleDefinitions[instance.styleID], theme: theme)
-        if style.invisible { continue }
-        let foreground =
-          selectionContains(orderedSelection, row: rowIndex, column: Int(instance.cellStart))
-          ? theme.selectionForeground
-          : style.foreground
-        let atlas = definition.format == .alpha8 ? atlases.alpha : atlases.color
-        guard let location = atlas.location(for: definition.id) else {
-          throw TRF1DecodingError("visible glyph \(definition.id) is absent from its atlas")
-        }
-        let output =
-          definition.format == .alpha8
-          ? \GhostteaMetalMesh.alphaGlyphs : \GhostteaMetalMesh.colorGlyphs
-        pushGlyph(
-          into: &mesh[keyPath: output],
-          x: (originX + instance.x) * scale,
-          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
-          width: instance.width * scale,
-          height: instance.height * scale,
-          location: location,
-          color: foreground,
-          viewportWidth: width,
-          viewportHeight: height
-        )
-      }
-      for run in row.styles {
-        let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
-        if style.invisible { continue }
-        let x = (originX + Float(run.cellStart) * Self.cellWidth) * scale
-        let rowTop = (originY + Float(rowIndex) * Self.lineHeight) * scale
-        let runWidth = Float(run.cellSpan) * Self.cellWidth * scale
-        let stroke = max(1, scale.rounded())
-        if style.underline {
-          pushRectangle(
-            into: &mesh.decorations,
-            x: x,
-            y: (rowTop + 16 * scale).rounded(),
-            width: runWidth,
-            height: stroke,
-            color: style.foreground,
-            viewportWidth: width,
-            viewportHeight: height
-          )
-        }
-        if style.strikethrough {
-          pushRectangle(
-            into: &mesh.decorations,
-            x: x,
-            y: (rowTop + 9 * scale).rounded(),
-            width: runWidth,
-            height: stroke,
-            color: style.foreground,
-            viewportWidth: width,
-            viewportHeight: height
-          )
-        }
-      }
-    }
     if let cursor = state.cursor, cursor.visible {
       guard Int(cursor.x) < Int(state.columns), Int(cursor.y) < state.rows.count else {
         throw TRF1DecodingError("cursor exceeds viewport")
@@ -750,7 +810,123 @@ final class GhostteaMetalRenderer {
         viewportHeight: height
       )
     }
+    return (mesh, activity)
+  }
+
+  private func buildRowMesh(
+    _ row: RetainedTRF1Row,
+    rowIndex: Int,
+    state: RetainedTRF1State,
+    width: Int,
+    height: Int,
+    scale: Float,
+    theme: GhostteaMetalTheme,
+    originX: Float,
+    originY: Float,
+    selection: GhostteaMetalSelection?
+  ) throws -> GhostteaMetalRowMesh {
+    var mesh = GhostteaMetalRowMesh()
+    for run in row.styles {
+      let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
+      if let background = style.background {
+        pushRectangle(
+          into: &mesh.backgrounds,
+          x: (originX + Float(run.cellStart) * Self.cellWidth) * scale,
+          y: (originY + Float(rowIndex) * Self.lineHeight) * scale,
+          width: Float(run.cellSpan) * Self.cellWidth * scale,
+          height: Self.lineHeight * scale,
+          color: background,
+          viewportWidth: width,
+          viewportHeight: height
+        )
+      }
+    }
+    for instance in row.glyphs {
+      guard let definition = state.glyphDefinitions[instance.glyphID] else { continue }
+      let style = resolveStyle(state.styleDefinitions[instance.styleID], theme: theme)
+      if style.invisible { continue }
+      let foreground =
+        selectionContains(selection, row: rowIndex, column: Int(instance.cellStart))
+        ? theme.selectionForeground
+        : style.foreground
+      let atlas = definition.format == .alpha8 ? atlases.alpha : atlases.color
+      guard let location = atlas.location(for: definition.id) else {
+        throw TRF1DecodingError("visible glyph \(definition.id) is absent from its atlas")
+      }
+      if definition.format == .alpha8 {
+        pushGlyph(
+          into: &mesh.alphaGlyphs,
+          x: (originX + instance.x) * scale,
+          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
+          width: instance.width * scale,
+          height: instance.height * scale,
+          location: location,
+          color: foreground,
+          viewportWidth: width,
+          viewportHeight: height
+        )
+      } else {
+        pushGlyph(
+          into: &mesh.colorGlyphs,
+          x: (originX + instance.x) * scale,
+          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
+          width: instance.width * scale,
+          height: instance.height * scale,
+          location: location,
+          color: foreground,
+          viewportWidth: width,
+          viewportHeight: height
+        )
+      }
+    }
+    for run in row.styles {
+      let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
+      if style.invisible { continue }
+      let x = (originX + Float(run.cellStart) * Self.cellWidth) * scale
+      let rowTop = (originY + Float(rowIndex) * Self.lineHeight) * scale
+      let runWidth = Float(run.cellSpan) * Self.cellWidth * scale
+      let stroke = max(1, scale.rounded())
+      if style.underline {
+        pushRectangle(
+          into: &mesh.decorations,
+          x: x,
+          y: (rowTop + 16 * scale).rounded(),
+          width: runWidth,
+          height: stroke,
+          color: style.foreground,
+          viewportWidth: width,
+          viewportHeight: height
+        )
+      }
+      if style.strikethrough {
+        pushRectangle(
+          into: &mesh.decorations,
+          x: x,
+          y: (rowTop + 9 * scale).rounded(),
+          width: runWidth,
+          height: stroke,
+          color: style.foreground,
+          viewportWidth: width,
+          viewportHeight: height
+        )
+      }
+    }
     return mesh
+  }
+
+  private func append(_ row: GhostteaMetalRowMesh, to mesh: inout GhostteaMetalMesh) {
+    mesh.backgrounds.append(contentsOf: row.backgrounds)
+    mesh.alphaGlyphs.append(contentsOf: row.alphaGlyphs)
+    mesh.colorGlyphs.append(contentsOf: row.colorGlyphs)
+    mesh.decorations.append(contentsOf: row.decorations)
+  }
+
+  @discardableResult
+  private func clearRowCache() -> Int {
+    let count = rowCache.count
+    rowCache.removeAll(keepingCapacity: true)
+    rowCacheBytes = 0
+    return count
   }
 
   private func makeEncodedMesh(

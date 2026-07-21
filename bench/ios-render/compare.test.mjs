@@ -49,6 +49,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       encodedGeometryReuseEnabled: true,
       inPlaceRetainedStateCommitEnabled: true,
       instancedSubmissionEnabled: true,
+      rowGeometryReuseEnabled: true,
       truffleStateCodec: "json",
     },
     runner: {
@@ -160,6 +161,24 @@ test("comparison allows only an explicit instanced-submission A/B difference", (
   assert.deepEqual(
     validateComparableReports(expanded, instanced, {
       allowInstancedSubmissionDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit row-geometry reuse A/B difference", () => {
+  const cached = report();
+  const direct = structuredClone(cached);
+  direct.config.rowGeometryReuseEnabled = false;
+
+  assert.ok(
+    validateComparableReports(direct, cached).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(direct, cached, {
+      allowRowGeometryReuseDifference: true,
     }),
     [],
   );
