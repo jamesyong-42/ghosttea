@@ -52,6 +52,33 @@ The comparator still enforces device, toolchain, workload, thermal, frame,
 TRF1, renderer, and pixel invariants. The flag permits only the encoded-geometry
 reuse setting to differ.
 
+Retained-state commit also has a same-binary copy-on-write control. Both modes
+perform identical complete decode and validation; only the ownership of the
+final nonthrowing commit differs:
+
+```sh
+npm run bench:ios-render -- \
+  --cases=typing-1,sparse-1,scroll-1,dense-1 \
+  --retained-state-commit=copy \
+  --output=bench/ios-render/results-retained-copy.json
+
+npm run bench:ios-render -- \
+  --no-build \
+  --cases=typing-1,sparse-1,scroll-1,dense-1 \
+  --retained-state-commit=in-place \
+  --output=bench/ios-render/results-retained-in-place.json
+
+npm run bench:ios-render:compare -- \
+  bench/ios-render/results-retained-copy.json \
+  bench/ios-render/results-retained-in-place.json \
+  --allow-retained-state-commit-difference
+```
+
+The comparator permits only `inPlaceRetainedStateCommitEnabled` to differ;
+source/TRF1 bytes and every renderer/pixel invariant remain mandatory. Reports
+separately attribute TRF1 envelope decode, retained-state preparation, and
+retained-state commit.
+
 The dedicated `doom-fire-truffle-1` case measures the production shared-session
 receive path from negotiated state bytes through the Swift decoder, native
 logical replica, TRF1 retained apply, and Metal submission. It generates the

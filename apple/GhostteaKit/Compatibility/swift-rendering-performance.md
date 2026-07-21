@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** clean physical-device baseline complete; optimizations 1-2 accepted
+**Status:** Slice 3 underway; first three measured optimizations accepted
 
 **Recorded:** 2026-07-20
 
@@ -39,7 +39,7 @@ Truffle negotiated state or SSH bytes
   -> shared Rust logical/terminal model
   -> TRF1 Data
   -> decode every section into Swift values
-  -> transactional RetainedTRF1State copy/update
+  -> prevalidated in-place RetainedTRF1State commit
   -> accessibility snapshot and UIKit invalidation
   -> scan all visible glyphs and synchronize per-view atlases
   -> rebuild six expanded Float vertex arrays for all rows
@@ -68,13 +68,14 @@ changes and removed neutral or harmful experiments:
 
 ### Retained state
 
-`RetainedTRF1State.applyDecoded` decodes the complete frame and then assigns
+`RetainedTRF1State` previously decoded the complete frame and then assigned
 `var next = self`. Mutating `next.rows`, glyph definitions, or style definitions
-can trigger copy-on-write storage proportional to retained state even when a
-patch changes one row. The method also searches the section array repeatedly
-and uses `changedRows.contains` while applying accessibility-only rows.
+triggered copy-on-write storage even when a patch changed one row. It also
+searched the section array repeatedly and used `changedRows.contains` while
+applying accessibility-only rows.
 
-The transactional guarantee is valuable and must stay. The cheaper shape is:
+The retained implementation now preserves the transactional guarantee with a
+cheaper shape:
 
 1. index and decode the sections once;
 2. validate row counts, bounds, duplicate rows, revisions, definitions, and all
@@ -83,9 +84,10 @@ The transactional guarantee is valuable and must stay. The cheaper shape is:
 4. perform a nonthrowing commit that mutates only changed rows and new
    definitions.
 
-A compact row bitset or `Set<UInt16>` should replace repeated linear membership
-checks. Benchmarks must attribute envelope/section decode separately from the
-retained-state commit so a codec win is not confused with a state-copy win.
+A `Set<UInt16>` replaces repeated linear membership checks. The recorder now
+attributes envelope decode, complete preparation/validation, and the final
+nonthrowing commit separately so codec, validation, and state-ownership wins
+cannot be confused.
 
 ### Damage and UIKit work
 
@@ -373,6 +375,36 @@ codec win.
 
 Exit gate: malformed frames remain atomic and force resync, all existing tests
 pass, and sparse/typing Swift CPU plus allocation counts improve.
+
+Implementation status: frame sections are indexed and completely decoded and
+validated before mutation. Preparation checks session/sequence continuity,
+row counts and bounds, duplicate accessibility rows, revision ordering, and all
+fallible section conversions. The final commit is nonthrowing and mutates the
+uniquely owned retained arrays/dictionaries directly. A forced copy path runs
+the same preparation and commit function through `var next = self`, providing
+an exact same-binary copy-on-write control.
+
+A five-sample, fresh-process A/B at revision `ab6813a` used the same signed
+Release binary on the iPhone 14 Pro at 120 Hz. All 143 Apple tests passed, and
+operation/TRF1 bytes, accepted/rendered frames, uploads, allocations, atlas
+residency, and final pixels were identical.
+
+| Workload | commit, copy → in-place | retained apply | active wall |
+| --- | ---: | ---: | ---: |
+| typing | 0.60 → 0.18 ms (-70.5%) | 5.34 → 4.74 ms (-11.2%) | -2.1%, neutral |
+| sparse | 0.65 → 0.15 ms (-77.6%) | 3.13 → 2.50 ms (-20.2%) | -1.7%, neutral |
+| scroll | 0.36 → 0.29 ms (-19.1%) | 21.08 → 21.09 ms (neutral) | -1.0%, neutral |
+| dense | 0.23 → 0.16 ms (-32.6%) | 12.12 → 12.07 ms (neutral) | -0.3%, neutral |
+| Truffle DOOM Fire | 0.56 → 0.46 ms (-18.7%) | 15.93 → 15.82 ms (neutral) | +0.0%, neutral |
+
+The commit improvement has bootstrap 95% intervals wholly below zero in every
+workload. It materially reduces total retained apply only for typing and sparse
+updates; native feed, replica preparation, and complete Metal rendering still
+dominate end-to-end time. Process footprint remains practically neutral. Tiny
+relative movements in accessibility timing amount to hundredths of a
+millisecond and are outside the changed code path; accessibility is measured
+again in the next Slice 3 step. The in-place commit is accepted as a narrow
+state-layer optimization, not claimed as a whole-renderer speedup.
 
 ### Slice 4: instanced Metal submission
 
