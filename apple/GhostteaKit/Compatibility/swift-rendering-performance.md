@@ -217,6 +217,39 @@ process physical footprint, and thermal state. Retain a change only when the
 target metric improves beyond normal variance with no practical regression in
 latency, memory, energy, or correctness.
 
+### DOOM Fire physical-device baseline
+
+`doom-fire-1` is now a first-class iOS renderer case. It ports the exact seeded
+xorshift, palette interpolation, packed upper-half-block simulation, SGR
+encoding, and warmup behavior from `bench/lib/payloads.mjs`. A three-frame
+cross-language vector checks frame byte lengths and the complete payload FNV-1a
+hash before a device run can begin. The iOS case uses the shared seed
+`0x0d00f1ee`, adapted to the harness terminal as 100 columns by 29 packed fire
+rows plus one row of headroom.
+
+A clean five-sample Release run on the iPhone 14 Pro at revision `d032e6c`
+processed all 180 frames per sample with nominal thermal state, Low Power Mode
+off, no failures, and identical final pixel hashes/counts. Median evidence was:
+
+| Metric | Result |
+| --- | ---: |
+| VT source bytes | 15,476,316 |
+| TRF1 bytes | 23,047,044 |
+| active operation wall time | 1,120.5 ms |
+| operation p99 | 6.83 ms |
+| native feed total | 314.3 ms |
+| retained frame decode total | 85.1 ms |
+| mesh build total | 676.2 ms |
+| Metal submission total | 710.0 ms |
+| GPU completion p99 | 1.80 ms |
+| vertex uploads | 162.1 MiB |
+| process footprint before / after | 77.0 / 65.8 MiB |
+
+This establishes the high-churn renderer baseline. Slice 2 additionally runs
+the same truecolor/fire state shape through legacy JSON and negotiated compact
+Truffle messages so codec bytes and Swift decode/publication time are measured
+separately from VT parsing and Metal work.
+
 ## Implementation order
 
 ### Slice 1: baseline and native artifact refresh
