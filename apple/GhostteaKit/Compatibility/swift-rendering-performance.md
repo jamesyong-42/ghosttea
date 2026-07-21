@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** Slice 3 complete; Slice 4 next
+**Status:** Slice 4 complete; Slice 5 next
 
 **Recorded:** 2026-07-20
 
@@ -461,6 +461,29 @@ arena is released with its surface renderer on suspension or memory pressure.
 Second-sighting geometry-cache admission uses a dedicated persistent buffer
 instead of retaining an arena slot. The same binary retains an expanded-vertex,
 per-category-buffer reference path for physical A/B qualification.
+
+A clean same-signed-binary A/B at revision `9533004` ran five Release samples
+per path on the iPhone 14 Pro at 120 Hz. A preceding complete 12-workload run
+also preserved every frame, TRF1, damage, and final-pixel proof; after pooling
+the arena, the five highest-load and multi-surface cases were rerun from the
+same final binary:
+
+| Workload | Metal encode/commit | Vertex upload | Buffer allocations | Active wall |
+| --- | ---: | ---: | ---: | ---: |
+| typing | 86.61 -> 16.28 ms (-81.2%) | -75.0% | -99.2% | -3.8%, inconclusive |
+| dense | 9.26 -> 1.07 ms (-88.5%) | -75.0% | -96.1% | -1.9%, neutral |
+| DOOM Fire | 128.36 -> 15.29 ms (-88.1%) | -76.1% | -99.2% | -2.2%, neutral |
+| four-surface scroll | 47.29 -> 5.09 ms (-89.2%) | -75.0% | -99.2% | -2.4%, neutral |
+| eight-surface scroll | 63.20 -> 6.28 ms (-90.1%) | -75.0% | -99.5% | -11.5% |
+
+The eight-surface process footprint moved from 138.4 to 142.1 MiB (+2.7%),
+below the 3% practical threshold and the 160 MiB standard-device soft gate;
+four surfaces was neutral (-0.5%). GPU completion p99 increased by roughly
+0.1 ms in the multi-surface cases but remained below 1 ms there and below 2 ms
+throughout the matrix. No arena stall, timeout, overwrite symptom, suspended
+GPU work, or pixel mismatch occurred. Slice 4 is accepted with packed
+instancing and the shared triple-buffered arena enabled by default; the exact
+expanded reference path remains available for future qualification.
 
 ### Slice 5: bounded row geometry reuse
 
