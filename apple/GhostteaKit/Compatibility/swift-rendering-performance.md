@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** physical-device benchmark validated; first clean baseline pending
+**Status:** clean physical-device baseline complete; optimization 1 accepted
 
 **Recorded:** 2026-07-20
 
@@ -237,12 +237,12 @@ Rust revision, and `bench/ios-render` automates signed Release-device warmups,
 repetitions, workload selection, detailed numeric attribution, renderer and
 memory counters, thermal/Low-Power checks, final pixel proofs, retained JSON,
 and strict baseline comparison. Host comparator tests and generic Release iOS
-builds pass. The runner has also passed a short smoke and the complete 11-case,
-55-sample suite on an iPhone 14 Pro at 120 Hz with Low Power Mode off, nominal
-thermal state, and no correctness failures. The full report is retained as a
-dirty-worktree baseline candidate; after these harness changes land, rerun the
-same suite from the clean revision to produce the comparator-eligible Slice 1
-baseline.
+builds pass. A clean complete 11-case, 55-sample baseline was captured from
+revision `5af4b27` on an iPhone 14 Pro at 120 Hz with Low Power Mode off,
+nominal thermal state, and no correctness failures. This completes the Slice 1
+development gate. The 60 Hz device matrix and longer Instruments/energy runs
+remain deferred release-qualification work rather than blockers for measured
+Swift optimization.
 
 ### Measured optimization 1: identical geometry reuse
 
@@ -263,17 +263,33 @@ Blink-hidden one-off frames skip the cursor buffer unless the repeated geometry
 is being admitted to cache, so changing typing and scrolling workloads retain
 their original allocation counts.
 
-The first iPhone smoke reduced the scaled unchanged-repaint workload from about
-15 ms to 1.3 ms and eliminated measured mesh construction, vertex uploads, and
-buffer allocations after warmup. Cursor and typing workloads continued to miss
-the cache and render normally. The complete clean-revision comparison is the
-acceptance gate before retaining this optimization.
+The complete clean-revision candidate preserved every workload, frame, TRF1,
+and pixel invariant. It reduced unchanged-repaint active time by 97.2%,
+operation p99 by 96.2%, mesh time by 99.5%, uploads by 99.2%, and Metal buffer
+allocations by 98.9%. Resize jitter active time fell 76.1%, with the same 99.2%
+upload and 98.9% allocation reductions.
 
-After bounded admission and cursor draw gating, a focused five-sample device
-run measured unchanged-repaint active time at 32.9 ms for 120 draws with a
-0.30 ms operation p99 and one 0.5 MiB admission upload. The committed baseline
-measured 761.8 ms, 7.97 ms, and 58.9 MiB respectively. The full clean-revision
-suite remains the final acceptance gate.
+That cross-revision comparison initially reported small typing and
+multi-surface footprint flags. Revision `975603e` therefore added an explicit
+forced-reference switch and comparator allowance for only that declared
+configuration difference. Cache-off and cache-on were then run back-to-back in
+fresh processes from the same signed Release binary on the same iPhone 14 Pro,
+with five nominal samples per case. The causal A/B result was:
+
+| Workload | Cache off | Cache on | Result |
+| --- | ---: | ---: | --- |
+| unchanged repaint active time | 741.9 ms | 26.0 ms | 96.5% faster |
+| resize-jitter active time | 741.7 ms | 177.9 ms | 76.0% faster |
+| typing active time | 758.4 ms | 750.6 ms | 1.0% lower; statistically neutral |
+| four-surface scroll active time | 742.1 ms | 744.2 ms | 0.3% higher; statistically neutral |
+| eight-surface scroll active time | 977.5 ms | 971.1 ms | 0.7% lower; statistically neutral |
+
+Typing and scroll retained byte-identical uploads and identical allocation,
+draw, frame, and atlas-residency counts. Their process footprints were also
+neutral (typing +0.3%, four-surface -0.8%, eight-surface -1.6%). The earlier
+flags were therefore process/build-order variance, not cache cost. Identical
+geometry reuse is accepted and remains enabled by default; the forced-reference
+path stays available for future pixel and performance qualification.
 
 ### Slice 2: compact Truffle state on Apple
 

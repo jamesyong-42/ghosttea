@@ -29,6 +29,29 @@ npm run bench:ios-render -- --iterations=1 --warmup=0 --scale=0.05 \
 npm run bench:ios-render -- --no-build
 ```
 
+The renderer also exposes a forced-reference control for causal, same-binary
+A/B checks. Build and run the reference first, then launch a fresh process from
+the same installed binary with reuse enabled:
+
+```sh
+npm run bench:ios-render -- \
+  --output=bench/ios-render/results-geometry-off.json \
+  --geometry-reuse=off
+
+npm run bench:ios-render -- \
+  --output=bench/ios-render/results-geometry-on.json \
+  --geometry-reuse=on --no-build
+
+npm run bench:ios-render:compare -- \
+  bench/ios-render/results-geometry-off.json \
+  bench/ios-render/results-geometry-on.json \
+  --allow-geometry-reuse-difference
+```
+
+The comparator still enforces device, toolchain, workload, thermal, frame,
+TRF1, renderer, and pixel invariants. The flag permits only the encoded-geometry
+reuse setting to differ.
+
 Capture the baseline from a clean tracked worktree with Low Power Mode off and
 nominal thermal state. Keep the same device, iOS/Xcode version, refresh-rate
 setting, cases, scale, warmups, repetitions, and cooldown for the candidate.
