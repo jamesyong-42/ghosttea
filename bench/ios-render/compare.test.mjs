@@ -46,6 +46,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       cooldownMilliseconds: 250,
       scale: 1,
       cases: ["typing-1"],
+      encodedGeometryReuseEnabled: true,
     },
     runner: {
       gitDirty: false,
@@ -84,6 +85,22 @@ test("comparison rejects correctness and environment drift", () => {
     validateComparableReports(baseline, changedRefresh).includes(
       "device, toolchain, suite, or workload configuration differs",
     ),
+  );
+});
+
+test("comparison allows only an explicit encoded-geometry A/B difference", () => {
+  const enabled = report();
+  const disabled = structuredClone(enabled);
+  disabled.config.encodedGeometryReuseEnabled = false;
+
+  assert.ok(
+    validateComparableReports(disabled, enabled).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(disabled, enabled, { allowGeometryReuseDifference: true }),
+    [],
   );
 });
 

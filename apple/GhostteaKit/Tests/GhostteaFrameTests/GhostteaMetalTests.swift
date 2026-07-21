@@ -853,6 +853,40 @@ private func productionFrame() async throws -> Data {
   #expect(selected.rectangleVertexCount == first.rectangleVertexCount + 6)
 }
 
+@Test func metalRendererCanForceTheUncachedReferencePath() async throws {
+  let frame = try await productionFrame()
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  let runtime = try GhostteaMetalRuntime()
+  let renderer = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    encodedGeometryReuseEnabled: false
+  )
+  let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+    pixelFormat: .rgba8Unorm,
+    width: 420,
+    height: 100,
+    mipmapped: false
+  )
+  descriptor.storageMode = .shared
+  descriptor.usage = [.renderTarget]
+  let target = try #require(runtime.device.makeTexture(descriptor: descriptor))
+
+  let first = try renderer.render(state: state, target: target)
+  let second = try renderer.render(state: state, target: target)
+  let third = try renderer.render(state: state, target: target)
+
+  #expect(first.vertexUploadBytes > 0)
+  #expect(second.vertexUploadBytes == first.vertexUploadBytes)
+  #expect(third.vertexUploadBytes == first.vertexUploadBytes)
+  #expect(second.bufferAllocationCount == first.bufferAllocationCount)
+  #expect(third.bufferAllocationCount == first.bufferAllocationCount)
+  #expect(second.drawCallCount == first.drawCallCount)
+  #expect(third.rectangleVertexCount == first.rectangleVertexCount)
+}
+
 @Test func metalAtlasesUseTheRequiredFormatsAndDeterministicShelfPlacement() throws {
   let runtime = try GhostteaMetalRuntime()
   let atlases = try GhostteaMetalAtlasSet(runtime: runtime, alphaSize: 8, colorSize: 8)

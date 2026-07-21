@@ -139,12 +139,18 @@ final class GhostteaMetalRenderer {
   private let alphaGlyphPipeline: any MTLRenderPipelineState
   private let colorGlyphPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
+  private let encodedGeometryReuseEnabled: Bool
   private var geometryCache: GhostteaMetalGeometryCache?
   private var pendingGeometryKey: GhostteaMetalGeometryKey?
 
-  init(runtime: GhostteaMetalRuntime, alphaAtlasSize: Int = 2048, colorAtlasSize: Int = 2048) throws
-  {
+  init(
+    runtime: GhostteaMetalRuntime,
+    alphaAtlasSize: Int = 2048,
+    colorAtlasSize: Int = 2048,
+    encodedGeometryReuseEnabled: Bool = true
+  ) throws {
     self.runtime = runtime
+    self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
       alphaSize: alphaAtlasSize,
@@ -265,21 +271,23 @@ final class GhostteaMetalRenderer {
         $0.visible && (!$0.blinking || cursorBlinkVisible)
       } ?? false
     let recorder = GhostteaPerformanceRecorder.shared
-    let lookupKey = geometryKey(
-      state: state,
-      width: width,
-      height: height,
-      scale: scale,
-      theme: theme,
-      contentInsets: contentInsets,
-      selection: selection,
-      focused: focused
-    )
+    let lookupKey =
+      encodedGeometryReuseEnabled
+      ? geometryKey(
+        state: state,
+        width: width,
+        height: height,
+        scale: scale,
+        theme: theme,
+        contentInsets: contentInsets,
+        selection: selection,
+        focused: focused
+      ) : nil
     let encodedMesh: GhostteaMetalEncodedMesh
     let atlasUpload: GhostteaMetalUploadResult
     let vertexUploadBytes: Int
     let bufferAllocationCount: Int
-    if let geometryCache, geometryCache.key == lookupKey {
+    if let lookupKey, let geometryCache, geometryCache.key == lookupKey {
       if recorder.isEnabled {
         recorder.record(.glyphVisibility, durationNanoseconds: 0)
         recorder.record(.atlasSynchronization, durationNanoseconds: 0)
@@ -318,17 +326,19 @@ final class GhostteaMetalRenderer {
           byteCount: atlasUpload.uploadedBytes
         )
       }
-      let completedKey = geometryKey(
-        state: state,
-        width: width,
-        height: height,
-        scale: scale,
-        theme: theme,
-        contentInsets: contentInsets,
-        selection: selection,
-        focused: focused
-      )
-      let willAdmit = pendingGeometryKey == completedKey
+      let completedKey =
+        encodedGeometryReuseEnabled
+        ? geometryKey(
+          state: state,
+          width: width,
+          height: height,
+          scale: scale,
+          theme: theme,
+          contentInsets: contentInsets,
+          selection: selection,
+          focused: focused
+        ) : nil
+      let willAdmit = completedKey.map { pendingGeometryKey == $0 } ?? false
       let mesh = try recorder.measure(.meshBuild) {
         try buildMesh(
           state: state,
@@ -352,7 +362,7 @@ final class GhostteaMetalRenderer {
         )
         return encodedMesh
       }
-      if willAdmit {
+      if willAdmit, let completedKey {
         geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
         pendingGeometryKey = nil
       } else {

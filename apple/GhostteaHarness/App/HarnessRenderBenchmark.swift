@@ -12,6 +12,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let cooldownMilliseconds: Int
   let scale: Double
   let cases: [String]
+  let encodedGeometryReuseEnabled: Bool?
 }
 
 struct HarnessRenderBenchmarkDevice: Codable, Sendable {
@@ -147,6 +148,7 @@ enum HarnessRenderBenchmark {
           spec: spec,
           iteration: -1,
           scale: configuration.scale,
+          encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
           validatePixels: false
@@ -160,6 +162,7 @@ enum HarnessRenderBenchmark {
           spec: spec,
           iteration: iteration,
           scale: configuration.scale,
+          encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
           validatePixels: true
@@ -194,6 +197,7 @@ enum HarnessRenderBenchmark {
     spec: HarnessRenderCaseSpec,
     iteration: Int,
     scale: Double,
+    encodedGeometryReuseEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -211,7 +215,10 @@ enum HarnessRenderBenchmark {
       )
     }
     let surfaces = try (0..<spec.surfaceCount).map { _ in
-      let surface = try GhostteaTerminalMetalView(terminalFrame: .zero)
+      let surface = try GhostteaTerminalMetalView(
+        terminalFrame: .zero,
+        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+      )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
       surface.includesSafeAreaInsets = false

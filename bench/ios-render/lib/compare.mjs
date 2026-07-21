@@ -92,10 +92,12 @@ export const METRICS = [
   },
 ];
 
-function comparableConfiguration(report) {
+function comparableConfiguration(report, options = {}) {
+  const configuration = structuredClone(report.config);
+  if (options.allowGeometryReuseDifference) delete configuration?.encodedGeometryReuseEnabled;
   return {
     suite: report.suite,
-    configuration: report.config,
+    configuration,
     device: {
       model: report.device?.model,
       systemVersion: report.device?.systemVersion,
@@ -117,9 +119,12 @@ const invariantKeys = [
   "nonBackgroundPixelCount",
 ];
 
-export function validateComparableReports(baseline, candidate) {
+export function validateComparableReports(baseline, candidate, options = {}) {
   const issues = [];
-  if (JSON.stringify(comparableConfiguration(baseline)) !== JSON.stringify(comparableConfiguration(candidate))) {
+  if (
+    JSON.stringify(comparableConfiguration(baseline, options)) !==
+    JSON.stringify(comparableConfiguration(candidate, options))
+  ) {
     issues.push("device, toolchain, suite, or workload configuration differs");
   }
   for (const [label, report] of [

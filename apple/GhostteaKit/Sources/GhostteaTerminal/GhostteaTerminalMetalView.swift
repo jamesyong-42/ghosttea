@@ -146,6 +146,7 @@
     )
 
     private let metalRuntime: GhostteaMetalRuntime
+    private let encodedGeometryReuseEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var awaitingMemoryPressureRefresh = false
     private var retainedState = RetainedTRF1State()
@@ -214,9 +215,13 @@
       self?.applyCursorBlinkVisibility(visible)
     }
 
-    public init(terminalFrame: CGRect = .zero) throws {
+    public init(
+      terminalFrame: CGRect = .zero,
+      encodedGeometryReuseEnabled: Bool = true
+    ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
+      self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1076,7 +1081,10 @@
 
     private func renderer() throws -> GhostteaMetalRenderer {
       if let terminalRenderer { return terminalRenderer }
-      let renderer = try GhostteaMetalRenderer(runtime: metalRuntime)
+      let renderer = try GhostteaMetalRenderer(
+        runtime: metalRuntime,
+        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+      )
       terminalRenderer = renderer
       updateDiagnostics(
         resourceRebuilds: diagnostics.resourceRebuilds + 1,

@@ -37,6 +37,7 @@ function parseArgs(argv) {
     cases: defaults,
     build: true,
     allowUntracked: [],
+    geometryReuse: true,
   };
   for (const argument of argv) {
     if (argument.startsWith("--output=")) options.output = resolve(root, argument.slice(9));
@@ -47,6 +48,10 @@ function parseArgs(argv) {
     else if (argument.startsWith("--cases=")) options.cases = argument.slice(8).split(",").filter(Boolean);
     else if (argument.startsWith("--allow-untracked=")) {
       options.allowUntracked = argument.slice(18).split(",").filter(Boolean);
+    } else if (argument.startsWith("--geometry-reuse=")) {
+      const value = argument.slice(17);
+      if (value !== "on" && value !== "off") throw new Error("--geometry-reuse must be on or off");
+      options.geometryReuse = value === "on";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -211,6 +216,7 @@ function main() {
   --cooldown-ms=250   Cooldown between repetitions
   --scale=1           Operation-count multiplier
   --cases=list        Comma-separated benchmark cases
+  --geometry-reuse=on Enable or disable encoded geometry reuse
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
     return;
@@ -266,6 +272,7 @@ function main() {
     cooldownMilliseconds: options.cooldownMs,
     scale: options.scale,
     cases: options.cases,
+    encodedGeometryReuseEnabled: options.geometryReuse,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");
   const launch = execute(

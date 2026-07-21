@@ -10,7 +10,9 @@ function option(name, fallback) {
 
 const positional = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
 if (positional.length !== 2) {
-  console.error("Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path]");
+  console.error(
+    "Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path] [--allow-geometry-reuse-difference]",
+  );
   process.exit(1);
 }
 
@@ -19,7 +21,9 @@ const candidatePath = resolve(positional[1]);
 const noise = Number(option("noise", "3"));
 const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
 const candidate = JSON.parse(readFileSync(candidatePath, "utf8"));
-const issues = validateComparableReports(baseline, candidate);
+const issues = validateComparableReports(baseline, candidate, {
+  allowGeometryReuseDifference: process.argv.includes("--allow-geometry-reuse-difference"),
+});
 if (issues.length > 0) {
   console.error("Reports are not a trustworthy physical-device comparison:");
   for (const issue of issues) console.error(`- ${issue}`);
