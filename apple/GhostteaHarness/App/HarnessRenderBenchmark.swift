@@ -18,6 +18,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let instancedSubmissionEnabled: Bool?
   let rowGeometryReuseEnabled: Bool?
   let lazyColorAtlasEnabled: Bool?
+  let displayLinkedSchedulingEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -111,7 +112,7 @@ private enum HarnessRenderBenchmarkError: Error, CustomStringConvertible {
 }
 
 private struct HarnessRenderCaseSpec: Sendable {
-  enum Kind: Sendable {
+  enum Kind: Sendable, Equatable {
     case feed
     case repaint
     case resizeJitter
@@ -181,6 +182,8 @@ enum HarnessRenderBenchmark {
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
           lazyColorAtlasEnabled: configuration.lazyColorAtlasEnabled ?? true,
+          displayLinkedSchedulingEnabled:
+            configuration.displayLinkedSchedulingEnabled ?? false,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -201,6 +204,8 @@ enum HarnessRenderBenchmark {
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
           lazyColorAtlasEnabled: configuration.lazyColorAtlasEnabled ?? true,
+          displayLinkedSchedulingEnabled:
+            configuration.displayLinkedSchedulingEnabled ?? false,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -241,6 +246,7 @@ enum HarnessRenderBenchmark {
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
     lazyColorAtlasEnabled: Bool,
+    displayLinkedSchedulingEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -258,6 +264,7 @@ enum HarnessRenderBenchmark {
         instancedSubmissionEnabled: instancedSubmissionEnabled,
         rowGeometryReuseEnabled: rowGeometryReuseEnabled,
         lazyColorAtlasEnabled: lazyColorAtlasEnabled,
+        displayLinkedSchedulingEnabled: displayLinkedSchedulingEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -281,7 +288,8 @@ enum HarnessRenderBenchmark {
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
         rowGeometryReuseEnabled: rowGeometryReuseEnabled,
-        lazyColorAtlasEnabled: lazyColorAtlasEnabled
+        lazyColorAtlasEnabled: lazyColorAtlasEnabled,
+        displayLinkedSchedulingEnabled: displayLinkedSchedulingEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -302,7 +310,11 @@ enum HarnessRenderBenchmark {
     let initialFrames = try await feed(terminals: terminals, payload: initialPayload, render: .full)
     for (surface, frame) in zip(surfaces, initialFrames) {
       guard try surface.apply(frame: frame) else { throw HarnessRenderBenchmarkError.frameMissing }
-      surface.draw(in: surface)
+    }
+    if displayLinkedSchedulingEnabled {
+      GhostteaTerminalMetalView.flushDisplayLinkedRenders()
+    } else {
+      for surface in surfaces { surface.draw(in: surface) }
     }
     try await Task.sleep(for: .nanoseconds(Int64(pacingNanoseconds * 2)))
 
@@ -332,16 +344,22 @@ enum HarnessRenderBenchmark {
           guard try surface.apply(frame: frame) else {
             throw HarnessRenderBenchmarkError.frameMissing
           }
-          surface.draw(in: surface)
+        }
+        if displayLinkedSchedulingEnabled {
+          GhostteaTerminalMetalView.flushDisplayLinkedRenders()
+        } else {
+          for surface in surfaces { surface.draw(in: surface) }
         }
       case .repaint:
         for surface in surfaces { surface.draw(in: surface) }
       case .resizeJitter:
         let jitter: CGFloat = operation.isMultiple(of: 2) ? 0.2 : 0
         layout(surfaces: surfaces, in: window.bounds, jitter: jitter)
-        for surface in surfaces {
-          surface.layoutIfNeeded()
-          surface.draw(in: surface)
+        for surface in surfaces { surface.layoutIfNeeded() }
+        if displayLinkedSchedulingEnabled {
+          GhostteaTerminalMetalView.flushDisplayLinkedRenders()
+        } else {
+          for surface in surfaces { surface.draw(in: surface) }
         }
       case .truffleDoomFire:
         preconditionFailure("Truffle samples use their dedicated path")
@@ -382,7 +400,10 @@ enum HarnessRenderBenchmark {
     if renderer.staleFrames != 0 || renderer.fullRefreshRequests != 0 {
       failures.append("renderer reported stale frames or requested a full refresh")
     }
-    if renderer.commandBufferCommits != UInt64(expectedRendered) {
+    let expectedCommandBufferCommits =
+      displayLinkedSchedulingEnabled && spec.kind != .repaint
+      ? operationCount : expectedRendered
+    if renderer.commandBufferCommits != UInt64(expectedCommandBufferCommits) {
       failures.append("command-buffer commit count does not match rendered frames")
     }
     if let summary = performance.summaries.first(where: { $0.metric == .metalSubmission }) {
@@ -460,6 +481,7 @@ enum HarnessRenderBenchmark {
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
     lazyColorAtlasEnabled: Bool,
+    displayLinkedSchedulingEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -474,7 +496,8 @@ enum HarnessRenderBenchmark {
       inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
       instancedSubmissionEnabled: instancedSubmissionEnabled,
       rowGeometryReuseEnabled: rowGeometryReuseEnabled,
-      lazyColorAtlasEnabled: lazyColorAtlasEnabled
+      lazyColorAtlasEnabled: lazyColorAtlasEnabled,
+      displayLinkedSchedulingEnabled: displayLinkedSchedulingEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
@@ -520,7 +543,11 @@ enum HarnessRenderBenchmark {
       guard try surface.apply(frame: frame) else {
         throw HarnessRenderBenchmarkError.frameMissing
       }
-      surface.draw(in: surface)
+      if displayLinkedSchedulingEnabled {
+        GhostteaTerminalMetalView.flushDisplayLinkedRenders()
+      } else {
+        surface.draw(in: surface)
+      }
       sourceBytes &+= UInt64(encoded.count)
       trf1Bytes &+= UInt64(frame.count)
       operationDurations.append(DispatchTime.now().uptimeNanoseconds &- started)

@@ -119,6 +119,9 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowLazyColorAtlasDifference) {
     delete configuration?.lazyColorAtlasEnabled;
   }
+  if (options.allowDisplayLinkedSchedulingDifference) {
+    delete configuration?.displayLinkedSchedulingEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

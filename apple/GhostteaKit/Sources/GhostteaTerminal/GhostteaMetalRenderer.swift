@@ -499,6 +499,7 @@ final class GhostteaMetalRenderer {
     focused: Bool = true,
     cursorBlinkVisible: Bool = true,
     damage: GhostteaTerminalRenderDamage = .full,
+    commandBuffer: (any MTLCommandBuffer)? = nil,
     presenting drawable: (any MTLDrawable)? = nil
   ) throws -> GhostteaMetalDrawResult {
     let width = target.width
@@ -527,6 +528,7 @@ final class GhostteaMetalRenderer {
     let atlasUpload: GhostteaMetalUploadResult
     let vertexUploadBytes: Int
     let bufferAllocationCount: Int
+    let commandBufferCount: Int
     let rowCacheActivity: GhostteaMetalRowCacheActivity
     if let lookupKey, let geometryCache, geometryCache.key == lookupKey {
       if recorder.isEnabled {
@@ -545,12 +547,13 @@ final class GhostteaMetalRenderer {
       vertexUploadBytes = 0
       bufferAllocationCount = 0
       rowCacheActivity = GhostteaMetalRowCacheActivity()
-      try recorder.measure(.metalEncoding) {
+      commandBufferCount = try recorder.measure(.metalEncoding) {
         try encode(
           mesh: encodedMesh,
           target: target,
           theme: theme,
           showCursor: showCursor,
+          commandBuffer: commandBuffer,
           presenting: drawable
         )
       }
@@ -596,21 +599,24 @@ final class GhostteaMetalRenderer {
       }
       let mesh = meshBuild.mesh
       rowCacheActivity = meshBuild.activity
+      var encodedCommandBufferCount = 0
       encodedMesh = try recorder.measure(.metalEncoding) {
         let encodedMesh = try makeEncodedMesh(
           mesh,
           includeCursor: showCursor || willAdmit,
           persistent: willAdmit
         )
-        try encode(
+        encodedCommandBufferCount = try encode(
           mesh: encodedMesh,
           target: target,
           theme: theme,
           showCursor: showCursor,
+          commandBuffer: commandBuffer,
           presenting: drawable
         )
         return encodedMesh
       }
+      commandBufferCount = encodedCommandBufferCount
       if willAdmit, let completedKey {
         geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
         pendingGeometryKey = nil
@@ -628,7 +634,7 @@ final class GhostteaMetalRenderer {
       vertexUploadBytes: vertexUploadBytes,
       bufferAllocationCount: bufferAllocationCount,
       drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
-      commandBufferCount: 1,
+      commandBufferCount: commandBufferCount,
       damage: damage,
       rowCacheHits: rowCacheActivity.hits,
       rowCacheAdmissions: rowCacheActivity.admissions,
@@ -1082,13 +1088,14 @@ final class GhostteaMetalRenderer {
     target: any MTLTexture,
     theme: GhostteaMetalTheme,
     showCursor: Bool,
+    commandBuffer suppliedCommandBuffer: (any MTLCommandBuffer)?,
     presenting drawable: (any MTLDrawable)?
-  ) throws {
+  ) throws -> Int {
     var uploadSubmitted = false
     defer {
       if !uploadSubmitted { mesh.uploadLease?.release() }
     }
-    guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
+    guard let commandBuffer = suppliedCommandBuffer ?? runtime.commandQueue.makeCommandBuffer() else {
       throw GhostteaMetalError.commandQueueUnavailable
     }
     let descriptor = MTLRenderPassDescriptor()
@@ -1146,16 +1153,22 @@ final class GhostteaMetalRenderer {
     }
     if let drawable {
       commandBuffer.present(drawable)
+      guard suppliedCommandBuffer == nil else {
+        uploadSubmitted = true
+        return 0
+      }
       commandBuffer.commit()
       uploadSubmitted = true
-      return
+      return 1
     }
+    precondition(suppliedCommandBuffer == nil, "offscreen renders own their command buffer")
     commandBuffer.commit()
     uploadSubmitted = true
     commandBuffer.waitUntilCompleted()
     guard commandBuffer.status == .completed else {
       throw GhostteaMetalError.commandBufferFailed("Metal command did not complete")
     }
+    return 1
   }
 
   private func draw(

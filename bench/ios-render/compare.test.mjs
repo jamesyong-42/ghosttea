@@ -51,6 +51,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       instancedSubmissionEnabled: true,
       rowGeometryReuseEnabled: true,
       lazyColorAtlasEnabled: true,
+      displayLinkedSchedulingEnabled: false,
       truffleStateCodec: "json",
     },
     runner: {
@@ -198,6 +199,24 @@ test("comparison allows only an explicit lazy color-atlas A/B difference", () =>
   assert.deepEqual(
     validateComparableReports(eager, lazy, {
       allowLazyColorAtlasDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit display-linked scheduling A/B difference", () => {
+  const immediate = report();
+  const scheduled = structuredClone(immediate);
+  scheduled.config.displayLinkedSchedulingEnabled = true;
+
+  assert.ok(
+    validateComparableReports(immediate, scheduled).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(immediate, scheduled, {
+      allowDisplayLinkedSchedulingDifference: true,
     }),
     [],
   );
