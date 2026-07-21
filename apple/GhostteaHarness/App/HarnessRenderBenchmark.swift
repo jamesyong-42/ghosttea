@@ -118,6 +118,7 @@ enum HarnessRenderBenchmark {
     "scroll-1",
     "dense-1",
     "truecolor-1",
+    "doom-fire-1",
     "unicode-1",
     "scroll-4",
     "scroll-8",
@@ -398,6 +399,7 @@ enum HarnessRenderBenchmark {
     case "scroll-1": .init(name: name, surfaceCount: 1, baseOperations: 60, kind: .feed)
     case "dense-1": .init(name: name, surfaceCount: 1, baseOperations: 45, kind: .feed)
     case "truecolor-1": .init(name: name, surfaceCount: 1, baseOperations: 45, kind: .feed)
+    case "doom-fire-1": .init(name: name, surfaceCount: 1, baseOperations: 180, kind: .feed)
     case "unicode-1": .init(name: name, surfaceCount: 1, baseOperations: 60, kind: .feed)
     case "scroll-4": .init(name: name, surfaceCount: 4, baseOperations: 60, kind: .feed)
     case "scroll-8": .init(name: name, surfaceCount: 8, baseOperations: 45, kind: .feed)
@@ -428,6 +430,14 @@ enum HarnessRenderBenchmark {
       configuration.cases.count == Set(configuration.cases).count
     else {
       throw HarnessRenderBenchmarkError.invalidConfiguration("cases must be nonempty and unique")
+    }
+    let vector = doomFirePayloads(frames: 3, rows: 4, columns: 8, seed: 42)
+    guard vector.map(\.count) == [795, 813, 840],
+      fnv1a64(vector.reduce(into: Data()) { $0.append($1) }) == 0xbcd2_e921_162c_7b96
+    else {
+      throw HarnessRenderBenchmarkError.invalidConfiguration(
+        "DOOM fire generator differs from the shared desktop vector"
+      )
     }
   }
 
@@ -479,6 +489,13 @@ enum HarnessRenderBenchmark {
         }
         return Data(output.utf8)
       }
+    case "doom-fire-1":
+      return doomFirePayloads(
+        frames: operations,
+        rows: Int(rows) - 1,
+        columns: Int(columns),
+        seed: 0x0d00_f1ee
+      )
     case "unicode-1":
       let fragments = ["e\u{301}", "界", "🙂", "λ", "क", "مرحبا", "─│┌┐└┘"]
       return (0..<operations).map { frame in
@@ -523,6 +540,94 @@ enum HarnessRenderBenchmark {
   private static func fixed(_ value: Int, width: Int) -> String {
     let raw = String(value)
     return String(repeating: "0", count: max(0, width - raw.count)) + raw
+  }
+
+  /// Exact Swift port of `bench/lib/payloads.mjs::doomFirePayload`. The iOS
+  /// case uses the same seed and simulation, adapted to its 100x30 benchmark
+  /// terminal (29 packed fire rows plus one row of headroom).
+  private static func doomFirePayloads(
+    frames: Int,
+    rows: Int,
+    columns: Int,
+    seed: UInt32
+  ) -> [Data] {
+    let levels = 32
+    let pixelRows = rows * 2
+    var pixels = [UInt8](repeating: 0, count: pixelRows * columns)
+    pixels.replaceSubrange(
+      (pixelRows - 1) * columns..<pixelRows * columns,
+      with: repeatElement(UInt8(levels - 1), count: columns)
+    )
+    var random = HarnessDoomFireRandom(state: seed)
+    let paletteStops = [
+      (0.0, 0.0, 0.0),
+      (176.0, 0.0, 0.0),
+      (255.0, 80.0, 0.0),
+      (255.0, 224.0, 0.0),
+      (255.0, 255.0, 255.0),
+    ]
+    let palette: [(Int, Int, Int)] = (0..<levels).map { level in
+      let position = Double(level) / Double(levels - 1) * Double(paletteStops.count - 1)
+      let lower = min(paletteStops.count - 2, Int(floor(position)))
+      let fraction = position - Double(lower)
+      let start = paletteStops[lower]
+      let end = paletteStops[lower + 1]
+      return (
+        Int((start.0 + (end.0 - start.0) * fraction).rounded()),
+        Int((start.1 + (end.1 - start.1) * fraction).rounded()),
+        Int((start.2 + (end.2 - start.2) * fraction).rounded())
+      )
+    }
+
+    func color(_ prefix: Int, _ value: (Int, Int, Int)) -> String {
+      "\u{1b}[\(prefix);2;\(value.0);\(value.1);\(value.2)m"
+    }
+    let foreground = palette.map { color(38, $0) }
+    let background = palette.map { color(48, $0) }
+    func spread() {
+      for y in 1..<pixelRows {
+        for x in 0..<columns {
+          let source = pixels[y * columns + x]
+          let drift = Int(random.next() & 3)
+          let destinationX = (x + 1 - drift + columns) % columns
+          pixels[(y - 1) * columns + destinationX] = source &- min(source, UInt8(drift & 1))
+        }
+      }
+    }
+    for _ in 0..<pixelRows { spread() }
+
+    var encoded: [Data] = []
+    encoded.reserveCapacity(frames)
+    var previousForeground = -1
+    var previousBackground = -1
+    for frame in 0..<frames {
+      spread()
+      var output = frame == 0 ? "\u{1b}[2J\u{1b}[?25l\u{1b}[0m" : ""
+      output += "\u{1b}[H"
+      for row in 0..<rows {
+        let upper = row * 2 * columns
+        let lower = upper + columns
+        for column in 0..<columns {
+          let foregroundLevel = Int(pixels[upper + column])
+          let backgroundLevel = Int(pixels[lower + column])
+          if backgroundLevel != previousBackground { output += background[backgroundLevel] }
+          if foregroundLevel != previousForeground { output += foreground[foregroundLevel] }
+          output += "▀"
+          previousForeground = foregroundLevel
+          previousBackground = backgroundLevel
+        }
+        if row + 1 < rows { output += "\r\n" }
+      }
+      if frame + 1 == frames { output += "\u{1b}[0m\u{1b}[?25h" }
+      encoded.append(Data(output.utf8))
+    }
+    return encoded
+  }
+
+  private static func fnv1a64(_ data: Data) -> UInt64 {
+    data.reduce(UInt64(0xcbf2_9ce4_8422_2325)) { hash, byte in
+      (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+    }
   }
 
   private static func layout(
@@ -653,5 +758,16 @@ enum HarnessRenderBenchmark {
     case .critical: "critical"
     @unknown default: "unknown"
     }
+  }
+}
+
+private struct HarnessDoomFireRandom {
+  var state: UInt32
+
+  mutating func next() -> UInt32 {
+    state ^= state << 13
+    state ^= state >> 17
+    state ^= state << 5
+    return state
   }
 }

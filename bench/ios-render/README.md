@@ -71,4 +71,7 @@ intervals and a 3% practical threshold, matching the desktop benchmark policy.
 
 Default cases cover unchanged repaint, cursor movement, typing, sparse updates,
 scrolling, dense screen replacement, truecolor style churn, complex Unicode,
-four/eight visible surfaces, and fractional UIKit resize jitter.
+the shared seeded DOOM Fire simulation, four/eight visible surfaces, and
+fractional UIKit resize jitter. `doom-fire-1` uses the desktop seed
+`0x0d00f1ee` and exact simulation/encoding algorithm, adapted to the iOS
+benchmark's 100x30 grid.

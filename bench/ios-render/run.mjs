@@ -21,6 +21,7 @@ const defaults = [
   "scroll-1",
   "dense-1",
   "truecolor-1",
+  "doom-fire-1",
   "unicode-1",
   "scroll-4",
   "scroll-8",
