@@ -725,8 +725,10 @@ private func productionFrame() async throws -> Data {
     renderer.shaderFunctionNames
       == [
         "ghosttea_rectangle_vertex",
+        "ghosttea_rectangle_instanced_vertex",
         "ghosttea_rectangle_fragment",
         "ghosttea_glyph_vertex",
+        "ghosttea_glyph_instanced_vertex",
         "ghosttea_alpha_glyph_fragment",
         "ghosttea_color_glyph_fragment",
       ]
@@ -803,6 +805,50 @@ private func productionFrame() async throws -> Data {
   #expect(selectedAgain.pixelHash == selected.pixelHash)
 }
 
+@Test func instancedSubmissionMatchesExpandedPixelsWithFewerBytesAndAllocations() async throws {
+  let frame = try await productionFrame()
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  let runtime = try GhostteaMetalRuntime()
+  let instancedRenderer = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    instancedSubmissionEnabled: true
+  )
+  let expandedRenderer = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    instancedSubmissionEnabled: false
+  )
+  let selection = GhostteaMetalSelection(
+    anchor: GhostteaMetalCellPoint(column: 1, row: 0),
+    focus: GhostteaMetalCellPoint(column: 7, row: 0)
+  )
+
+  let instanced = try instancedRenderer.render(
+    state: state,
+    width: 420,
+    height: 100,
+    selection: selection
+  )
+  let expanded = try expandedRenderer.render(
+    state: state,
+    width: 420,
+    height: 100,
+    selection: selection
+  )
+
+  #expect(instanced.pixelHash == expanded.pixelHash)
+  #expect(instanced.visualFingerprint == expanded.visualFingerprint)
+  #expect(instanced.rectangleVertexCount == expanded.rectangleVertexCount)
+  #expect(instanced.alphaGlyphVertexCount == expanded.alphaGlyphVertexCount)
+  #expect(instanced.colorGlyphVertexCount == expanded.colorGlyphVertexCount)
+  #expect(instanced.vertexUploadBytes < expanded.vertexUploadBytes)
+  #expect(instanced.bufferAllocationCount < expanded.bufferAllocationCount)
+}
+
 @Test func metalRendererReusesEncodedGeometryUntilRenderInputsChange() async throws {
   let frame = try await productionFrame()
   var state = RetainedTRF1State()
@@ -866,7 +912,7 @@ private func productionFrame() async throws -> Data {
       target: target,
       cursorBlinkVisible: false
     )
-    #expect(hiddenFirst.bufferAllocationCount == first.bufferAllocationCount - 1)
+    #expect(hiddenFirst.bufferAllocationCount == first.bufferAllocationCount)
     #expect(hiddenFirst.vertexUploadBytes < first.vertexUploadBytes)
   }
   #expect(selected.vertexUploadBytes > 0)

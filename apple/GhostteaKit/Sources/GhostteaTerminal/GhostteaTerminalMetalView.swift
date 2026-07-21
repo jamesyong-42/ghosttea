@@ -173,6 +173,7 @@
     private let metalRuntime: GhostteaMetalRuntime
     private let encodedGeometryReuseEnabled: Bool
     private let inPlaceRetainedStateCommitEnabled: Bool
+    private let instancedSubmissionEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -246,12 +247,14 @@
     public init(
       terminalFrame: CGRect = .zero,
       encodedGeometryReuseEnabled: Bool = true,
-      inPlaceRetainedStateCommitEnabled: Bool = true
+      inPlaceRetainedStateCommitEnabled: Bool = true,
+      instancedSubmissionEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
       self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
+      self.instancedSubmissionEnabled = instancedSubmissionEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1158,7 +1161,8 @@
       if let terminalRenderer { return terminalRenderer }
       let renderer = try GhostteaMetalRenderer(
         runtime: metalRuntime,
-        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
+        instancedSubmissionEnabled: instancedSubmissionEnabled
       )
       terminalRenderer = renderer
       updateDiagnostics(

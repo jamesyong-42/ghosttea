@@ -110,6 +110,9 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowRetainedStateCommitDifference) {
     delete configuration?.inPlaceRetainedStateCommitEnabled;
   }
+  if (options.allowInstancedSubmissionDifference) {
+    delete configuration?.instancedSubmissionEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

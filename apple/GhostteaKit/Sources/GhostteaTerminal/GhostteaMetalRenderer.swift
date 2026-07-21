@@ -75,6 +75,8 @@ struct GhostteaMetalRenderResult: Equatable, Sendable {
   let pixelHash: UInt64
   let visualFingerprint: GhostteaVisualFingerprint
   let atlasUpload: GhostteaMetalUploadResult
+  let vertexUploadBytes: Int
+  let bufferAllocationCount: Int
   let residentBytes: Int
 }
 
@@ -99,12 +101,23 @@ private struct GhostteaResolvedMetalStyle {
 }
 
 private struct GhostteaMetalMesh {
-  var backgrounds: [Float] = []
-  var selection: [Float] = []
-  var alphaGlyphs: [Float] = []
-  var colorGlyphs: [Float] = []
-  var decorations: [Float] = []
-  var cursor: [Float] = []
+  var backgrounds: [GhostteaMetalRectangleInstance] = []
+  var selection: [GhostteaMetalRectangleInstance] = []
+  var alphaGlyphs: [GhostteaMetalGlyphInstance] = []
+  var colorGlyphs: [GhostteaMetalGlyphInstance] = []
+  var decorations: [GhostteaMetalRectangleInstance] = []
+  var cursor: [GhostteaMetalRectangleInstance] = []
+}
+
+private struct GhostteaMetalRectangleInstance {
+  let bounds: SIMD4<Float>
+  let color: SIMD4<Float>
+}
+
+private struct GhostteaMetalGlyphInstance {
+  let bounds: SIMD4<Float>
+  let uvBounds: SIMD4<Float>
+  let color: SIMD4<Float>
 }
 
 private struct GhostteaMetalGeometryKey: Equatable {
@@ -125,7 +138,9 @@ private struct GhostteaMetalGeometryKey: Equatable {
 
 private struct GhostteaMetalBufferSlice {
   let buffer: any MTLBuffer
+  let offset: Int
   let vertexCount: Int
+  let instanceCount: Int
 }
 
 private struct GhostteaMetalEncodedMesh {
@@ -139,18 +154,105 @@ private struct GhostteaMetalEncodedMesh {
   let alphaGlyphVertexCount: Int
   let colorGlyphVertexCount: Int
   let uploadedBytes: Int
+  let allocationCount: Int
+  let instanced: Bool
+  let uploadLease: GhostteaMetalUploadLease?
 
-  var allocationCount: Int {
+  var populatedSliceCount: Int {
     [backgrounds, selection, alphaGlyphs, colorGlyphs, decorations, cursor]
       .compactMap { $0 }.count
   }
 
   func drawCallCount(showCursor: Bool) -> Int {
-    allocationCount - (!showCursor && cursor != nil ? 1 : 0)
+    populatedSliceCount - (!showCursor && cursor != nil ? 1 : 0)
   }
 
   func rectangleVertexCount(showCursor: Bool) -> Int {
     rectangleVertexCount - (!showCursor ? cursor?.vertexCount ?? 0 : 0)
+  }
+}
+
+private final class GhostteaMetalUploadLease: @unchecked Sendable {
+  private let lock = NSLock()
+  private var releaseAction: (() -> Void)?
+
+  init(release: @escaping () -> Void) {
+    releaseAction = release
+  }
+
+  func release() {
+    lock.lock()
+    let action = releaseAction
+    releaseAction = nil
+    lock.unlock()
+    action?()
+  }
+
+  deinit { release() }
+}
+
+private final class GhostteaMetalUploadArena {
+  private final class Slot: @unchecked Sendable {
+    let available = DispatchSemaphore(value: 1)
+    var buffer: (any MTLBuffer)?
+    var capacity = 0
+  }
+
+  struct Allocation {
+    let buffer: any MTLBuffer
+    let allocationCount: Int
+    let lease: GhostteaMetalUploadLease
+  }
+
+  private static let slotCount = 3
+  private static let maximumSlotBytes = 8 * 1024 * 1024
+  private let device: any MTLDevice
+  private let slots: [Slot]
+  private var nextSlot = 0
+
+  init(device: any MTLDevice) {
+    self.device = device
+    slots = (0..<Self.slotCount).map { _ in Slot() }
+  }
+
+  var residentBytes: Int { slots.reduce(0) { $0 + $1.capacity } }
+
+  func acquire(minimumBytes: Int) throws -> Allocation {
+    guard minimumBytes > 0, minimumBytes <= Self.maximumSlotBytes else {
+      throw GhostteaMetalError.bufferUnavailable("bounded upload arena")
+    }
+    let slot = slots[nextSlot]
+    nextSlot = (nextSlot + 1) % slots.count
+    slot.available.wait()
+    var allocationCount = 0
+    if slot.buffer == nil || slot.capacity < minimumBytes {
+      let capacity = min(Self.maximumSlotBytes, roundedCapacity(minimumBytes))
+      guard
+        let buffer = device.makeBuffer(length: capacity, options: .storageModeShared)
+      else {
+        slot.available.signal()
+        throw GhostteaMetalError.bufferUnavailable("upload arena slot")
+      }
+      buffer.label = "Ghosttea upload arena"
+      slot.buffer = buffer
+      slot.capacity = capacity
+      allocationCount = 1
+    }
+    guard let buffer = slot.buffer else {
+      slot.available.signal()
+      throw GhostteaMetalError.bufferUnavailable("upload arena slot")
+    }
+    return Allocation(
+      buffer: buffer,
+      allocationCount: allocationCount,
+      lease: GhostteaMetalUploadLease { slot.available.signal() }
+    )
+  }
+
+  private func roundedCapacity(_ minimumBytes: Int) -> Int {
+    var capacity = 64 * 1024
+    while capacity < minimumBytes { capacity *= 2 }
+    return capacity
   }
 }
 
@@ -171,8 +273,13 @@ final class GhostteaMetalRenderer {
   private let rectanglePipeline: any MTLRenderPipelineState
   private let alphaGlyphPipeline: any MTLRenderPipelineState
   private let colorGlyphPipeline: any MTLRenderPipelineState
+  private let instancedRectanglePipeline: any MTLRenderPipelineState
+  private let instancedAlphaGlyphPipeline: any MTLRenderPipelineState
+  private let instancedColorGlyphPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
   private let encodedGeometryReuseEnabled: Bool
+  private let instancedSubmissionEnabled: Bool
+  private let uploadArena: GhostteaMetalUploadArena
   private var geometryCache: GhostteaMetalGeometryCache?
   private var pendingGeometryKey: GhostteaMetalGeometryKey?
 
@@ -180,10 +287,13 @@ final class GhostteaMetalRenderer {
     runtime: GhostteaMetalRuntime,
     alphaAtlasSize: Int = 2048,
     colorAtlasSize: Int = 2048,
-    encodedGeometryReuseEnabled: Bool = true
+    encodedGeometryReuseEnabled: Bool = true,
+    instancedSubmissionEnabled: Bool = true
   ) throws {
     self.runtime = runtime
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
+    self.instancedSubmissionEnabled = instancedSubmissionEnabled
+    uploadArena = GhostteaMetalUploadArena(device: runtime.device)
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
       alphaSize: alphaAtlasSize,
@@ -216,6 +326,22 @@ final class GhostteaMetalRenderer {
       library: library,
       fragment: "ghosttea_color_glyph_fragment",
       label: "Ghosttea color glyph pipeline"
+    )
+    instancedRectanglePipeline = try Self.makeInstancedRectanglePipeline(
+      runtime: runtime,
+      library: library
+    )
+    instancedAlphaGlyphPipeline = try Self.makeInstancedGlyphPipeline(
+      runtime: runtime,
+      library: library,
+      fragment: "ghosttea_alpha_glyph_fragment",
+      label: "Ghosttea instanced alpha glyph pipeline"
+    )
+    instancedColorGlyphPipeline = try Self.makeInstancedGlyphPipeline(
+      runtime: runtime,
+      library: library,
+      fragment: "ghosttea_color_glyph_fragment",
+      label: "Ghosttea instanced color glyph pipeline"
     )
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .linear
@@ -281,6 +407,8 @@ final class GhostteaMetalRenderer {
         nonBackgroundPixelCount: nonBackgroundPixelCount
       ),
       atlasUpload: draw.atlasUpload,
+      vertexUploadBytes: draw.vertexUploadBytes,
+      bufferAllocationCount: draw.bufferAllocationCount,
       residentBytes: atlases.residentBytes + pixels.count
     )
   }
@@ -388,7 +516,11 @@ final class GhostteaMetalRenderer {
         )
       }
       encodedMesh = try recorder.measure(.metalEncoding) {
-        let encodedMesh = try makeEncodedMesh(mesh, includeCursor: showCursor || willAdmit)
+        let encodedMesh = try makeEncodedMesh(
+          mesh,
+          includeCursor: showCursor || willAdmit,
+          persistent: willAdmit
+        )
         try encode(
           mesh: encodedMesh,
           target: target,
@@ -604,28 +736,148 @@ final class GhostteaMetalRenderer {
 
   private func makeEncodedMesh(
     _ mesh: GhostteaMetalMesh,
+    includeCursor: Bool,
+    persistent: Bool
+  ) throws -> GhostteaMetalEncodedMesh {
+    if instancedSubmissionEnabled {
+      return try makeInstancedEncodedMesh(
+        mesh, includeCursor: includeCursor, persistent: persistent)
+    }
+    return try makeLegacyEncodedMesh(mesh, includeCursor: includeCursor)
+  }
+
+  private func makeInstancedEncodedMesh(
+    _ mesh: GhostteaMetalMesh,
+    includeCursor: Bool,
+    persistent: Bool
+  ) throws -> GhostteaMetalEncodedMesh {
+    let cursor = includeCursor ? mesh.cursor : []
+    var requiredBytes = 0
+    func reserve<T>(_ values: [T]) -> Int {
+      let offset = alignedUploadOffset(requiredBytes)
+      requiredBytes = offset + values.count * MemoryLayout<T>.stride
+      return offset
+    }
+    let backgroundOffset = reserve(mesh.backgrounds)
+    let selectionOffset = reserve(mesh.selection)
+    let alphaGlyphOffset = reserve(mesh.alphaGlyphs)
+    let colorGlyphOffset = reserve(mesh.colorGlyphs)
+    let decorationOffset = reserve(mesh.decorations)
+    let cursorOffset = reserve(cursor)
+    let uploadedBytes =
+      mesh.backgrounds.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + mesh.selection.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + mesh.alphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + mesh.colorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + mesh.decorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + cursor.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+    guard requiredBytes > 0 else {
+      return GhostteaMetalEncodedMesh(
+        backgrounds: nil,
+        selection: nil,
+        alphaGlyphs: nil,
+        colorGlyphs: nil,
+        decorations: nil,
+        cursor: nil,
+        rectangleVertexCount: 0,
+        alphaGlyphVertexCount: 0,
+        colorGlyphVertexCount: 0,
+        uploadedBytes: 0,
+        allocationCount: 0,
+        instanced: true,
+        uploadLease: nil
+      )
+    }
+
+    let buffer: any MTLBuffer
+    let allocationCount: Int
+    let lease: GhostteaMetalUploadLease?
+    if persistent {
+      guard
+        let persistentBuffer = runtime.device.makeBuffer(
+          length: requiredBytes,
+          options: .storageModeShared
+        )
+      else {
+        throw GhostteaMetalError.bufferUnavailable("persistent geometry")
+      }
+      persistentBuffer.label = "Ghosttea persistent geometry"
+      buffer = persistentBuffer
+      allocationCount = 1
+      lease = nil
+    } else {
+      let allocation = try uploadArena.acquire(minimumBytes: requiredBytes)
+      buffer = allocation.buffer
+      allocationCount = allocation.allocationCount
+      lease = allocation.lease
+    }
+    write(mesh.backgrounds, to: buffer, at: backgroundOffset)
+    write(mesh.selection, to: buffer, at: selectionOffset)
+    write(mesh.alphaGlyphs, to: buffer, at: alphaGlyphOffset)
+    write(mesh.colorGlyphs, to: buffer, at: colorGlyphOffset)
+    write(mesh.decorations, to: buffer, at: decorationOffset)
+    write(cursor, to: buffer, at: cursorOffset)
+
+    return GhostteaMetalEncodedMesh(
+      backgrounds: instanceSlice(mesh.backgrounds, buffer: buffer, offset: backgroundOffset),
+      selection: instanceSlice(mesh.selection, buffer: buffer, offset: selectionOffset),
+      alphaGlyphs: instanceSlice(mesh.alphaGlyphs, buffer: buffer, offset: alphaGlyphOffset),
+      colorGlyphs: instanceSlice(mesh.colorGlyphs, buffer: buffer, offset: colorGlyphOffset),
+      decorations: instanceSlice(mesh.decorations, buffer: buffer, offset: decorationOffset),
+      cursor: instanceSlice(cursor, buffer: buffer, offset: cursorOffset),
+      rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count
+        + mesh.decorations.count + cursor.count) * 6,
+      alphaGlyphVertexCount: mesh.alphaGlyphs.count * 6,
+      colorGlyphVertexCount: mesh.colorGlyphs.count * 6,
+      uploadedBytes: uploadedBytes,
+      allocationCount: allocationCount,
+      instanced: true,
+      uploadLease: lease
+    )
+  }
+
+  private func makeLegacyEncodedMesh(
+    _ mesh: GhostteaMetalMesh,
     includeCursor: Bool
   ) throws -> GhostteaMetalEncodedMesh {
-    let staticArrays = [
-      mesh.backgrounds,
-      mesh.selection,
-      mesh.alphaGlyphs,
-      mesh.colorGlyphs,
-      mesh.decorations,
-    ]
-    return try GhostteaMetalEncodedMesh(
-      backgrounds: makeBufferSlice(mesh.backgrounds, label: "backgrounds", stride: 6),
-      selection: makeBufferSlice(mesh.selection, label: "selection", stride: 6),
-      alphaGlyphs: makeBufferSlice(mesh.alphaGlyphs, label: "alpha glyphs", stride: 8),
-      colorGlyphs: makeBufferSlice(mesh.colorGlyphs, label: "color glyphs", stride: 8),
-      decorations: makeBufferSlice(mesh.decorations, label: "decorations", stride: 6),
-      cursor: includeCursor ? makeBufferSlice(mesh.cursor, label: "cursor", stride: 6) : nil,
-      rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count
-        + mesh.decorations.count + mesh.cursor.count) / 6,
-      alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
-      colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
-      uploadedBytes: (staticArrays.reduce(0) { $0 + $1.count }
-        + (includeCursor ? mesh.cursor.count : 0)) * MemoryLayout<Float>.stride
+    let backgrounds = expandedRectangleVertices(mesh.backgrounds)
+    let selection = expandedRectangleVertices(mesh.selection)
+    let alphaGlyphs = expandedGlyphVertices(mesh.alphaGlyphs)
+    let colorGlyphs = expandedGlyphVertices(mesh.colorGlyphs)
+    let decorations = expandedRectangleVertices(mesh.decorations)
+    let cursor = includeCursor ? expandedRectangleVertices(mesh.cursor) : []
+    let slices = try (
+      backgrounds: makeBufferSlice(backgrounds, label: "backgrounds", stride: 6),
+      selection: makeBufferSlice(selection, label: "selection", stride: 6),
+      alphaGlyphs: makeBufferSlice(alphaGlyphs, label: "alpha glyphs", stride: 8),
+      colorGlyphs: makeBufferSlice(colorGlyphs, label: "color glyphs", stride: 8),
+      decorations: makeBufferSlice(decorations, label: "decorations", stride: 6),
+      cursor: makeBufferSlice(cursor, label: "cursor", stride: 6)
+    )
+    let allocationCount = [
+      slices.backgrounds,
+      slices.selection,
+      slices.alphaGlyphs,
+      slices.colorGlyphs,
+      slices.decorations,
+      slices.cursor,
+    ].compactMap { $0 }.count
+    return GhostteaMetalEncodedMesh(
+      backgrounds: slices.backgrounds,
+      selection: slices.selection,
+      alphaGlyphs: slices.alphaGlyphs,
+      colorGlyphs: slices.colorGlyphs,
+      decorations: slices.decorations,
+      cursor: slices.cursor,
+      rectangleVertexCount: backgrounds.count / 6 + selection.count / 6
+        + decorations.count / 6 + cursor.count / 6,
+      alphaGlyphVertexCount: alphaGlyphs.count / 8,
+      colorGlyphVertexCount: colorGlyphs.count / 8,
+      uploadedBytes: (backgrounds.count + selection.count + alphaGlyphs.count
+        + colorGlyphs.count + decorations.count + cursor.count) * MemoryLayout<Float>.stride,
+      allocationCount: allocationCount,
+      instanced: false,
+      uploadLease: nil
     )
   }
 
@@ -636,6 +888,10 @@ final class GhostteaMetalRenderer {
     showCursor: Bool,
     presenting drawable: (any MTLDrawable)?
   ) throws {
+    var uploadSubmitted = false
+    defer {
+      if !uploadSubmitted { mesh.uploadLease?.release() }
+    }
     guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
       throw GhostteaMetalError.commandQueueUnavailable
     }
@@ -653,23 +909,26 @@ final class GhostteaMetalRenderer {
       throw GhostteaMetalError.renderTargetUnavailable
     }
     encoder.label = "Ghosttea terminal pass"
-    draw(mesh.backgrounds, pipeline: rectanglePipeline, encoder: encoder)
-    draw(mesh.selection, pipeline: rectanglePipeline, encoder: encoder)
+    let activeRectanglePipeline = mesh.instanced ? instancedRectanglePipeline : rectanglePipeline
+    let activeAlphaGlyphPipeline = mesh.instanced ? instancedAlphaGlyphPipeline : alphaGlyphPipeline
+    let activeColorGlyphPipeline = mesh.instanced ? instancedColorGlyphPipeline : colorGlyphPipeline
+    draw(mesh.backgrounds, pipeline: activeRectanglePipeline, encoder: encoder)
+    draw(mesh.selection, pipeline: activeRectanglePipeline, encoder: encoder)
     drawGlyphs(
       mesh.alphaGlyphs,
-      pipeline: alphaGlyphPipeline,
+      pipeline: activeAlphaGlyphPipeline,
       texture: atlases.alpha.texture,
       encoder: encoder
     )
     drawGlyphs(
       mesh.colorGlyphs,
-      pipeline: colorGlyphPipeline,
+      pipeline: activeColorGlyphPipeline,
       texture: atlases.color.texture,
       encoder: encoder
     )
-    draw(mesh.decorations, pipeline: rectanglePipeline, encoder: encoder)
+    draw(mesh.decorations, pipeline: activeRectanglePipeline, encoder: encoder)
     if showCursor {
-      draw(mesh.cursor, pipeline: rectanglePipeline, encoder: encoder)
+      draw(mesh.cursor, pipeline: activeRectanglePipeline, encoder: encoder)
     }
     encoder.endEncoding()
     if GhostteaPerformanceRecorder.shared.isEnabled {
@@ -681,12 +940,17 @@ final class GhostteaMetalRenderer {
         )
       }
     }
+    if let uploadLease = mesh.uploadLease {
+      commandBuffer.addCompletedHandler { _ in uploadLease.release() }
+    }
     if let drawable {
       commandBuffer.present(drawable)
       commandBuffer.commit()
+      uploadSubmitted = true
       return
     }
     commandBuffer.commit()
+    uploadSubmitted = true
     commandBuffer.waitUntilCompleted()
     guard commandBuffer.status == .completed else {
       throw GhostteaMetalError.commandBufferFailed("Metal command did not complete")
@@ -700,8 +964,13 @@ final class GhostteaMetalRenderer {
   ) {
     guard let slice else { return }
     encoder.setRenderPipelineState(pipeline)
-    encoder.setVertexBuffer(slice.buffer, offset: 0, index: 0)
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: slice.vertexCount)
+    encoder.setVertexBuffer(slice.buffer, offset: slice.offset, index: 0)
+    encoder.drawPrimitives(
+      type: .triangle,
+      vertexStart: 0,
+      vertexCount: slice.vertexCount,
+      instanceCount: slice.instanceCount
+    )
   }
 
   private func drawGlyphs(
@@ -712,10 +981,15 @@ final class GhostteaMetalRenderer {
   ) {
     guard let slice else { return }
     encoder.setRenderPipelineState(pipeline)
-    encoder.setVertexBuffer(slice.buffer, offset: 0, index: 0)
+    encoder.setVertexBuffer(slice.buffer, offset: slice.offset, index: 0)
     encoder.setFragmentTexture(texture, index: 0)
     encoder.setFragmentSamplerState(sampler, index: 0)
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: slice.vertexCount)
+    encoder.drawPrimitives(
+      type: .triangle,
+      vertexStart: 0,
+      vertexCount: slice.vertexCount,
+      instanceCount: slice.instanceCount
+    )
   }
 
   private func makeBufferSlice(
@@ -731,7 +1005,37 @@ final class GhostteaMetalRenderer {
     }
     guard let buffer else { throw GhostteaMetalError.bufferUnavailable(label) }
     buffer.label = "Ghosttea \(label) vertices"
-    return GhostteaMetalBufferSlice(buffer: buffer, vertexCount: vertices.count / stride)
+    return GhostteaMetalBufferSlice(
+      buffer: buffer,
+      offset: 0,
+      vertexCount: vertices.count / stride,
+      instanceCount: 1
+    )
+  }
+
+  private func instanceSlice<T>(
+    _ instances: [T],
+    buffer: any MTLBuffer,
+    offset: Int
+  ) -> GhostteaMetalBufferSlice? {
+    guard !instances.isEmpty else { return nil }
+    return GhostteaMetalBufferSlice(
+      buffer: buffer,
+      offset: offset,
+      vertexCount: 6,
+      instanceCount: instances.count
+    )
+  }
+
+  private func write<T>(_ values: [T], to buffer: any MTLBuffer, at offset: Int) {
+    guard !values.isEmpty else { return }
+    values.withUnsafeBytes { source in
+      guard let baseAddress = source.baseAddress else { return }
+      buffer.contents().advanced(by: offset).copyMemory(
+        from: baseAddress,
+        byteCount: source.count
+      )
+    }
   }
 
   private static func makeRectanglePipeline(
@@ -786,6 +1090,40 @@ final class GhostteaMetalRenderer {
       return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
     } catch {
       throw GhostteaMetalError.pipelineUnavailable("glyph pipeline")
+    }
+  }
+
+  private static func makeInstancedRectanglePipeline(
+    runtime: GhostteaMetalRuntime,
+    library: any MTLLibrary
+  ) throws -> any MTLRenderPipelineState {
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = "Ghosttea instanced rectangle pipeline"
+    descriptor.vertexFunction = library.makeFunction(name: "ghosttea_rectangle_instanced_vertex")
+    descriptor.fragmentFunction = library.makeFunction(name: "ghosttea_rectangle_fragment")
+    configureColorAttachment(descriptor.colorAttachments[0])
+    do {
+      return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
+    } catch {
+      throw GhostteaMetalError.pipelineUnavailable("instanced rectangle pipeline")
+    }
+  }
+
+  private static func makeInstancedGlyphPipeline(
+    runtime: GhostteaMetalRuntime,
+    library: any MTLLibrary,
+    fragment: String,
+    label: String
+  ) throws -> any MTLRenderPipelineState {
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = label
+    descriptor.vertexFunction = library.makeFunction(name: "ghosttea_glyph_instanced_vertex")
+    descriptor.fragmentFunction = library.makeFunction(name: fragment)
+    configureColorAttachment(descriptor.colorAttachments[0])
+    do {
+      return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
+    } catch {
+      throw GhostteaMetalError.pipelineUnavailable("instanced glyph pipeline")
     }
   }
 
@@ -869,7 +1207,7 @@ private func clipY(_ pixel: Float, height: Int) -> Float {
 }
 
 private func pushRectangle(
-  into output: inout [Float],
+  into output: inout [GhostteaMetalRectangleInstance],
   x: Float,
   y: Float,
   width: Float,
@@ -882,25 +1220,16 @@ private func pushRectangle(
   let right = clipX(x + width, width: viewportWidth)
   let top = clipY(y, height: viewportHeight)
   let bottom = clipY(y + height, height: viewportHeight)
-  appendRectangleVertex(to: &output, x: left, y: top, color: color)
-  appendRectangleVertex(to: &output, x: right, y: top, color: color)
-  appendRectangleVertex(to: &output, x: left, y: bottom, color: color)
-  appendRectangleVertex(to: &output, x: left, y: bottom, color: color)
-  appendRectangleVertex(to: &output, x: right, y: top, color: color)
-  appendRectangleVertex(to: &output, x: right, y: bottom, color: color)
-}
-
-private func appendRectangleVertex(
-  to output: inout [Float],
-  x: Float,
-  y: Float,
-  color: GhostteaMetalColor
-) {
-  output.append(contentsOf: [x, y] + color.components)
+  output.append(
+    GhostteaMetalRectangleInstance(
+      bounds: SIMD4(left, top, right, bottom),
+      color: SIMD4(color.red, color.green, color.blue, color.alpha)
+    )
+  )
 }
 
 private func pushGlyph(
-  into output: inout [Float],
+  into output: inout [GhostteaMetalGlyphInstance],
   x: Float,
   y: Float,
   width: Float,
@@ -914,23 +1243,55 @@ private func pushGlyph(
   let right = clipX(x + width, width: viewportWidth)
   let top = clipY(y, height: viewportHeight)
   let bottom = clipY(y + height, height: viewportHeight)
-  appendGlyphVertex(to: &output, x: left, y: top, u: location.u0, v: location.v0, color: color)
-  appendGlyphVertex(to: &output, x: right, y: top, u: location.u1, v: location.v0, color: color)
-  appendGlyphVertex(to: &output, x: left, y: bottom, u: location.u0, v: location.v1, color: color)
-  appendGlyphVertex(to: &output, x: left, y: bottom, u: location.u0, v: location.v1, color: color)
-  appendGlyphVertex(to: &output, x: right, y: top, u: location.u1, v: location.v0, color: color)
-  appendGlyphVertex(to: &output, x: right, y: bottom, u: location.u1, v: location.v1, color: color)
+  output.append(
+    GhostteaMetalGlyphInstance(
+      bounds: SIMD4(left, top, right, bottom),
+      uvBounds: SIMD4(location.u0, location.v0, location.u1, location.v1),
+      color: SIMD4(color.red, color.green, color.blue, color.alpha)
+    )
+  )
 }
 
-private func appendGlyphVertex(
-  to output: inout [Float],
-  x: Float,
-  y: Float,
-  u: Float,
-  v: Float,
-  color: GhostteaMetalColor
-) {
-  output.append(contentsOf: [x, y, u, v] + color.components)
+private func alignedUploadOffset(_ value: Int) -> Int {
+  (value + 15) & ~15
+}
+
+private func expandedRectangleVertices(
+  _ instances: [GhostteaMetalRectangleInstance]
+) -> [Float] {
+  var output: [Float] = []
+  output.reserveCapacity(instances.count * 6 * 6)
+  let corners = [(0, 1), (2, 1), (0, 3), (0, 3), (2, 1), (2, 3)]
+  for instance in instances {
+    for (xIndex, yIndex) in corners {
+      output.append(instance.bounds[xIndex])
+      output.append(instance.bounds[yIndex])
+      output.append(instance.color.x)
+      output.append(instance.color.y)
+      output.append(instance.color.z)
+      output.append(instance.color.w)
+    }
+  }
+  return output
+}
+
+private func expandedGlyphVertices(_ instances: [GhostteaMetalGlyphInstance]) -> [Float] {
+  var output: [Float] = []
+  output.reserveCapacity(instances.count * 6 * 8)
+  let corners = [(0, 1), (2, 1), (0, 3), (0, 3), (2, 1), (2, 3)]
+  for instance in instances {
+    for (xIndex, yIndex) in corners {
+      output.append(instance.bounds[xIndex])
+      output.append(instance.bounds[yIndex])
+      output.append(instance.uvBounds[xIndex])
+      output.append(instance.uvBounds[yIndex])
+      output.append(instance.color.x)
+      output.append(instance.color.y)
+      output.append(instance.color.z)
+      output.append(instance.color.w)
+    }
+  }
+  return output
 }
 
 private func readPixels(texture: any MTLTexture, width: Int, height: Int) -> [UInt8] {

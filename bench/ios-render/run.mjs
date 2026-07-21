@@ -40,6 +40,7 @@ function parseArgs(argv) {
     allowUntracked: [],
     geometryReuse: true,
     inPlaceRetainedStateCommit: true,
+    instancedSubmission: true,
     stateCodec: "json",
   };
   for (const argument of argv) {
@@ -66,6 +67,12 @@ function parseArgs(argv) {
         throw new Error("--retained-state-commit must be in-place or copy");
       }
       options.inPlaceRetainedStateCommit = value === "in-place";
+    } else if (argument.startsWith("--instanced-submission=")) {
+      const value = argument.slice(23);
+      if (value !== "on" && value !== "off") {
+        throw new Error("--instanced-submission must be on or off");
+      }
+      options.instancedSubmission = value === "on";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -232,6 +239,7 @@ function main() {
   --cases=list        Comma-separated benchmark cases
   --geometry-reuse=on Enable or disable encoded geometry reuse
   --retained-state-commit=in-place  Use in-place or copy retained-state commit
+  --instanced-submission=on  Use packed instances/arena or expanded vertex buffers
   --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
@@ -290,6 +298,7 @@ function main() {
     cases: options.cases,
     encodedGeometryReuseEnabled: options.geometryReuse,
     inPlaceRetainedStateCommitEnabled: options.inPlaceRetainedStateCommit,
+    instancedSubmissionEnabled: options.instancedSubmission,
     truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");

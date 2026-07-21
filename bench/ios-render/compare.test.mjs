@@ -48,6 +48,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       cases: ["typing-1"],
       encodedGeometryReuseEnabled: true,
       inPlaceRetainedStateCommitEnabled: true,
+      instancedSubmissionEnabled: true,
       truffleStateCodec: "json",
     },
     runner: {
@@ -141,6 +142,24 @@ test("comparison allows only an explicit retained-state commit A/B difference", 
   assert.deepEqual(
     validateComparableReports(copied, inPlace, {
       allowRetainedStateCommitDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit instanced-submission A/B difference", () => {
+  const instanced = report();
+  const expanded = structuredClone(instanced);
+  expanded.config.instancedSubmissionEnabled = false;
+
+  assert.ok(
+    validateComparableReports(expanded, instanced).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(expanded, instanced, {
+      allowInstancedSubmissionDifference: true,
     }),
     [],
   );

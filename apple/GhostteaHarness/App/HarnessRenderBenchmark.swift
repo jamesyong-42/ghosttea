@@ -15,6 +15,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let cases: [String]
   let encodedGeometryReuseEnabled: Bool?
   let inPlaceRetainedStateCommitEnabled: Bool?
+  let instancedSubmissionEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -172,6 +173,7 @@ enum HarnessRenderBenchmark {
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           inPlaceRetainedStateCommitEnabled:
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
+          instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -189,6 +191,7 @@ enum HarnessRenderBenchmark {
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           inPlaceRetainedStateCommitEnabled:
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
+          instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -226,6 +229,7 @@ enum HarnessRenderBenchmark {
     scale: Double,
     encodedGeometryReuseEnabled: Bool,
     inPlaceRetainedStateCommitEnabled: Bool,
+    instancedSubmissionEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -240,6 +244,7 @@ enum HarnessRenderBenchmark {
         codec: truffleStateCodec,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+        instancedSubmissionEnabled: instancedSubmissionEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -260,7 +265,8 @@ enum HarnessRenderBenchmark {
       let surface = try GhostteaTerminalMetalView(
         terminalFrame: .zero,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
-        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
+        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+        instancedSubmissionEnabled: instancedSubmissionEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -436,6 +442,7 @@ enum HarnessRenderBenchmark {
     codec: GhostteaStateCodec,
     encodedGeometryReuseEnabled: Bool,
     inPlaceRetainedStateCommitEnabled: Bool,
+    instancedSubmissionEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -447,7 +454,8 @@ enum HarnessRenderBenchmark {
     let surface = try GhostteaTerminalMetalView(
       terminalFrame: .zero,
       encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
-      inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
+      inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+      instancedSubmissionEnabled: instancedSubmissionEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
