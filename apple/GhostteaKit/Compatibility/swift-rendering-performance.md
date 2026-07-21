@@ -406,6 +406,27 @@ millisecond and are outside the changed code path; accessibility is measured
 again in the next Slice 3 step. The in-place commit is accepted as a narrow
 state-layer optimization, not claimed as a whole-renderer speedup.
 
+The next implementation carries a union of full, row, cursor, selection,
+geometry, and atlas damage from accepted frames and UIKit events until a Metal
+submission succeeds. Renderer diagnostics expose each category and the number
+of damaged rows. This is intentionally bookkeeping in Slice 3: the renderer
+still redraws the complete drawable, while Slice 5 consumes the row set for
+bounded row-geometry reuse. Accessibility snapshots now rebuild only changed
+rows (plus old/new cursor rows), and UIKit accessibility elements are
+coalesced only while VoiceOver is active. Effective rounded drawable geometry
+suppresses duplicate UIKit layout callbacks. Full reconstruction remains an
+exact benchmark control for the incremental accessibility path.
+
+A resolved-style dictionary cache was also prototyped and rejected. A
+same-signed-binary device development A/B preserved pixel hashes, uploads,
+allocations, frame counts, and damage counts, but increased median mesh time in
+all four sampled workloads: typing 483.8 to 497.4 ms (+2.8%), sparse 373.2 to
+379.3 ms (+1.6%), dense 83.5 to 88.4 ms (+5.9%), and DOOM Fire 704.6 to
+724.2 ms (+2.8%). End-to-end changes were neutral. Re-resolving these small
+styles is cheaper than Swift dictionary traffic, so the cache code and runtime
+switch were removed. These development captures came from a dirty worktree and
+are rejection evidence, not release benchmark artifacts.
+
 ### Slice 4: instanced Metal submission
 
 - Replace six-vertex quad expansion with packed rectangle and glyph instances.

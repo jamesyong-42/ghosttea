@@ -15,6 +15,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let cases: [String]
   let encodedGeometryReuseEnabled: Bool?
   let inPlaceRetainedStateCommitEnabled: Bool?
+  let incrementalAccessibilityEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -37,6 +38,12 @@ struct HarnessRenderBenchmarkCounters: Codable, Sendable {
   let bufferAllocations: UInt64
   let drawCalls: UInt64
   let commandBufferCommits: UInt64
+  let fullDamageSubmissions: Int
+  let rowDamageSubmissions: Int
+  let damagedRowsSubmitted: Int
+  let cursorDamageSubmissions: Int
+  let selectionDamageSubmissions: Int
+  let geometryDamageSubmissions: Int
   let residentAtlasBytes: UInt64
   let residentGlyphBytes: UInt64
 }
@@ -166,6 +173,8 @@ enum HarnessRenderBenchmark {
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           inPlaceRetainedStateCommitEnabled:
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
+          incrementalAccessibilityEnabled:
+            configuration.incrementalAccessibilityEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -183,6 +192,8 @@ enum HarnessRenderBenchmark {
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
           inPlaceRetainedStateCommitEnabled:
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
+          incrementalAccessibilityEnabled:
+            configuration.incrementalAccessibilityEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -220,6 +231,7 @@ enum HarnessRenderBenchmark {
     scale: Double,
     encodedGeometryReuseEnabled: Bool,
     inPlaceRetainedStateCommitEnabled: Bool,
+    incrementalAccessibilityEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -234,6 +246,7 @@ enum HarnessRenderBenchmark {
         codec: truffleStateCodec,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+        incrementalAccessibilityEnabled: incrementalAccessibilityEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -254,7 +267,8 @@ enum HarnessRenderBenchmark {
       let surface = try GhostteaTerminalMetalView(
         terminalFrame: .zero,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
-        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
+        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+        incrementalAccessibilityEnabled: incrementalAccessibilityEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -430,6 +444,7 @@ enum HarnessRenderBenchmark {
     codec: GhostteaStateCodec,
     encodedGeometryReuseEnabled: Bool,
     inPlaceRetainedStateCommitEnabled: Bool,
+    incrementalAccessibilityEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -441,7 +456,8 @@ enum HarnessRenderBenchmark {
     let surface = try GhostteaTerminalMetalView(
       terminalFrame: .zero,
       encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
-      inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
+      inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
+      incrementalAccessibilityEnabled: incrementalAccessibilityEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
@@ -1127,6 +1143,16 @@ enum HarnessRenderBenchmark {
       bufferAllocations: surfaces.reduce(0) { $0 &+ $1.diagnostics.bufferAllocations },
       drawCalls: surfaces.reduce(0) { $0 &+ $1.diagnostics.drawCalls },
       commandBufferCommits: surfaces.reduce(0) { $0 &+ $1.diagnostics.commandBufferCommits },
+      fullDamageSubmissions: surfaces.reduce(0) { $0 + $1.diagnostics.fullDamageSubmissions },
+      rowDamageSubmissions: surfaces.reduce(0) { $0 + $1.diagnostics.rowDamageSubmissions },
+      damagedRowsSubmitted: surfaces.reduce(0) { $0 + $1.diagnostics.damagedRowsSubmitted },
+      cursorDamageSubmissions: surfaces.reduce(0) { $0 + $1.diagnostics.cursorDamageSubmissions },
+      selectionDamageSubmissions: surfaces.reduce(0) {
+        $0 + $1.diagnostics.selectionDamageSubmissions
+      },
+      geometryDamageSubmissions: surfaces.reduce(0) {
+        $0 + $1.diagnostics.geometryDamageSubmissions
+      },
       residentAtlasBytes: surfaces.reduce(0) {
         $0 &+ UInt64(max(0, $1.diagnostics.residentAtlasBytes))
       },
@@ -1150,6 +1176,16 @@ enum HarnessRenderBenchmark {
       bufferAllocations: after.bufferAllocations &- before.bufferAllocations,
       drawCalls: after.drawCalls &- before.drawCalls,
       commandBufferCommits: after.commandBufferCommits &- before.commandBufferCommits,
+      fullDamageSubmissions: max(
+        0, after.fullDamageSubmissions - before.fullDamageSubmissions),
+      rowDamageSubmissions: max(0, after.rowDamageSubmissions - before.rowDamageSubmissions),
+      damagedRowsSubmitted: max(0, after.damagedRowsSubmitted - before.damagedRowsSubmitted),
+      cursorDamageSubmissions: max(
+        0, after.cursorDamageSubmissions - before.cursorDamageSubmissions),
+      selectionDamageSubmissions: max(
+        0, after.selectionDamageSubmissions - before.selectionDamageSubmissions),
+      geometryDamageSubmissions: max(
+        0, after.geometryDamageSubmissions - before.geometryDamageSubmissions),
       residentAtlasBytes: after.residentAtlasBytes,
       residentGlyphBytes: after.residentGlyphBytes
     )

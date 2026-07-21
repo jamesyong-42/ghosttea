@@ -7,6 +7,18 @@ import Testing
 @testable import GhostteaFrame
 @testable import GhostteaTerminal
 
+@Test func terminalDamageUnionsRowsAndPresentationCategories() {
+  var damage = GhostteaTerminalRenderDamage.rows([1, 2])
+  damage.formUnion(.cursor)
+  damage.formUnion(.selection)
+  damage.formUnion(.rows([2, 3]))
+
+  #expect(damage.rows == [1, 2, 3])
+  #expect(damage.flags.contains(.cursor))
+  #expect(damage.flags.contains(.selection))
+  #expect(!damage.flags.contains(.full))
+}
+
 private actor ResizeTestRecorder {
   var events: [String] = []
   var commits: [GhostteaResizeCommit] = []
@@ -808,7 +820,15 @@ private func productionFrame() async throws -> Data {
   descriptor.usage = [.renderTarget]
   let target = try #require(runtime.device.makeTexture(descriptor: descriptor))
 
-  let first = try renderer.render(state: state, target: target)
+  let submittedDamage = GhostteaTerminalRenderDamage(
+    flags: [.cursor, .selection],
+    rows: [1, 3]
+  )
+  let first = try renderer.render(
+    state: state,
+    target: target,
+    damage: submittedDamage
+  )
   let admitted = try renderer.render(state: state, target: target)
   let cached = try renderer.render(state: state, target: target)
   let blinkHidden = try renderer.render(
@@ -827,6 +847,7 @@ private func productionFrame() async throws -> Data {
 
   #expect(first.vertexUploadBytes > 0)
   #expect(first.bufferAllocationCount > 0)
+  #expect(first.damage == submittedDamage)
   #expect(admitted.vertexUploadBytes == first.vertexUploadBytes)
   #expect(admitted.bufferAllocationCount == first.bufferAllocationCount)
   #expect(cached.vertexUploadBytes == 0)

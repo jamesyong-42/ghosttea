@@ -33,6 +33,38 @@ struct GhostteaMetalSelection: Equatable, Sendable {
   let focus: GhostteaMetalCellPoint
 }
 
+struct GhostteaTerminalDamageFlags: OptionSet, Equatable, Sendable {
+  let rawValue: UInt8
+
+  static let full = Self(rawValue: 1 << 0)
+  static let cursor = Self(rawValue: 1 << 1)
+  static let selection = Self(rawValue: 1 << 2)
+  static let geometry = Self(rawValue: 1 << 3)
+  static let atlas = Self(rawValue: 1 << 4)
+}
+
+struct GhostteaTerminalRenderDamage: Equatable, Sendable {
+  var flags: GhostteaTerminalDamageFlags = []
+  var rows: Set<UInt16> = []
+
+  static let full = Self(flags: [.full])
+  static let cursor = Self(flags: [.cursor])
+  static let selection = Self(flags: [.selection])
+  static let geometry = Self(flags: [.geometry])
+  static let atlas = Self(flags: [.atlas])
+
+  static func rows(_ rows: some Sequence<UInt16>) -> Self {
+    Self(rows: Set(rows))
+  }
+
+  var isEmpty: Bool { flags.isEmpty && rows.isEmpty }
+
+  mutating func formUnion(_ other: Self) {
+    flags.formUnion(other.flags)
+    rows.formUnion(other.rows)
+  }
+}
+
 struct GhostteaMetalRenderResult: Equatable, Sendable {
   let width: Int
   let height: Int
@@ -55,6 +87,7 @@ struct GhostteaMetalDrawResult: Equatable, Sendable {
   let bufferAllocationCount: Int
   let drawCallCount: Int
   let commandBufferCount: Int
+  let damage: GhostteaTerminalRenderDamage
 }
 
 private struct GhostteaResolvedMetalStyle {
@@ -204,7 +237,8 @@ final class GhostteaMetalRenderer {
     contentInsets: GhostteaTerminalContentInsets = .zero,
     selection: GhostteaMetalSelection? = nil,
     focused: Bool = true,
-    cursorBlinkVisible: Bool = true
+    cursorBlinkVisible: Bool = true,
+    damage: GhostteaTerminalRenderDamage = .full
   ) throws -> GhostteaMetalRenderResult {
     let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
       pixelFormat: .rgba8Unorm,
@@ -226,7 +260,8 @@ final class GhostteaMetalRenderer {
       contentInsets: contentInsets,
       selection: selection,
       focused: focused,
-      cursorBlinkVisible: cursorBlinkVisible
+      cursorBlinkVisible: cursorBlinkVisible,
+      damage: damage
     )
     let pixels = readPixels(texture: target, width: width, height: height)
     let nonBackgroundPixelCount = countNonBackgroundPixels(
@@ -259,6 +294,7 @@ final class GhostteaMetalRenderer {
     selection: GhostteaMetalSelection? = nil,
     focused: Bool = true,
     cursorBlinkVisible: Bool = true,
+    damage: GhostteaTerminalRenderDamage = .full,
     presenting drawable: (any MTLDrawable)? = nil
   ) throws -> GhostteaMetalDrawResult {
     let width = target.width
@@ -379,7 +415,8 @@ final class GhostteaMetalRenderer {
       vertexUploadBytes: vertexUploadBytes,
       bufferAllocationCount: bufferAllocationCount,
       drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
-      commandBufferCount: 1
+      commandBufferCount: 1,
+      damage: damage
     )
   }
 

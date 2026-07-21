@@ -110,6 +110,9 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowRetainedStateCommitDifference) {
     delete configuration?.inPlaceRetainedStateCommitEnabled;
   }
+  if (options.allowIncrementalAccessibilityDifference) {
+    delete configuration?.incrementalAccessibilityEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,
@@ -185,7 +188,18 @@ export function validateComparableReports(baseline, candidate, options = {}) {
         issues.push(`${caseName} changed the ${key} correctness invariant`);
       }
     }
-    for (const key of ["acceptedFrames", "renderedFrames", "staleFrames", "fullRefreshRequests"]) {
+    for (const key of [
+      "acceptedFrames",
+      "renderedFrames",
+      "staleFrames",
+      "fullRefreshRequests",
+      "fullDamageSubmissions",
+      "rowDamageSubmissions",
+      "damagedRowsSubmitted",
+      "cursorDamageSubmissions",
+      "selectionDamageSubmissions",
+      "geometryDamageSubmissions",
+    ]) {
       const left = baselineCase.samples.map((sample) => sample.renderer?.[key]);
       const right = candidateCase.samples.map((sample) => sample.renderer?.[key]);
       if (JSON.stringify(left) !== JSON.stringify(right)) {

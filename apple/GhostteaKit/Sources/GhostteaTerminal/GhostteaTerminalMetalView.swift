@@ -19,6 +19,12 @@
     public let bufferAllocations: UInt64
     public let drawCalls: UInt64
     public let commandBufferCommits: UInt64
+    public let fullDamageSubmissions: Int
+    public let rowDamageSubmissions: Int
+    public let damagedRowsSubmitted: Int
+    public let cursorDamageSubmissions: Int
+    public let selectionDamageSubmissions: Int
+    public let geometryDamageSubmissions: Int
     public let lastError: String?
 
     init(
@@ -36,6 +42,12 @@
       bufferAllocations: UInt64 = 0,
       drawCalls: UInt64 = 0,
       commandBufferCommits: UInt64 = 0,
+      fullDamageSubmissions: Int = 0,
+      rowDamageSubmissions: Int = 0,
+      damagedRowsSubmitted: Int = 0,
+      cursorDamageSubmissions: Int = 0,
+      selectionDamageSubmissions: Int = 0,
+      geometryDamageSubmissions: Int = 0,
       lastError: String? = nil
     ) {
       self.acceptedFrames = acceptedFrames
@@ -52,12 +64,25 @@
       self.bufferAllocations = bufferAllocations
       self.drawCalls = drawCalls
       self.commandBufferCommits = commandBufferCommits
+      self.fullDamageSubmissions = fullDamageSubmissions
+      self.rowDamageSubmissions = rowDamageSubmissions
+      self.damagedRowsSubmitted = damagedRowsSubmitted
+      self.cursorDamageSubmissions = cursorDamageSubmissions
+      self.selectionDamageSubmissions = selectionDamageSubmissions
+      self.geometryDamageSubmissions = geometryDamageSubmissions
       self.lastError = lastError
     }
   }
 
   @MainActor
   public final class GhostteaTerminalMetalView: MTKView, MTKViewDelegate {
+    private struct EffectiveGeometry: Equatable {
+      let drawableSize: CGSize
+      let scale: CGFloat
+      let contentInsets: GhostteaTerminalContentInsets
+      let gridSize: GhostteaTerminalGridSize
+    }
+
     private struct PressedHardwareKey {
       let event: GhostteaHardwareKeyEvent
       let handled: Bool
@@ -148,7 +173,10 @@
     private let metalRuntime: GhostteaMetalRuntime
     private let encodedGeometryReuseEnabled: Bool
     private let inPlaceRetainedStateCommitEnabled: Bool
+    private let incrementalAccessibilityEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
+    private var pendingDamage = GhostteaTerminalRenderDamage.full
+    private var effectiveGeometry: EffectiveGeometry?
     private var awaitingMemoryPressureRefresh = false
     private var retainedState = RetainedTRF1State()
     private var terminalSelection: GhostteaMetalSelection?
@@ -219,12 +247,14 @@
     public init(
       terminalFrame: CGRect = .zero,
       encodedGeometryReuseEnabled: Bool = true,
-      inPlaceRetainedStateCommitEnabled: Bool = true
+      inPlaceRetainedStateCommitEnabled: Bool = true,
+      incrementalAccessibilityEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
       self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
+      self.incrementalAccessibilityEnabled = incrementalAccessibilityEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -270,6 +300,12 @@
         self,
         selector: #selector(applicationDidReceiveMemoryWarning),
         name: UIApplication.didReceiveMemoryWarningNotification,
+        object: nil
+      )
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(voiceOverStatusDidChange),
+        name: UIAccessibility.voiceOverStatusDidChangeNotification,
         object: nil
       )
     }
@@ -424,6 +460,8 @@
     @discardableResult
     public func apply(frame data: Data) throws -> Bool {
       do {
+        let previousCursor = retainedState.cursor
+        let previousScrollbar = retainedState.scrollbar
         let applyResult = try GhostteaPerformanceRecorder.shared.measure(
           .frameDecode, byteCount: data.count
         ) {
@@ -433,9 +471,13 @@
           )
         }
         switch applyResult {
-        case .applied(let fullSnapshot, _, _, _):
+        case .applied(let fullSnapshot, let changedRows, _, _):
           if fullSnapshot { awaitingMemoryPressureRefresh = false }
-          updateAccessibilitySnapshot()
+          updateAccessibilitySnapshot(
+            changedRows: changedRows,
+            forceFull: !incrementalAccessibilityEnabled || fullSnapshot
+              || previousScrollbar != retainedState.scrollbar
+          )
           if accessibilityPageScrollPending {
             accessibilityPageScrollPending = false
             UIAccessibility.post(
@@ -452,7 +494,11 @@
             acceptedFrames: diagnostics.acceptedFrames + 1,
             residentGlyphBytes: retainedState.residentGlyphPixelBytes,
             clearError: true)
-          requestEventDrivenDraw()
+          var damage =
+            fullSnapshot
+            ? GhostteaTerminalRenderDamage.full : GhostteaTerminalRenderDamage.rows(changedRows)
+          if previousCursor != retainedState.cursor { damage.formUnion(.cursor) }
+          requestEventDrivenDraw(damage: damage)
           return true
         case .stale:
           updateDiagnostics(staleFrames: diagnostics.staleFrames + 1)
@@ -490,11 +536,12 @@
     }
 
     public func clearSelection() {
+      guard absoluteSelection != nil || terminalSelection != nil else { return }
       absoluteSelection = nil
       terminalSelection = nil
       onSelectionChange?(nil)
       updateAccessibilitySnapshot()
-      requestEventDrivenDraw()
+      requestEventDrivenDraw(damage: .selection)
     }
 
     public var selection: GhostteaTerminalSelection? { absoluteSelection }
@@ -540,11 +587,21 @@
       resignFirstResponder()
     }
 
-    private func updateAccessibilitySnapshot() {
+    private func updateAccessibilitySnapshot(
+      changedRows: [UInt16] = [],
+      forceFull: Bool = true
+    ) {
       let next = GhostteaPerformanceRecorder.shared.measure(.accessibilityUpdate) {
-        GhostteaTerminalAccessibilitySnapshot(
+        if forceFull {
+          return GhostteaTerminalAccessibilitySnapshot(
+            retainedState: retainedState,
+            selection: absoluteSelection
+          )
+        }
+        return accessibilitySnapshot.updating(
           retainedState: retainedState,
-          selection: absoluteSelection
+          selection: absoluteSelection,
+          changedRows: changedRows
         )
       }
       guard next != accessibilitySnapshot else { return }
@@ -555,7 +612,12 @@
     private func scheduleAccessibilityElementUpdate(force: Bool = false) {
       guard retainedState.sessionHandle != 0 else { return }
       accessibilityElementUpdateTask?.cancel()
-      guard UIAccessibility.isVoiceOverRunning && !force else {
+      guard UIAccessibility.isVoiceOverRunning else {
+        accessibilityElementUpdateTask = nil
+        accessibilityElements = nil
+        return
+      }
+      if force {
         rebuildAccessibilityElements()
         return
       }
@@ -564,6 +626,10 @@
         guard !Task.isCancelled else { return }
         self?.rebuildAccessibilityElements()
       }
+    }
+
+    @objc private func voiceOverStatusDidChange() {
+      scheduleAccessibilityElementUpdate(force: true)
     }
 
     private func rebuildAccessibilityElements() {
@@ -686,14 +752,14 @@
       guard terminalFocused != focused else { return }
       terminalFocused = focused
       cursorBlinkController.setFocused(focused)
-      requestEventDrivenDraw()
+      requestEventDrivenDraw(damage: .cursor)
     }
 
     public func setTerminalVisible(_ visible: Bool) {
       guard terminalVisible != visible else { return }
       terminalVisible = visible
       updateCursorBlinkSurfaceVisibility()
-      if visible { requestEventDrivenDraw() }
+      if visible { requestEventDrivenDraw(damage: .full) }
     }
 
     public func noteCursorActivity() {
@@ -994,11 +1060,12 @@
           rows: currentGridSize?.rows ?? UInt16(retainedState.rows.count)
         )
       else {
+        guard terminalSelection != nil else { return }
         terminalSelection = nil
-        requestEventDrivenDraw()
+        requestEventDrivenDraw(damage: .selection)
         return
       }
-      terminalSelection = GhostteaMetalSelection(
+      let next = GhostteaMetalSelection(
         anchor: GhostteaMetalCellPoint(
           column: viewport.anchor.column,
           row: viewport.anchor.row
@@ -1008,13 +1075,15 @@
           row: viewport.focus.row
         )
       )
-      requestEventDrivenDraw()
+      guard next != terminalSelection else { return }
+      terminalSelection = next
+      requestEventDrivenDraw(damage: .selection)
     }
 
     private func applyCursorBlinkVisibility(_ visible: Bool) {
       guard cursorBlinkVisible != visible else { return }
       cursorBlinkVisible = visible
-      requestEventDrivenDraw()
+      requestEventDrivenDraw(damage: .cursor)
     }
 
     public func prepareGPUResources() throws {
@@ -1039,7 +1108,7 @@
       guard gpuSuspended else { return }
       gpuSuspended = false
       updateCursorBlinkSurfaceVisibility()
-      requestEventDrivenDraw()
+      requestEventDrivenDraw(damage: .full)
     }
 
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -1052,6 +1121,7 @@
         return
       }
       do {
+        let submittedDamage = pendingDamage.isEmpty ? .full : pendingDamage
         let renderer = try renderer()
         let draw = try GhostteaPerformanceRecorder.shared.measure(.metalSubmission) {
           try renderer.render(
@@ -1062,9 +1132,15 @@
             selection: terminalSelection,
             focused: terminalFocused,
             cursorBlinkVisible: cursorBlinkVisible,
+            damage: submittedDamage,
             presenting: drawable
           )
         }
+        var completedDamage = draw.damage
+        if draw.atlasUpload.alphaReset || draw.atlasUpload.colorReset {
+          completedDamage.formUnion(.atlas)
+        }
+        pendingDamage = GhostteaTerminalRenderDamage()
         updateDiagnostics(
           renderedFrames: diagnostics.renderedFrames + 1,
           residentAtlasBytes: renderer.atlases.residentBytes,
@@ -1077,6 +1153,17 @@
           drawCalls: diagnostics.drawCalls &+ UInt64(max(0, draw.drawCallCount)),
           commandBufferCommits: diagnostics.commandBufferCommits
             &+ UInt64(max(0, draw.commandBufferCount)),
+          fullDamageSubmissions: diagnostics.fullDamageSubmissions
+            + (completedDamage.flags.contains(.full) ? 1 : 0),
+          rowDamageSubmissions: diagnostics.rowDamageSubmissions
+            + (completedDamage.rows.isEmpty ? 0 : 1),
+          damagedRowsSubmitted: diagnostics.damagedRowsSubmitted + completedDamage.rows.count,
+          cursorDamageSubmissions: diagnostics.cursorDamageSubmissions
+            + (completedDamage.flags.contains(.cursor) ? 1 : 0),
+          selectionDamageSubmissions: diagnostics.selectionDamageSubmissions
+            + (completedDamage.flags.contains(.selection) ? 1 : 0),
+          geometryDamageSubmissions: diagnostics.geometryDamageSubmissions
+            + (completedDamage.flags.contains(.geometry) ? 1 : 0),
           clearError: true
         )
         _ = draw
@@ -1099,7 +1186,8 @@
       return renderer
     }
 
-    private func requestEventDrivenDraw() {
+    private func requestEventDrivenDraw(damage: GhostteaTerminalRenderDamage = .full) {
+      pendingDamage.formUnion(damage)
       guard !gpuSuspended, !awaitingMemoryPressureRefresh else { return }
       setNeedsDisplay()
     }
@@ -1110,10 +1198,30 @@
     }
 
     private func geometryDidChange() {
-      updateGridSize()
+      guard bounds.width > 0, bounds.height > 0 else { return }
+      let grid = GhostteaTerminalLayout.gridSize(
+        width: Float(bounds.width),
+        height: Float(bounds.height),
+        contentInsets: effectiveContentInsets()
+      )
+      let next = EffectiveGeometry(
+        drawableSize: CGSize(
+          width: drawableSize.width.rounded(),
+          height: drawableSize.height.rounded()
+        ),
+        scale: contentScaleFactor,
+        contentInsets: effectiveContentInsets(),
+        gridSize: grid
+      )
+      guard next != effectiveGeometry else { return }
+      effectiveGeometry = next
+      if grid != currentGridSize {
+        currentGridSize = grid
+        onGridSizeChange?(grid)
+      }
       updateMarkedTextOverlay()
       scheduleAccessibilityElementUpdate(force: true)
-      requestEventDrivenDraw()
+      requestEventDrivenDraw(damage: .geometry)
     }
 
     private func updateGridSize(notifyUnchanged: Bool = false) {
@@ -1170,6 +1278,12 @@
       bufferAllocations: UInt64? = nil,
       drawCalls: UInt64? = nil,
       commandBufferCommits: UInt64? = nil,
+      fullDamageSubmissions: Int? = nil,
+      rowDamageSubmissions: Int? = nil,
+      damagedRowsSubmitted: Int? = nil,
+      cursorDamageSubmissions: Int? = nil,
+      selectionDamageSubmissions: Int? = nil,
+      geometryDamageSubmissions: Int? = nil,
       lastError: String? = nil,
       clearError: Bool = false
     ) {
@@ -1189,6 +1303,14 @@
         bufferAllocations: bufferAllocations ?? diagnostics.bufferAllocations,
         drawCalls: drawCalls ?? diagnostics.drawCalls,
         commandBufferCommits: commandBufferCommits ?? diagnostics.commandBufferCommits,
+        fullDamageSubmissions: fullDamageSubmissions ?? diagnostics.fullDamageSubmissions,
+        rowDamageSubmissions: rowDamageSubmissions ?? diagnostics.rowDamageSubmissions,
+        damagedRowsSubmitted: damagedRowsSubmitted ?? diagnostics.damagedRowsSubmitted,
+        cursorDamageSubmissions: cursorDamageSubmissions ?? diagnostics.cursorDamageSubmissions,
+        selectionDamageSubmissions: selectionDamageSubmissions
+          ?? diagnostics.selectionDamageSubmissions,
+        geometryDamageSubmissions: geometryDamageSubmissions
+          ?? diagnostics.geometryDamageSubmissions,
         lastError: clearError ? nil : (lastError ?? diagnostics.lastError)
       )
     }

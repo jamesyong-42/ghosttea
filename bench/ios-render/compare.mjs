@@ -11,7 +11,7 @@ function option(name, fallback) {
 const positional = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
 if (positional.length !== 2) {
   console.error(
-    "Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path] [--allow-geometry-reuse-difference] [--allow-retained-state-commit-difference] [--allow-state-codec-difference]",
+    "Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path] [--allow-geometry-reuse-difference] [--allow-retained-state-commit-difference] [--allow-incremental-accessibility-difference] [--allow-state-codec-difference]",
   );
   process.exit(1);
 }
@@ -25,6 +25,9 @@ const issues = validateComparableReports(baseline, candidate, {
   allowGeometryReuseDifference: process.argv.includes("--allow-geometry-reuse-difference"),
   allowRetainedStateCommitDifference: process.argv.includes(
     "--allow-retained-state-commit-difference",
+  ),
+  allowIncrementalAccessibilityDifference: process.argv.includes(
+    "--allow-incremental-accessibility-difference",
   ),
   allowStateCodecDifference: process.argv.includes("--allow-state-codec-difference"),
 });

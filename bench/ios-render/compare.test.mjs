@@ -48,6 +48,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       cases: ["typing-1"],
       encodedGeometryReuseEnabled: true,
       inPlaceRetainedStateCommitEnabled: true,
+      incrementalAccessibilityEnabled: true,
       truffleStateCodec: "json",
     },
     runner: {
@@ -141,6 +142,24 @@ test("comparison allows only an explicit retained-state commit A/B difference", 
   assert.deepEqual(
     validateComparableReports(copied, inPlace, {
       allowRetainedStateCommitDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit incremental-accessibility A/B difference", () => {
+  const incremental = report();
+  const full = structuredClone(incremental);
+  full.config.incrementalAccessibilityEnabled = false;
+
+  assert.ok(
+    validateComparableReports(full, incremental).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(full, incremental, {
+      allowIncrementalAccessibilityDifference: true,
     }),
     [],
   );
