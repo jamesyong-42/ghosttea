@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
 import { TerminalSurface, type TerminalMenuAction } from "../TerminalSurface.js";
+import type { TerminalTheme } from "../renderers/types.js";
 import { useGhostteaRuntime } from "../context.js";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette.js";
 import { TERMINAL_THEMES } from "./themes.js";
@@ -73,6 +74,7 @@ export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
   sidebar?: ComponentType<{ workspace: GhostteaWorkspaceContext }>;
+  theme?: TerminalTheme;
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
@@ -168,6 +170,7 @@ interface SplitViewProps {
   workspaceActive: boolean;
   zoomedPaneId: string | null;
   platform: GhostteaWorkspacePlatform;
+  theme: TerminalTheme;
   onActivate: (paneId: string) => void;
   onRatio: (splitId: string, ratio: number) => void;
 }
@@ -178,6 +181,7 @@ function SplitView({
   workspaceActive,
   zoomedPaneId,
   platform,
+  theme,
   onActivate,
   onRatio,
 }: SplitViewProps) {
@@ -195,7 +199,7 @@ function SplitView({
       >
         <TerminalSurface
           session={node.session}
-          theme={TERMINAL_THEMES.midnight}
+          theme={theme}
           active={active}
           {...(platform.platform ? { platform: platform.platform } : {})}
           visible={workspaceActive}
@@ -230,7 +234,7 @@ function SplitView({
     <div ref={splitRef} className={`ghostty-split is-${node.axis}`} style={style as CSSProperties}>
       <SplitView
         key={node.first.id}
-        {...{ node: node.first, activePaneId, workspaceActive, zoomedPaneId, platform, onActivate, onRatio }}
+        {...{ node: node.first, activePaneId, workspaceActive, zoomedPaneId, platform, theme, onActivate, onRatio }}
       />
       <div
         className="ghostty-split-divider"
@@ -251,7 +255,7 @@ function SplitView({
       />
       <SplitView
         key={node.second.id}
-        {...{ node: node.second, activePaneId, workspaceActive, zoomedPaneId, platform, onActivate, onRatio }}
+        {...{ node: node.second, activePaneId, workspaceActive, zoomedPaneId, platform, theme, onActivate, onRatio }}
       />
     </div>
   );
@@ -261,6 +265,7 @@ export function GhostteaWorkspace({
   platform,
   storageKey = DEFAULT_STORAGE_KEY,
   sidebar,
+  theme = TERMINAL_THEMES.midnight,
   onActiveSessionChange,
   createSplitSession,
   enableRemoteSessions = true,
@@ -605,6 +610,7 @@ export function GhostteaWorkspace({
               workspaceActive={active}
               zoomedPaneId={null}
               platform={platform}
+              theme={theme}
               onActivate={activatePane}
               onRatio={(splitId, ratio) =>
                 setLayout((current) =>
