@@ -294,6 +294,7 @@ enum HarnessRenderBenchmark {
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
       surface.includesSafeAreaInsets = false
+      surface.setTerminalFocused(false)
       return surface
     }
     layout(surfaces: surfaces, in: window.bounds)
@@ -502,6 +503,7 @@ enum HarnessRenderBenchmark {
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
     surface.includesSafeAreaInsets = false
+    surface.setTerminalFocused(false)
     layout(surfaces: [surface], in: window.bounds)
     window.addSubview(surface)
     defer {
