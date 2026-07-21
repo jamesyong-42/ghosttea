@@ -116,6 +116,11 @@ private struct HarnessTruffleDoomPayload: Sendable {
   let compact: Data
 }
 
+private struct HarnessTruffleDoomParity: Sendable {
+  let frames: [Data]
+  let fullFrame: Data
+}
+
 @MainActor
 enum HarnessRenderBenchmark {
   static let defaultCases = [
@@ -408,7 +413,7 @@ enum HarnessRenderBenchmark {
     validatePixels: Bool
   ) async throws -> HarnessRenderBenchmarkSample {
     let payloads = try makeTruffleDoomPayloads(frames: operationCount)
-    let parityFrames = try await validateTruffleDoomParity(payloads)
+    let parity = try await validateTruffleDoomParity(payloads)
     let runtime = try GhostteaRuntime()
     let replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: 84_001)
     let surface = try GhostteaTerminalMetalView(
@@ -436,7 +441,6 @@ enum HarnessRenderBenchmark {
     var trf1Bytes: UInt64 = 0
     var operationDurations: [UInt64] = []
     operationDurations.reserveCapacity(operationCount)
-    var finalFrame = Data()
     let elapsedStarted = DispatchTime.now().uptimeNanoseconds
 
     for (index, payload) in payloads.enumerated() {
@@ -452,7 +456,7 @@ enum HarnessRenderBenchmark {
       guard let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload else {
         throw HarnessRenderBenchmarkError.frameMissing
       }
-      guard frame == parityFrames[index] else {
+      guard frame == parity.frames[index] else {
         throw HarnessRenderBenchmarkError.invalidConfiguration(
           "selected Truffle codec produced different TRF1"
         )
@@ -463,7 +467,6 @@ enum HarnessRenderBenchmark {
       surface.draw(in: surface)
       sourceBytes &+= UInt64(encoded.count)
       trf1Bytes &+= UInt64(frame.count)
-      finalFrame = frame
       operationDurations.append(DispatchTime.now().uptimeNanoseconds &- started)
     }
     let elapsed = DispatchTime.now().uptimeNanoseconds &- elapsedStarted
@@ -478,7 +481,15 @@ enum HarnessRenderBenchmark {
     let sortedDurations = operationDurations.sorted()
 
     recorder.setEnabled(false)
-    let proof = validatePixels ? try GhostteaMetalProof.run(frame: finalFrame) : nil
+    let refresh = try await replica.refresh()
+    guard let fullFrame = refresh.effects.last(where: { $0.kind == .frameReady })?.payload,
+      fullFrame == parity.fullFrame
+    else {
+      throw HarnessRenderBenchmarkError.invalidConfiguration(
+        "selected Truffle codec produced different full-refresh TRF1"
+      )
+    }
+    let proof = validatePixels ? try GhostteaMetalProof.run(frame: fullFrame) : nil
     recorder.setEnabled(true)
 
     var failures: [String] = []
@@ -563,7 +574,7 @@ enum HarnessRenderBenchmark {
 
   private static func validateTruffleDoomParity(
     _ payloads: [HarnessTruffleDoomPayload]
-  ) async throws -> [Data] {
+  ) async throws -> HarnessTruffleDoomParity {
     let jsonReplica = try GhostteaLogicalReplica(runtime: GhostteaRuntime(), sessionHandle: 84_001)
     let compactReplica = try GhostteaLogicalReplica(
       runtime: GhostteaRuntime(), sessionHandle: 84_001)
@@ -592,7 +603,19 @@ enum HarnessRenderBenchmark {
       }
       frames.append(jsonFrame)
     }
-    return frames
+    let jsonRefresh = try await jsonReplica.refresh()
+    let compactRefresh = try await compactReplica.refresh()
+    guard
+      let jsonFullFrame = jsonRefresh.effects.last(where: { $0.kind == .frameReady })?.payload,
+      let compactFullFrame = compactRefresh.effects.last(where: { $0.kind == .frameReady })?
+        .payload,
+      jsonFullFrame == compactFullFrame
+    else {
+      throw HarnessRenderBenchmarkError.invalidConfiguration(
+        "JSON and compact Doom state produced different full-refresh TRF1"
+      )
+    }
+    return HarnessTruffleDoomParity(frames: frames, fullFrame: jsonFullFrame)
   }
 
   private static func feed(
