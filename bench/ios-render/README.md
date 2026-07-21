@@ -52,6 +52,42 @@ The comparator still enforces device, toolchain, workload, thermal, frame,
 TRF1, renderer, and pixel invariants. The flag permits only the encoded-geometry
 reuse setting to differ.
 
+The dedicated `doom-fire-truffle-1` case measures the production shared-session
+receive path from negotiated state bytes through the Swift decoder, native
+logical replica, TRF1 retained apply, and Metal submission. It generates the
+same deterministic 100-column fire state for both codecs. Before timing each
+sample, the device decodes both representations, asserts identical logical
+messages, and publishes both through independent replicas. Every incremental
+TRF1 frame and the final full-refresh TRF1 frame must be byte-identical. The
+normal final pixel proof remains mandatory.
+
+Capture the JSON control and compact candidate in fresh processes from the
+same signed binary:
+
+```sh
+npm run bench:ios-render -- \
+  --cases=doom-fire-truffle-1 \
+  --state-codec=json \
+  --output=bench/ios-render/results-doom-fire-truffle-json.json
+
+npm run bench:ios-render -- \
+  --no-build \
+  --cases=doom-fire-truffle-1 \
+  --state-codec=compact-json-v1 \
+  --output=bench/ios-render/results-doom-fire-truffle-compact.json
+
+npm run bench:ios-render:compare -- \
+  bench/ios-render/results-doom-fire-truffle-json.json \
+  bench/ios-render/results-doom-fire-truffle-compact.json \
+  --allow-state-codec-difference
+```
+
+The comparator permits only `truffleStateCodec` and source payload bytes to
+differ. Operation count, TRF1 bytes, final pixels, accepted/rendered frames,
+device, toolchain, pacing, and every other workload setting remain hard gates.
+The case is intentionally opt-in rather than part of the default VT renderer
+matrix.
+
 Capture the baseline from a clean tracked worktree with Low Power Mode off and
 nominal thermal state. Keep the same device, iOS/Xcode version, refresh-rate
 setting, cases, scale, warmups, repetitions, and cooldown for the candidate.

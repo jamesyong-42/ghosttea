@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** clean physical-device baseline complete; optimization 1 accepted
+**Status:** clean physical-device baseline complete; optimizations 1-2 accepted
 
 **Recorded:** 2026-07-20
 
@@ -35,7 +35,7 @@ acceptable only when it preserves:
 The current Apple hot path is:
 
 ```text
-Truffle JSON or SSH bytes
+Truffle negotiated state or SSH bytes
   -> shared Rust logical/terminal model
   -> TRF1 Data
   -> decode every section into Swift values
@@ -61,7 +61,7 @@ changes and removed neutral or harmful experiments:
 | A narrow second-sighting repeated-row geometry cache helped; persistent per-row GPU regions were neutral, regressed typing CPU, and raised memory risk.          | Start with a bounded CPU cache/admission policy. Do not begin with per-row persistent Metal allocations.                                                                                                                                    |
 | One-pass classification for simple rows removed expensive segmentation work while Unicode retained a correctness fallback.                                       | Swift receives already-shaped glyphs; its analogous hot loop is repeated style resolution, atlas lookup, quad expansion, and whole-row traversal. Preserve a simple linear path for small rows and add indexing only when density earns it. |
 | Clone-free replica patching and reusable contiguous buffers reduced apply/decode work.                                                                           | Remove the full `RetainedTRF1State` transactional copy only after all validation can complete before mutation; reuse decode and upload storage where ownership permits.                                                                     |
-| `compact-json-v1` cut truecolor source bytes 79%, decode time 82%, and end-to-end replica wall time 53% before later native gains.                               | The Apple compact-port client currently stays on legacy JSON. Add negotiated compact-state support and a Swift decoder before tuning around avoidable JSON volume.                                                                          |
+| `compact-json-v1` cut truecolor source bytes 79%, decode time 82%, and end-to-end replica wall time 53% before later native gains.                               | Negotiate the same codec on Apple and measure its Swift decoder on a physical device before tuning around avoidable JSON volume.                                                                                                             |
 | Color-only shape reuse, second-sighting shared row-shape caching, and adaptive TRF1 style indexing produced large native gains without changing wire/TRF1 bytes. | These shared Rust improvements benefit iOS after rebuilding the Apple native artifacts. Add Apple regression/performance coverage rather than duplicating them in Swift.                                                                    |
 
 ## Current Swift audit
@@ -165,19 +165,20 @@ eviction and the existing full-snapshot recovery transaction.
 
 ### Truffle replication
 
-The production Apple path dials the raw compact listener on port 9421. That
-listener currently returns no selected state codec, and Swift always decodes
-state messages with `JSONDecoder`. The Rust QUIC peer path can negotiate
-`compact-json-v1`, but that optimization does not currently reach the iOS app.
+The production Apple raw-stream client and compact listener now negotiate
+`compact-json-v1` through optional hello fields without changing the protocol
+major version. An old client that omits its offer receives JSON; an old server
+that omits its selection makes the new client fall back to JSON. Control
+messages remain JSON. The exact Swift tuple decoder is locked to a shared
+Rust-produced fixture covering snapshot, patch, control-changed, truecolor,
+Unicode/combining/wide text, null optionals, malformed flags/colors, and size
+limits.
 
-Extend the optional hello fields without changing protocol major version, teach
-the compact listener to negotiate the same codec, and implement the exact tuple
-schema in Swift. An old client continues to omit the offer and receives JSON;
-an old server omits the selection and the new client falls back to JSON. Golden
-fixtures must be generated from Rust and decoded in Swift for snapshot, patch,
-control-changed, truecolor, Unicode, null optionals, malformed tuples, and size
-limits. Source bytes, logical revisions, emitted TRF1 bytes, and final pixel
-hashes must match the JSON path.
+The physical-device `doom-fire-truffle-1` case proves the complete receive
+path. JSON and compact bytes decode to equal logical messages, then independent
+native replicas must emit byte-identical incremental and full-refresh TRF1;
+final pixels must also match. This makes state bytes and decoder time causal
+measurements rather than assuming semantic parity.
 
 After codec parity, evaluate reusable receive storage. `readExactly` currently
 copies a prefix into new `Data` and calls `removeFirst`; the attachment then
@@ -335,6 +336,33 @@ path stays available for future pixel and performance qualification.
 Exit gate: the iOS app and desktop demo remain attached to the same session;
 JSON and compact paths produce identical logical revisions, TRF1 bytes, and
 pixels; truecolor state bytes/decode time materially improve.
+
+Implementation status: optional codec negotiation, legacy fallback, the exact
+Swift compact decoder, shared Rust fixture, production decode/publication
+metrics, and loopback attachment coverage are complete. A same-signed-binary,
+fresh-process A/B at revision `1da30a3` ran five measured Release samples per
+codec on an iPhone 14 Pro (`iPhone15,2`, iOS 26.5.2, 120 Hz). Each sample
+processed 45 full-grid DOOM Fire logical updates with nominal thermal state,
+Low Power Mode off, no failures, and identical TRF1/pixel/frame invariants.
+
+| Metric | JSON | `compact-json-v1` | Result |
+| --- | ---: | ---: | ---: |
+| source state bytes | 27,923,919 | 5,545,858 | 80.1% lower |
+| state decode total | 646.27 ms | 290.59 ms | 55.0% faster |
+| active operation wall | 1,569.25 ms | 1,213.50 ms | 22.7% faster |
+| operation p50 | 34.60 ms | 26.71 ms | 22.8% faster |
+| operation p99 | 44.92 ms | 37.07 ms | 17.5% faster |
+| replica publication | 756.46 ms | 757.93 ms | neutral (+0.2%) |
+| TRF1 bytes | 5,712,984 | 5,712,984 | identical |
+| vertex uploads | 39.8 MiB | 39.8 MiB | identical |
+| resident atlas | 20 MiB | 20 MiB | identical |
+
+Bootstrap 95% intervals fully exclude zero for the payload, decode, active,
+p50, and p99 improvements. Replica publication, TRF1 apply, mesh build, Metal
+submission, buffer allocations, draw calls, atlas residency, and process
+footprint are neutral. Slice 2 is accepted. Cursor-based receive-buffer reuse
+remains a separate measured experiment; it is not needed to establish the
+codec win.
 
 ### Slice 3: retained-state and invalidation efficiency
 

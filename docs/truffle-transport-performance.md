@@ -159,9 +159,10 @@ rather than silently changing the existing desktop and Apple protocol.
 
 Desktop peers now advertise state-codec capabilities in the existing Truffle
 hello and select `compact-json-v1` only when both sides support it. Missing
-capability and selection fields mean legacy JSON, so older desktop peers and
-the Apple compact-stream client keep their existing contract without a
-protocol-version bump. The selected codec changes only live state messages;
+capability and selection fields mean legacy JSON, so older desktop peers keep
+their existing contract without a protocol-version bump. The Apple raw-stream
+client and listener now negotiate the same codec with legacy fallback. The
+selected codec changes only live state messages;
 control messages and the four-byte length framing remain unchanged.
 
 The compact representation preserves the logical model but serializes state
@@ -203,7 +204,14 @@ preserving patch ordering and resynchronization semantics.
 The benchmark now treats source wire bytes as a performance metric rather than
 a correctness invariant. TRF1 bytes, received message counts, and revision
 checksums remain invariant across JSON and compact runs. Rust unit tests,
-benchmark tests, Clippy, and all 137 Apple package tests passed.
+benchmark tests, Clippy, and all 142 Apple package tests passed. A physical
+iPhone 14 Pro A/B using the same signed binary and 45 deterministic DOOM Fire
+logical frames per sample measured 80.1% fewer state bytes, 55.0% less Swift
+decode time, and 22.7% less active end-to-end receive/render time. Replica
+publication, TRF1 bytes/apply, Metal work, and final pixels remained invariant;
+the full evidence and commands are recorded in
+`apple/GhostteaKit/Compatibility/swift-rendering-performance.md` and
+`bench/ios-render/README.md`.
 
 ## Retained optimization: reuse shaping for color-only rows
 
