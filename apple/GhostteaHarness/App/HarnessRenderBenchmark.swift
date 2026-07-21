@@ -17,7 +17,6 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let inPlaceRetainedStateCommitEnabled: Bool?
   let instancedSubmissionEnabled: Bool?
   let rowGeometryReuseEnabled: Bool?
-  let persistentSceneTextureEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -50,7 +49,6 @@ struct HarnessRenderBenchmarkCounters: Codable, Sendable {
   let rowCacheAdmissions: Int
   let rowCacheEvictions: Int
   let residentAtlasBytes: UInt64
-  let residentSceneTextureBytes: UInt64
   let residentGlyphBytes: UInt64
 }
 
@@ -181,7 +179,6 @@ enum HarnessRenderBenchmark {
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
-          persistentSceneTextureEnabled: configuration.persistentSceneTextureEnabled ?? false,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -201,7 +198,6 @@ enum HarnessRenderBenchmark {
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
-          persistentSceneTextureEnabled: configuration.persistentSceneTextureEnabled ?? false,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -241,7 +237,6 @@ enum HarnessRenderBenchmark {
     inPlaceRetainedStateCommitEnabled: Bool,
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
-    persistentSceneTextureEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -258,7 +253,6 @@ enum HarnessRenderBenchmark {
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
         rowGeometryReuseEnabled: rowGeometryReuseEnabled,
-        persistentSceneTextureEnabled: persistentSceneTextureEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -281,8 +275,7 @@ enum HarnessRenderBenchmark {
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
-        rowGeometryReuseEnabled: rowGeometryReuseEnabled,
-        persistentSceneTextureEnabled: persistentSceneTextureEnabled
+        rowGeometryReuseEnabled: rowGeometryReuseEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -460,7 +453,6 @@ enum HarnessRenderBenchmark {
     inPlaceRetainedStateCommitEnabled: Bool,
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
-    persistentSceneTextureEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -474,8 +466,7 @@ enum HarnessRenderBenchmark {
       encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
       inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
       instancedSubmissionEnabled: instancedSubmissionEnabled,
-      rowGeometryReuseEnabled: rowGeometryReuseEnabled,
-      persistentSceneTextureEnabled: persistentSceneTextureEnabled
+      rowGeometryReuseEnabled: rowGeometryReuseEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
@@ -1177,9 +1168,6 @@ enum HarnessRenderBenchmark {
       residentAtlasBytes: surfaces.reduce(0) {
         $0 &+ UInt64(max(0, $1.diagnostics.residentAtlasBytes))
       },
-      residentSceneTextureBytes: surfaces.reduce(0) {
-        $0 &+ UInt64(max(0, $1.diagnostics.residentSceneTextureBytes))
-      },
       residentGlyphBytes: surfaces.reduce(0) {
         $0 &+ UInt64(max(0, $1.diagnostics.residentGlyphBytes))
       }
@@ -1214,7 +1202,6 @@ enum HarnessRenderBenchmark {
       rowCacheAdmissions: max(0, after.rowCacheAdmissions - before.rowCacheAdmissions),
       rowCacheEvictions: max(0, after.rowCacheEvictions - before.rowCacheEvictions),
       residentAtlasBytes: after.residentAtlasBytes,
-      residentSceneTextureBytes: after.residentSceneTextureBytes,
       residentGlyphBytes: after.residentGlyphBytes
     )
   }

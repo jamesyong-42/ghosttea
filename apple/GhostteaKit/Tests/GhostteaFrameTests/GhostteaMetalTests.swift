@@ -727,9 +727,6 @@ private func productionFrame() async throws -> Data {
         "ghosttea_rectangle_vertex",
         "ghosttea_rectangle_instanced_vertex",
         "ghosttea_rectangle_fragment",
-        "ghosttea_scene_clear_fragment",
-        "ghosttea_scene_vertex",
-        "ghosttea_scene_fragment",
         "ghosttea_glyph_vertex",
         "ghosttea_glyph_instanced_vertex",
         "ghosttea_alpha_glyph_fragment",
@@ -873,14 +870,6 @@ private func productionFrame() async throws -> Data {
     encodedGeometryReuseEnabled: false,
     rowGeometryReuseEnabled: false
   )
-  let sceneRenderer = try GhostteaMetalRenderer(
-    runtime: runtime,
-    alphaAtlasSize: 512,
-    colorAtlasSize: 512,
-    encodedGeometryReuseEnabled: false,
-    rowGeometryReuseEnabled: true,
-    persistentSceneTextureEnabled: true
-  )
 
   let initialUpdate = try await terminal.feed(
     Data("row-0\r\nrow-1\r\nrow-2\r\nrow-3".utf8), render: .full)
@@ -904,15 +893,7 @@ private func productionFrame() async throws -> Data {
     height: 140,
     damage: damage
   )
-  var scene = try sceneRenderer.render(
-    state: state,
-    width: 420,
-    height: 140,
-    damage: damage
-  )
   #expect(cached.pixelHash == direct.pixelHash)
-  #expect(scene.pixelHash == direct.pixelHash)
-  #expect(scene.residentSceneTextureBytes == 420 * 140 * 4)
 
   var admissions = 0
   for text in ["A", "B"] {
@@ -923,7 +904,6 @@ private func productionFrame() async throws -> Data {
       return
     }
     damage = .rows(changedRows)
-    damage.formUnion(.cursor)
     cached = try cachedRenderer.render(
       state: state,
       width: 420,
@@ -936,43 +916,13 @@ private func productionFrame() async throws -> Data {
       height: 140,
       damage: damage
     )
-    scene = try sceneRenderer.render(
-      state: state,
-      width: 420,
-      height: 140,
-      damage: damage
-    )
     #expect(cached.pixelHash == direct.pixelHash)
     #expect(cached.visualFingerprint == direct.visualFingerprint)
-    #expect(scene.pixelHash == direct.pixelHash)
-    #expect(scene.visualFingerprint == direct.visualFingerprint)
     admissions += cached.rowCacheAdmissions
   }
 
   #expect(cached.rowCacheHits > 0)
   #expect(admissions > 0)
-
-  let selection = GhostteaMetalSelection(
-    anchor: GhostteaMetalCellPoint(column: 1, row: 0),
-    focus: GhostteaMetalCellPoint(column: 3, row: 2)
-  )
-  let resizedDirect = try directRenderer.render(
-    state: state,
-    width: 430,
-    height: 150,
-    selection: selection,
-    damage: .geometry
-  )
-  let resizedScene = try sceneRenderer.render(
-    state: state,
-    width: 430,
-    height: 150,
-    selection: selection,
-    damage: .geometry
-  )
-  #expect(resizedScene.pixelHash == resizedDirect.pixelHash)
-  #expect(resizedScene.visualFingerprint == resizedDirect.visualFingerprint)
-  #expect(resizedScene.residentSceneTextureBytes == 430 * 150 * 4)
 }
 
 @Test func metalRendererReusesEncodedGeometryUntilRenderInputsChange() async throws {
