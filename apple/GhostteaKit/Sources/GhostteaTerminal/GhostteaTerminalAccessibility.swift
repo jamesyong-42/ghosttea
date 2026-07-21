@@ -82,6 +82,9 @@ extension GhostteaTerminalAccessibilitySnapshot {
       impacted.insert(cursorRow)
     }
     guard !impacted.isEmpty else { return self }
+    guard impacted.count * 2 < retainedState.rows.count else {
+      return Self(retainedState: retainedState, selection: selection)
+    }
 
     var nextRows = rows
     for rowIndex in impacted {

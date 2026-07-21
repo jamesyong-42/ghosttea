@@ -412,10 +412,11 @@ submission succeeds. Renderer diagnostics expose each category and the number
 of damaged rows. This is intentionally bookkeeping in Slice 3: the renderer
 still redraws the complete drawable, while Slice 5 consumes the row set for
 bounded row-geometry reuse. Accessibility snapshots now rebuild only changed
-rows (plus old/new cursor rows), and UIKit accessibility elements are
-coalesced only while VoiceOver is active. Effective rounded drawable geometry
-suppresses duplicate UIKit layout callbacks. Full reconstruction remains an
-exact benchmark control for the incremental accessibility path.
+rows (plus old/new cursor rows), with a direct full-construction path when at
+least half the viewport is damaged. UIKit accessibility elements are coalesced
+only while VoiceOver is active. Effective rounded drawable geometry suppresses
+duplicate UIKit layout callbacks. Full reconstruction remains an exact
+benchmark control for the incremental accessibility path.
 
 A resolved-style dictionary cache was also prototyped and rejected. A
 same-signed-binary device development A/B preserved pixel hashes, uploads,
