@@ -232,46 +232,79 @@ struct GhostteaMetalUploadResult: Equatable, Sendable {
 final class GhostteaMetalAtlasSet {
   let runtime: GhostteaMetalRuntime
   let alpha: GhostteaMetalGlyphAtlas
-  let color: GhostteaMetalGlyphAtlas
+  private(set) var color: GhostteaMetalGlyphAtlas?
+  private let colorSize: Int
 
-  init(runtime: GhostteaMetalRuntime, alphaSize: Int = 2048, colorSize: Int = 2048) throws {
+  init(
+    runtime: GhostteaMetalRuntime,
+    alphaSize: Int = 2048,
+    colorSize: Int = 2048,
+    lazyColor: Bool = true
+  ) throws {
+    guard colorSize >= 3 else {
+      throw GhostteaMetalError.invalidAtlasSize("Ghosttea color glyph atlas", colorSize)
+    }
     self.runtime = runtime
+    self.colorSize = colorSize
+    color = nil
     alpha = try GhostteaMetalGlyphAtlas(
       runtime: runtime,
       format: .alpha8,
       size: alphaSize,
       label: "Ghosttea alpha glyph atlas"
     )
-    color = try GhostteaMetalGlyphAtlas(
-      runtime: runtime,
-      format: .rgba8Premultiplied,
-      size: colorSize,
-      label: "Ghosttea color glyph atlas"
-    )
+    if !lazyColor { color = try makeColorAtlas() }
   }
 
-  var residentBytes: Int { alpha.residentBytes + color.residentBytes }
+  var residentBytes: Int { alpha.residentBytes + (color?.residentBytes ?? 0) }
+  var colorGlyphCount: Int { color?.glyphCount ?? 0 }
+  var colorResetCount: Int { color?.resetCount ?? 0 }
+  var colorTexture: (any MTLTexture)? { color?.texture }
+
+  func location(for definition: TRF1GlyphDefinition) -> GhostteaAtlasLocation? {
+    switch definition.format {
+    case .alpha8: alpha.location(for: definition.id)
+    case .rgba8Premultiplied: color?.location(for: definition.id)
+    }
+  }
 
   func synchronize(visible definitions: [TRF1GlyphDefinition]) throws -> GhostteaMetalUploadResult {
     let alphaDefinitions = definitions.filter { $0.format == .alpha8 }
     let colorDefinitions = definitions.filter { $0.format == .rgba8Premultiplied }
     let alphaReset = try alpha.needsReset(for: alphaDefinitions)
-    let colorReset = try color.needsReset(for: colorDefinitions)
+    let colorAtlas = try colorDefinitions.isEmpty ? color : ensureColorAtlas()
+    let colorReset = try colorAtlas?.needsReset(for: colorDefinitions) ?? false
     if alphaReset { alpha.reset() }
-    if colorReset { color.reset() }
-    let before = alpha.uploadedBytes + color.uploadedBytes
+    if colorReset { colorAtlas?.reset() }
+    let before = alpha.uploadedBytes + (colorAtlas?.uploadedBytes ?? 0)
     for definition in alphaDefinitions.sorted(by: { $0.id < $1.id }) {
       try alpha.upload(definition)
     }
     for definition in colorDefinitions.sorted(by: { $0.id < $1.id }) {
-      try color.upload(definition)
+      try colorAtlas?.upload(definition)
     }
     return GhostteaMetalUploadResult(
-      uploadedBytes: alpha.uploadedBytes + color.uploadedBytes - before,
+      uploadedBytes: alpha.uploadedBytes + (colorAtlas?.uploadedBytes ?? 0) - before,
       alphaGlyphCount: alpha.glyphCount,
-      colorGlyphCount: color.glyphCount,
+      colorGlyphCount: colorAtlas?.glyphCount ?? 0,
       alphaReset: alphaReset,
       colorReset: colorReset
+    )
+  }
+
+  private func ensureColorAtlas() throws -> GhostteaMetalGlyphAtlas {
+    if let color { return color }
+    let color = try makeColorAtlas()
+    self.color = color
+    return color
+  }
+
+  private func makeColorAtlas() throws -> GhostteaMetalGlyphAtlas {
+    try GhostteaMetalGlyphAtlas(
+      runtime: runtime,
+      format: .rgba8Premultiplied,
+      size: colorSize,
+      label: "Ghosttea color glyph atlas"
     )
   }
 }

@@ -50,6 +50,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       inPlaceRetainedStateCommitEnabled: true,
       instancedSubmissionEnabled: true,
       rowGeometryReuseEnabled: true,
+      lazyColorAtlasEnabled: true,
       truffleStateCodec: "json",
     },
     runner: {
@@ -179,6 +180,24 @@ test("comparison allows only an explicit row-geometry reuse A/B difference", () 
   assert.deepEqual(
     validateComparableReports(direct, cached, {
       allowRowGeometryReuseDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit lazy color-atlas A/B difference", () => {
+  const lazy = report();
+  const eager = structuredClone(lazy);
+  eager.config.lazyColorAtlasEnabled = false;
+
+  assert.ok(
+    validateComparableReports(eager, lazy).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(eager, lazy, {
+      allowLazyColorAtlasDifference: true,
     }),
     [],
   );

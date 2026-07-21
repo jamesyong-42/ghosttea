@@ -116,6 +116,9 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowRowGeometryReuseDifference) {
     delete configuration?.rowGeometryReuseEnabled;
   }
+  if (options.allowLazyColorAtlasDifference) {
+    delete configuration?.lazyColorAtlasEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

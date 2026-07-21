@@ -1041,21 +1041,78 @@ private func productionFrame() async throws -> Data {
 
   let first = try atlases.synchronize(visible: [color, alpha])
   let second = try atlases.synchronize(visible: [alpha, color])
+  let colorAtlas = try #require(atlases.color)
 
   #expect(atlases.alpha.texture.pixelFormat == .r8Unorm)
-  #expect(atlases.color.texture.pixelFormat == .rgba8Unorm)
+  #expect(colorAtlas.texture.pixelFormat == .rgba8Unorm)
   #expect(
     atlases.alpha.location(for: 1)
       == GhostteaAtlasLocation(x: 1, y: 1, width: 2, height: 2, atlasSize: 8)
   )
   #expect(
-    atlases.color.location(for: 2)
+    colorAtlas.location(for: 2)
       == GhostteaAtlasLocation(x: 1, y: 1, width: 2, height: 2, atlasSize: 8)
   )
   #expect(first.uploadedBytes == 20)
   #expect(second.uploadedBytes == 0)
   #expect(!first.alphaReset)
   #expect(!first.colorReset)
+}
+
+@Test func colorAtlasAllocatesOnlyWhenAColorGlyphBecomesVisible() throws {
+  let runtime = try GhostteaMetalRuntime()
+  let lazy = try GhostteaMetalAtlasSet(runtime: runtime, alphaSize: 8, colorSize: 8)
+
+  #expect(lazy.color == nil)
+  #expect(lazy.residentBytes == 64)
+  let alpha = try lazy.synchronize(visible: [glyph(id: 1)])
+  #expect(alpha.colorGlyphCount == 0)
+  #expect(lazy.color == nil)
+  #expect(lazy.residentBytes == 64)
+
+  let color = try lazy.synchronize(
+    visible: [glyph(id: 2, format: .rgba8Premultiplied)])
+  #expect(color.colorGlyphCount == 1)
+  #expect(lazy.color?.texture.pixelFormat == .rgba8Unorm)
+  #expect(lazy.residentBytes == 64 + 256)
+
+  let eager = try GhostteaMetalAtlasSet(
+    runtime: runtime, alphaSize: 8, colorSize: 8, lazyColor: false)
+  #expect(eager.color != nil)
+  #expect(eager.residentBytes == 64 + 256)
+}
+
+@Test func alphaOnlyRendererKeepsTheColorAtlasUnallocatedAndPixelExact() async throws {
+  let terminal = try GhostteaTerminal(
+    runtime: GhostteaRuntime(),
+    configuration: .init(sessionHandle: 914, columns: 20, rows: 4)
+  )
+  let update = try await terminal.feed(Data("alpha only".utf8), render: .full)
+  let frame = try #require(update.effects.first { $0.kind == .frameReady }?.payload)
+  var state = RetainedTRF1State()
+  _ = try state.apply(frame)
+  let runtime = try GhostteaMetalRuntime()
+  let lazy = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    lazyColorAtlasEnabled: true
+  )
+  let eager = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 512,
+    colorAtlasSize: 512,
+    lazyColorAtlasEnabled: false
+  )
+
+  let lazyResult = try lazy.render(state: state, width: 240, height: 90)
+  let eagerResult = try eager.render(state: state, width: 240, height: 90)
+
+  #expect(lazyResult.pixelHash == eagerResult.pixelHash)
+  #expect(lazyResult.visualFingerprint == eagerResult.visualFingerprint)
+  #expect(lazy.atlases.color == nil)
+  #expect(lazy.atlases.residentBytes == 512 * 512)
+  #expect(eager.atlases.residentBytes == 512 * 512 * 5)
 }
 
 @Test func metalAtlasResetsOnlyWhenTheVisibleSetFitsAnEmptyAtlas() throws {

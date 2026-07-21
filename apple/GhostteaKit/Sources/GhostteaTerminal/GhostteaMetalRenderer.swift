@@ -358,7 +358,8 @@ final class GhostteaMetalRenderer {
     colorAtlasSize: Int = 2048,
     encodedGeometryReuseEnabled: Bool = true,
     instancedSubmissionEnabled: Bool = true,
-    rowGeometryReuseEnabled: Bool = true
+    rowGeometryReuseEnabled: Bool = true,
+    lazyColorAtlasEnabled: Bool = true
   ) throws {
     self.runtime = runtime
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
@@ -368,7 +369,8 @@ final class GhostteaMetalRenderer {
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
       alphaSize: alphaAtlasSize,
-      colorSize: colorAtlasSize
+      colorSize: colorAtlasSize,
+      lazyColor: lazyColorAtlasEnabled
     )
     let library: any MTLLibrary
     do {
@@ -536,7 +538,7 @@ final class GhostteaMetalRenderer {
       atlasUpload = GhostteaMetalUploadResult(
         uploadedBytes: 0,
         alphaGlyphCount: atlases.alpha.glyphCount,
-        colorGlyphCount: atlases.color.glyphCount,
+        colorGlyphCount: atlases.colorGlyphCount,
         alphaReset: false,
         colorReset: false
       )
@@ -657,7 +659,7 @@ final class GhostteaMetalRenderer {
       selection: selection,
       focused: focused,
       alphaAtlasResetCount: atlases.alpha.resetCount,
-      colorAtlasResetCount: atlases.color.resetCount
+      colorAtlasResetCount: atlases.colorResetCount
     )
   }
 
@@ -708,7 +710,7 @@ final class GhostteaMetalRenderer {
       contentInsets: contentInsets,
       selection: orderedSelection,
       alphaAtlasResetCount: atlases.alpha.resetCount,
-      colorAtlasResetCount: atlases.color.resetCount
+      colorAtlasResetCount: atlases.colorResetCount
     )
     let contextChanged = context != rowCacheContext
     if contextChanged {
@@ -849,8 +851,7 @@ final class GhostteaMetalRenderer {
         selectionContains(selection, row: rowIndex, column: Int(instance.cellStart))
         ? theme.selectionForeground
         : style.foreground
-      let atlas = definition.format == .alpha8 ? atlases.alpha : atlases.color
-      guard let location = atlas.location(for: definition.id) else {
+      guard let location = atlases.location(for: definition) else {
         throw TRF1DecodingError("visible glyph \(definition.id) is absent from its atlas")
       }
       if definition.format == .alpha8 {
@@ -1115,12 +1116,17 @@ final class GhostteaMetalRenderer {
       texture: atlases.alpha.texture,
       encoder: encoder
     )
-    drawGlyphs(
-      mesh.colorGlyphs,
-      pipeline: activeColorGlyphPipeline,
-      texture: atlases.color.texture,
-      encoder: encoder
-    )
+    if mesh.colorGlyphs != nil {
+      guard let colorTexture = atlases.colorTexture else {
+        throw GhostteaMetalError.textureUnavailable("Ghosttea color glyph atlas")
+      }
+      drawGlyphs(
+        mesh.colorGlyphs,
+        pipeline: activeColorGlyphPipeline,
+        texture: colorTexture,
+        encoder: encoder
+      )
+    }
     draw(mesh.decorations, pipeline: activeRectanglePipeline, encoder: encoder)
     if showCursor {
       draw(mesh.cursor, pipeline: activeRectanglePipeline, encoder: encoder)

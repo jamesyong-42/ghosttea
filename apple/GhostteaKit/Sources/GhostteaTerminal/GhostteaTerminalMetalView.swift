@@ -184,6 +184,7 @@
     private let inPlaceRetainedStateCommitEnabled: Bool
     private let instancedSubmissionEnabled: Bool
     private let rowGeometryReuseEnabled: Bool
+    private let lazyColorAtlasEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -259,7 +260,8 @@
       encodedGeometryReuseEnabled: Bool = true,
       inPlaceRetainedStateCommitEnabled: Bool = true,
       instancedSubmissionEnabled: Bool = true,
-      rowGeometryReuseEnabled: Bool = true
+      rowGeometryReuseEnabled: Bool = true,
+      lazyColorAtlasEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
@@ -267,6 +269,7 @@
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
       self.instancedSubmissionEnabled = instancedSubmissionEnabled
       self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
+      self.lazyColorAtlasEnabled = lazyColorAtlasEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1178,7 +1181,8 @@
         runtime: metalRuntime,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
-        rowGeometryReuseEnabled: rowGeometryReuseEnabled
+        rowGeometryReuseEnabled: rowGeometryReuseEnabled,
+        lazyColorAtlasEnabled: lazyColorAtlasEnabled
       )
       terminalRenderer = renderer
       updateDiagnostics(

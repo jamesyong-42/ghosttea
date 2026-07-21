@@ -17,6 +17,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let inPlaceRetainedStateCommitEnabled: Bool?
   let instancedSubmissionEnabled: Bool?
   let rowGeometryReuseEnabled: Bool?
+  let lazyColorAtlasEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -179,6 +180,7 @@ enum HarnessRenderBenchmark {
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
+          lazyColorAtlasEnabled: configuration.lazyColorAtlasEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -198,6 +200,7 @@ enum HarnessRenderBenchmark {
             configuration.inPlaceRetainedStateCommitEnabled ?? true,
           instancedSubmissionEnabled: configuration.instancedSubmissionEnabled ?? true,
           rowGeometryReuseEnabled: configuration.rowGeometryReuseEnabled ?? true,
+          lazyColorAtlasEnabled: configuration.lazyColorAtlasEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -237,6 +240,7 @@ enum HarnessRenderBenchmark {
     inPlaceRetainedStateCommitEnabled: Bool,
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
+    lazyColorAtlasEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -253,6 +257,7 @@ enum HarnessRenderBenchmark {
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
         rowGeometryReuseEnabled: rowGeometryReuseEnabled,
+        lazyColorAtlasEnabled: lazyColorAtlasEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -275,7 +280,8 @@ enum HarnessRenderBenchmark {
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
-        rowGeometryReuseEnabled: rowGeometryReuseEnabled
+        rowGeometryReuseEnabled: rowGeometryReuseEnabled,
+        lazyColorAtlasEnabled: lazyColorAtlasEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -453,6 +459,7 @@ enum HarnessRenderBenchmark {
     inPlaceRetainedStateCommitEnabled: Bool,
     instancedSubmissionEnabled: Bool,
     rowGeometryReuseEnabled: Bool,
+    lazyColorAtlasEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -466,7 +473,8 @@ enum HarnessRenderBenchmark {
       encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
       inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
       instancedSubmissionEnabled: instancedSubmissionEnabled,
-      rowGeometryReuseEnabled: rowGeometryReuseEnabled
+      rowGeometryReuseEnabled: rowGeometryReuseEnabled,
+      lazyColorAtlasEnabled: lazyColorAtlasEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false

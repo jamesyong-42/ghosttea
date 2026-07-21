@@ -11,7 +11,7 @@ function option(name, fallback) {
 const positional = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
 if (positional.length !== 2) {
   console.error(
-    "Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path] [--allow-geometry-reuse-difference] [--allow-retained-state-commit-difference] [--allow-instanced-submission-difference] [--allow-row-geometry-reuse-difference] [--allow-state-codec-difference]",
+    "Usage: node bench/ios-render/compare.mjs baseline.json candidate.json [--noise=3] [--json=path] [--allow-geometry-reuse-difference] [--allow-retained-state-commit-difference] [--allow-instanced-submission-difference] [--allow-row-geometry-reuse-difference] [--allow-lazy-color-atlas-difference] [--allow-state-codec-difference]",
   );
   process.exit(1);
 }
@@ -32,6 +32,7 @@ const issues = validateComparableReports(baseline, candidate, {
   allowRowGeometryReuseDifference: process.argv.includes(
     "--allow-row-geometry-reuse-difference",
   ),
+  allowLazyColorAtlasDifference: process.argv.includes("--allow-lazy-color-atlas-difference"),
   allowStateCodecDifference: process.argv.includes("--allow-state-codec-difference"),
 });
 if (issues.length > 0) {
