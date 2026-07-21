@@ -14,6 +14,7 @@ struct HarnessRenderBenchmarkConfiguration: Codable, Sendable {
   let scale: Double
   let cases: [String]
   let encodedGeometryReuseEnabled: Bool?
+  let inPlaceRetainedStateCommitEnabled: Bool?
   let truffleStateCodec: GhostteaStateCodec?
 }
 
@@ -163,6 +164,8 @@ enum HarnessRenderBenchmark {
           iteration: -1,
           scale: configuration.scale,
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
+          inPlaceRetainedStateCommitEnabled:
+            configuration.inPlaceRetainedStateCommitEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -178,6 +181,8 @@ enum HarnessRenderBenchmark {
           iteration: iteration,
           scale: configuration.scale,
           encodedGeometryReuseEnabled: configuration.encodedGeometryReuseEnabled ?? true,
+          inPlaceRetainedStateCommitEnabled:
+            configuration.inPlaceRetainedStateCommitEnabled ?? true,
           truffleStateCodec: configuration.truffleStateCodec ?? .json,
           pacingNanoseconds: framePacingNanoseconds,
           window: window,
@@ -214,6 +219,7 @@ enum HarnessRenderBenchmark {
     iteration: Int,
     scale: Double,
     encodedGeometryReuseEnabled: Bool,
+    inPlaceRetainedStateCommitEnabled: Bool,
     truffleStateCodec: GhostteaStateCodec,
     pacingNanoseconds: UInt64,
     window: UIWindow,
@@ -227,6 +233,7 @@ enum HarnessRenderBenchmark {
         operationCount: operationCount,
         codec: truffleStateCodec,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
+        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled,
         pacingNanoseconds: pacingNanoseconds,
         window: window,
         validatePixels: validatePixels
@@ -246,7 +253,8 @@ enum HarnessRenderBenchmark {
     let surfaces = try (0..<spec.surfaceCount).map { _ in
       let surface = try GhostteaTerminalMetalView(
         terminalFrame: .zero,
-        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+        encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
+        inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
       )
       surface.isPaused = true
       surface.enableSetNeedsDisplay = false
@@ -363,6 +371,19 @@ enum HarnessRenderBenchmark {
     {
       failures.append("TRF1 apply sample count does not match accepted frames")
     }
+    if case .feed = spec.kind {
+      for (metric, label) in [
+        (GhostteaPerformanceMetric.trf1FrameDecode, "TRF1 envelope decode"),
+        (.retainedStatePrepare, "retained-state prepare"),
+        (.retainedStateCommit, "retained-state commit"),
+      ] {
+        if performance.summaries.first(where: { $0.metric == metric })?.sampleCount
+          != expectedAccepted
+        {
+          failures.append("\(label) sample count does not match accepted frames")
+        }
+      }
+    }
     if performance.summaries.contains(where: { $0.droppedSampleCount != 0 }) {
       failures.append("one or more performance metrics dropped samples")
     }
@@ -408,6 +429,7 @@ enum HarnessRenderBenchmark {
     operationCount: Int,
     codec: GhostteaStateCodec,
     encodedGeometryReuseEnabled: Bool,
+    inPlaceRetainedStateCommitEnabled: Bool,
     pacingNanoseconds: UInt64,
     window: UIWindow,
     validatePixels: Bool
@@ -418,7 +440,8 @@ enum HarnessRenderBenchmark {
     let replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: 84_001)
     let surface = try GhostteaTerminalMetalView(
       terminalFrame: .zero,
-      encodedGeometryReuseEnabled: encodedGeometryReuseEnabled
+      encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
+      inPlaceRetainedStateCommitEnabled: inPlaceRetainedStateCommitEnabled
     )
     surface.isPaused = true
     surface.enableSetNeedsDisplay = false
@@ -507,6 +530,9 @@ enum HarnessRenderBenchmark {
     let expectedMetrics: [(GhostteaPerformanceMetric, String)] = [
       (.truffleStateDecode, "Truffle state decode"),
       (.truffleReplicaPublication, "Truffle replica publication"),
+      (.trf1FrameDecode, "TRF1 envelope decode"),
+      (.retainedStatePrepare, "retained-state prepare"),
+      (.retainedStateCommit, "retained-state commit"),
       (.frameDecode, "TRF1 apply"),
       (.metalSubmission, "Metal submission"),
     ]

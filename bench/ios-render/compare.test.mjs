@@ -47,6 +47,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       scale: 1,
       cases: ["typing-1"],
       encodedGeometryReuseEnabled: true,
+      inPlaceRetainedStateCommitEnabled: true,
       truffleStateCodec: "json",
     },
     runner: {
@@ -124,6 +125,24 @@ test("comparison allows only codec and source-byte differences for an explicit c
     validateComparableReports(json, compact, { allowStateCodecDifference: true }).includes(
       "typing-1 changed the trf1Bytes correctness invariant",
     ),
+  );
+});
+
+test("comparison allows only an explicit retained-state commit A/B difference", () => {
+  const inPlace = report();
+  const copied = structuredClone(inPlace);
+  copied.config.inPlaceRetainedStateCommitEnabled = false;
+
+  assert.ok(
+    validateComparableReports(copied, inPlace).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(copied, inPlace, {
+      allowRetainedStateCommitDifference: true,
+    }),
+    [],
   );
 });
 

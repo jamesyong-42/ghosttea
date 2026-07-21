@@ -34,6 +34,9 @@ export const METRICS = [
     ["truffleStateDecode", "Truffle state decode"],
     ["truffleReplicaPublication", "Truffle replica publication"],
     ["nativeFeed", "native feed"],
+    ["trf1FrameDecode", "TRF1 envelope decode"],
+    ["retainedStatePrepare", "retained-state prepare"],
+    ["retainedStateCommit", "retained-state commit"],
     ["textEngineLockWait", "text-engine wait"],
     ["textEngineLockHold", "text-engine hold"],
     ["frameDecode", "TRF1 retained apply"],
@@ -104,6 +107,9 @@ export const METRICS = [
 function comparableConfiguration(report, options = {}) {
   const configuration = structuredClone(report.config);
   if (options.allowGeometryReuseDifference) delete configuration?.encodedGeometryReuseEnabled;
+  if (options.allowRetainedStateCommitDifference) {
+    delete configuration?.inPlaceRetainedStateCommitEnabled;
+  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

@@ -1,6 +1,7 @@
 import Foundation
 import GhostteaCore
 import Testing
+
 @testable import GhostteaFrame
 @testable import GhostteaTerminal
 
@@ -57,7 +58,8 @@ private func framePayload(_ update: GhostteaUpdate) throws -> Data {
 private func accessibilityFixture(_ text: String = "hello") -> Data {
   let textBytes = Data(text.utf8)
   let payloadLength = 2 + 6 + textBytes.count
-  var data = Data(repeating: 0, count: TRF1.frameHeaderBytes + TRF1.sectionHeaderBytes + payloadLength)
+  var data = Data(
+    repeating: 0, count: TRF1.frameHeaderBytes + TRF1.sectionHeaderBytes + payloadLength)
   writeUInt32(TRF1.magic, to: &data, at: 0)
   writeUInt16(TRF1.protocolVersion, to: &data, at: 4)
   writeUInt64(7, to: &data, at: 8)
@@ -122,7 +124,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(frame.frameSequence == 3)
   #expect(frame.columns == 80)
   #expect(frame.rows == 24)
-  #expect(try decodeTRF1AccessibilityRows(frame.sections[0]) == [TRF1TextRow(row: 0, text: "hello")])
+  #expect(
+    try decodeTRF1AccessibilityRows(frame.sections[0]) == [TRF1TextRow(row: 0, text: "hello")])
 }
 
 @Test func decodesAProductionCoreFrameAndEveryEmittedSection() async throws {
@@ -152,7 +155,10 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(try !decodeTRF1StyleDefinitions(styleSection).isEmpty)
   #expect(try decodeTRF1RowReplacements(rowSection).contains { $0.text.contains("phase4 ✓ 界") })
   #expect(try decodeTRF1CursorState(cursorSection).y == 1)
-  #expect(try decodeTRF1AccessibilityRows(accessibilitySection).contains { $0.text.contains("phase4 ✓ 界") })
+  #expect(
+    try decodeTRF1AccessibilityRows(accessibilitySection).contains {
+      $0.text.contains("phase4 ✓ 界")
+    })
   let scrollbar = try decodeTRF1ScrollbarState(scrollbarSection)
   #expect(scrollbar.length == 30)
   #expect(scrollbar.length <= scrollbar.total)
@@ -299,7 +305,9 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   )
 
   var state = RetainedTRF1State()
-  guard case .applied(let fullSnapshot, let changedRows, let completedResync, _) = try state.apply(full) else {
+  guard
+    case .applied(let fullSnapshot, let changedRows, let completedResync, _) = try state.apply(full)
+  else {
     Issue.record("initial full frame was not applied")
     return
   }
@@ -310,7 +318,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(!state.glyphDefinitions.isEmpty)
   #expect(!state.styleDefinitions.isEmpty)
 
-  guard case .applied(let nextWasFull, let nextChangedRows, _, _) = try state.apply(incremental) else {
+  guard case .applied(let nextWasFull, let nextChangedRows, _, _) = try state.apply(incremental)
+  else {
     Issue.record("next incremental frame was not applied")
     return
   }
@@ -319,6 +328,26 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(state.rows[1].text.contains("second ✓"))
   #expect(state.sequence == readUInt64(incremental, at: 40))
   #expect(try state.apply(incremental) == .stale)
+}
+
+@Test func retainedStateInPlaceAndCopyCommitsRemainExactlyEquivalent() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 911, sessionEpoch: 3, layoutEpoch: 7, columns: 80, rows: 12)
+  )
+  let full = try framePayload(await terminal.feed(Data("first\r\n".utf8), render: .full))
+  let second = try framePayload(await terminal.feed(Data("second ✓\r\n".utf8), render: .damage))
+  let third = try framePayload(await terminal.feed(Data("third 界\r\n".utf8), render: .damage))
+  let frames = [full, second, third]
+  var inPlace = RetainedTRF1State()
+  var copied = RetainedTRF1State()
+  for frame in frames {
+    let inPlaceResult = try inPlace.apply(frame, inPlaceCommitEnabled: true)
+    let copiedResult = try copied.apply(frame, inPlaceCommitEnabled: false)
+    #expect(inPlaceResult == copiedResult)
+    #expect(inPlace == copied)
+  }
 }
 
 @Test func retainedStateRequestsAndCompletesFullResynchronization() async throws {
@@ -341,7 +370,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(try state.apply(incremental) == .needsFullRefresh)
 
   let recovery = try framePayload(await terminal.refresh(.full))
-  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery) else {
+  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery)
+  else {
     Issue.record("full recovery frame was not applied")
     return
   }
@@ -358,7 +388,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
     runtime: runtime,
     configuration: .init(sessionHandle: 921, sessionEpoch: 1, columns: 80, rows: 10)
   )
-  let full = try framePayload(await terminal.feed(Data("memory pressure ✓\r\n".utf8), render: .full))
+  let full = try framePayload(
+    await terminal.feed(Data("memory pressure ✓\r\n".utf8), render: .full))
   let incremental = try framePayload(
     await terminal.feed(Data("incremental\r\n".utf8), render: .damage))
   var state = RetainedTRF1State()
@@ -377,7 +408,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   #expect(try state.apply(incremental) == .needsFullRefresh)
 
   let recovery = try framePayload(await terminal.refresh(.full))
-  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery) else {
+  guard case .applied(let fullSnapshot, _, let completedResync, _) = try state.apply(recovery)
+  else {
     Issue.record("memory-pressure recovery frame was not applied")
     return
   }
@@ -429,7 +461,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
     configuration: .init(sessionHandle: 94)
   )
   _ = try framePayload(await terminal.feed(Data("initial".utf8), render: .damage))
-  let incremental = try framePayload(await terminal.feed(Data(" incremental".utf8), render: .damage))
+  let incremental = try framePayload(
+    await terminal.feed(Data(" incremental".utf8), render: .damage))
   var state = RetainedTRF1State()
   #expect(try state.apply(incremental) == .needsFullRefresh)
   #expect(state.awaitingResync)
@@ -447,7 +480,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
     configuration: .init(sessionHandle: 95, sessionEpoch: 2, columns: 80, rows: 6)
   )
   let first = try framePayload(await firstTerminal.feed(Data("abcdefgh\r\n".utf8), render: .full))
-  let replacement = try framePayload(await replacementTerminal.feed(Data("x\r\n".utf8), render: .full))
+  let replacement = try framePayload(
+    await replacementTerminal.feed(Data("x\r\n".utf8), render: .full))
   let decodedReplacement = try decodeTRF1Frame(replacement)
   let replacementGlyphs = try decodeTRF1GlyphDefinitions(
     #require(decodedReplacement.sections.first { $0.kind == .glyphDefinitions })

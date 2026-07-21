@@ -147,6 +147,7 @@
 
     private let metalRuntime: GhostteaMetalRuntime
     private let encodedGeometryReuseEnabled: Bool
+    private let inPlaceRetainedStateCommitEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var awaitingMemoryPressureRefresh = false
     private var retainedState = RetainedTRF1State()
@@ -217,11 +218,13 @@
 
     public init(
       terminalFrame: CGRect = .zero,
-      encodedGeometryReuseEnabled: Bool = true
+      encodedGeometryReuseEnabled: Bool = true,
+      inPlaceRetainedStateCommitEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
       self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
+      self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -424,7 +427,10 @@
         let applyResult = try GhostteaPerformanceRecorder.shared.measure(
           .frameDecode, byteCount: data.count
         ) {
-          try retainedState.apply(data)
+          try retainedState.apply(
+            data,
+            inPlaceCommitEnabled: inPlaceRetainedStateCommitEnabled
+          )
         }
         switch applyResult {
         case .applied(let fullSnapshot, _, _, _):

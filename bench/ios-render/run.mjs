@@ -39,6 +39,7 @@ function parseArgs(argv) {
     build: true,
     allowUntracked: [],
     geometryReuse: true,
+    inPlaceRetainedStateCommit: true,
     stateCodec: "json",
   };
   for (const argument of argv) {
@@ -59,6 +60,12 @@ function parseArgs(argv) {
       if (!["json", "compact-json-v1"].includes(options.stateCodec)) {
         throw new Error("--state-codec must be json or compact-json-v1");
       }
+    } else if (argument.startsWith("--retained-state-commit=")) {
+      const value = argument.slice(24);
+      if (value !== "in-place" && value !== "copy") {
+        throw new Error("--retained-state-commit must be in-place or copy");
+      }
+      options.inPlaceRetainedStateCommit = value === "in-place";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -224,6 +231,7 @@ function main() {
   --scale=1           Operation-count multiplier
   --cases=list        Comma-separated benchmark cases
   --geometry-reuse=on Enable or disable encoded geometry reuse
+  --retained-state-commit=in-place  Use in-place or copy retained-state commit
   --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
@@ -281,6 +289,7 @@ function main() {
     scale: options.scale,
     cases: options.cases,
     encodedGeometryReuseEnabled: options.geometryReuse,
+    inPlaceRetainedStateCommitEnabled: options.inPlaceRetainedStateCommit,
     truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");

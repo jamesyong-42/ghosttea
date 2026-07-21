@@ -1,5 +1,6 @@
 import Foundation
 import GhostteaFrame
+import GhostteaPerformance
 
 struct RetainedTRF1Row: Equatable, Sendable {
   var text = ""
@@ -22,7 +23,29 @@ private enum RetainedTRF1Classification {
   case resync
 }
 
-struct RetainedTRF1State: Sendable {
+private enum RetainedTRF1Preparation {
+  case stale
+  case resync
+  case transaction(RetainedTRF1Transaction)
+}
+
+private struct RetainedTRF1Transaction {
+  let frame: TRF1Frame
+  let fullSnapshot: Bool
+  let resetCatalogs: Bool
+  let completedResync: Bool
+  let replacements: [TRF1RowReplacement]
+  let accessibilityByRow: [UInt16: String]
+  let accessibilityOnlyRows: [UInt16]
+  let glyphs: [TRF1GlyphDefinition]
+  let styles: [TRF1StyleDefinition]
+  let cursor: TRF1CursorState
+  let scrollbar: TRF1ScrollbarState?
+  let clipboardWrites: [String]
+  let changedRows: [UInt16]
+}
+
+struct RetainedTRF1State: Equatable, Sendable {
   private(set) var sessionHandle: UInt64 = 0
   private(set) var sessionEpoch: UInt64 = 0
   private(set) var layoutEpoch: UInt64 = 0
@@ -39,7 +62,8 @@ struct RetainedTRF1State: Sendable {
 
   var residentGlyphPixelBytes: Int {
     glyphDefinitions.values.reduce(into: 0) { total, definition in
-      total = total > Int.max - definition.pixels.count
+      total =
+        total > Int.max - definition.pixels.count
         ? Int.max
         : total + definition.pixels.count
     }
@@ -58,16 +82,48 @@ struct RetainedTRF1State: Sendable {
     return released
   }
 
-  mutating func apply(_ data: Data) throws -> RetainedTRF1ApplyResult {
+  mutating func apply(
+    _ data: Data,
+    inPlaceCommitEnabled: Bool = true
+  ) throws -> RetainedTRF1ApplyResult {
     do {
-      return try applyDecoded(try decodeTRF1Frame(data))
+      let recorder = GhostteaPerformanceRecorder.shared
+      let frame = try recorder.measure(.trf1FrameDecode, byteCount: data.count) {
+        try decodeTRF1Frame(data)
+      }
+      let preparation = try recorder.measure(.retainedStatePrepare) {
+        try prepare(frame)
+      }
+      switch preparation {
+      case .stale:
+        return .stale
+      case .resync:
+        awaitingResync = true
+        return .needsFullRefresh
+      case .transaction(let transaction):
+        recorder.measure(.retainedStateCommit) {
+          if inPlaceCommitEnabled {
+            commit(transaction)
+          } else {
+            var next = self
+            next.commit(transaction)
+            self = next
+          }
+        }
+        return .applied(
+          fullSnapshot: transaction.fullSnapshot,
+          changedRows: transaction.changedRows,
+          completedResync: transaction.completedResync,
+          clipboardWrites: transaction.clipboardWrites
+        )
+      }
     } catch {
       awaitingResync = true
       throw error
     }
   }
 
-  private mutating func applyDecoded(_ frame: TRF1Frame) throws -> RetainedTRF1ApplyResult {
+  private func prepare(_ frame: TRF1Frame) throws -> RetainedTRF1Preparation {
     if sessionHandle != 0 && frame.sessionHandle != sessionHandle {
       throw TRF1DecodingError("frame belongs to a different terminal session")
     }
@@ -76,16 +132,25 @@ struct RetainedTRF1State: Sendable {
     case .stale:
       return .stale
     case .resync:
-      awaitingResync = true
-      return .needsFullRefresh
+      return .resync
     case .accept:
       break
     }
 
-    guard let rowSection = frame.sections.first(where: { $0.kind == .rowReplacements }) else {
+    var sections: [TRF1SectionKind: TRF1Section] = [:]
+    var clipboardSections: [TRF1Section] = []
+    sections.reserveCapacity(frame.sections.count)
+    for section in frame.sections {
+      if section.kind == .clipboardWrite {
+        clipboardSections.append(section)
+      } else if sections[section.kind] == nil {
+        sections[section.kind] = section
+      }
+    }
+    guard let rowSection = sections[.rowReplacements] else {
       throw TRF1DecodingError("missing row replacement section")
     }
-    guard let cursorSection = frame.sections.first(where: { $0.kind == .cursorState }) else {
+    guard let cursorSection = sections[.cursorState] else {
       throw TRF1DecodingError("missing cursor section")
     }
     let fullRows = rowSection.flags & TRF1FrameFlags.fullSnapshot.rawValue != 0
@@ -93,94 +158,115 @@ struct RetainedTRF1State: Sendable {
       throw TRF1DecodingError("frame and row snapshot flags disagree")
     }
 
-    let replacements = try decodeTRF1RowReplacements(rowSection)
+    let decodedReplacements = try decodeTRF1RowReplacements(rowSection)
     let accessibilityRows =
-      try frame.sections.first(where: { $0.kind == .accessibilityText }).map(
+      try sections[.accessibilityText].map(
         decodeTRF1AccessibilityRows) ?? []
     let nextCursor = try decodeTRF1CursorState(cursorSection)
-    let glyphs =
-      try frame.sections.first(where: { $0.kind == .glyphDefinitions }).map(
-        decodeTRF1GlyphDefinitions) ?? []
-    let styles =
-      try frame.sections.first(where: { $0.kind == .styleDefinitions }).map(
-        decodeTRF1StyleDefinitions) ?? []
-    let nextScrollbar = try frame.sections.first(where: { $0.kind == .scrollbarState }).map(
-      decodeTRF1ScrollbarState)
-    let clipboardWrites = try frame.sections.filter { $0.kind == .clipboardWrite }.map(
-      decodeTRF1ClipboardWrite)
+    let glyphs = try sections[.glyphDefinitions].map(decodeTRF1GlyphDefinitions) ?? []
+    let styles = try sections[.styleDefinitions].map(decodeTRF1StyleDefinitions) ?? []
+    let nextScrollbar = try sections[.scrollbarState].map(decodeTRF1ScrollbarState)
+    let clipboardWrites = try clipboardSections.map(decodeTRF1ClipboardWrite)
 
-    var next = self
     let changedSession = sessionEpoch != 0 && frame.sessionEpoch != sessionEpoch
     let completingResync = awaitingResync
-    if changedSession || completingResync {
-      next.rows = []
-      next.glyphDefinitions = [:]
-      next.styleDefinitions = [:]
-    }
-    for definition in glyphs {
-      next.glyphDefinitions[definition.id] = definition
-    }
-    for definition in styles {
-      next.styleDefinitions[definition.id] = definition
-    }
-
-    if fullRows {
-      next.rows = Array(repeating: RetainedTRF1Row(), count: Int(frame.rows))
-    } else if next.rows.count != Int(frame.rows) {
+    if !fullRows && rows.count != Int(frame.rows) {
       throw TRF1DecodingError("incremental frame changed viewport row count")
     }
 
-    var changedRows: [UInt16] = []
-    changedRows.reserveCapacity(replacements.count)
     var accessibilityByRow: [UInt16: String] = [:]
     accessibilityByRow.reserveCapacity(accessibilityRows.count)
     for row in accessibilityRows {
-      guard Int(row.row) < next.rows.count else {
+      guard Int(row.row) < Int(frame.rows) else {
         throw TRF1DecodingError("accessibility row exceeds viewport")
       }
       guard accessibilityByRow.updateValue(row.text, forKey: row.row) == nil else {
         throw TRF1DecodingError("duplicate accessibility row")
       }
     }
-    for replacement in replacements {
-      guard Int(replacement.row) < next.rows.count else {
+
+    var acceptedReplacements: [TRF1RowReplacement] = []
+    acceptedReplacements.reserveCapacity(decodedReplacements.count)
+    var changedRows: [UInt16] = []
+    changedRows.reserveCapacity(decodedReplacements.count)
+    var revisions =
+      fullRows
+      ? Array(repeating: UInt64(0), count: Int(frame.rows))
+      : rows.map(\.revision)
+    for replacement in decodedReplacements {
+      guard Int(replacement.row) < revisions.count else {
         throw TRF1DecodingError("row replacement exceeds viewport")
       }
-      if replacement.revision < next.rows[Int(replacement.row)].revision {
+      if replacement.revision < revisions[Int(replacement.row)] {
         continue
       }
-      next.rows[Int(replacement.row)] = RetainedTRF1Row(
+      revisions[Int(replacement.row)] = replacement.revision
+      acceptedReplacements.append(replacement)
+      changedRows.append(replacement.row)
+    }
+    let changedRowSet = Set(changedRows)
+    let accessibilityOnlyRows = accessibilityByRow.keys.filter { !changedRowSet.contains($0) }
+
+    return .transaction(
+      RetainedTRF1Transaction(
+        frame: frame,
+        fullSnapshot: fullFrame,
+        resetCatalogs: changedSession || completingResync,
+        completedResync: completingResync,
+        replacements: acceptedReplacements,
+        accessibilityByRow: accessibilityByRow,
+        accessibilityOnlyRows: accessibilityOnlyRows,
+        glyphs: glyphs,
+        styles: styles,
+        cursor: nextCursor,
+        scrollbar: nextScrollbar,
+        clipboardWrites: clipboardWrites,
+        changedRows: changedRows
+      )
+    )
+  }
+
+  private mutating func commit(_ transaction: RetainedTRF1Transaction) {
+    let frame = transaction.frame
+    if transaction.resetCatalogs {
+      rows.removeAll(keepingCapacity: false)
+      glyphDefinitions.removeAll(keepingCapacity: false)
+      styleDefinitions.removeAll(keepingCapacity: false)
+    }
+    for definition in transaction.glyphs {
+      glyphDefinitions[definition.id] = definition
+    }
+    for definition in transaction.styles {
+      styleDefinitions[definition.id] = definition
+    }
+    if transaction.fullSnapshot {
+      rows = Array(repeating: RetainedTRF1Row(), count: Int(frame.rows))
+    }
+    for replacement in transaction.replacements {
+      rows[Int(replacement.row)] = RetainedTRF1Row(
         text: replacement.text,
-        accessibilityText: accessibilityByRow[replacement.row] ?? replacement.text,
+        accessibilityText: transaction.accessibilityByRow[replacement.row] ?? replacement.text,
         revision: replacement.revision,
         glyphs: replacement.glyphs,
         styles: replacement.styles
       )
-      changedRows.append(replacement.row)
     }
-    for (row, text) in accessibilityByRow where !changedRows.contains(row) {
-      next.rows[Int(row)].accessibilityText = text
+    for row in transaction.accessibilityOnlyRows {
+      rows[Int(row)].accessibilityText = transaction.accessibilityByRow[row]!
     }
 
-    next.sessionHandle = frame.sessionHandle
-    next.sessionEpoch = frame.sessionEpoch
-    next.layoutEpoch = frame.layoutEpoch
-    next.sequence = frame.frameSequence
-    next.terminalRevision = frame.terminalRevision
-    next.columns = frame.columns
-    next.cursor = nextCursor
-    next.mouseTracking = frame.flags.contains(.mouseTracking)
-    if let nextScrollbar {
-      next.scrollbar = nextScrollbar
+    sessionHandle = frame.sessionHandle
+    sessionEpoch = frame.sessionEpoch
+    layoutEpoch = frame.layoutEpoch
+    sequence = frame.frameSequence
+    terminalRevision = frame.terminalRevision
+    columns = frame.columns
+    cursor = transaction.cursor
+    mouseTracking = frame.flags.contains(.mouseTracking)
+    if let scrollbar = transaction.scrollbar {
+      self.scrollbar = scrollbar
     }
-    next.awaitingResync = false
-    self = next
-    return .applied(
-      fullSnapshot: fullFrame,
-      changedRows: changedRows,
-      completedResync: completingResync,
-      clipboardWrites: clipboardWrites
-    )
+    awaitingResync = false
   }
 
   private func classify(frame: TRF1Frame, full: Bool) -> RetainedTRF1Classification {
