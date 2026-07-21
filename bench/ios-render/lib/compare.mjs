@@ -110,9 +110,6 @@ function comparableConfiguration(report, options = {}) {
   if (options.allowRetainedStateCommitDifference) {
     delete configuration?.inPlaceRetainedStateCommitEnabled;
   }
-  if (options.allowIncrementalAccessibilityDifference) {
-    delete configuration?.incrementalAccessibilityEnabled;
-  }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {
     suite: report.suite,

@@ -40,7 +40,6 @@ function parseArgs(argv) {
     allowUntracked: [],
     geometryReuse: true,
     inPlaceRetainedStateCommit: true,
-    incrementalAccessibility: true,
     stateCodec: "json",
   };
   for (const argument of argv) {
@@ -67,12 +66,6 @@ function parseArgs(argv) {
         throw new Error("--retained-state-commit must be in-place or copy");
       }
       options.inPlaceRetainedStateCommit = value === "in-place";
-    } else if (argument.startsWith("--incremental-accessibility=")) {
-      const value = argument.slice(28);
-      if (value !== "on" && value !== "off") {
-        throw new Error("--incremental-accessibility must be on or off");
-      }
-      options.incrementalAccessibility = value === "on";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -239,7 +232,6 @@ function main() {
   --cases=list        Comma-separated benchmark cases
   --geometry-reuse=on Enable or disable encoded geometry reuse
   --retained-state-commit=in-place  Use in-place or copy retained-state commit
-  --incremental-accessibility=on  Use incremental or full accessibility snapshots
   --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
@@ -298,7 +290,6 @@ function main() {
     cases: options.cases,
     encodedGeometryReuseEnabled: options.geometryReuse,
     inPlaceRetainedStateCommitEnabled: options.inPlaceRetainedStateCommit,
-    incrementalAccessibilityEnabled: options.incrementalAccessibility,
     truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");

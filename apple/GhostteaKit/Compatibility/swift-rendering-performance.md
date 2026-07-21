@@ -1,6 +1,6 @@
 # Swift rendering and replication performance plan
 
-**Status:** Slice 3 underway; first three measured optimizations accepted
+**Status:** Slice 3 complete; Slice 4 next
 
 **Recorded:** 2026-07-20
 
@@ -411,12 +411,25 @@ geometry, and atlas damage from accepted frames and UIKit events until a Metal
 submission succeeds. Renderer diagnostics expose each category and the number
 of damaged rows. This is intentionally bookkeeping in Slice 3: the renderer
 still redraws the complete drawable, while Slice 5 consumes the row set for
-bounded row-geometry reuse. Accessibility snapshots now rebuild only changed
-rows (plus old/new cursor rows), with a direct full-construction path when at
-least half the viewport is damaged. UIKit accessibility elements are coalesced
-only while VoiceOver is active. Effective rounded drawable geometry suppresses
-duplicate UIKit layout callbacks. Full reconstruction remains an exact
-benchmark control for the incremental accessibility path.
+bounded row-geometry reuse. UIKit accessibility-element reconstruction is now
+coalesced only while VoiceOver is active, and effective rounded drawable
+geometry suppresses duplicate UIKit layout callbacks.
+
+Incremental accessibility-snapshot replacement was prototyped and rejected.
+The complete snapshot cost only 0.25--0.45 ms across 45--120 frames on the
+iPhone 14 Pro. Two clean same-binary five-sample A/B pairs disagreed on even
+the direction of the sparse/cursor/typing change, while dense and DOOM frames
+paid extra set/fallback overhead and no workload gained end-to-end time. The
+incremental state and benchmark switch were therefore removed; the simple
+linear snapshot remains, while the materially larger UIKit element tree is
+still demand-gated and coalesced for VoiceOver.
+
+Slice 3 is complete. Its retained-state optimization materially improves the
+targeted typing and sparse apply stages; damage is now losslessly available to
+later row-granular work; duplicate geometry and inactive-VoiceOver element
+work are suppressed; malformed-frame atomicity and every pixel invariant pass.
+No allocation or end-to-end win is claimed for the rejected accessibility and
+style-cache prototypes.
 
 A resolved-style dictionary cache was also prototyped and rejected. A
 same-signed-binary device development A/B preserved pixel hashes, uploads,

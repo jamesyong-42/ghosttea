@@ -350,33 +350,6 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   }
 }
 
-@Test func incrementalAccessibilitySnapshotMatchesFullReconstruction() async throws {
-  let runtime = try GhostteaRuntime()
-  let terminal = try GhostteaTerminal(
-    runtime: runtime,
-    configuration: .init(sessionHandle: 912, columns: 40, rows: 6)
-  )
-  let full = try framePayload(await terminal.feed(Data("first\r\nsecond".utf8), render: .full))
-  var state = RetainedTRF1State()
-  _ = try state.apply(full)
-  let initial = GhostteaTerminalAccessibilitySnapshot(retainedState: state, selection: nil)
-
-  let patch = try framePayload(
-    await terminal.feed(Data("\u{1b}[2;1Hchanged ✓".utf8), render: .damage)
-  )
-  guard case .applied(_, let changedRows, _, _) = try state.apply(patch) else {
-    Issue.record("incremental frame was not applied")
-    return
-  }
-  let incremental = initial.updating(
-    retainedState: state,
-    selection: nil,
-    changedRows: changedRows
-  )
-  #expect(
-    incremental == GhostteaTerminalAccessibilitySnapshot(retainedState: state, selection: nil))
-}
-
 @Test func retainedStateRequestsAndCompletesFullResynchronization() async throws {
   let runtime = try GhostteaRuntime()
   let terminal = try GhostteaTerminal(

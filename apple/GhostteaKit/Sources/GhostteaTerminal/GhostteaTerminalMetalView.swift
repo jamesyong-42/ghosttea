@@ -173,7 +173,6 @@
     private let metalRuntime: GhostteaMetalRuntime
     private let encodedGeometryReuseEnabled: Bool
     private let inPlaceRetainedStateCommitEnabled: Bool
-    private let incrementalAccessibilityEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -247,14 +246,12 @@
     public init(
       terminalFrame: CGRect = .zero,
       encodedGeometryReuseEnabled: Bool = true,
-      inPlaceRetainedStateCommitEnabled: Bool = true,
-      incrementalAccessibilityEnabled: Bool = true
+      inPlaceRetainedStateCommitEnabled: Bool = true
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
       self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
-      self.incrementalAccessibilityEnabled = incrementalAccessibilityEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -461,7 +458,6 @@
     public func apply(frame data: Data) throws -> Bool {
       do {
         let previousCursor = retainedState.cursor
-        let previousScrollbar = retainedState.scrollbar
         let applyResult = try GhostteaPerformanceRecorder.shared.measure(
           .frameDecode, byteCount: data.count
         ) {
@@ -473,11 +469,7 @@
         switch applyResult {
         case .applied(let fullSnapshot, let changedRows, _, _):
           if fullSnapshot { awaitingMemoryPressureRefresh = false }
-          updateAccessibilitySnapshot(
-            changedRows: changedRows,
-            forceFull: !incrementalAccessibilityEnabled || fullSnapshot
-              || previousScrollbar != retainedState.scrollbar
-          )
+          updateAccessibilitySnapshot()
           if accessibilityPageScrollPending {
             accessibilityPageScrollPending = false
             UIAccessibility.post(
@@ -587,21 +579,11 @@
       resignFirstResponder()
     }
 
-    private func updateAccessibilitySnapshot(
-      changedRows: [UInt16] = [],
-      forceFull: Bool = true
-    ) {
+    private func updateAccessibilitySnapshot() {
       let next = GhostteaPerformanceRecorder.shared.measure(.accessibilityUpdate) {
-        if forceFull {
-          return GhostteaTerminalAccessibilitySnapshot(
-            retainedState: retainedState,
-            selection: absoluteSelection
-          )
-        }
-        return accessibilitySnapshot.updating(
+        GhostteaTerminalAccessibilitySnapshot(
           retainedState: retainedState,
-          selection: absoluteSelection,
-          changedRows: changedRows
+          selection: absoluteSelection
         )
       }
       guard next != accessibilitySnapshot else { return }
