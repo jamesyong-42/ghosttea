@@ -14,10 +14,11 @@ This contract covers reconstructible terminal presentation memory owned by
 whole-process memory growth, jetsam, or an unbounded number of inactive
 sessions.
 
-One live surface currently owns two fixed-size Metal glyph atlases:
+One live surface owns one fixed-size atlas and may lazily allocate a second:
 
 - a 2,048-square `r8Unorm` alpha atlas (4 MiB); and
-- a 2,048-square `rgba8Unorm` color atlas (16 MiB).
+- a 2,048-square `rgba8Unorm` color atlas (16 MiB) only after a visible color
+  glyph is synchronized.
 
 TRF1 retained state also owns CPU-side glyph pixels, style definitions, and
 per-row glyph/style render records. These are authoritative only for drawing;
@@ -35,11 +36,12 @@ transaction on the main actor:
 3. Mark retained state as awaiting a full snapshot. Incremental frames cannot
    repopulate partially evicted catalogs and are classified as
    `needsFullRefresh`.
-4. Destroy the Metal renderer, pipelines, and both atlases. Resident atlas
-   bytes become zero immediately.
+4. Destroy the Metal renderer, pipelines, and every allocated atlas. Resident
+   atlas bytes become zero immediately.
 5. Ask the host for one full refresh and suppress event-driven drawing while
    that refresh is outstanding. This prevents a memory warning from
-   immediately reallocating the 20 MiB atlases.
+   immediately reallocating either the 4 MiB alpha atlas or an optional 16 MiB
+   color atlas.
 6. Apply the next valid full snapshot atomically, clear the resync state, and
    lazily recreate GPU resources on the subsequent draw.
 
@@ -139,7 +141,8 @@ it will not destroy a selected pane or active remote Truffle attachment.
 
 `GhostteaTerminalSurfaceDiagnostics` exposes presentation-only counters:
 
-- `residentAtlasBytes` is the current fixed GPU atlas allocation;
+- `residentAtlasBytes` is the current GPU atlas allocation (4 MiB for an
+  alpha-only surface and 20 MiB after color-glyph allocation);
 - `residentGlyphBytes` counts retained CPU glyph pixels;
 - `reconstructibleBytesEvicted` accumulates released glyph-pixel bytes;
 - `resourceEvictions` and `resourceRebuilds` count GPU transitions; and
@@ -153,7 +156,8 @@ those categories.
 The deterministic retained-state test proves that eviction preserves row text,
 rejects a subsequent incremental frame, and recovers only from a full frame.
 The iOS harness posts duplicate real UIKit memory-warning notifications after
-a live TRF1 render and requires the refresh request to remain coalesced:
+a live color-glyph TRF1 render and requires the refresh request to remain
+coalesced:
 
 ```text
 atlas:       20 MiB -> 0 -> 20 MiB

@@ -451,9 +451,10 @@ Store or external beta release candidate can be release-eligible.
 ## Memory-pressure recovery
 
 [`memory-pressure.md`](memory-pressure.md) defines the implemented
-presentation-cache transaction. A UIKit memory warning now releases the fixed
-20 MiB Metal atlases and CPU glyph/style render payloads, preserves readable
-row and accessibility text, enters full-resync state, and suppresses redraw
+presentation-cache transaction. A UIKit memory warning now releases the 4 MiB
+alpha atlas, the lazily allocated 16 MiB color atlas when present, and CPU
+glyph/style render payloads; it preserves readable row and accessibility text,
+enters full-resync state, and suppresses redraw
 until the host supplies a valid full snapshot. The production Truffle surface
 requests that snapshot from the desktop attachment; the direct SSH surface
 requests it from the local core. Recovery does not reconnect or replay remote

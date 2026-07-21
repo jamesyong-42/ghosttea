@@ -512,6 +512,22 @@ private func glyph(
   )
 }
 
+@Test func independentGlyphCatalogsMayReuseAnIDForDifferentPixels() {
+  let first = glyph(id: 42)
+  let second = TRF1GlyphDefinition(
+    id: first.id,
+    width: first.width,
+    height: first.height,
+    bearingX: first.bearingX,
+    bearingY: first.bearingY,
+    format: first.format,
+    pixels: Data(repeating: 0xff, count: first.pixels.count)
+  )
+
+  #expect(first.id == second.id)
+  #expect(first != second)
+}
+
 private func productionFrame() async throws -> Data {
   let runtime = try GhostteaRuntime()
   let terminal = try GhostteaTerminal(

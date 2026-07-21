@@ -1,8 +1,8 @@
 # Swift rendering and replication performance plan
 
-**Status:** Slice 5 complete; Slice 6 next
+**Status:** Slice 6 complete
 
-**Recorded:** 2026-07-20
+**Recorded:** 2026-07-20; Slice 6 updated 2026-07-21
 
 This document translates the retained desktop and native optimizations in
 [`docs/rendering-performance-audit.md`](../../../docs/rendering-performance-audit.md)
@@ -564,8 +564,72 @@ complete.
   ordering.
 
 Exit gate: one/four/eight visible surfaces remain within the whole-app memory
-policy, memory-warning recovery stays atomic, and batching shows a measured
-latency/energy benefit without starving a pane.
+policy and memory-warning recovery stays atomic. Retain a batching candidate
+only if it shows a measured latency/energy benefit without starving a pane.
+
+Implementation status: color-atlas allocation is now demand driven. Every
+renderer still creates its 2,048-square `r8Unorm` alpha atlas, but the
+2,048-square `rgba8Unorm` color atlas is absent until a visible color glyph is
+first synchronized. Diagnostics report the allocation that actually exists,
+and memory-warning teardown still destroys the renderer and every allocated
+atlas atomically. Alpha-only lazy/eager unit renders have identical pixels and
+fingerprints; a Unicode fixture proves that the color atlas appears when an
+emoji becomes visible.
+
+A clean same-signed-binary A/B at revision `0a4e5d0` ran five Release samples
+per path on the iPhone 14 Pro at 120 Hz. Accepted/rendered frames, TRF1 bytes,
+damage, uploads, allocations, draw calls, and final pixel proofs remained
+exact. Timings were neutral; the residency result was deterministic:
+
+| Workload | Eager -> lazy atlas residency | Process footprint |
+| --- | ---: | ---: |
+| typing | 20 -> 4 MiB (-80%) | -2.5%, inconclusive |
+| truecolor cells | 20 -> 4 MiB (-80%) | -1.4%, inconclusive |
+| DOOM Fire | 20 -> 4 MiB (-80%) | -0.9%, inconclusive |
+| Unicode with emoji | 20 -> 20 MiB | neutral |
+| four-surface scroll | 80 -> 16 MiB (-80%) | -4.2%, improved |
+| eight-surface scroll | 160 -> 32 MiB (-80%) | +0.8%, inconclusive |
+
+The lazy policy is accepted and enabled by default. It removes 64 MiB of
+declared atlas residency at four alpha-only surfaces and 128 MiB at eight
+without changing rendering work.
+
+A process-global atlas was deliberately not prototyped. TRF1 carries only a
+session-local `UInt32` glyph ID; it has no catalog namespace or stable content
+identity. A regression test constructs two valid independent definitions with
+the same ID and different pixels. Sharing by bare ID could therefore render
+the wrong glyph. A correct pool first requires a protocol contract for either
+an explicit catalog namespace plus generation or a collision-safe exact
+content key, together with cross-view atlas-reset invalidation and atomic
+memory-warning ownership. After lazy color allocation, the remaining fixed
+cost is 4 MiB of alpha atlas per visible surface (32 MiB at eight), so that
+protocol expansion is not justified by the current device budget.
+
+A display-linked multi-surface scheduler was also implemented and measured.
+The first prototype exposed a real interaction with Slice 4: attempting to
+encode a fourth surface before committing deadlocked on the three leased
+upload-arena slots. The corrected prototype bounded each command buffer to
+three surfaces and added a deterministic `1/3/4/8 -> 1/1/2/3` batching test.
+The final harness also disabled cursor blinking so immediate and scheduled
+paths rendered exactly the same scripted frames.
+
+The final clean same-binary five-sample A/B at revision `79844a6` passed every
+frame and pixel invariant, but rejected batching:
+
+| Workload | Commits | Active wall | Operation p50 | Operation p99 | GPU completion p99 | Footprint |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| typing | 120 -> 120 | +2.8%, inconclusive | +4.7%, inconclusive | -10.4%, inconclusive | neutral | -0.5%, neutral |
+| DOOM Fire | 180 -> 180 | -1.1%, inconclusive | +0.5%, inconclusive | +2.6%, inconclusive | neutral | neutral |
+| four-surface scroll | 240 -> 120 | +15.8% | +19.3% | +5.1% | +85.5% | -8.6% |
+| eight-surface scroll | 360 -> 135 | +19.2% | +22.2% | +8.6% | +95.6% | -10.4% |
+
+Batching reduced in-flight drawable/command-buffer footprint, but holding the
+first surfaces until a batch was complete delayed GPU work and made the later
+arena-lease waits part of the submission critical path. The scheduler and its
+runtime switches were removed in `b4fdbd9`; independent event-driven surface
+commits remain. Slice 6 is complete with lazy color allocation retained, shared
+atlas work gated on a future protocol identity, and the measured scheduler
+rejected.
 
 ## Explicit non-goals for the first pass
 
@@ -579,12 +643,13 @@ latency/energy benefit without starving a pane.
   Coalescing requires a protocol-aware snapshot/resync design and is a separate
   experiment.
 
-## Recommended first implementation
+## Retained configuration after Slice 6
 
-Begin with Slice 1 and Slice 2. The native changes are already measured, and
-compact state encoding removes work before it reaches Swift. In parallel within
-the baseline harness, add counters for the discarded `changedRows`, mesh build,
-Metal allocation/upload bytes, and atlas residency. Those numbers will decide
-whether Slice 3 or Slice 4 is the larger device-side win; current source review
-suggests both are substantial, with eager per-view color atlases the most urgent
-multi-pane memory issue.
+The production path now keeps compact Truffle state, in-place retained-state
+commit, packed Metal instancing with the bounded three-slot upload arena,
+second-sighting row-geometry reuse, event-driven independent surface commits,
+and lazy color-atlas allocation. Expanded vertices, copy commit, direct row
+geometry, and eager color allocation remain same-binary reference switches in
+the physical harness where they are still useful. Rejected UIKit snapshot,
+style-cache, persistent-scene, shared-atlas, and multi-surface batching code is
+not present in production.
