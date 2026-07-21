@@ -838,6 +838,15 @@ private func productionFrame() async throws -> Data {
   if state.cursor?.blinking == true {
     #expect(blinkHidden.drawCallCount == cached.drawCallCount - 1)
     #expect(blinkHidden.rectangleVertexCount == cached.rectangleVertexCount - 6)
+    let hiddenRenderer = try GhostteaMetalRenderer(
+      runtime: runtime, alphaAtlasSize: 512, colorAtlasSize: 512)
+    let hiddenFirst = try hiddenRenderer.render(
+      state: state,
+      target: target,
+      cursorBlinkVisible: false
+    )
+    #expect(hiddenFirst.bufferAllocationCount == first.bufferAllocationCount - 1)
+    #expect(hiddenFirst.vertexUploadBytes < first.vertexUploadBytes)
   }
   #expect(selected.vertexUploadBytes > 0)
   #expect(selected.bufferAllocationCount > 0)

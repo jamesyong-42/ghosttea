@@ -259,6 +259,9 @@ Cursor blink visibility is applied when encoding the cursor draw rather than
 being part of the geometry key. Cursor geometry remains pixel-identical and is
 still invalidated by cursor state, focus, viewport, theme, or frame changes, but
 the normal blink timer no longer rebuilds and uploads the entire terminal mesh.
+Blink-hidden one-off frames skip the cursor buffer unless the repeated geometry
+is being admitted to cache, so changing typing and scrolling workloads retain
+their original allocation counts.
 
 The first iPhone smoke reduced the scaled unchanged-repaint workload from about
 15 ms to 1.3 ms and eliminated measured mesh construction, vertex uploads, and

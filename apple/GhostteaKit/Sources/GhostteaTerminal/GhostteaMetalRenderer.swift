@@ -318,6 +318,17 @@ final class GhostteaMetalRenderer {
           byteCount: atlasUpload.uploadedBytes
         )
       }
+      let completedKey = geometryKey(
+        state: state,
+        width: width,
+        height: height,
+        scale: scale,
+        theme: theme,
+        contentInsets: contentInsets,
+        selection: selection,
+        focused: focused
+      )
+      let willAdmit = pendingGeometryKey == completedKey
       let mesh = try recorder.measure(.meshBuild) {
         try buildMesh(
           state: state,
@@ -331,7 +342,7 @@ final class GhostteaMetalRenderer {
         )
       }
       encodedMesh = try recorder.measure(.metalEncoding) {
-        let encodedMesh = try makeEncodedMesh(mesh)
+        let encodedMesh = try makeEncodedMesh(mesh, includeCursor: showCursor || willAdmit)
         try encode(
           mesh: encodedMesh,
           target: target,
@@ -341,17 +352,7 @@ final class GhostteaMetalRenderer {
         )
         return encodedMesh
       }
-      let completedKey = geometryKey(
-        state: state,
-        width: width,
-        height: height,
-        scale: scale,
-        theme: theme,
-        contentInsets: contentInsets,
-        selection: selection,
-        focused: focused
-      )
-      if pendingGeometryKey == completedKey {
+      if willAdmit {
         geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
         pendingGeometryKey = nil
       } else {
@@ -554,14 +555,16 @@ final class GhostteaMetalRenderer {
     return mesh
   }
 
-  private func makeEncodedMesh(_ mesh: GhostteaMetalMesh) throws -> GhostteaMetalEncodedMesh {
-    let arrays = [
+  private func makeEncodedMesh(
+    _ mesh: GhostteaMetalMesh,
+    includeCursor: Bool
+  ) throws -> GhostteaMetalEncodedMesh {
+    let staticArrays = [
       mesh.backgrounds,
       mesh.selection,
       mesh.alphaGlyphs,
       mesh.colorGlyphs,
       mesh.decorations,
-      mesh.cursor,
     ]
     return try GhostteaMetalEncodedMesh(
       backgrounds: makeBufferSlice(mesh.backgrounds, label: "backgrounds", stride: 6),
@@ -569,12 +572,13 @@ final class GhostteaMetalRenderer {
       alphaGlyphs: makeBufferSlice(mesh.alphaGlyphs, label: "alpha glyphs", stride: 8),
       colorGlyphs: makeBufferSlice(mesh.colorGlyphs, label: "color glyphs", stride: 8),
       decorations: makeBufferSlice(mesh.decorations, label: "decorations", stride: 6),
-      cursor: makeBufferSlice(mesh.cursor, label: "cursor", stride: 6),
+      cursor: includeCursor ? makeBufferSlice(mesh.cursor, label: "cursor", stride: 6) : nil,
       rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count
         + mesh.decorations.count + mesh.cursor.count) / 6,
       alphaGlyphVertexCount: mesh.alphaGlyphs.count / 8,
       colorGlyphVertexCount: mesh.colorGlyphs.count / 8,
-      uploadedBytes: arrays.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride }
+      uploadedBytes: (staticArrays.reduce(0) { $0 + $1.count }
+        + (includeCursor ? mesh.cursor.count : 0)) * MemoryLayout<Float>.stride
     )
   }
 
