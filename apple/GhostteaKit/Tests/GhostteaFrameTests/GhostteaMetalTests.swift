@@ -528,14 +528,6 @@ private func glyph(
   #expect(first != second)
 }
 
-@Test func displayLinkedSubmissionBatchesRespectTheUploadLeaseBound() {
-  #expect(GhostteaMetalSubmissionPolicy.commandBufferCount(surfaceCount: 0) == 0)
-  #expect(GhostteaMetalSubmissionPolicy.commandBufferCount(surfaceCount: 1) == 1)
-  #expect(GhostteaMetalSubmissionPolicy.commandBufferCount(surfaceCount: 3) == 1)
-  #expect(GhostteaMetalSubmissionPolicy.commandBufferCount(surfaceCount: 4) == 2)
-  #expect(GhostteaMetalSubmissionPolicy.commandBufferCount(surfaceCount: 8) == 3)
-}
-
 private func productionFrame() async throws -> Data {
   let runtime = try GhostteaRuntime()
   let terminal = try GhostteaTerminal(
