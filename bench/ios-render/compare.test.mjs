@@ -26,6 +26,7 @@ function sample(value = 100) {
       bufferAllocations: 60,
       drawCalls: 60,
       residentAtlasBytes: 20 * 1024 * 1024,
+      residentSceneTextureBytes: 0,
     },
     performance: {
       summaries: [
@@ -50,6 +51,7 @@ function report(values = [100, 101, 99, 102, 100]) {
       inPlaceRetainedStateCommitEnabled: true,
       instancedSubmissionEnabled: true,
       rowGeometryReuseEnabled: true,
+      persistentSceneTextureEnabled: false,
       truffleStateCodec: "json",
     },
     runner: {
@@ -179,6 +181,24 @@ test("comparison allows only an explicit row-geometry reuse A/B difference", () 
   assert.deepEqual(
     validateComparableReports(direct, cached, {
       allowRowGeometryReuseDifference: true,
+    }),
+    [],
+  );
+});
+
+test("comparison allows only an explicit persistent scene texture A/B difference", () => {
+  const direct = report();
+  const retainedScene = structuredClone(direct);
+  retainedScene.config.persistentSceneTextureEnabled = true;
+
+  assert.ok(
+    validateComparableReports(direct, retainedScene).includes(
+      "device, toolchain, suite, or workload configuration differs",
+    ),
+  );
+  assert.deepEqual(
+    validateComparableReports(direct, retainedScene, {
+      allowPersistentSceneTextureDifference: true,
     }),
     [],
   );

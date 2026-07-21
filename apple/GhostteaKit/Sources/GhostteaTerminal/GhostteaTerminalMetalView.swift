@@ -12,6 +12,7 @@
     public let resourceEvictions: Int
     public let resourceRebuilds: Int
     public let residentAtlasBytes: Int
+    public let residentSceneTextureBytes: Int
     public let residentGlyphBytes: Int
     public let reconstructibleBytesEvicted: Int
     public let vertexUploadBytes: UInt64
@@ -38,6 +39,7 @@
       resourceEvictions: Int = 0,
       resourceRebuilds: Int = 0,
       residentAtlasBytes: Int = 0,
+      residentSceneTextureBytes: Int = 0,
       residentGlyphBytes: Int = 0,
       reconstructibleBytesEvicted: Int = 0,
       vertexUploadBytes: UInt64 = 0,
@@ -63,6 +65,7 @@
       self.resourceEvictions = resourceEvictions
       self.resourceRebuilds = resourceRebuilds
       self.residentAtlasBytes = residentAtlasBytes
+      self.residentSceneTextureBytes = residentSceneTextureBytes
       self.residentGlyphBytes = residentGlyphBytes
       self.reconstructibleBytesEvicted = reconstructibleBytesEvicted
       self.vertexUploadBytes = vertexUploadBytes
@@ -184,6 +187,7 @@
     private let inPlaceRetainedStateCommitEnabled: Bool
     private let instancedSubmissionEnabled: Bool
     private let rowGeometryReuseEnabled: Bool
+    private let persistentSceneTextureEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
@@ -259,7 +263,8 @@
       encodedGeometryReuseEnabled: Bool = true,
       inPlaceRetainedStateCommitEnabled: Bool = true,
       instancedSubmissionEnabled: Bool = true,
-      rowGeometryReuseEnabled: Bool = true
+      rowGeometryReuseEnabled: Bool = true,
+      persistentSceneTextureEnabled: Bool = false
     ) throws {
       let runtime = try GhostteaMetalRuntime()
       metalRuntime = runtime
@@ -267,6 +272,7 @@
       self.inPlaceRetainedStateCommitEnabled = inPlaceRetainedStateCommitEnabled
       self.instancedSubmissionEnabled = instancedSubmissionEnabled
       self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
+      self.persistentSceneTextureEnabled = persistentSceneTextureEnabled
       super.init(frame: terminalFrame, device: runtime.device)
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
@@ -1141,6 +1147,7 @@
         updateDiagnostics(
           renderedFrames: diagnostics.renderedFrames + 1,
           residentAtlasBytes: renderer.atlases.residentBytes,
+          residentSceneTextureBytes: draw.residentSceneTextureBytes,
           vertexUploadBytes: diagnostics.vertexUploadBytes
             &+ UInt64(max(0, draw.vertexUploadBytes)),
           atlasUploadBytes: diagnostics.atlasUploadBytes
@@ -1178,12 +1185,14 @@
         runtime: metalRuntime,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
-        rowGeometryReuseEnabled: rowGeometryReuseEnabled
+        rowGeometryReuseEnabled: rowGeometryReuseEnabled,
+        persistentSceneTextureEnabled: persistentSceneTextureEnabled
       )
       terminalRenderer = renderer
       updateDiagnostics(
         resourceRebuilds: diagnostics.resourceRebuilds + 1,
-        residentAtlasBytes: renderer.atlases.residentBytes
+        residentAtlasBytes: renderer.atlases.residentBytes,
+        residentSceneTextureBytes: 0
       )
       return renderer
     }
@@ -1261,7 +1270,8 @@
       terminalRenderer = nil
       updateDiagnostics(
         resourceEvictions: diagnostics.resourceEvictions + 1,
-        residentAtlasBytes: 0
+        residentAtlasBytes: 0,
+        residentSceneTextureBytes: 0
       )
     }
 
@@ -1273,6 +1283,7 @@
       resourceEvictions: Int? = nil,
       resourceRebuilds: Int? = nil,
       residentAtlasBytes: Int? = nil,
+      residentSceneTextureBytes: Int? = nil,
       residentGlyphBytes: Int? = nil,
       reconstructibleBytesEvicted: Int? = nil,
       vertexUploadBytes: UInt64? = nil,
@@ -1300,6 +1311,8 @@
         resourceEvictions: resourceEvictions ?? diagnostics.resourceEvictions,
         resourceRebuilds: resourceRebuilds ?? diagnostics.resourceRebuilds,
         residentAtlasBytes: residentAtlasBytes ?? diagnostics.residentAtlasBytes,
+        residentSceneTextureBytes: residentSceneTextureBytes
+          ?? diagnostics.residentSceneTextureBytes,
         residentGlyphBytes: residentGlyphBytes ?? diagnostics.residentGlyphBytes,
         reconstructibleBytesEvicted: reconstructibleBytesEvicted
           ?? diagnostics.reconstructibleBytesEvicted,

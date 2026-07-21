@@ -42,6 +42,7 @@ function parseArgs(argv) {
     inPlaceRetainedStateCommit: true,
     instancedSubmission: true,
     rowGeometryReuse: true,
+    persistentSceneTexture: false,
     stateCodec: "json",
   };
   for (const argument of argv) {
@@ -80,6 +81,12 @@ function parseArgs(argv) {
         throw new Error("--row-geometry-reuse must be on or off");
       }
       options.rowGeometryReuse = value === "on";
+    } else if (argument.startsWith("--persistent-scene-texture=")) {
+      const value = argument.slice(27);
+      if (value !== "on" && value !== "off") {
+        throw new Error("--persistent-scene-texture must be on or off");
+      }
+      options.persistentSceneTexture = value === "on";
     } else if (argument === "--no-build") options.build = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
   }
@@ -248,6 +255,7 @@ function main() {
   --retained-state-commit=in-place  Use in-place or copy retained-state commit
   --instanced-submission=on  Use packed instances/arena or expanded vertex buffers
   --row-geometry-reuse=on  Enable or disable bounded damaged-row geometry reuse
+  --persistent-scene-texture=off  Enable or disable retained scene-band updates
   --state-codec=json  Truffle state codec: json or compact-json-v1
   --allow-untracked=  Comma-separated untracked-file exceptions
   --no-build          Reuse the existing signed Release app`);
@@ -308,6 +316,7 @@ function main() {
     inPlaceRetainedStateCommitEnabled: options.inPlaceRetainedStateCommit,
     instancedSubmissionEnabled: options.instancedSubmission,
     rowGeometryReuseEnabled: options.rowGeometryReuse,
+    persistentSceneTextureEnabled: options.persistentSceneTexture,
     truffleStateCodec: options.stateCodec,
   };
   const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64");

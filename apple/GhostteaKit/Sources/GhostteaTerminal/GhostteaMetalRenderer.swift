@@ -80,6 +80,7 @@ struct GhostteaMetalRenderResult: Equatable, Sendable {
   let rowCacheHits: Int
   let rowCacheAdmissions: Int
   let rowCacheEvictions: Int
+  let residentSceneTextureBytes: Int
   let residentBytes: Int
 }
 
@@ -96,6 +97,7 @@ struct GhostteaMetalDrawResult: Equatable, Sendable {
   let rowCacheHits: Int
   let rowCacheAdmissions: Int
   let rowCacheEvictions: Int
+  let residentSceneTextureBytes: Int
 }
 
 private struct GhostteaResolvedMetalStyle {
@@ -152,6 +154,20 @@ private struct GhostteaMetalRowCacheActivity {
   var hits = 0
   var admissions = 0
   var evictions = 0
+}
+
+private struct GhostteaMetalSceneContext: Equatable {
+  let sessionHandle: UInt64
+  let sessionEpoch: UInt64
+  let layoutEpoch: UInt64
+  let width: Int
+  let height: Int
+  let scale: Float
+  let theme: GhostteaMetalTheme
+  let contentInsets: GhostteaTerminalContentInsets
+  let selection: GhostteaMetalSelection?
+  let alphaAtlasResetCount: Int
+  let colorAtlasResetCount: Int
 }
 
 private struct GhostteaMetalRectangleInstance {
@@ -340,10 +356,13 @@ final class GhostteaMetalRenderer {
   private let instancedRectanglePipeline: any MTLRenderPipelineState
   private let instancedAlphaGlyphPipeline: any MTLRenderPipelineState
   private let instancedColorGlyphPipeline: any MTLRenderPipelineState
+  private let sceneClearPipeline: any MTLRenderPipelineState
+  private let scenePresentationPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
   private let encodedGeometryReuseEnabled: Bool
   private let instancedSubmissionEnabled: Bool
   private let rowGeometryReuseEnabled: Bool
+  private let persistentSceneTextureEnabled: Bool
   private let uploadArena: GhostteaMetalUploadArena
   private var geometryCache: GhostteaMetalGeometryCache?
   private var pendingGeometryKey: GhostteaMetalGeometryKey?
@@ -351,6 +370,10 @@ final class GhostteaMetalRenderer {
   private var rowCache: [Int: GhostteaMetalRowCacheEntry] = [:]
   private var pendingRowRevisions: [Int: UInt64] = [:]
   private var rowCacheBytes = 0
+  private var sceneTexture: (any MTLTexture)?
+  private var sceneContext: GhostteaMetalSceneContext?
+  private var sceneCursorRow: UInt16?
+  private var lastSceneAuxiliaryDrawCalls = 0
 
   init(
     runtime: GhostteaMetalRuntime,
@@ -358,12 +381,14 @@ final class GhostteaMetalRenderer {
     colorAtlasSize: Int = 2048,
     encodedGeometryReuseEnabled: Bool = true,
     instancedSubmissionEnabled: Bool = true,
-    rowGeometryReuseEnabled: Bool = true
+    rowGeometryReuseEnabled: Bool = true,
+    persistentSceneTextureEnabled: Bool = false
   ) throws {
     self.runtime = runtime
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
     self.instancedSubmissionEnabled = instancedSubmissionEnabled
     self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
+    self.persistentSceneTextureEnabled = persistentSceneTextureEnabled
     uploadArena = GhostteaMetalUploadArenaPool.shared.arena(for: runtime.device)
     atlases = try GhostteaMetalAtlasSet(
       runtime: runtime,
@@ -414,6 +439,9 @@ final class GhostteaMetalRenderer {
       fragment: "ghosttea_color_glyph_fragment",
       label: "Ghosttea instanced color glyph pipeline"
     )
+    sceneClearPipeline = try Self.makeSceneClearPipeline(runtime: runtime, library: library)
+    scenePresentationPipeline = try Self.makeScenePresentationPipeline(
+      runtime: runtime, library: library)
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .linear
     samplerDescriptor.magFilter = .linear
@@ -483,7 +511,8 @@ final class GhostteaMetalRenderer {
       rowCacheHits: draw.rowCacheHits,
       rowCacheAdmissions: draw.rowCacheAdmissions,
       rowCacheEvictions: draw.rowCacheEvictions,
-      residentBytes: atlases.residentBytes + pixels.count
+      residentSceneTextureBytes: draw.residentSceneTextureBytes,
+      residentBytes: atlases.residentBytes + draw.residentSceneTextureBytes + pixels.count
     )
   }
 
@@ -549,7 +578,13 @@ final class GhostteaMetalRenderer {
           target: target,
           theme: theme,
           showCursor: showCursor,
-          presenting: drawable
+          presenting: drawable,
+          state: state,
+          scale: scale,
+          contentInsets: contentInsets,
+          selection: selection,
+          damage: damage,
+          forceFullScene: false
         )
       }
     } else {
@@ -605,7 +640,13 @@ final class GhostteaMetalRenderer {
           target: target,
           theme: theme,
           showCursor: showCursor,
-          presenting: drawable
+          presenting: drawable,
+          state: state,
+          scale: scale,
+          contentInsets: contentInsets,
+          selection: selection,
+          damage: damage,
+          forceFullScene: atlasUpload.alphaReset || atlasUpload.colorReset
         )
         return encodedMesh
       }
@@ -625,12 +666,14 @@ final class GhostteaMetalRenderer {
       atlasUpload: atlasUpload,
       vertexUploadBytes: vertexUploadBytes,
       bufferAllocationCount: bufferAllocationCount,
-      drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
+      drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor)
+        + lastSceneAuxiliaryDrawCalls,
       commandBufferCount: 1,
       damage: damage,
       rowCacheHits: rowCacheActivity.hits,
       rowCacheAdmissions: rowCacheActivity.admissions,
-      rowCacheEvictions: rowCacheActivity.evictions
+      rowCacheEvictions: rowCacheActivity.evictions,
+      residentSceneTextureBytes: sceneTexture.map { $0.width * $0.height * 4 } ?? 0
     )
   }
 
@@ -1081,7 +1124,13 @@ final class GhostteaMetalRenderer {
     target: any MTLTexture,
     theme: GhostteaMetalTheme,
     showCursor: Bool,
-    presenting drawable: (any MTLDrawable)?
+    presenting drawable: (any MTLDrawable)?,
+    state: RetainedTRF1State,
+    scale: Float,
+    contentInsets: GhostteaTerminalContentInsets,
+    selection: GhostteaMetalSelection?,
+    damage: GhostteaTerminalRenderDamage,
+    forceFullScene: Bool
   ) throws {
     var uploadSubmitted = false
     defer {
@@ -1090,9 +1139,82 @@ final class GhostteaMetalRenderer {
     guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
       throw GhostteaMetalError.commandQueueUnavailable
     }
+
+    if persistentSceneTextureEnabled {
+      let scene = try persistentSceneTexture(matching: target)
+      let context = GhostteaMetalSceneContext(
+        sessionHandle: state.sessionHandle,
+        sessionEpoch: state.sessionEpoch,
+        layoutEpoch: state.layoutEpoch,
+        width: target.width,
+        height: target.height,
+        scale: scale,
+        theme: theme,
+        contentInsets: contentInsets,
+        selection: selection,
+        alphaAtlasResetCount: atlases.alpha.resetCount,
+        colorAtlasResetCount: atlases.color.resetCount
+      )
+      let update = sceneUpdate(
+        state: state,
+        target: scene,
+        scale: scale,
+        contentInsets: contentInsets,
+        selection: selection,
+        damage: damage,
+        context: context,
+        forceFull: forceFullScene
+      )
+      if let scissor = update.scissor {
+        try encodeTerminalPass(
+          mesh: mesh,
+          target: scene,
+          commandBuffer: commandBuffer,
+          theme: theme,
+          showCursor: showCursor,
+          loadAction: update.full ? .clear : .load,
+          scissor: update.full ? nil : scissor,
+          clearScissor: !update.full
+        )
+      }
+      try encodeScenePresentation(scene: scene, target: target, commandBuffer: commandBuffer)
+      lastSceneAuxiliaryDrawCalls = 1 + (update.scissor != nil && !update.full ? 1 : 0)
+      sceneContext = context
+      sceneCursorRow = state.cursor?.y
+    } else {
+      try encodeTerminalPass(
+        mesh: mesh,
+        target: target,
+        commandBuffer: commandBuffer,
+        theme: theme,
+        showCursor: showCursor,
+        loadAction: .clear,
+        scissor: nil,
+        clearScissor: false
+      )
+      lastSceneAuxiliaryDrawCalls = 0
+    }
+    try finish(
+      commandBuffer: commandBuffer,
+      mesh: mesh,
+      drawable: drawable,
+      uploadSubmitted: &uploadSubmitted
+    )
+  }
+
+  private func encodeTerminalPass(
+    mesh: GhostteaMetalEncodedMesh,
+    target: any MTLTexture,
+    commandBuffer: any MTLCommandBuffer,
+    theme: GhostteaMetalTheme,
+    showCursor: Bool,
+    loadAction: MTLLoadAction,
+    scissor: MTLScissorRect?,
+    clearScissor: Bool
+  ) throws {
     let descriptor = MTLRenderPassDescriptor()
     descriptor.colorAttachments[0].texture = target
-    descriptor.colorAttachments[0].loadAction = .clear
+    descriptor.colorAttachments[0].loadAction = loadAction
     descriptor.colorAttachments[0].storeAction = .store
     descriptor.colorAttachments[0].clearColor = MTLClearColor(
       red: Double(theme.background.red),
@@ -1104,6 +1226,22 @@ final class GhostteaMetalRenderer {
       throw GhostteaMetalError.renderTargetUnavailable
     }
     encoder.label = "Ghosttea terminal pass"
+    if let scissor { encoder.setScissorRect(scissor) }
+    if clearScissor {
+      var clear = GhostteaMetalRectangleInstance(
+        bounds: SIMD4<Float>(-1, -1, 1, 1),
+        color: SIMD4<Float>(
+          theme.background.red,
+          theme.background.green,
+          theme.background.blue,
+          theme.background.alpha
+        )
+      )
+      encoder.setRenderPipelineState(sceneClearPipeline)
+      encoder.setVertexBytes(
+        &clear, length: MemoryLayout<GhostteaMetalRectangleInstance>.stride, index: 0)
+      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: 1)
+    }
     let activeRectanglePipeline = mesh.instanced ? instancedRectanglePipeline : rectanglePipeline
     let activeAlphaGlyphPipeline = mesh.instanced ? instancedAlphaGlyphPipeline : alphaGlyphPipeline
     let activeColorGlyphPipeline = mesh.instanced ? instancedColorGlyphPipeline : colorGlyphPipeline
@@ -1126,6 +1264,33 @@ final class GhostteaMetalRenderer {
       draw(mesh.cursor, pipeline: activeRectanglePipeline, encoder: encoder)
     }
     encoder.endEncoding()
+  }
+
+  private func encodeScenePresentation(
+    scene: any MTLTexture,
+    target: any MTLTexture,
+    commandBuffer: any MTLCommandBuffer
+  ) throws {
+    let descriptor = MTLRenderPassDescriptor()
+    descriptor.colorAttachments[0].texture = target
+    descriptor.colorAttachments[0].loadAction = .dontCare
+    descriptor.colorAttachments[0].storeAction = .store
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+      throw GhostteaMetalError.renderTargetUnavailable
+    }
+    encoder.label = "Ghosttea scene presentation pass"
+    encoder.setRenderPipelineState(scenePresentationPipeline)
+    encoder.setFragmentTexture(scene, index: 0)
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+    encoder.endEncoding()
+  }
+
+  private func finish(
+    commandBuffer: any MTLCommandBuffer,
+    mesh: GhostteaMetalEncodedMesh,
+    drawable: (any MTLDrawable)?,
+    uploadSubmitted: inout Bool
+  ) throws {
     if GhostteaPerformanceRecorder.shared.isEnabled {
       let started = DispatchTime.now().uptimeNanoseconds
       commandBuffer.addCompletedHandler { _ in
@@ -1150,6 +1315,79 @@ final class GhostteaMetalRenderer {
     guard commandBuffer.status == .completed else {
       throw GhostteaMetalError.commandBufferFailed("Metal command did not complete")
     }
+  }
+
+  private func persistentSceneTexture(matching target: any MTLTexture) throws -> any MTLTexture {
+    if let sceneTexture,
+      sceneTexture.width == target.width,
+      sceneTexture.height == target.height,
+      sceneTexture.pixelFormat == target.pixelFormat
+    {
+      return sceneTexture
+    }
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: target.pixelFormat,
+      width: target.width,
+      height: target.height,
+      mipmapped: false
+    )
+    descriptor.storageMode = .private
+    descriptor.usage = [.renderTarget, .shaderRead]
+    guard let texture = runtime.device.makeTexture(descriptor: descriptor) else {
+      throw GhostteaMetalError.renderTargetUnavailable
+    }
+    texture.label = "Ghosttea persistent terminal scene"
+    sceneTexture = texture
+    sceneContext = nil
+    sceneCursorRow = nil
+    return texture
+  }
+
+  private func sceneUpdate(
+    state: RetainedTRF1State,
+    target: any MTLTexture,
+    scale: Float,
+    contentInsets: GhostteaTerminalContentInsets,
+    selection: GhostteaMetalSelection?,
+    damage: GhostteaTerminalRenderDamage,
+    context: GhostteaMetalSceneContext,
+    forceFull: Bool
+  ) -> (scissor: MTLScissorRect?, full: Bool) {
+    let full =
+      forceFull || sceneContext != context
+      || damage.flags.contains(.full)
+      || damage.flags.contains(.geometry)
+      || damage.flags.contains(.atlas)
+      || damage.flags.contains(.selection)
+    if full {
+      return (
+        MTLScissorRect(x: 0, y: 0, width: target.width, height: target.height), true
+      )
+    }
+    var rows = damage.rows
+    if damage.flags.contains(.cursor) {
+      if let sceneCursorRow { rows.insert(sceneCursorRow) }
+      if let cursor = state.cursor { rows.insert(cursor.y) }
+    }
+    guard let minimumRow = rows.min(), let maximumRow = rows.max() else {
+      return damage.isEmpty
+        ? (nil, false)
+        : (
+          MTLScissorRect(x: 0, y: 0, width: target.width, height: target.height), true
+        )
+    }
+    let first = max(0, Int(minimumRow) - 1)
+    let last = min(max(0, state.rows.count - 1), Int(maximumRow) + 1)
+    let origin = (Self.originY + contentInsets.top) * scale
+    let start = max(0, Int(floor(origin + Float(first) * Self.lineHeight * scale)))
+    let end = min(
+      target.height,
+      Int(ceil(origin + Float(last + 1) * Self.lineHeight * scale))
+    )
+    guard end > start else {
+      return (MTLScissorRect(x: 0, y: 0, width: target.width, height: target.height), true)
+    }
+    return (MTLScissorRect(x: 0, y: start, width: target.width, height: end - start), false)
   }
 
   private func draw(
@@ -1319,6 +1557,38 @@ final class GhostteaMetalRenderer {
       return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
     } catch {
       throw GhostteaMetalError.pipelineUnavailable("instanced glyph pipeline")
+    }
+  }
+
+  private static func makeSceneClearPipeline(
+    runtime: GhostteaMetalRuntime,
+    library: any MTLLibrary
+  ) throws -> any MTLRenderPipelineState {
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = "Ghosttea scene band clear pipeline"
+    descriptor.vertexFunction = library.makeFunction(name: "ghosttea_rectangle_instanced_vertex")
+    descriptor.fragmentFunction = library.makeFunction(name: "ghosttea_scene_clear_fragment")
+    descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+    do {
+      return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
+    } catch {
+      throw GhostteaMetalError.pipelineUnavailable("scene band clear pipeline")
+    }
+  }
+
+  private static func makeScenePresentationPipeline(
+    runtime: GhostteaMetalRuntime,
+    library: any MTLLibrary
+  ) throws -> any MTLRenderPipelineState {
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = "Ghosttea scene presentation pipeline"
+    descriptor.vertexFunction = library.makeFunction(name: "ghosttea_scene_vertex")
+    descriptor.fragmentFunction = library.makeFunction(name: "ghosttea_scene_fragment")
+    descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+    do {
+      return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
+    } catch {
+      throw GhostteaMetalError.pipelineUnavailable("scene presentation pipeline")
     }
   }
 

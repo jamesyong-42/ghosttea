@@ -96,6 +96,13 @@ export const METRICS = [
     select: (sample) => sample.renderer?.residentAtlasBytes,
   },
   {
+    key: "residentSceneTextureBytes",
+    label: "resident scene texture bytes",
+    unit: "bytes",
+    direction: "lower",
+    select: (sample) => sample.renderer?.residentSceneTextureBytes,
+  },
+  {
     key: "footprintAfterBytes",
     label: "process footprint",
     unit: "bytes",
@@ -115,6 +122,9 @@ function comparableConfiguration(report, options = {}) {
   }
   if (options.allowRowGeometryReuseDifference) {
     delete configuration?.rowGeometryReuseEnabled;
+  }
+  if (options.allowPersistentSceneTextureDifference) {
+    delete configuration?.persistentSceneTextureEnabled;
   }
   if (options.allowStateCodecDifference) delete configuration?.truffleStateCodec;
   return {

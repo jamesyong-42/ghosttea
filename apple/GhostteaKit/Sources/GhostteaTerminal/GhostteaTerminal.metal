@@ -39,6 +39,23 @@ fragment float4 ghosttea_rectangle_fragment(RectangleOutput input [[stage_in]]) 
   return float4(input.color.rgb * input.color.a, input.color.a);
 }
 
+fragment float4 ghosttea_scene_clear_fragment(RectangleOutput input [[stage_in]]) {
+  return input.color;
+}
+
+vertex float4 ghosttea_scene_vertex(uint vertex_id [[vertex_id]]) {
+  const float2 position = vertex_id == 0
+    ? float2(-1.0, -1.0)
+    : (vertex_id == 1 ? float2(3.0, -1.0) : float2(-1.0, 3.0));
+  return float4(position, 0.0, 1.0);
+}
+
+fragment float4 ghosttea_scene_fragment(
+  float4 position [[position]],
+  texture2d<float> scene [[texture(0)]]) {
+  return scene.read(uint2(position.xy));
+}
+
 struct GlyphInput {
   float2 position [[attribute(0)]];
   float2 uv [[attribute(1)]];
