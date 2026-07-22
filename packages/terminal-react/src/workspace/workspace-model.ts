@@ -262,22 +262,14 @@ export function decodeWorkspaceDocument(value: unknown): WorkspaceDocumentV1 | n
   if (candidate.version !== WORKSPACE_SCHEMA_VERSION) return null;
   const nodeIds = new Set<string>();
   const paneIds = new Set<string>();
-  const sessionIds = new Set<string>();
   const decodeNode = (raw: unknown): WorkspaceNode | null => {
     if (!raw || typeof raw !== "object") return null;
     const node = raw as Record<string, unknown>;
     if (typeof node.id !== "string" || !node.id || nodeIds.has(node.id)) return null;
     nodeIds.add(node.id);
     if (node.kind === "pane") {
-      if (
-        typeof node.sessionId !== "string" ||
-        !node.sessionId ||
-        paneIds.has(node.id) ||
-        sessionIds.has(node.sessionId)
-      )
-        return null;
+      if (typeof node.sessionId !== "string" || !node.sessionId || paneIds.has(node.id)) return null;
       paneIds.add(node.id);
-      sessionIds.add(node.sessionId);
       return { kind: "pane", id: node.id, sessionId: node.sessionId };
     }
     if (node.kind !== "split" || (node.axis !== "horizontal" && node.axis !== "vertical")) return null;

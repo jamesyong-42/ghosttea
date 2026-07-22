@@ -13,6 +13,7 @@ export {
   equalize,
   layoutId,
   leaves,
+  mountSessionInPane,
   pane,
   persistedWorkspace,
   placeSessionInPane,

@@ -21,9 +21,9 @@ import {
   insertPane,
   layoutId,
   leaves,
+  mountSessionInPane,
   pane,
   persistedWorkspace,
-  placeSessionInPane,
   removePane,
   resizeForPane,
   restoreNode,
@@ -76,7 +76,10 @@ export interface GhostteaWorkspaceContext {
   sessions: readonly SessionSummary[];
   addSession: (session: SessionSummary, axis?: SplitAxis) => void;
   activateSession: (sessionId: string) => void;
+  mountSession: (session: SessionSummary) => void;
   placeSession: (session: SessionSummary) => void;
+  createSessionInActivePane: () => Promise<SessionSummary | undefined>;
+  splitActive: (axis?: SplitAxis) => Promise<SessionSummary | undefined>;
 }
 
 export interface GhostteaWorkspacePaneDecoration {
@@ -327,7 +330,7 @@ export function GhostteaWorkspace({
   const [operationError, setOperationError] = useState<string>();
   const [focused, setFocused] = useState(document.hasFocus());
   const [remotePaletteOpen, setRemotePaletteOpen] = useState(false);
-  const creatingSplitRef = useRef(false);
+  const creatingSessionRef = useRef(false);
   const workspaceRef = useRef<HTMLElement>(null);
   const layoutRef = useRef<PaneNode | undefined>(undefined);
   const activePaneIdRef = useRef<string | undefined>(undefined);
@@ -430,13 +433,13 @@ export function GhostteaWorkspace({
     [activatePane],
   );
 
-  const placeSession = useCallback(
+  const mountSession = useCallback(
     (session: SessionSummary): void => {
       terminalRuntime.registerSession(session);
       const current = layoutRef.current;
       const paneId = activePaneIdRef.current;
       if (!current || !paneId) return;
-      const updated = placeSessionInPane(current, paneId, session);
+      const updated = mountSessionInPane(current, paneId, session);
       layoutRef.current = updated;
       setLayout(updated);
       setZoomedPaneId(null);
@@ -445,6 +448,7 @@ export function GhostteaWorkspace({
     },
     [activatePane, terminalRuntime],
   );
+  const placeSession = mountSession;
 
   const addSession = useCallback(
     (session: SessionSummary, axis: SplitAxis = "horizontal"): void => {
@@ -469,11 +473,11 @@ export function GhostteaWorkspace({
   );
 
   const newSplit = useCallback(
-    async (axis: SplitAxis): Promise<void> => {
+    async (axis: SplitAxis = "horizontal"): Promise<SessionSummary | undefined> => {
       const current = layoutRef.current;
       const active = leaves(current).find((candidate) => candidate.id === activePaneIdRef.current);
-      if (!current || !active || creatingSplitRef.current) return;
-      creatingSplitRef.current = true;
+      if (!current || !active || creatingSessionRef.current) return undefined;
+      creatingSessionRef.current = true;
       try {
         const session = createSplitSession
           ? await createSplitSession(active.session, axis)
@@ -488,17 +492,57 @@ export function GhostteaWorkspace({
             });
         if (!mountedRef.current || !layoutRef.current || !containsPane(layoutRef.current, active.id)) {
           terminalRuntime.terminate(session.id);
-          return;
+          return undefined;
         }
         addSession(session, axis);
+        return session;
       } catch (cause) {
         setOperationError(cause instanceof Error ? cause.message : String(cause));
+        return undefined;
       } finally {
-        creatingSplitRef.current = false;
+        creatingSessionRef.current = false;
       }
     },
     [addSession, createSplitSession, platform.defaultShell, terminalRuntime],
   );
+
+  const createSessionInActivePane = useCallback(async (): Promise<SessionSummary | undefined> => {
+    const current = layoutRef.current;
+    const active = leaves(current).find((candidate) => candidate.id === activePaneIdRef.current);
+    if (!current || !active || creatingSessionRef.current) return undefined;
+    creatingSessionRef.current = true;
+    try {
+      const session = createSplitSession
+        ? await createSplitSession(active.session, "horizontal")
+        : await terminalRuntime.createSession({
+            executable: platform.defaultShell,
+            args: [],
+            ...(active.session.cwd ? { cwd: active.session.cwd } : {}),
+            environment: { mode: "inherit" },
+            cols: active.session.cols,
+            rows: active.session.rows,
+            persistence: "terminate-with-app",
+          });
+      const latest = layoutRef.current;
+      if (!mountedRef.current || !latest || !containsPane(latest, active.id)) {
+        terminalRuntime.terminate(session.id);
+        return undefined;
+      }
+      terminalRuntime.registerSession(session);
+      const updated = mountSessionInPane(latest, active.id, session);
+      layoutRef.current = updated;
+      setLayout(updated);
+      setZoomedPaneId(null);
+      setOperationError(undefined);
+      activatePane(active.id);
+      return session;
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      return undefined;
+    } finally {
+      creatingSessionRef.current = false;
+    }
+  }, [activatePane, createSplitSession, platform.defaultShell, terminalRuntime]);
 
   const focusRelative = useCallback(
     (offset: number): void => {
@@ -541,26 +585,25 @@ export function GhostteaWorkspace({
   const closeActivePane = useCallback((): void => {
     const current = layoutRef.current;
     const active = leaves(current).find((candidate) => candidate.id === activePaneIdRef.current);
-    if (!current || !active || creatingSplitRef.current) return;
+    if (!current || !active || creatingSessionRef.current) return;
     const panes = leaves(current);
     if (panes.length === 1) {
       platform.closeWindow();
       return;
     }
-    terminalRuntime.terminate(active.session.id);
     const index = panes.findIndex((candidate) => candidate.id === active.id);
     const next = panes[index === panes.length - 1 ? index - 1 : index + 1]!;
     setLayout(removePane(current, active.id) ?? undefined);
     setZoomedPaneId(null);
     activatePane(next.id);
-  }, [activatePane, platform, terminalRuntime]);
+  }, [activatePane, platform]);
 
   const openRemoteChoice = useCallback(
     async (choice: RemoteChoice): Promise<void> => {
       const current = layoutRef.current;
       const active = leaves(current).find((candidate) => candidate.id === activePaneIdRef.current);
-      if (!current || !active || creatingSplitRef.current) return;
-      creatingSplitRef.current = true;
+      if (!current || !active || creatingSessionRef.current) return;
+      creatingSessionRef.current = true;
       try {
         const session = await terminalRuntime.openRemoteSession(
           choice.host.deviceId,
@@ -578,7 +621,7 @@ export function GhostteaWorkspace({
         setOperationError(message);
         throw cause;
       } finally {
-        creatingSplitRef.current = false;
+        creatingSessionRef.current = false;
       }
     },
     [addSession, terminalRuntime],
@@ -655,9 +698,23 @@ export function GhostteaWorkspace({
       sessions,
       addSession,
       activateSession,
+      mountSession,
       placeSession,
+      createSessionInActivePane,
+      splitActive: newSplit,
     }),
-    [activePane?.session, activePaneId, activateSession, addSession, panes, placeSession, sessions],
+    [
+      activePane?.session,
+      activePaneId,
+      activateSession,
+      addSession,
+      createSessionInActivePane,
+      mountSession,
+      newSplit,
+      panes,
+      placeSession,
+      sessions,
+    ],
   );
 
   return (

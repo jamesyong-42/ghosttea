@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSummary } from "@vibecook/ghosttea-protocol";
-import { insertPane, leaves, pane, persistedWorkspace, placeSessionInPane, restoreNode } from "./pane-layout";
+import { insertPane, leaves, mountSessionInPane, pane, persistedWorkspace, restoreNode } from "./pane-layout";
 
 function session(id: string): SessionSummary {
   return {
@@ -32,9 +32,10 @@ describe("insertPane", () => {
     expect(leaves(third).map((leaf) => leaf.session.id)).toEqual(["one", "two", "three"]);
   });
 
-  it("does not add the same session twice", () => {
+  it("allows multiple panes to mirror the same session", () => {
     const first = pane("pane-1", session("one"));
-    expect(insertPane(first, pane("pane-2", session("one")), first.id, "horizontal", "split-1")).toBe(first);
+    const mirrored = insertPane(first, pane("pane-2", session("one")), first.id, "horizontal", "split-1");
+    expect(leaves(mirrored).map((leaf) => leaf.session.id)).toEqual(["one", "one"]);
   });
 
   it("persists only opaque layout and session identities", () => {
@@ -61,19 +62,19 @@ describe("insertPane", () => {
   });
 });
 
-describe("placeSessionInPane", () => {
-  it("moves an existing session into the target pane and preserves both pane colors by identity", () => {
+describe("mountSessionInPane", () => {
+  it("mounts an existing session without changing another pane that already shows it", () => {
     const first = pane("pane-1", session("one"));
     const layout = insertPane(first, pane("pane-2", session("two")), first.id, "horizontal", "split-1");
-    const placed = placeSessionInPane(layout, "pane-1", session("two"));
+    const placed = mountSessionInPane(layout, "pane-1", session("two"));
     expect(leaves(placed).map((leaf) => [leaf.id, leaf.session.id])).toEqual([
       ["pane-1", "two"],
-      ["pane-2", "one"],
+      ["pane-2", "two"],
     ]);
   });
 
   it("replaces the target when the session is not already visible", () => {
     const layout = pane("pane-1", session("one"));
-    expect(leaves(placeSessionInPane(layout, "pane-1", session("three")))[0]?.session.id).toBe("three");
+    expect(leaves(mountSessionInPane(layout, "pane-1", session("three")))[0]?.session.id).toBe("three");
   });
 });

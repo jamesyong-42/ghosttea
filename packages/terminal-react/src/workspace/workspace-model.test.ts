@@ -33,7 +33,7 @@ describe("workspace model", () => {
     }
   });
 
-  it("rejects stale active panes, duplicate sessions, and unknown versions", () => {
+  it("rejects stale active panes and unknown versions while allowing mirrored sessions", () => {
     const initial = fixture.scenarios[0]!.initial;
     expect(decodeWorkspaceDocument({ ...initial, version: 2 })).toBeNull();
     expect(decodeWorkspaceDocument({ ...initial, activePaneId: "missing" })).toBeNull();
@@ -49,7 +49,7 @@ describe("workspace model", () => {
           second: { kind: "pane", id: "pane-2", sessionId: "session-1" },
         },
       }),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("clamps finite persisted ratios and defaults malformed ratio values", () => {

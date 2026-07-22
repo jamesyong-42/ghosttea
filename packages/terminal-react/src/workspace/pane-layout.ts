@@ -76,7 +76,6 @@ export function insertPane(
   splitId: string,
 ): PaneNode {
   if (!root) return next;
-  if (leaves(root).some((candidate) => candidate.session.id === next.session.id)) return root;
   const active = leaves(root).find((candidate) => candidate.id === activePaneId) ?? leaves(root)[0]!;
   return replacePane(root, active.id, {
     kind: "split",
@@ -88,15 +87,14 @@ export function insertPane(
   });
 }
 
-export function placeSessionInPane(root: PaneNode, paneId: string, session: SessionSummary): PaneNode {
-  const panes = leaves(root);
-  const target = panes.find((candidate) => candidate.id === paneId);
+export function mountSessionInPane(root: PaneNode, paneId: string, session: SessionSummary): PaneNode {
+  const target = leaves(root).find((candidate) => candidate.id === paneId);
   if (!target) return root;
-  const existing = panes.find((candidate) => candidate.session.id === session.id);
-  if (existing?.id === target.id) return replacePane(root, target.id, { ...target, session });
-  const moved = existing ? replacePane(root, existing.id, { ...existing, session: target.session }) : root;
-  return replacePane(moved, target.id, { ...target, session });
+  return replacePane(root, target.id, { ...target, session });
 }
+
+/** @deprecated Use mountSessionInPane; panes no longer own or move sessions. */
+export const placeSessionInPane = mountSessionInPane;
 
 export function updateSession(node: PaneNode, session: SessionSummary): PaneNode {
   if (node.kind === "pane") return node.session.id === session.id ? { ...node, session } : node;
