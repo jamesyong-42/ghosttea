@@ -33,6 +33,7 @@ import { classifyFrame } from "./frame-sequence.js";
 import { cursorActivityChangesPixels } from "./cursor-invalidation.js";
 import { emptyRenderMetrics, type TerminalRenderPerformanceSnapshot } from "./performance.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
+import { catalogAdmission, definitionCatalogFits, glyphCatalogFits } from "./catalog-budget.js";
 
 interface SessionSnapshot {
   rows: string[];
@@ -47,6 +48,7 @@ interface SessionSnapshot {
   sessionEpoch: bigint;
   sequence: bigint;
   awaitingResync: boolean;
+  catalogFallback: boolean;
   scrollbar: TerminalScrollbarState | null;
 }
 
@@ -76,13 +78,24 @@ const CURSOR_BLINK_INTERVAL_MS = 600;
 const MAX_SESSION_GLYPH_DEFINITIONS = 65_536;
 const MAX_SESSION_GLYPH_PIXEL_BYTES = 64 * 1024 * 1024;
 const MAX_SESSION_STYLE_DEFINITIONS = 65_536;
+const MAX_SHARED_GLYPH_DEFINITIONS = 131_072;
 const MAX_SHARED_GLYPH_PIXEL_BYTES = 128 * 1024 * 1024;
+const MAX_RETAINED_STYLE_DEFINITIONS = 262_144;
+const GLYPH_CATALOG_BUDGET = {
+  maxDefinitions: MAX_SESSION_GLYPH_DEFINITIONS,
+  maxSharedDefinitions: MAX_SHARED_GLYPH_DEFINITIONS,
+  maxSessionPixelBytes: MAX_SESSION_GLYPH_PIXEL_BYTES,
+  maxSharedPixelBytes: MAX_SHARED_GLYPH_PIXEL_BYTES,
+} as const;
+const NO_GLYPH_DEFINITIONS: readonly GlyphDefinition[] = [];
+const NO_STYLE_DEFINITIONS: readonly StyleDefinition[] = [];
 const MAX_PERFORMANCE_SAMPLES = 100_000;
 const FRAME_CREDIT_BATCH_BYTES = 4 * 1024 * 1024;
 const FRAME_CREDIT_MAX_DELAY_MS = 8;
 const snapshots = new Map<string, SessionSnapshot>();
 const sharedGlyphDefinitions = new Map<number, { definition: GlyphDefinition; references: number }>();
 let sharedGlyphPixelBytes = 0;
+let retainedStyleDefinitions = 0;
 const surfaces = new Map<string, SurfaceSnapshot>();
 const surfaceIdsBySession = new Map<string, Set<string>>();
 const noSurfaceIds: ReadonlySet<string> = new Set();
@@ -271,6 +284,7 @@ function snapshot(sessionHandle: string): SessionSnapshot {
       sessionEpoch: 0n,
       sequence: 0n,
       awaitingResync: false,
+      catalogFallback: false,
       scrollbar: null,
     };
     snapshots.set(sessionHandle, value);
@@ -290,23 +304,15 @@ function clearSessionCatalog(session: SessionSnapshot): void {
   }
   session.glyphDefinitions.clear();
   session.glyphPixelBytes = 0;
+  retainedStyleDefinitions -= session.styleDefinitions.size;
   session.styleDefinitions.clear();
 }
 
-function installGlyphDefinitions(session: SessionSnapshot, definitions: readonly GlyphDefinition[]): boolean {
-  let overflowed = false;
+function installGlyphDefinitions(session: SessionSnapshot, definitions: readonly GlyphDefinition[]): void {
   for (const decoded of definitions) {
     if (session.glyphDefinitions.has(decoded.id)) continue;
     let shared = sharedGlyphDefinitions.get(decoded.id);
     const pixelBytes = shared?.definition.pixels.byteLength ?? decoded.pixels.byteLength;
-    if (
-      session.glyphDefinitions.size >= MAX_SESSION_GLYPH_DEFINITIONS ||
-      session.glyphPixelBytes + pixelBytes > MAX_SESSION_GLYPH_PIXEL_BYTES ||
-      (!shared && sharedGlyphPixelBytes + pixelBytes > MAX_SHARED_GLYPH_PIXEL_BYTES)
-    ) {
-      overflowed = true;
-      continue;
-    }
     if (shared) {
       shared.references += 1;
     } else {
@@ -317,20 +323,14 @@ function installGlyphDefinitions(session: SessionSnapshot, definitions: readonly
     session.glyphDefinitions.set(decoded.id, shared.definition);
     session.glyphPixelBytes += pixelBytes;
   }
-  return overflowed;
 }
 
-function installStyleDefinitions(session: SessionSnapshot, definitions: readonly StyleDefinition[]): boolean {
-  let overflowed = false;
+function installStyleDefinitions(session: SessionSnapshot, definitions: readonly StyleDefinition[]): void {
   for (const definition of definitions) {
     if (session.styleDefinitions.has(definition.id)) continue;
-    if (session.styleDefinitions.size >= MAX_SESSION_STYLE_DEFINITIONS) {
-      overflowed = true;
-      continue;
-    }
     session.styleDefinitions.set(definition.id, definition);
+    retainedStyleDefinitions += 1;
   }
-  return overflowed;
 }
 
 function dropSessionSnapshot(sessionHandle: string): void {
@@ -669,13 +669,6 @@ function applyFrame(packet: ArrayBuffer): void {
     return;
   }
   const completingResync = previous.awaitingResync;
-  if (changedSession || completingResync || catalogReset) {
-    previous.rows = [];
-    previous.nativeRows = [];
-    previous.nativeStyleRows = [];
-    clearSessionCatalog(previous);
-    previous.rowRevisions = [];
-  }
   const rowSection = frame.sections.find((candidate) => candidate.kind === SectionKind.RowReplacements);
   const cursorSection = frame.sections.find((candidate) => candidate.kind === SectionKind.CursorState);
   const glyphSection = frame.sections.find((candidate) => candidate.kind === SectionKind.GlyphDefinitions);
@@ -687,20 +680,80 @@ function applyFrame(packet: ArrayBuffer): void {
     return;
   }
 
-  let catalogOverflowed = false;
-  if (glyphSection) {
-    const definitions = decodeGlyphDefinitions(glyphSection);
-    if (active) active.frames.glyphDefinitions += definitions.length;
-    const glyphCatalogOverflowed = installGlyphDefinitions(previous, definitions);
-    catalogOverflowed ||= glyphCatalogOverflowed;
-    if (!nativeTextAnnounced && definitions.length > 0) {
-      nativeTextAnnounced = true;
-      postToRenderer({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
+  const glyphDefinitions = glyphSection ? decodeGlyphDefinitions(glyphSection) : NO_GLYPH_DEFINITIONS;
+  const styleDefinitions = styleSection ? decodeStyleDefinitions(styleSection) : NO_STYLE_DEFINITIONS;
+  if (active) active.frames.glyphDefinitions += glyphDefinitions.length;
+  const resetsCatalog = changedSession || completingResync || catalogReset;
+  const wasCatalogFallback = previous.catalogFallback;
+  if (resetsCatalog) {
+    previous.rows = [];
+    previous.nativeRows = [];
+    previous.nativeStyleRows = [];
+    clearSessionCatalog(previous);
+    previous.rowRevisions = [];
+    const catalogFits =
+      glyphCatalogFits(
+        previous.glyphDefinitions,
+        previous.glyphPixelBytes,
+        sharedGlyphDefinitions,
+        sharedGlyphPixelBytes,
+        glyphDefinitions,
+        GLYPH_CATALOG_BUDGET,
+      ) &&
+      definitionCatalogFits(
+        previous.styleDefinitions,
+        styleDefinitions,
+        MAX_SESSION_STYLE_DEFINITIONS,
+        retainedStyleDefinitions,
+        MAX_RETAINED_STYLE_DEFINITIONS,
+      );
+    const admission = catalogAdmission(true, wasCatalogFallback, catalogFits);
+    previous.catalogFallback = admission === "text-fallback";
+    if (admission === "install") {
+      installGlyphDefinitions(previous, glyphDefinitions);
+      installStyleDefinitions(previous, styleDefinitions);
+    } else if (!wasCatalogFallback) {
+      postToRenderer({
+        type: "catalog-pressure",
+        sessionHandle: id,
+        reason: "working-set-exceeds-budget",
+      });
+    }
+  } else if (!previous.catalogFallback) {
+    const catalogFits =
+      glyphCatalogFits(
+        previous.glyphDefinitions,
+        previous.glyphPixelBytes,
+        sharedGlyphDefinitions,
+        sharedGlyphPixelBytes,
+        glyphDefinitions,
+        GLYPH_CATALOG_BUDGET,
+      ) &&
+      definitionCatalogFits(
+        previous.styleDefinitions,
+        styleDefinitions,
+        MAX_SESSION_STYLE_DEFINITIONS,
+        retainedStyleDefinitions,
+        MAX_RETAINED_STYLE_DEFINITIONS,
+      );
+    const admission = catalogAdmission(false, false, catalogFits);
+    if (admission === "request-full") {
+      if (active) {
+        active.frames.resyncRequested += 1;
+        appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
+      }
+      previous.awaitingResync = true;
+      postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
+      return;
+    }
+    if (admission === "install") {
+      installGlyphDefinitions(previous, glyphDefinitions);
+      installStyleDefinitions(previous, styleDefinitions);
     }
   }
-  if (styleSection) {
-    const styleCatalogOverflowed = installStyleDefinitions(previous, decodeStyleDefinitions(styleSection));
-    catalogOverflowed ||= styleCatalogOverflowed;
+  if (!previous.catalogFallback && !nativeTextAnnounced && glyphDefinitions.length > 0) {
+    nativeTextAnnounced = true;
+    postToRenderer({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
   }
   if (clipboardSection) {
     postToRenderer({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
@@ -730,6 +783,7 @@ function applyFrame(packet: ArrayBuffer): void {
   }
 
   const full = (rowSection.flags & 1) !== 0;
+  const useNativeCatalog = !previous.catalogFallback;
   const rows = full ? Array<string>(frame.rows).fill("") : previous.rows.slice();
   const nativeRows = full
     ? Array.from({ length: frame.rows }, () => [] as GlyphInstance[])
@@ -745,8 +799,8 @@ function applyFrame(packet: ArrayBuffer): void {
     if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
     if (replacement.revision < (rowRevisions[replacement.row] ?? 0n)) continue;
     rows[replacement.row] = replacement.text;
-    nativeRows[replacement.row] = replacement.glyphs;
-    nativeStyleRows[replacement.row] = replacement.styles;
+    nativeRows[replacement.row] = useNativeCatalog ? replacement.glyphs : [];
+    nativeStyleRows[replacement.row] = useNativeCatalog ? replacement.styles : [];
     rowRevisions[replacement.row] = replacement.revision;
     damagedRows.push(replacement.row);
   }
@@ -769,10 +823,6 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
-  if (catalogOverflowed && !catalogReset && !completingResync) {
-    previous.awaitingResync = true;
-    postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
-  }
   const requiresFullRedraw = full || changedSession || completingResync;
   if (!requiresFullRedraw && cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
   const hasRowDamage = damagedRows.length > 0;
@@ -844,6 +894,8 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
         session.awaitingResync = true;
         postToRenderer({ type: "frame-resync-needed", sessionHandle });
       }
+    } else if (message.type === "expect-full") {
+      snapshot(message.sessionHandle).awaitingResync = true;
     } else if (message.type === "theme") {
       if (message.surfaceId) {
         surface(message.surfaceId, message.sessionHandle).theme = message.theme;

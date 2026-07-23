@@ -7,16 +7,18 @@ use ghosttea_core::{
     TextEnginePerformanceSnapshot,
 };
 use ghosttea_text::TextEngine;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::session::{SessionActivity, SessionSummary};
+use crate::{
+    FrameHub,
+    session::{SessionActivity, SessionSummary},
+};
 
 /// Desktop host wrapper for the platform-neutral logical replica model.
 pub struct RemoteReplica {
     summary: Mutex<SessionSummary>,
     model: Mutex<LogicalReplicaModel>,
-    frames: broadcast::Sender<Vec<u8>>,
+    frames: FrameHub,
 }
 
 impl RemoteReplica {
@@ -26,7 +28,7 @@ impl RemoteReplica {
         cols: u16,
         rows: u16,
         owner_id: Option<String>,
-        frames: broadcast::Sender<Vec<u8>>,
+        frames: FrameHub,
         text_engine: Arc<Mutex<TextEngine>>,
     ) -> Arc<Self> {
         let id = Uuid::new_v4();
@@ -121,7 +123,7 @@ impl RemoteReplica {
         for effect in update {
             match effect {
                 TerminalEffect::FrameReady(frame) => {
-                    let _ = self.frames.send(frame);
+                    self.frames.publish(frame);
                 }
                 _ => bail!("logical replica produced an unsupported host effect"),
             }
@@ -137,7 +139,8 @@ mod tests {
 
     #[test]
     fn desktop_wrapper_publishes_core_frame_and_updates_summary() {
-        let (frames, mut receiver) = broadcast::channel(2);
+        let frames = FrameHub::new(2);
+        let (mut receiver, _) = frames.subscribe();
         let engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
         let replica = RemoteReplica::new("remote".into(), None, 20, 1, None, frames, engine);
         replica

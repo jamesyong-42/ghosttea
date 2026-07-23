@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::FrameHub;
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Persistence {
@@ -302,7 +304,7 @@ pub struct Session {
     model: Mutex<TerminalModel>,
     model_operation: Mutex<()>,
     exited: AtomicBool,
-    frames: broadcast::Sender<Vec<u8>>,
+    frames: FrameHub,
     persistence: Persistence,
     on_exit: ExitCallback,
     authority: Mutex<ViewAuthority>,
@@ -546,7 +548,7 @@ fn resolve_program_kind(
 impl Session {
     pub fn spawn(
         options: SpawnOptions,
-        frames: broadcast::Sender<Vec<u8>>,
+        frames: FrameHub,
         text_engine: Arc<Mutex<TextEngine>>,
         on_exit: ExitCallback,
     ) -> Result<Arc<Self>> {
@@ -555,7 +557,7 @@ impl Session {
 
     pub(crate) fn spawn_with_private_env_prefixes(
         options: SpawnOptions,
-        frames: broadcast::Sender<Vec<u8>>,
+        frames: FrameHub,
         text_engine: Arc<Mutex<TextEngine>>,
         extra_private_prefixes: &[String],
         on_exit: ExitCallback,
@@ -819,7 +821,7 @@ impl Session {
                     let _ = self.logical_tx.send(snapshot);
                 }
                 TerminalEffect::FrameReady(frame) => {
-                    let _ = self.frames.send(frame);
+                    self.frames.publish(frame);
                 }
             }
         }
@@ -1629,7 +1631,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn naturally_exited_sessions_release_under_churn() {
-        let (frames, _) = broadcast::channel(8);
+        let frames = FrameHub::new(8);
         let text_engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
         let mut sessions = Vec::with_capacity(128);
         for _ in 0..128 {
@@ -1683,7 +1685,7 @@ mod tests {
         } else {
             "/bin/sh"
         };
-        let (frames, _) = broadcast::channel(8);
+        let frames = FrameHub::new(8);
         let (exited_tx, exited_rx) = mpsc::channel();
         let session = Session::spawn(
             SpawnOptions {

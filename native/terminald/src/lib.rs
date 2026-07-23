@@ -1,11 +1,13 @@
 //! Reusable, transport-neutral Ghosttea terminal service.
 
+mod frame_hub;
 pub mod mesh;
 pub mod replica;
 mod service;
 pub mod session;
 pub mod tunnel_protocol;
 
+pub use frame_hub::{FrameHub, FramePacket};
 pub use ghosttea_core::ViewAccess;
 pub use ghosttea_text::{
     FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,

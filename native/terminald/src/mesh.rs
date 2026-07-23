@@ -7,6 +7,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::{
+    FrameHub,
     service::Registry,
     session::{SessionActivity, SessionSummary},
     tunnel_protocol::{SharedSessionSummary, TunnelInput},
@@ -77,7 +78,7 @@ pub struct RemoteSessionOpen {
     pub cols: u16,
     pub rows: u16,
     pub owner_id: Option<String>,
-    pub frames: broadcast::Sender<Vec<u8>>,
+    pub frames: FrameHub,
     pub text_engine: Arc<Mutex<TextEngine>>,
 }
 

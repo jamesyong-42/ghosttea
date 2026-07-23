@@ -1,6 +1,6 @@
 import type { Socket } from "node:net";
 import { connectSocket, packet } from "./bridge-socket.js";
-import { FrameFlowControl } from "./frame-flow.js";
+import { FrameFlowControl, requestedFrameBridgeCapabilities } from "./frame-flow.js";
 import { isMainToBridgeMessage } from "./types.js";
 
 const parentPort = process.parentPort;
@@ -61,11 +61,12 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
               bytes.byteOffset,
               bytes.byteOffset + bytes.byteLength,
             ) as ArrayBuffer;
-            const action = frameFlowEnabled ? frameFlow.accept(transferable.byteLength) : undefined;
+            const accounted = frameFlowEnabled;
+            const action = accounted ? frameFlow.accept(transferable.byteLength) : undefined;
             try {
               framePort.postMessage(transferable);
             } catch (error) {
-              frameFlow.release(transferable.byteLength);
+              if (accounted) frameFlow.release(transferable.byteLength);
               throw error;
             }
             if (action === "pause") frameSocket?.pause();
@@ -121,10 +122,20 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
       if (
         subscription &&
         typeof subscription === "object" &&
-        (subscription as { type?: unknown }).type === "subscribe" &&
-        (subscription as { frameCredits?: unknown }).frameCredits === true
+        (subscription as { type?: unknown }).type === "subscribe"
       ) {
-        frameFlowEnabled = true;
+        const capabilities = requestedFrameBridgeCapabilities(subscription);
+        if (capabilities) {
+          // Announce support before forwarding the subscription. MessagePort
+          // ordering then guarantees that the renderer knows credits are active
+          // before terminald can deliver the subscription's first frame.
+          framePort.postMessage(capabilities);
+          frameFlowEnabled = true;
+        } else if ((subscription as { frameCredits?: unknown }).frameCredits === true) {
+          // Preserve compatibility with the first credit-enabled renderer,
+          // which predated the explicit bridge capability handshake.
+          frameFlowEnabled = true;
+        }
       }
       const encoded = Buffer.from(JSON.stringify(subscription));
       if (encoded.byteLength > MAX_FRAME_SUBSCRIPTION_BYTES) throw new Error("frame subscription exceeds quota");

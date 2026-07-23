@@ -18,7 +18,7 @@ use tokio::{
 };
 
 use crate::{
-    mesh, session,
+    FrameHub, mesh, session,
     session::{
         AutomationInputOperation, ExitCallback, KeyInput, MouseInput, Persistence, Session,
         SpawnOptions, TerminationSource,
@@ -34,6 +34,8 @@ const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
 const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
+const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
+const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
 const CONTROL_PROTOCOL_MINOR: u16 = 7;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
@@ -68,28 +70,73 @@ struct FrameSubscription {
     session_handles: Vec<String>,
 }
 
-#[derive(Default)]
 struct OwnerTombstones {
-    owners: HashSet<String>,
+    recent_owners: HashSet<String>,
     order: VecDeque<String>,
+    // The archive is monotonic: it can reject a never-seen owner on a rare
+    // false positive, but it never forgets and reopens an owner that was closed.
+    archived: Box<[u64]>,
+}
+
+impl Default for OwnerTombstones {
+    fn default() -> Self {
+        Self {
+            recent_owners: HashSet::new(),
+            order: VecDeque::new(),
+            archived: vec![0; CLOSED_OWNER_BLOOM_BITS / u64::BITS as usize].into_boxed_slice(),
+        }
+    }
 }
 
 impl OwnerTombstones {
     fn contains(&self, owner_id: &str) -> bool {
-        self.owners.contains(owner_id)
+        self.recent_owners.contains(owner_id) || self.archived_contains(owner_id)
     }
 
     fn insert(&mut self, owner_id: String) {
-        if !self.owners.insert(owner_id.clone()) {
+        if self.contains(&owner_id) {
+            return;
+        }
+        if !self.recent_owners.insert(owner_id.clone()) {
             return;
         }
         self.order.push_back(owner_id);
-        while self.owners.len() > MAX_CLOSED_OWNER_TOMBSTONES {
+        while self.recent_owners.len() > MAX_CLOSED_OWNER_TOMBSTONES {
             if let Some(expired) = self.order.pop_front() {
-                self.owners.remove(&expired);
+                self.recent_owners.remove(&expired);
+                self.archive(&expired);
             }
         }
     }
+
+    fn archive(&mut self, owner_id: &str) {
+        for index in owner_bloom_indexes(owner_id) {
+            self.archived[index / u64::BITS as usize] |= 1_u64 << (index % u64::BITS as usize);
+        }
+    }
+
+    fn archived_contains(&self, owner_id: &str) -> bool {
+        owner_bloom_indexes(owner_id).into_iter().all(|index| {
+            self.archived[index / u64::BITS as usize] & (1_u64 << (index % u64::BITS as usize)) != 0
+        })
+    }
+}
+
+fn owner_bloom_indexes(owner_id: &str) -> [usize; CLOSED_OWNER_BLOOM_HASHES as usize] {
+    let first = owner_hash(owner_id.as_bytes(), 0xcbf2_9ce4_8422_2325);
+    let second = owner_hash(owner_id.as_bytes(), 0x9e37_79b9_7f4a_7c15) | 1;
+    std::array::from_fn(|index| {
+        first
+            .wrapping_add((index as u64).wrapping_mul(second))
+            .wrapping_add((index as u64).wrapping_mul(index as u64)) as usize
+            & (CLOSED_OWNER_BLOOM_BITS - 1)
+    })
+}
+
+fn owner_hash(bytes: &[u8], seed: u64) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 #[derive(Deserialize)]
@@ -315,7 +362,7 @@ pub type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
 #[derive(Clone)]
 struct ControlContext {
     registry: Registry,
-    frame_tx: broadcast::Sender<Vec<u8>>,
+    frames: FrameHub,
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
@@ -422,7 +469,7 @@ impl TerminalService {
         let configured_text_engine = self.text_engine;
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
-        let (frame_tx, _) = broadcast::channel::<Vec<u8>>(32);
+        let frame_hub = FrameHub::new(32);
         let (event_tx, _) = broadcast::channel::<Value>(64);
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
         let activity_registry = Arc::clone(&registry);
@@ -513,7 +560,7 @@ impl TerminalService {
             auth_token.clone(),
             ControlContext {
                 registry: Arc::clone(&registry),
-                frame_tx: frame_tx.clone(),
+                frames: frame_hub.clone(),
                 event_tx,
                 text_engine,
                 mesh_runtime,
@@ -521,7 +568,7 @@ impl TerminalService {
                 private_env_prefixes: self.private_env_prefixes.into(),
             },
         );
-        let frame_task = serve_frames(frames, auth_token, frame_tx);
+        let frame_task = serve_frames(frames, auth_token, frame_hub);
         tokio::try_join!(control_task, frame_task).map(|_| ())
     }
 }
@@ -681,7 +728,7 @@ async fn handle_command(
                 });
                 let session = Session::spawn_with_private_env_prefixes(
                     options,
-                    context.frame_tx.clone(),
+                    context.frames.clone(),
                     Arc::clone(&context.text_engine),
                     &context.private_env_prefixes,
                     on_exit,
@@ -808,7 +855,7 @@ async fn handle_command(
                         cols,
                         rows,
                         owner_id,
-                        frames: context.frame_tx.clone(),
+                        frames: context.frames.clone(),
                         text_engine: Arc::clone(&context.text_engine),
                     })
                     .await?;
@@ -1396,21 +1443,18 @@ fn remove_session_attachments(
     removed
 }
 
-async fn serve_frames(
-    listener: UnixListener,
-    token: String,
-    frame_tx: broadcast::Sender<Vec<u8>>,
-) -> Result<()> {
+async fn serve_frames(listener: UnixListener, token: String, frames: FrameHub) -> Result<()> {
     loop {
         let (mut socket, _) = listener.accept().await?;
         let token = token.clone();
-        let mut rx = frame_tx.subscribe();
+        let frames = frames.clone();
+        let (mut rx, mut last_seen_ordinal) = frames.subscribe();
         tokio::spawn(async move {
             if authenticate(&mut socket, &token).await.is_err() {
                 return;
             }
             let (mut reader, mut writer) = socket.into_split();
-            let mut subscriptions = HashSet::<u64>::new();
+            let mut subscription_starts = HashMap::<u64, u64>::new();
             loop {
                 tokio::select! {
                     packet = read_packet(&mut reader, MAX_FRAME_SUBSCRIPTION_BYTES) => {
@@ -1427,7 +1471,13 @@ async fn serve_frames(
                         else {
                             break;
                         };
-                        subscriptions = parsed;
+                        let subscription_ordinal = frames.current_ordinal();
+                        subscription_starts.retain(|handle, _| parsed.contains(handle));
+                        for handle in parsed {
+                            subscription_starts
+                                .entry(handle)
+                                .or_insert(subscription_ordinal);
+                        }
                         let acknowledgement = serde_json::to_vec(&json!({
                             "type": "subscription-ack",
                             "requestId": subscription.request_id,
@@ -1439,8 +1489,27 @@ async fn serve_frames(
                     }
                     frame = rx.recv() => match frame {
                         Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
-                            let Some(handle) = frame_session_handle(&frame) else { continue; };
-                            if subscriptions.contains(&handle)
+                            if frame.ordinal <= last_seen_ordinal {
+                                continue;
+                            }
+                            if frame.ordinal > last_seen_ordinal.saturating_add(1) {
+                                let first = last_seen_ordinal.saturating_add(1);
+                                let last = frame.ordinal.saturating_sub(1);
+                                if let Some(notice) = frame_gap_notice(
+                                    &frames,
+                                    first,
+                                    last,
+                                    &subscription_starts,
+                                )
+                                    && write_packet(&mut writer, &notice).await.is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            last_seen_ordinal = frame.ordinal;
+                            if subscription_starts
+                                .get(&frame.session_handle)
+                                .is_some_and(|start| frame.ordinal > *start)
                                 && write_packet(&mut writer, &frame).await.is_err()
                             {
                                 break;
@@ -1448,12 +1517,17 @@ async fn serve_frames(
                         }
                         Ok(_) => break,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            let notice = serde_json::to_vec(&json!({
-                                "type": "frame-gap",
-                                "skipped": skipped,
-                            }))
-                            .unwrap();
-                            if write_packet(&mut writer, &notice).await.is_err() {
+                            let first = last_seen_ordinal.saturating_add(1);
+                            let last = last_seen_ordinal.saturating_add(skipped);
+                            last_seen_ordinal = last;
+                            if let Some(notice) = frame_gap_notice(
+                                &frames,
+                                first,
+                                last,
+                                &subscription_starts,
+                            )
+                                && write_packet(&mut writer, &notice).await.is_err()
+                            {
                                 break;
                             }
                         }
@@ -1465,6 +1539,29 @@ async fn serve_frames(
     }
 }
 
+fn frame_gap_notice(
+    frames: &FrameHub,
+    first_ordinal: u64,
+    last_ordinal: u64,
+    subscription_starts: &HashMap<u64, u64>,
+) -> Option<Vec<u8>> {
+    let (handles, history_complete) =
+        frames.affected_handles(first_ordinal, last_ordinal, subscription_starts);
+    if handles.is_empty() {
+        return None;
+    }
+    Some(
+        serde_json::to_vec(&json!({
+            "type": "frame-gap",
+            "skipped": last_ordinal.saturating_sub(first_ordinal).saturating_add(1),
+            "sessionHandles": handles.into_iter().map(|handle| handle.to_string()).collect::<Vec<_>>(),
+            "historyComplete": history_complete,
+        }))
+        .unwrap(),
+    )
+}
+
+#[cfg(test)]
 fn frame_session_handle(frame: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(frame.get(8..16)?.try_into().ok()?))
 }
@@ -1594,14 +1691,26 @@ mod protocol_tests {
     #[test]
     fn closed_owner_tombstones_have_a_fixed_capacity() {
         let mut tombstones = OwnerTombstones::default();
-        for index in 0..=MAX_CLOSED_OWNER_TOMBSTONES {
+        let closed_owner_count = MAX_CLOSED_OWNER_TOMBSTONES + 50_000;
+        for index in 0..closed_owner_count {
             tombstones.insert(format!("owner-{index}"));
         }
 
-        assert_eq!(tombstones.owners.len(), MAX_CLOSED_OWNER_TOMBSTONES);
+        assert_eq!(tombstones.recent_owners.len(), MAX_CLOSED_OWNER_TOMBSTONES);
         assert_eq!(tombstones.order.len(), MAX_CLOSED_OWNER_TOMBSTONES);
-        assert!(!tombstones.contains("owner-0"));
-        assert!(tombstones.contains(&format!("owner-{MAX_CLOSED_OWNER_TOMBSTONES}")));
+        assert_eq!(
+            tombstones.archived.len(),
+            CLOSED_OWNER_BLOOM_BITS / u64::BITS as usize
+        );
+        for index in [
+            0,
+            1_000,
+            MAX_CLOSED_OWNER_TOMBSTONES,
+            closed_owner_count - 1,
+        ] {
+            assert!(tombstones.contains(&format!("owner-{index}")));
+        }
+        assert!(!tombstones.contains("owner-never-closed"));
     }
 
     #[test]

@@ -4,10 +4,22 @@ import { GhostteaTerminalRuntime } from "./runtime";
 
 class FakeWorker extends EventTarget {
   readonly messages: unknown[] = [];
+  completeExpectedSnapshots = true;
   terminated = false;
 
   postMessage(message: unknown): void {
     this.messages.push(message);
+    if (
+      this.completeExpectedSnapshots &&
+      message &&
+      typeof message === "object" &&
+      (message as { type?: unknown }).type === "expect-full"
+    ) {
+      const sessionHandle = String((message as { sessionHandle?: unknown }).sessionHandle);
+      queueMicrotask(() =>
+        this.dispatchEvent(new MessageEvent("message", { data: { type: "frame-resync-complete", sessionHandle } })),
+      );
+    }
   }
 
   terminate(): void {
@@ -17,8 +29,12 @@ class FakeWorker extends EventTarget {
 
 class FakePort extends EventTarget {
   readonly messages: Array<Record<string, unknown>> = [];
+  readonly pendingSubscriptionAcknowledgements: number[] = [];
   attachReadWrite = true;
+  bridgeCapabilities = true;
+  deferSubscriptionAcknowledgements = false;
   subscriptionAcknowledgements = true;
+  subscriptionControlAsArrayBuffer = false;
   helloProtocolMinor: number | undefined;
   closed = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
@@ -38,12 +54,20 @@ class FakePort extends EventTarget {
           },
         }),
       );
-    } else if (message.type === "subscribe" && this.subscriptionAcknowledgements) {
-      this.onmessage?.(
-        new MessageEvent("message", {
-          data: { type: "subscription-ack", requestId },
-        }),
-      );
+    } else if (message.type === "subscribe") {
+      if (this.bridgeCapabilities && message.bridgeCapabilities === 1) {
+        this.onmessage?.(
+          new MessageEvent("message", {
+            data: { type: "bridge-capabilities", requestId, protocolVersion: 1, frameCredits: true },
+          }),
+        );
+      }
+      if (this.subscriptionAcknowledgements) {
+        if (this.deferSubscriptionAcknowledgements) this.pendingSubscriptionAcknowledgements.push(requestId);
+        else this.acknowledgeSubscription(requestId);
+      }
+    } else if (message.type === "refresh-session") {
+      this.dispatchEvent(new MessageEvent("message", { data: { requestId, type: "ok" } }));
     } else if (message.type === "attach-session") {
       this.dispatchEvent(
         new MessageEvent("message", {
@@ -52,7 +76,7 @@ class FakePort extends EventTarget {
             type: "view-attached",
             sessionId: message.sessionId,
             viewId: message.viewId,
-            attachmentEpoch: requestId,
+            attachmentEpoch: 2,
             readWrite: this.attachReadWrite,
           },
         }),
@@ -67,6 +91,16 @@ class FakePort extends EventTarget {
   }
 
   start(): void {}
+
+  acknowledgeSubscription(requestId = this.pendingSubscriptionAcknowledgements.shift()): void {
+    if (requestId === undefined) throw new Error("No pending frame subscription acknowledgement");
+    const acknowledgement = { type: "subscription-ack", requestId };
+    const data = this.subscriptionControlAsArrayBuffer
+      ? new TextEncoder().encode(JSON.stringify(acknowledgement)).buffer
+      : acknowledgement;
+    this.onmessage?.(new MessageEvent("message", { data }));
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -79,7 +113,15 @@ function canvas(): HTMLCanvasElement {
 }
 
 async function flushMicrotasks(): Promise<void> {
-  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  for (let index = 0; index < 12; index += 1) await Promise.resolve();
+}
+
+function frameForHandle(handle: string): ArrayBuffer {
+  const frame = new ArrayBuffer(16);
+  const view = new DataView(frame);
+  view.setUint32(0, 0x31465254, true);
+  view.setBigUint64(8, BigInt(handle), true);
+  return frame;
 }
 
 const session = {
@@ -330,12 +372,121 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(frames.messages.at(-1)).toMatchObject({ type: "subscribe", sessionHandles: [] });
   });
 
-  it("keeps older daemons responsive without enabling unsupported frame credits", async () => {
+  it("serializes subscription mutations before attaching a newly mounted view", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    frames.deferSubscriptionAcknowledgements = true;
+    const first = { ...session, id: "session-a", handle: "handle-a" };
+    const second = { ...session, id: "session-b", handle: "handle-b" };
+    runtime.registerSession(first);
+    runtime.registerSession(second);
+
+    runtime.setSessionPinned(first.handle, true);
+    await flushMicrotasks();
+    runtime.setSessionPinned(second.handle, true);
+    runtime.mount(second.id, second.handle, "view-b", canvas());
+    await flushMicrotasks();
+
+    expect(
+      frames.messages.filter((message) => message.type === "subscribe").map((message) => message.sessionHandles),
+    ).toEqual([[], [first.handle]]);
+    expect(control.messages.some((message) => message.type === "attach-session")).toBe(false);
+
+    frames.acknowledgeSubscription();
+    await flushMicrotasks();
+    expect(frames.messages.at(-1)).toMatchObject({
+      type: "subscribe",
+      sessionHandles: [first.handle, second.handle],
+    });
+    expect(control.messages.some((message) => message.type === "attach-session")).toBe(false);
+
+    frames.acknowledgeSubscription();
+    await flushMicrotasks();
+    expect(control.messages).toContainEqual(
+      expect.objectContaining({ type: "attach-session", sessionId: second.id, viewId: "view-b" }),
+    );
+    runtime.dispose();
+  });
+
+  it("accepts daemon acknowledgements forwarded as bytes by an older bridge", async () => {
+    vi.stubGlobal("window", globalThis);
+    const frames = new FakePort();
+    frames.bridgeCapabilities = false;
+    frames.subscriptionControlAsArrayBuffer = true;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: new FakePort() as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+
+    await expect(runtime.connect()).resolves.toBeUndefined();
+    expect(frames.messages.at(-1)).toMatchObject({
+      type: "subscribe",
+      bridgeCapabilities: 1,
+      sessionHandles: [],
+    });
+    runtime.dispose();
+  });
+
+  it("resynchronizes only sessions attributed to a frame transport gap", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: new FakePort() as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const first = { ...session, id: "session-a", handle: "handle-a" };
+    const second = { ...session, id: "session-b", handle: "handle-b" };
+    runtime.registerSession(first);
+    runtime.registerSession(second);
+    runtime.setSessionPinned(first.handle, true);
+    runtime.setSessionPinned(second.handle, true);
+    await flushMicrotasks();
+    worker.messages.length = 0;
+
+    frames.onmessage?.(
+      new MessageEvent("message", {
+        data: { type: "frame-gap", skipped: 3, sessionHandles: [first.handle], historyComplete: true },
+      }),
+    );
+
+    expect(worker.messages).toEqual([{ type: "frame-gap", sessionHandles: [first.handle] }]);
+    runtime.dispose();
+  });
+
+  it("keeps an older bridge responsive without enabling unacknowledged frame credits", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();
     const control = new FakePort();
     const frames = new FakePort();
     control.helloProtocolMinor = 6;
+    frames.bridgeCapabilities = false;
     frames.subscriptionAcknowledgements = false;
     const runtime = new GhostteaTerminalRuntime({
       ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
@@ -361,6 +512,36 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       expect.objectContaining({ frameCredits: true }),
     );
     expect(frames.messages.some((message) => message.type === "frame-credit")).toBe(false);
+    expect(worker.messages).toContainEqual({ type: "expect-full", sessionHandle: session.handle });
+    expect(control.messages.findIndex((message) => message.type === "refresh-session")).toBeLessThan(
+      control.messages.findIndex((message) => message.type === "attach-session"),
+    );
+    runtime.dispose();
+  });
+
+  it("uses bridge-negotiated credits even when terminald predates subscription acknowledgements", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    control.helloProtocolMinor = 6;
+    frames.subscriptionAcknowledgements = false;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+
+    await runtime.connect();
+    worker.dispatchEvent(new MessageEvent("message", { data: { type: "frame-credit", bytes: 512 } }));
+
+    expect(frames.messages).toContainEqual({ type: "frame-credit", bytes: 512 });
+    runtime.dispose();
   });
 
   it("unregisters renderer state without terminating the underlying PTY", async () => {
@@ -384,6 +565,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await flushMicrotasks();
 
     runtime.unregisterSession(session.id);
+    await flushMicrotasks();
 
     expect(control.messages.some((message) => message.type === "terminate")).toBe(false);
     expect(control.messages).toContainEqual({
@@ -467,8 +649,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       updates.push((event as CustomEvent<SessionSummary>).detail),
     );
 
-    const frame = new ArrayBuffer(16);
-    new DataView(frame).setBigUint64(8, BigInt(exitingSession.handle), true);
+    const frame = frameForHandle(exitingSession.handle);
     frames.onmessage?.(new MessageEvent("message", { data: frame }));
     control.dispatchEvent(
       new MessageEvent("message", {
@@ -516,8 +697,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.registerSession(exitingSession);
     runtime.setSessionPinned(exitingSession.handle, true);
 
-    const frame = new ArrayBuffer(16);
-    new DataView(frame).setBigUint64(8, BigInt(exitingSession.handle), true);
+    const frame = frameForHandle(exitingSession.handle);
     frames.onmessage?.(new MessageEvent("message", { data: frame }));
     await vi.advanceTimersByTimeAsync(200);
     const refresh = control.messages.find((message) => message.type === "get-session");

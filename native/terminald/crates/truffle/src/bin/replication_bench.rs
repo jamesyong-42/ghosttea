@@ -14,10 +14,10 @@ use ghosttea::tunnel_protocol::{
     StateCodec, StateMessage, decode_compact_message, decode_state_message, encode_compact_message,
     encode_state_message,
 };
-use ghosttea::{RemoteReplica, TextEngine};
+use ghosttea::{FrameHub, RemoteReplica, TextEngine};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::sync::{Barrier, broadcast};
+use tokio::sync::Barrier;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -499,14 +499,15 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
     let mut replica = None;
     let mut frames = None;
     if config.apply == ApplyMode::Replica {
-        let (frame_tx, frame_rx) = broadcast::channel(config.sent_at_ns.len() + 1);
+        let frame_hub = FrameHub::new(config.sent_at_ns.len() + 1);
+        let (frame_rx, _) = frame_hub.subscribe();
         replica = Some(RemoteReplica::new(
             "remote".into(),
             None,
             config.cols,
             config.rows,
             None,
-            frame_tx,
+            frame_hub,
             config
                 .engine
                 .context("replica mode requires a text engine")?,

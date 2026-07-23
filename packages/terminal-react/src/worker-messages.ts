@@ -11,6 +11,7 @@ export type RendererToWorkerMessage =
   | { type: "resize"; surfaceId: string; width: number; height: number; dpr: number }
   | { type: "frame"; packet: ArrayBuffer }
   | { type: "frame-gap"; sessionHandles: string[] }
+  | { type: "expect-full"; sessionHandle: string }
   | { type: "theme"; sessionHandle: string; surfaceId?: string; theme: TerminalTheme }
   | { type: "selection"; sessionHandle: string; surfaceId?: string; selection: CellSelection | null }
   | { type: "visibility"; sessionHandle: string; surfaceId?: string; visible: boolean }
@@ -27,6 +28,7 @@ export type WorkerToRendererMessage =
   | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }
+  | { type: "catalog-pressure"; sessionHandle: string; reason: "working-set-exceeds-budget" }
   | { type: "frame-credit"; bytes: number }
   | { type: "performance-started"; requestId: number }
   | { type: "performance-result"; requestId: number; snapshot: TerminalRenderPerformanceSnapshot }
