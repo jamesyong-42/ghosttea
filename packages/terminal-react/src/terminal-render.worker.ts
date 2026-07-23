@@ -74,6 +74,8 @@ const hiddenCursor: CursorState = { x: 0, y: 0, visible: false, style: 1, blinki
 const CURSOR_BLINK_INTERVAL_MS = 600;
 const snapshots = new Map<string, SessionSnapshot>();
 const surfaces = new Map<string, SurfaceSnapshot>();
+const surfaceIdsBySession = new Map<string, Set<string>>();
+const noSurfaceIds: ReadonlySet<string> = new Set();
 const presentationDefaults = new Map<string, SessionPresentationDefaults>();
 const mounts = new Map<string, MountedCanvas>();
 const cursorBlinkTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -266,12 +268,28 @@ function surface(surfaceId: string, sessionHandle: string): SurfaceSnapshot {
     damage: { full: true, rows: new Set(), geometryChanged: true },
   };
   surfaces.set(surfaceId, value);
+  let sessionSurfaceIds = surfaceIdsBySession.get(sessionHandle);
+  if (!sessionSurfaceIds) {
+    sessionSurfaceIds = new Set();
+    surfaceIdsBySession.set(sessionHandle, sessionSurfaceIds);
+  }
+  sessionSurfaceIds.add(surfaceId);
   if (!initial.visible) occluded.add(surfaceId);
   return value;
 }
 
-function surfaceIdsForSession(sessionHandle: string): string[] {
-  return [...surfaces].flatMap(([surfaceId, value]) => (value.sessionHandle === sessionHandle ? [surfaceId] : []));
+function surfaceIdsForSession(sessionHandle: string): ReadonlySet<string> {
+  return surfaceIdsBySession.get(sessionHandle) ?? noSurfaceIds;
+}
+
+function deleteSurface(surfaceId: string): SurfaceSnapshot | undefined {
+  const value = surfaces.get(surfaceId);
+  if (!value) return undefined;
+  surfaces.delete(surfaceId);
+  const sessionSurfaceIds = surfaceIdsBySession.get(value.sessionHandle);
+  sessionSurfaceIds?.delete(surfaceId);
+  if (sessionSurfaceIds?.size === 0) surfaceIdsBySession.delete(value.sessionHandle);
+  return value;
 }
 
 function renderView(session: SessionSnapshot, presentation: SurfaceSnapshot): RenderView {
@@ -637,19 +655,18 @@ function applyFrame(packet: ArrayBuffer): void {
     nextCursor.style !== previousCursor.style ||
     nextCursor.blinking !== previousCursor.blinking;
   previous.cursor = nextCursor;
-  if (cursorChanged) {
-    for (const surfaceId of surfaceIdsForSession(id)) scheduleCursorBlink(surfaceId, true);
-  }
   previous.layoutEpoch = frame.layoutEpoch;
   previous.sessionEpoch = frame.sessionEpoch;
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
-  if (full || changedSession || completingResync) {
-    invalidateSessionFull(id);
-  } else {
-    if (cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
-    if (damagedRows.length > 0) invalidateSessionRows(id, damagedRows, geometryChanged);
+  const requiresFullRedraw = full || changedSession || completingResync;
+  if (!requiresFullRedraw && cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
+  const hasRowDamage = damagedRows.length > 0;
+  for (const surfaceId of surfaceIdsForSession(id)) {
+    if (cursorChanged) scheduleCursorBlink(surfaceId, true);
+    if (requiresFullRedraw) invalidateFull(surfaceId);
+    else if (hasRowDamage) invalidateRows(surfaceId, damagedRows, geometryChanged);
   }
   if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
 }
@@ -669,7 +686,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
     } else if (message.type === "unmount") {
       mounts.delete(message.surfaceId);
       dirty.delete(message.surfaceId);
-      surfaces.delete(message.surfaceId);
+      deleteSurface(message.surfaceId);
       occluded.delete(message.surfaceId);
       renderer?.unmount(message.surfaceId);
       const timer = cursorBlinkTimers.get(message.surfaceId);
@@ -688,6 +705,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
         if (timer !== undefined) clearTimeout(timer);
         cursorBlinkTimers.delete(surfaceId);
       }
+      surfaceIdsBySession.delete(message.sessionHandle);
       snapshots.delete(message.sessionHandle);
       presentationDefaults.delete(message.sessionHandle);
     } else if (message.type === "resize") {
