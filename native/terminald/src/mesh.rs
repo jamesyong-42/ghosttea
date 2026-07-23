@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     service::Registry,
-    session::SessionSummary,
+    session::{SessionActivity, SessionSummary},
     tunnel_protocol::{SharedSessionSummary, TunnelInput},
 };
 
@@ -29,6 +29,12 @@ pub struct RemoteControlChanged {
     pub cols: u16,
     pub rows: u16,
     pub layout_epoch: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteActivityChanged {
+    pub session_id: String,
+    pub activity: SessionActivity,
 }
 
 pub struct RemoteResize {
@@ -78,6 +84,7 @@ pub struct RemoteSessionOpen {
 #[async_trait]
 pub trait RemoteTerminalRuntime: Send + Sync {
     fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged>;
+    fn subscribe_activity(&self) -> broadcast::Receiver<RemoteActivityChanged>;
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>>;
     async fn list_sessions(&self, device_id: &str) -> Result<Vec<SharedSessionSummary>>;
     async fn open_session(&self, request: RemoteSessionOpen) -> Result<SessionSummary>;
@@ -128,6 +135,12 @@ fn unavailable<T>() -> Result<T> {
 #[async_trait]
 impl RemoteTerminalRuntime for NoRemoteRuntime {
     fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged> {
+        let (sender, receiver) = broadcast::channel(1);
+        drop(sender);
+        receiver
+    }
+
+    fn subscribe_activity(&self) -> broadcast::Receiver<RemoteActivityChanged> {
         let (sender, receiver) = broadcast::channel(1);
         drop(sender);
         receiver

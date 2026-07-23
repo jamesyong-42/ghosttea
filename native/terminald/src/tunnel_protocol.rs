@@ -9,10 +9,11 @@ use serde::{
     ser::{SerializeSeq, SerializeTuple},
 };
 
-use crate::session::{KeyInput, MouseInput};
+use crate::session::{KeyInput, MouseInput, SessionActivity};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 3;
+pub const PROTOCOL_MINOR: u16 = 4;
+pub const SESSION_ACTIVITY_PROTOCOL_MINOR: u16 = 4;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -383,6 +384,9 @@ pub enum StateMessage {
         rows: u16,
         layout_epoch: u64,
     },
+    ActivityChanged {
+        activity: SessionActivity,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -431,6 +435,9 @@ impl Serialize for CompactStateMessageRef<'_> {
                     layout_epoch: *layout_epoch,
                 },
             ),
+            StateMessage::ActivityChanged { activity } => {
+                serializer.serialize_newtype_variant("CompactStateMessage", 3, "a", activity)
+            }
         }
     }
 }
@@ -603,6 +610,8 @@ enum CompactStateMessage {
     Patch(CompactPatch),
     #[serde(rename = "c")]
     ControlChanged(CompactControlChanged),
+    #[serde(rename = "a")]
+    ActivityChanged(SessionActivity),
 }
 
 #[derive(Deserialize)]
@@ -741,6 +750,7 @@ impl TryFrom<CompactStateMessage> for StateMessage {
                 rows: control.3,
                 layout_epoch: control.4,
             },
+            CompactStateMessage::ActivityChanged(activity) => Self::ActivityChanged { activity },
         })
     }
 }
@@ -854,6 +864,8 @@ pub struct SharedSessionSummary {
     pub attachable: bool,
     pub read_write: bool,
     pub created_at_ms: u64,
+    #[serde(default)]
+    pub activity: SessionActivity,
 }
 
 #[cfg(test)]
@@ -1021,6 +1033,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn activity_changes_round_trip_in_json_and_compact_state_codecs() {
+        let message = StateMessage::ActivityChanged {
+            activity: SessionActivity {
+                kind: crate::SessionActivityKind::ForegroundJob,
+                source: crate::SessionActivitySource::ProcessGroup,
+                confidence: crate::SessionActivityConfidence::Heuristic,
+                root_process_group_id: Some(42),
+                foreground_process_group_id: Some(43),
+                observed_at_ms: 100,
+            },
+        };
+        for codec in [StateCodec::Json, StateCodec::CompactJsonV1] {
+            let encoded = encode_state_message(&message, codec, 4096).unwrap();
+            let (decoded, consumed) = decode_state_message(&encoded, codec, 4096).unwrap();
+            assert_eq!(decoded, message);
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+
+    #[test]
+    fn older_shared_summaries_default_activity_to_unknown() {
+        let summary: SharedSessionSummary = serde_json::from_value(serde_json::json!({
+            "sessionId": "session",
+            "title": "shell",
+            "cwdLabel": null,
+            "running": true,
+            "attachable": true,
+            "readWrite": true,
+            "createdAtMs": 1
+        }))
+        .unwrap();
+        assert_eq!(summary.activity.kind, crate::SessionActivityKind::Unknown);
+        assert_eq!(
+            summary.activity.source,
+            crate::SessionActivitySource::Unsupported
+        );
     }
 
     #[test]

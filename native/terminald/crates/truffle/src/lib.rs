@@ -21,16 +21,18 @@ use truffle_core::{Node, network::tailscale::TailscaleProvider, transport::quic:
 use uuid::Uuid;
 
 use ghosttea::{
-    RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteReplica,
-    RemoteResize, RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, Session,
-    SessionRegistry as Registry, SessionSummary, TerminalMesh, ViewAccess,
+    RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
+    RemoteHostSummary, RemoteReplica, RemoteResize, RemoteSelection, RemoteSessionOpen,
+    RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
+    ViewAccess,
     tunnel_protocol::{
         CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-        RowReplacement, SessionControlMessage, SharedSessionSummary, StateCodec, StateMessage,
-        StreamKind, StreamPreface, TerminalHostAdvertisement, TunnelInput, decode_compact_message,
-        decode_message, decode_preface, decode_state_message, encode_compact_message,
-        encode_message, encode_preface, encode_state_message,
+        RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage,
+        SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
+        TerminalHostAdvertisement, TunnelInput, decode_compact_message, decode_message,
+        decode_preface, decode_state_message, encode_compact_message, encode_message,
+        encode_preface, encode_state_message,
     },
 };
 
@@ -52,17 +54,20 @@ pub struct MeshRuntime {
     views: RemoteViews,
     connections: RemoteConnections,
     control_tx: broadcast::Sender<RemoteControlChanged>,
+    activity_tx: broadcast::Sender<RemoteActivityChanged>,
 }
 
 impl Default for MeshRuntime {
     fn default() -> Self {
         let (control_tx, _) = broadcast::channel(64);
+        let (activity_tx, _) = broadcast::channel(64);
         Self {
             ready: Arc::default(),
             replicas: Arc::default(),
             views: Arc::default(),
             connections: Arc::default(),
             control_tx,
+            activity_tx,
         }
     }
 }
@@ -235,6 +240,7 @@ impl MeshRuntime {
             frames,
             text_engine,
         );
+        replica.set_activity(remote.activity.clone());
         let summary = replica.summary();
         self.replicas.write().await.insert(
             summary.id.clone(),
@@ -382,6 +388,7 @@ impl MeshRuntime {
         let views = Arc::clone(&self.views);
         let connections = Arc::clone(&self.connections);
         let remote_control_tx = self.control_tx.clone();
+        let remote_activity_tx = self.activity_tx.clone();
         tokio::spawn(async move {
             let mut connection_failed = true;
             loop {
@@ -432,6 +439,13 @@ impl MeshRuntime {
                             cols,
                             rows,
                             layout_epoch,
+                        });
+                    }
+                    Ok(Some(StateMessage::ActivityChanged { activity })) => {
+                        replica.set_activity(activity.clone());
+                        let _ = remote_activity_tx.send(RemoteActivityChanged {
+                            session_id: local_session_id.clone(),
+                            activity,
                         });
                     }
                     Ok(None) => break,
@@ -754,7 +768,7 @@ impl MeshRuntime {
                 nonce: echoed_nonce,
                 state_codec,
             } if protocol_major == PROTOCOL_MAJOR
-                && protocol_minor >= PROTOCOL_MINOR
+                && protocol_minor > 0
                 && echoed_nonce == nonce
                 && host_instance_id == advertisement.host_instance_id
                 && state_codec.is_none_or(|codec| codec == StateCodec::CompactJsonV1) =>
@@ -815,8 +829,8 @@ async fn validated_advertisement(
     if advertisement.protocol_major != PROTOCOL_MAJOR {
         bail!("remote terminal protocol major is incompatible");
     }
-    if advertisement.protocol_minor < PROTOCOL_MINOR {
-        bail!("remote terminal protocol minor is too old");
+    if advertisement.protocol_minor == 0 {
+        bail!("remote terminal protocol minor is invalid");
     }
     Ok(advertisement)
 }
@@ -1013,6 +1027,7 @@ async fn advertise_loop(
                     attachable: true,
                     read_write: config.advertises_write(),
                     created_at_ms: session.created_at_ms(),
+                    activity: summary.activity,
                 }
             })
             .collect();
@@ -1143,7 +1158,7 @@ where
     .await
     .context("timed out reading compact-stream client hello")??
     .context("compact stream closed before client hello")?;
-    let (client_nonce, state_codec) = match hello {
+    let (client_nonce, state_codec, protocol_minor) = match hello {
         ConnectionMessage::ClientHello {
             protocol_major,
             protocol_minor,
@@ -1152,13 +1167,17 @@ where
             state_codecs,
             ..
         } if protocol_major == PROTOCOL_MAJOR
-            && protocol_minor >= PROTOCOL_MINOR
+            && protocol_minor > 0
             && !local_device_id.trim().is_empty()
             && expected_device_id
                 .as_deref()
                 .is_none_or(|expected| expected == local_device_id) =>
         {
-            (nonce, negotiate_state_codec(state_codecs))
+            (
+                nonce,
+                negotiate_state_codec(state_codecs),
+                protocol_minor.min(PROTOCOL_MINOR),
+            )
         }
         ConnectionMessage::ClientHello { .. } => {
             bail!("compact-stream client hello identity or protocol mismatch")
@@ -1221,6 +1240,7 @@ where
                 config,
                 client_id,
                 state_codec,
+                protocol_minor,
             )
             .await?;
         }
@@ -1236,6 +1256,7 @@ async fn handle_compact_session_protocol<S>(
     config: TruffleTerminalConfig,
     client_id: String,
     state_codec: StateCodec,
+    protocol_minor: u16,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -1295,6 +1316,7 @@ where
 
     let result = async {
         let mut controls = session.subscribe_control();
+        let mut activities = session.subscribe_activity();
         let mut snapshots = session.subscribe_logical();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
@@ -1316,6 +1338,16 @@ where
                         cols,
                         rows,
                         layout_epoch,
+                    },
+                    state_codec,
+                )
+                .await?;
+        }
+        if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
+            control
+                .write_compact_state_message(
+                    &StateMessage::ActivityChanged {
+                        activity: session.summary().activity,
                     },
                     state_codec,
                 )
@@ -1491,6 +1523,20 @@ where
                         state_codec,
                     ).await?;
                 }
+                changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
+                    let activity = match changed {
+                        Ok(activity) => activity,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            session.announce_activity();
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    control.write_compact_state_message(
+                        &StateMessage::ActivityChanged { activity },
+                        state_codec,
+                    ).await?;
+                }
             }
         }
         Ok(())
@@ -1568,7 +1614,7 @@ async fn handle_connection(
     .await
     .context("timed out reading client hello")??
     .context("connection closed before client hello")?;
-    let (client_nonce, state_codec) = match hello {
+    let (client_nonce, state_codec, protocol_minor) = match hello {
         ConnectionMessage::ClientHello {
             protocol_major,
             protocol_minor,
@@ -1577,11 +1623,11 @@ async fn handle_connection(
             state_codecs,
             ..
         } if protocol_major == PROTOCOL_MAJOR
-            && protocol_minor >= PROTOCOL_MINOR
+            && protocol_minor > 0
             && local_device_id == expected_device_id =>
         {
             let state_codec = negotiate_state_codec(state_codecs);
-            (nonce, state_codec)
+            (nonce, state_codec, protocol_minor.min(PROTOCOL_MINOR))
         }
         ConnectionMessage::ClientHello { .. } => {
             bail!("client hello identity or protocol mismatch")
@@ -1612,6 +1658,7 @@ async fn handle_connection(
             let config = streams_config.clone();
             let client_id = streams_client_id.clone();
             let state_codec = streams_state_codec;
+            let protocol_minor = protocol_minor;
             let connection = Arc::clone(&streams_connection);
             tokio::spawn(async move {
                 if let Err(error) = handle_application_stream(
@@ -1621,6 +1668,7 @@ async fn handle_connection(
                     config,
                     client_id,
                     state_codec,
+                    protocol_minor,
                 )
                 .await
                 {
@@ -1674,6 +1722,7 @@ async fn handle_application_stream(
     config: TruffleTerminalConfig,
     client_id: String,
     state_codec: StateCodec,
+    protocol_minor: u16,
 ) -> Result<()> {
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
@@ -1732,6 +1781,7 @@ async fn handle_application_stream(
         &view_id,
         state_cancelled.clone(),
         state_codec,
+        protocol_minor,
     )
     .await?;
 
@@ -1745,6 +1795,7 @@ async fn handle_application_stream(
         StateStreamContext {
             cancelled: state_cancelled,
             codec: state_codec,
+            protocol_minor,
         },
     )
     .await;
@@ -1756,6 +1807,7 @@ async fn handle_application_stream(
 struct StateStreamContext {
     cancelled: tokio::sync::watch::Receiver<bool>,
     codec: StateCodec,
+    protocol_minor: u16,
 }
 
 async fn session_control_loop(
@@ -1857,6 +1909,7 @@ async fn session_control_loop(
                     attached_view_id,
                     state_stream.cancelled.clone(),
                     state_stream.codec,
+                    state_stream.protocol_minor,
                 )
                 .await?;
             }
@@ -1901,6 +1954,7 @@ async fn spawn_state_stream(
     view_id: &str,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
     state_codec: StateCodec,
+    protocol_minor: u16,
 ) -> Result<()> {
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
@@ -1912,6 +1966,7 @@ async fn spawn_state_stream(
         })
         .await?;
     let mut controls = session.subscribe_control();
+    let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
     let mut previous = session.logical_snapshot();
     if let Some(snapshot) = previous.as_ref() {
@@ -1929,6 +1984,16 @@ async fn spawn_state_stream(
                     cols,
                     rows,
                     layout_epoch,
+                },
+                state_codec,
+            )
+            .await?;
+    }
+    if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
+        state
+            .write_state_message(
+                &StateMessage::ActivityChanged {
+                    activity: session.summary().activity,
                 },
                 state_codec,
             )
@@ -1972,6 +2037,14 @@ async fn spawn_state_stream(
                         layout_epoch: changed.layout_epoch,
                     }),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => match changed {
+                    Ok(activity) => Some(StateMessage::ActivityChanged { activity }),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        session.announce_activity();
+                        continue;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
             };
@@ -2051,6 +2124,7 @@ fn shared_sessions(
                 attachable: true,
                 read_write: config.advertises_write(),
                 created_at_ms: session.created_at_ms(),
+                activity: summary.activity,
             }
         })
         .collect()
@@ -2364,6 +2438,10 @@ impl ProtocolStream {
 impl RemoteTerminalRuntime for MeshRuntime {
     fn subscribe_control(&self) -> broadcast::Receiver<RemoteControlChanged> {
         self.control_tx.subscribe()
+    }
+
+    fn subscribe_activity(&self) -> broadcast::Receiver<RemoteActivityChanged> {
+        self.activity_tx.subscribe()
     }
 
     async fn hosts(&self) -> Result<Vec<RemoteHostSummary>> {

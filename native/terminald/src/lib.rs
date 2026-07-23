@@ -11,13 +11,15 @@ pub use ghosttea_text::{
     FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
 };
 pub use mesh::{
-    RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteHostSummary, RemoteResize,
-    RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime, TerminalMesh,
+    RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
+    RemoteHostSummary, RemoteResize, RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime,
+    TerminalMesh,
 };
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;
 pub use service::{TerminalService, TerminalServiceConfig, TerminalServiceListeners};
 pub use session::{
-    AutomationInputOperation, AutomationInputResult, ExitOutcome, Session, SessionEnvironment,
-    SessionExit, SessionSummary, TerminationSource,
+    AutomationInputOperation, AutomationInputResult, ExitOutcome, Session, SessionActivity,
+    SessionActivityConfidence, SessionActivityKind, SessionActivitySource, SessionEnvironment,
+    SessionExit, SessionProgramKind, SessionSummary, TerminationSource,
 };

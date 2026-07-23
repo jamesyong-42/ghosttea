@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
 import { insertPane, leaves, mountSessionInPane, pane, persistedWorkspace, restoreNode } from "./pane-layout";
 
 function session(id: string): SessionSummary {
@@ -21,6 +21,7 @@ function session(id: string): SessionSummary {
     requestedTermination: null,
     exitOutcome: null,
     ownerId: null,
+    activity: unknownSessionActivity(),
   };
 }
 

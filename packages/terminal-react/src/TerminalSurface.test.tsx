@@ -1,5 +1,5 @@
 import { isValidElement } from "react";
-import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
 import { describe, expect, it } from "vitest";
 import { TerminalSurface, viewportSelection } from "./TerminalSurface";
 import { DEFAULT_THEME } from "./renderers/types";
@@ -23,6 +23,7 @@ function session(id: string, handle: string): SessionSummary {
     requestedTermination: null,
     exitOutcome: null,
     ownerId: null,
+    activity: unknownSessionActivity(),
   };
 }
 

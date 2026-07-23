@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
 import {
   containsPane,
   equalize,
@@ -29,6 +29,7 @@ const session = (id: string): SessionSummary => ({
   requestedTermination: null,
   exitOutcome: null,
   ownerId: null,
+  activity: unknownSessionActivity(),
 });
 
 describe("pane layout", () => {

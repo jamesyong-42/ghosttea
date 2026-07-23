@@ -169,6 +169,7 @@ async function initializeWorkspace(
       cols: 100,
       rows: 30,
       persistence: "terminate-with-app",
+      programKind: "interactive-shell",
     });
     layout = pane(layoutId("pane"), session);
   }
@@ -503,6 +504,7 @@ export function GhostteaWorkspace({
               cols: active.session.cols,
               rows: active.session.rows,
               persistence: "terminate-with-app",
+              programKind: "interactive-shell",
             });
         if (!mountedRef.current || !layoutRef.current || !containsPane(layoutRef.current, active.id)) {
           terminalRuntime.terminate(session.id);
@@ -536,6 +538,7 @@ export function GhostteaWorkspace({
             cols: active.session.cols,
             rows: active.session.rows,
             persistence: "terminate-with-app",
+            programKind: "interactive-shell",
           });
       const latest = layoutRef.current;
       if (!mountedRef.current || !latest || !containsPane(latest, active.id)) {

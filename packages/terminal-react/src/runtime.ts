@@ -4,6 +4,7 @@ import {
   PROTOCOL_MINOR,
   type CreateSessionOptions,
   type RemoteHostSummary,
+  type SessionActivity,
   type ServerEvent,
   type SessionSummary,
   type SharedSessionSummary,
@@ -42,6 +43,17 @@ export type TerminalMount = {
   resize: (width: number, height: number, dpr: number) => void;
   dispose: () => void;
 };
+
+function sameSessionActivity(left: SessionActivity, right: SessionActivity): boolean {
+  return (
+    left.kind === right.kind &&
+    left.source === right.source &&
+    left.confidence === right.confidence &&
+    left.rootProcessGroupId === right.rootProcessGroupId &&
+    left.foregroundProcessGroupId === right.foregroundProcessGroupId &&
+    left.observedAtMs === right.observedAtMs
+  );
+}
 
 interface MountedCanvas {
   canvas: HTMLCanvasElement;
@@ -259,6 +271,16 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.dispatchEvent(new CustomEvent("session-metadata", { detail: exited }));
       this.dispatchEvent(new CustomEvent("session-exited", { detail }));
     });
+    this.#control.addEventListener("session-activity-changed", (event) => {
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "session-activity-changed" }>>).detail;
+      const handle = this.#handleBySessionId.get(detail.sessionId);
+      const session = handle ? this.#sessionByHandle.get(handle) : undefined;
+      if (!handle || !session || session.exited) return;
+      const updated = { ...session, activity: detail.activity };
+      this.#sessionByHandle.set(handle, updated);
+      this.dispatchEvent(new CustomEvent("session-activity", { detail }));
+      this.dispatchEvent(new CustomEvent("session-metadata", { detail: updated }));
+    });
     this.#control.addEventListener("control-changed", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "control-changed" }>>).detail;
       for (const [viewId, view] of this.#views) {
@@ -325,7 +347,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
           if (
             previous.title !== response.session.title ||
             previous.cwd !== response.session.cwd ||
-            previous.exited !== response.session.exited
+            previous.exited !== response.session.exited ||
+            !sameSessionActivity(previous.activity, response.session.activity)
           ) {
             this.dispatchEvent(new CustomEvent("session-metadata", { detail: response.session }));
           }

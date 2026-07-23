@@ -1,5 +1,29 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 5;
+export const PROTOCOL_MINOR = 6;
+
+export type SessionActivityKind = "shell-idle" | "foreground-job" | "unknown";
+export type SessionActivitySource = "shell-integration" | "process-group" | "unsupported";
+export type SessionActivityConfidence = "authoritative" | "heuristic";
+
+export interface SessionActivity {
+  kind: SessionActivityKind;
+  source: SessionActivitySource;
+  confidence: SessionActivityConfidence;
+  rootProcessGroupId: number | null;
+  foregroundProcessGroupId: number | null;
+  observedAtMs: number;
+}
+
+export function unknownSessionActivity(): SessionActivity {
+  return {
+    kind: "unknown",
+    source: "unsupported",
+    confidence: "heuristic",
+    rootProcessGroupId: null,
+    foregroundProcessGroupId: null,
+    observedAtMs: 0,
+  };
+}
 
 export type SessionEnvironment =
   { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
@@ -28,6 +52,11 @@ export interface CreateSessionOptions {
   cols: number;
   rows: number;
   persistence: "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
+  /**
+   * Helps activity detection distinguish an interactive shell that owns the
+   * foreground process group from a directly launched application.
+   */
+  programKind?: "interactive-shell" | "application" | "auto";
   /** Application-defined lifecycle owner, such as an Electron tab ID. */
   ownerId?: string;
 }
@@ -128,6 +157,7 @@ export interface SessionSummary {
   requestedTermination: TerminationSource | null;
   exitOutcome: ExitOutcome | null;
   ownerId: string | null;
+  activity: SessionActivity;
 }
 
 export interface ViewInputIdentity {
@@ -144,6 +174,7 @@ export interface SharedSessionSummary {
   attachable: boolean;
   readWrite: boolean;
   createdAtMs: number;
+  activity: SessionActivity;
 }
 
 export interface RemoteHostSummary {
@@ -213,7 +244,8 @@ export type ServerEvent =
       cols: number;
       rows: number;
       layoutEpoch: number;
-    };
+    }
+  | { requestId: 0; type: "session-activity-changed"; sessionId: string; activity: SessionActivity };
 
 export interface TerminalKeyEvent {
   type: "down" | "up";
@@ -275,6 +307,23 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     outcome === "application-terminated" ||
     outcome === "service-terminated" ||
     outcome === "unknown";
+  const validActivity = (activity: unknown): activity is SessionActivity => {
+    if (!activity || typeof activity !== "object") return false;
+    const value = activity as Record<string, unknown>;
+    return (
+      (value.kind === "shell-idle" || value.kind === "foreground-job" || value.kind === "unknown") &&
+      (value.source === "shell-integration" || value.source === "process-group" || value.source === "unsupported") &&
+      (value.confidence === "authoritative" || value.confidence === "heuristic") &&
+      (value.rootProcessGroupId === null || Number.isSafeInteger(value.rootProcessGroupId)) &&
+      (value.foregroundProcessGroupId === null || Number.isSafeInteger(value.foregroundProcessGroupId)) &&
+      Number.isSafeInteger(value.observedAtMs) &&
+      (value.observedAtMs as number) >= 0
+    );
+  };
+  const normalizeActivity = (summary: Record<string, unknown>): boolean => {
+    if (summary.activity === undefined) summary.activity = unknownSessionActivity();
+    return validActivity(summary.activity);
+  };
   const validSession = (session: unknown): boolean => {
     if (!session || typeof session !== "object") return false;
     const summary = session as Record<string, unknown>;
@@ -295,7 +344,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       (summary.exitSignal === null || typeof summary.exitSignal === "string") &&
       validTerminationSource(summary.requestedTermination) &&
       (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome)) &&
-      (summary.ownerId === null || typeof summary.ownerId === "string")
+      (summary.ownerId === null || typeof summary.ownerId === "string") &&
+      normalizeActivity(summary)
     );
   };
   const validSharedSession = (session: unknown): boolean => {
@@ -308,7 +358,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       typeof summary.running === "boolean" &&
       typeof summary.attachable === "boolean" &&
       typeof summary.readWrite === "boolean" &&
-      Number.isSafeInteger(summary.createdAtMs)
+      Number.isSafeInteger(summary.createdAtMs) &&
+      normalizeActivity(summary)
     );
   };
   switch (candidate.type) {
@@ -400,6 +451,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
         Number.isSafeInteger(candidate.rows) &&
         Number.isSafeInteger(candidate.layoutEpoch)
       );
+    case "session-activity-changed":
+      return candidate.requestId === 0 && typeof candidate.sessionId === "string" && validActivity(candidate.activity);
     default:
       return false;
   }

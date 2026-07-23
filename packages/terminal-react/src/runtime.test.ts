@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
 import { GhostteaTerminalRuntime } from "./runtime";
 
 class FakeWorker extends EventTarget {
@@ -88,6 +88,7 @@ const session = {
   requestedTermination: null,
   exitOutcome: null,
   ownerId: null,
+  activity: unknownSessionActivity(),
 } as const;
 
 function controlChanged(control: FakePort, controllerViewId: string, cols: number, rows: number): void {
@@ -309,6 +310,52 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
 
     runtime.terminate(session.id);
     expect(frames.messages.at(-1)).toEqual({ type: "subscribe", sessionHandles: [] });
+  });
+
+  it("applies unsolicited activity changes without waiting for a terminal frame", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    const activities: unknown[] = [];
+    const metadata: SessionSummary[] = [];
+    runtime.addEventListener("session-activity", (event) => activities.push((event as CustomEvent).detail));
+    runtime.addEventListener("session-metadata", (event) =>
+      metadata.push((event as CustomEvent<SessionSummary>).detail),
+    );
+
+    const activity = {
+      kind: "foreground-job",
+      source: "process-group",
+      confidence: "heuristic",
+      rootProcessGroupId: 42,
+      foregroundProcessGroupId: 43,
+      observedAtMs: 100,
+    } as const;
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "session-activity-changed",
+          sessionId: session.id,
+          activity,
+        },
+      }),
+    );
+
+    expect(runtime.sessionMetadata(session.handle)?.activity).toEqual(activity);
+    expect(activities).toEqual([{ requestId: 0, type: "session-activity-changed", sessionId: session.id, activity }]);
+    expect(metadata.at(-1)?.activity).toEqual(activity);
   });
 
   it("cancels metadata refreshes and preserves complete exit metadata when a session exits", async () => {

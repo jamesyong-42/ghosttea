@@ -164,11 +164,13 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
     rows: UInt16,
     layoutEpoch: UInt64
   )
+  case activityChanged(GhostteaSessionActivity)
 
   private enum CodingKeys: String, CodingKey {
     case type
     case controllerViewID = "controllerViewId"
     case controlEpoch, cols, rows, layoutEpoch
+    case activity
   }
 
   public init(from decoder: Decoder) throws {
@@ -184,6 +186,8 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
         rows: values.decode(UInt16.self, forKey: .rows),
         layoutEpoch: values.decode(UInt64.self, forKey: .layoutEpoch)
       )
+    case "activity-changed":
+      self = try .activityChanged(values.decode(GhostteaSessionActivity.self, forKey: .activity))
     default: throw GhostteaTruffleError.malformedMessage
     }
   }
@@ -206,6 +210,10 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
       try values.encode(cols, forKey: .cols)
       try values.encode(rows, forKey: .rows)
       try values.encode(layout, forKey: .layoutEpoch)
+    case .activityChanged(let activity):
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("activity-changed", forKey: .type)
+      try values.encode(activity, forKey: .activity)
     }
   }
 }
@@ -766,7 +774,7 @@ private actor GhostteaAttachmentHandshake {
     let response: GhostteaConnectionMessage = try await readFrame()
     guard case .serverHello(let major, let minor, let host, let echoed, let stateCodec) = response,
       major == GhostteaTruffleContract.protocolMajor,
-      minor >= GhostteaTruffleContract.protocolMinor, echoed == nonce, !host.isEmpty
+      minor > 0, echoed == nonce, !host.isEmpty
     else { throw GhostteaTruffleError.mismatchedResponse }
     return (host, stateCodec ?? .json)
   }

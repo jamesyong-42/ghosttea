@@ -93,6 +93,7 @@ export function RenderBenchmarkApp({ config }: { config: RenderBenchmarkConfig }
         Array.from({ length: benchmarkCase.panes }, () =>
           runtime.createSession({
             executable: idle ? "/bin/sh" : interactive ? "/bin/cat" : config.workloadExecutable,
+            programKind: "application",
             args: idle
               ? [
                   "-c",

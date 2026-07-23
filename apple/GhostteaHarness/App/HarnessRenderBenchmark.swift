@@ -624,9 +624,9 @@ enum HarnessRenderBenchmark {
       return try await replica.publishSnapshotJSON(encoder.encode(snapshot))
     case .patch(let patch):
       return try await replica.publishPatchJSON(encoder.encode(patch))
-    case .controlChanged:
+    case .controlChanged, .activityChanged:
       throw HarnessRenderBenchmarkError.invalidConfiguration(
-        "control messages cannot produce replica frames"
+        "metadata messages cannot produce replica frames"
       )
     }
   }
@@ -1088,6 +1088,18 @@ enum HarnessRenderBenchmark {
       ]
     case .controlChanged(let viewID, let epoch, let cols, let rows, let layout):
       return ["c": [viewID, epoch, cols, rows, layout]]
+    case .activityChanged(let activity):
+      return [
+        "a": [
+          "kind": activity.kind.rawValue,
+          "source": activity.source.rawValue,
+          "confidence": activity.confidence.rawValue,
+          "rootProcessGroupId": activity.rootProcessGroupID.map { $0 as Any } ?? NSNull(),
+          "foregroundProcessGroupId":
+            activity.foregroundProcessGroupID.map { $0 as Any } ?? NSNull(),
+          "observedAtMs": activity.observedAtMs,
+        ]
+      ]
     }
   }
 

@@ -235,7 +235,15 @@ try {
       JSON.stringify({
         requestId: 1,
         type: "create-session",
-        options: { executable: "/bin/sh", args: [], env: {}, cols: 80, rows: 20, persistence: "terminate-with-app" },
+        options: {
+          executable: "/bin/sh",
+          args: [],
+          env: {},
+          cols: 80,
+          rows: 20,
+          persistence: "terminate-with-app",
+          programKind: "interactive-shell",
+        },
       }),
     ),
   );
@@ -257,6 +265,15 @@ try {
   ) {
     throw new Error("running session reported exit metadata");
   }
+  if (
+    created.session.activity?.kind !== "shell-idle" ||
+    created.session.activity.source !== "process-group" ||
+    created.session.activity.confidence !== "heuristic" ||
+    !Number.isInteger(created.session.activity.rootProcessGroupId) ||
+    created.session.activity.rootProcessGroupId !== created.session.activity.foregroundProcessGroupId
+  ) {
+    throw new Error(`interactive shell activity metadata was incorrect: ${JSON.stringify(created.session.activity)}`);
+  }
   const primaryView = {
     viewId: "smoke-primary",
     attachmentEpoch: 0,
@@ -277,6 +294,22 @@ try {
   const attached = await nextControlResponse(control, 2);
   if (attached.type !== "view-attached") throw new Error(`attach failed: ${JSON.stringify(attached)}`);
   primaryView.attachmentEpoch = attached.attachmentEpoch;
+  const activityControl = await open(controlSocket);
+  activityControl.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: 1,
+        type: "hello",
+        protocolMajor: 1,
+        protocolMinor: 6,
+        clientBuild: "activity-smoke",
+      }),
+    ),
+  );
+  const activityHello = await nextControlResponse(activityControl, 1);
+  if (activityHello.type !== "hello" || activityHello.protocolMinor < 6) {
+    throw new Error(`activity protocol negotiation failed: ${JSON.stringify(activityHello)}`);
+  }
   control.socket.write(
     packet(
       JSON.stringify({
@@ -284,11 +317,37 @@ try {
         type: "send-text",
         sessionId: created.session.id,
         ...nextInput(primaryView),
-        text: "printf 'ghostty-smoke\\n'\r",
+        text: "sleep 1\r",
       }),
     ),
   );
   await nextControlResponse(control, 3);
+  const foregroundActivity = await nextControlEvent(
+    activityControl,
+    "session-activity-changed",
+    (event) => event.sessionId === created.session.id && event.activity?.kind === "foreground-job",
+  );
+  if (foregroundActivity.activity.foregroundProcessGroupId === foregroundActivity.activity.rootProcessGroupId) {
+    throw new Error(`foreground process group was not exposed: ${JSON.stringify(foregroundActivity.activity)}`);
+  }
+  await nextControlEvent(
+    activityControl,
+    "session-activity-changed",
+    (event) => event.sessionId === created.session.id && event.activity?.kind === "shell-idle",
+  );
+  activityControl.socket.end();
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: 4,
+        type: "send-text",
+        sessionId: created.session.id,
+        ...nextInput(primaryView),
+        text: "printf 'ghostty-smoke\\n'\r",
+      }),
+    ),
+  );
+  await nextControlResponse(control, 4);
   const deadline = Date.now() + 5_000;
   let found = false;
   while (Date.now() < deadline && !found) {
@@ -310,7 +369,7 @@ try {
   }
   if (!found) throw new Error("PTY output was not present in a binary snapshot");
 
-  let requestId = 4;
+  let requestId = 5;
   control.socket.write(
     packet(
       JSON.stringify({

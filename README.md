@@ -200,7 +200,9 @@ described above; otherwise remote panes intentionally attach view-only.
 The network protocol sends logical terminal rows and typed terminal input; it
 does not send local glyph atlases, WebGPU display lists, or raw renderer
 frames. See [`draft/terminal-tunneling.md`](draft/terminal-tunneling.md) for
-the protocol and authority model.
+the protocol and authority model. Session liveness, shell-idle/foreground-job
+semantics, delivery, and compatibility are documented in
+[`docs/session-activity.md`](docs/session-activity.md).
 
 ## Verify
 

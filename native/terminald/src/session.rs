@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -89,6 +90,102 @@ pub enum SessionEnvironment {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionProgramKind {
+    InteractiveShell,
+    Application,
+    #[default]
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResolvedProgramKind {
+    InteractiveShell,
+    Application,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionActivityKind {
+    ShellIdle,
+    ForegroundJob,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionActivitySource {
+    ShellIntegration,
+    ProcessGroup,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionActivityConfidence {
+    Authoritative,
+    Heuristic,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActivity {
+    pub kind: SessionActivityKind,
+    pub source: SessionActivitySource,
+    pub confidence: SessionActivityConfidence,
+    pub root_process_group_id: Option<i32>,
+    pub foreground_process_group_id: Option<i32>,
+    pub observed_at_ms: u64,
+}
+
+impl SessionActivity {
+    pub(crate) fn unsupported(observed_at_ms: u64) -> Self {
+        Self {
+            kind: SessionActivityKind::Unknown,
+            source: SessionActivitySource::Unsupported,
+            confidence: SessionActivityConfidence::Heuristic,
+            root_process_group_id: None,
+            foreground_process_group_id: None,
+            observed_at_ms,
+        }
+    }
+
+    fn same_observation(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.source == other.source
+            && self.confidence == other.confidence
+            && self.root_process_group_id == other.root_process_group_id
+            && self.foreground_process_group_id == other.foreground_process_group_id
+    }
+}
+
+impl Default for SessionActivity {
+    fn default() -> Self {
+        Self::unsupported(0)
+    }
+}
+
+fn classify_process_group_activity(
+    program_kind: ResolvedProgramKind,
+    root_process_group_id: Option<i32>,
+    foreground_process_group_id: Option<i32>,
+) -> SessionActivityKind {
+    match (
+        program_kind,
+        root_process_group_id,
+        foreground_process_group_id,
+    ) {
+        (_, Some(root), Some(foreground)) if root != foreground => {
+            SessionActivityKind::ForegroundJob
+        }
+        (ResolvedProgramKind::InteractiveShell, Some(_), Some(_)) => SessionActivityKind::ShellIdle,
+        (ResolvedProgramKind::Application, Some(_), Some(_)) => SessionActivityKind::ForegroundJob,
+        _ => SessionActivityKind::Unknown,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum AutomationInputOperation {
@@ -120,6 +217,8 @@ pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
     pub persistence: Persistence,
+    #[serde(default)]
+    pub program_kind: SessionProgramKind,
     pub owner_id: Option<String>,
 }
 
@@ -193,6 +292,7 @@ pub struct SessionSummary {
     pub requested_termination: Option<TerminationSource>,
     pub exit_outcome: Option<ExitOutcome>,
     pub owner_id: Option<String>,
+    pub activity: SessionActivity,
 }
 
 pub struct Session {
@@ -212,6 +312,8 @@ pub struct Session {
     requested_termination: Mutex<Option<TerminationSource>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
     control_tx: broadcast::Sender<ControlChanged>,
+    activity_tx: broadcast::Sender<SessionActivity>,
+    program_kind: ResolvedProgramKind,
 }
 
 enum InputOperation {
@@ -277,6 +379,42 @@ impl PtyProcess {
                 exit_signal: None,
             },
         }
+    }
+
+    #[cfg(unix)]
+    fn process_group_activity(
+        &self,
+        program_kind: ResolvedProgramKind,
+        observed_at_ms: u64,
+    ) -> SessionActivity {
+        let foreground_process_group_id = self.master.lock().unwrap().process_group_leader();
+        let root_process_group_id = self.pid.and_then(|pid| {
+            let pid = i32::try_from(pid).ok()?;
+            let process_group_id = unsafe { libc::getpgid(pid) };
+            (process_group_id > 0).then_some(process_group_id)
+        });
+        let kind = classify_process_group_activity(
+            program_kind,
+            root_process_group_id,
+            foreground_process_group_id,
+        );
+        SessionActivity {
+            kind,
+            source: SessionActivitySource::ProcessGroup,
+            confidence: SessionActivityConfidence::Heuristic,
+            root_process_group_id,
+            foreground_process_group_id,
+            observed_at_ms,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn process_group_activity(
+        &self,
+        _program_kind: ResolvedProgramKind,
+        observed_at_ms: u64,
+    ) -> SessionActivity {
+        SessionActivity::unsupported(observed_at_ms)
     }
 }
 
@@ -356,6 +494,54 @@ fn configure_environment(
     command.env("TERM", "xterm-256color");
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn resolve_program_kind(
+    configured: SessionProgramKind,
+    executable: &str,
+    args: &[String],
+) -> ResolvedProgramKind {
+    match configured {
+        SessionProgramKind::InteractiveShell => ResolvedProgramKind::InteractiveShell,
+        SessionProgramKind::Application => ResolvedProgramKind::Application,
+        SessionProgramKind::Auto => {
+            let executable = Path::new(executable)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(executable)
+                .trim_start_matches('-');
+            let recognized_shell = matches!(
+                executable,
+                "sh" | "ash"
+                    | "bash"
+                    | "dash"
+                    | "elvish"
+                    | "fish"
+                    | "ksh"
+                    | "mksh"
+                    | "nu"
+                    | "xonsh"
+                    | "zsh"
+            );
+            let invokes_command = args
+                .iter()
+                .any(|arg| arg == "-c" || arg == "--command" || !arg.starts_with('-'));
+            if recognized_shell && !invokes_command {
+                ResolvedProgramKind::InteractiveShell
+            } else if recognized_shell {
+                ResolvedProgramKind::Application
+            } else {
+                ResolvedProgramKind::Unknown
+            }
+        }
+    }
+}
+
 impl Session {
     pub fn spawn(
         options: SpawnOptions,
@@ -382,8 +568,10 @@ impl Session {
             cols,
             rows,
             persistence,
+            program_kind,
             owner_id,
         } = options;
+        let program_kind = resolve_program_kind(program_kind, &executable, &args);
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -409,12 +597,10 @@ impl Session {
         let id_bytes = *Uuid::parse_str(&id)?.as_bytes();
         let handle = u64::from_le_bytes(id_bytes[..8].try_into().unwrap());
         let session_epoch = u64::from_le_bytes(id_bytes[8..].try_into().unwrap()).max(1);
-        let created_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let created_at_ms = now_ms();
         let (logical_tx, _) = broadcast::channel(8);
         let (control_tx, _) = broadcast::channel(16);
+        let (activity_tx, _) = broadcast::channel(16);
         let runtime = Arc::new(TerminalRuntime::from_shared_text_engine(text_engine));
         let model = TerminalModel::new(
             runtime,
@@ -446,6 +632,7 @@ impl Session {
                 requested_termination: None,
                 exit_outcome: None,
                 owner_id,
+                activity: SessionActivity::unsupported(created_at_ms),
             }),
             created_at_ms,
             process: PtyProcess {
@@ -467,7 +654,10 @@ impl Session {
             requested_termination: Mutex::new(None),
             logical_tx,
             control_tx,
+            activity_tx,
+            program_kind,
         });
+        let _ = session.sample_activity();
         Self::start_input_actor(&session, input_rx);
         Self::start_reader(&session, reader);
         Ok(session)
@@ -624,6 +814,39 @@ impl Session {
     }
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
+    }
+
+    pub fn sample_activity(&self) -> Option<SessionActivity> {
+        if self.has_exited() {
+            return None;
+        }
+        let next = self
+            .process
+            .process_group_activity(self.program_kind, now_ms());
+        let changed = {
+            let mut summary = self.summary.lock().unwrap();
+            if summary.activity.observed_at_ms != 0 && summary.activity.same_observation(&next) {
+                false
+            } else {
+                summary.activity = next.clone();
+                true
+            }
+        };
+        if !changed {
+            return None;
+        }
+        let _ = self.activity_tx.send(next.clone());
+        Some(next)
+    }
+
+    pub fn subscribe_activity(&self) -> broadcast::Receiver<SessionActivity> {
+        self.activity_tx.subscribe()
+    }
+
+    pub fn announce_activity(&self) {
+        let _ = self
+            .activity_tx
+            .send(self.summary.lock().unwrap().activity.clone());
     }
 
     pub fn selection_text(
@@ -1228,6 +1451,23 @@ impl Session {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn wait_for_activity(
+        session: &Session,
+        expected: SessionActivityKind,
+        timeout: Duration,
+    ) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < timeout {
+            let _ = session.sample_activity();
+            if session.summary().activity.kind == expected {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
     #[test]
     fn clean_environment_contains_only_explicit_variables_and_terminal_contract() {
         let mut command = CommandBuilder::new("test");
@@ -1311,5 +1551,189 @@ mod tests {
             classify_exit(None, Some("Killed"), Some(TerminationSource::Application)),
             ExitOutcome::ApplicationTerminated
         );
+    }
+
+    #[test]
+    fn resolves_explicit_and_auto_program_kinds_without_mistaking_shell_scripts_for_prompts() {
+        assert_eq!(
+            resolve_program_kind(SessionProgramKind::InteractiveShell, "/bin/custom", &[]),
+            ResolvedProgramKind::InteractiveShell
+        );
+        assert_eq!(
+            resolve_program_kind(SessionProgramKind::Auto, "/bin/zsh", &[]),
+            ResolvedProgramKind::InteractiveShell
+        );
+        assert_eq!(
+            resolve_program_kind(
+                SessionProgramKind::Auto,
+                "/bin/sh",
+                &["-c".into(), "sleep 1".into()]
+            ),
+            ResolvedProgramKind::Application
+        );
+        assert_eq!(
+            resolve_program_kind(SessionProgramKind::Auto, "/usr/bin/vim", &[]),
+            ResolvedProgramKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classifies_process_groups_only_when_program_identity_supports_the_inference() {
+        assert_eq!(
+            classify_process_group_activity(
+                ResolvedProgramKind::InteractiveShell,
+                Some(10),
+                Some(10)
+            ),
+            SessionActivityKind::ShellIdle
+        );
+        assert_eq!(
+            classify_process_group_activity(
+                ResolvedProgramKind::InteractiveShell,
+                Some(10),
+                Some(20)
+            ),
+            SessionActivityKind::ForegroundJob
+        );
+        assert_eq!(
+            classify_process_group_activity(ResolvedProgramKind::Application, Some(10), Some(10)),
+            SessionActivityKind::ForegroundJob
+        );
+        assert_eq!(
+            classify_process_group_activity(ResolvedProgramKind::Unknown, Some(10), Some(10)),
+            SessionActivityKind::Unknown
+        );
+        assert_eq!(
+            classify_process_group_activity(ResolvedProgramKind::Unknown, Some(10), Some(20)),
+            SessionActivityKind::ForegroundJob
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observes_real_shell_foreground_jobs_interrupts_pipelines_and_background_jobs() {
+        let shell = if Path::new("/bin/zsh").exists() {
+            "/bin/zsh"
+        } else {
+            "/bin/sh"
+        };
+        let (frames, _) = broadcast::channel(8);
+        let (exited_tx, exited_rx) = mpsc::channel();
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: shell.into(),
+                args: Vec::new(),
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::TerminateWithApp,
+                program_kind: SessionProgramKind::InteractiveShell,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _, _| {
+                let _ = exited_tx.send(());
+            }),
+        )
+        .unwrap();
+        let view_id = "activity-test-view";
+        let client_id = "activity-test-client";
+        let attachment_epoch = session.attach_view(view_id, client_id).unwrap();
+
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ShellIdle,
+            Duration::from_secs(2)
+        ));
+        let mut changes = session.subscribe_activity();
+        assert!(session.sample_activity().is_none());
+        assert!(matches!(
+            changes.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        session
+            .send_text(
+                view_id,
+                client_id,
+                attachment_epoch,
+                1,
+                "sleep 5 | cat\n".into(),
+            )
+            .unwrap();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ForegroundJob,
+            Duration::from_secs(2)
+        ));
+        session
+            .interrupt(view_id, client_id, attachment_epoch, 2)
+            .unwrap();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ShellIdle,
+            Duration::from_secs(2)
+        ));
+
+        session
+            .send_text(view_id, client_id, attachment_epoch, 3, "sleep 1\n".into())
+            .unwrap();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ForegroundJob,
+            Duration::from_secs(2)
+        ));
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ShellIdle,
+            Duration::from_secs(3)
+        ));
+
+        session
+            .send_text(view_id, client_id, attachment_epoch, 4, "cat\n".into())
+            .unwrap();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ForegroundJob,
+            Duration::from_secs(2)
+        ));
+        session
+            .interrupt(view_id, client_id, attachment_epoch, 5)
+            .unwrap();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ShellIdle,
+            Duration::from_secs(2)
+        ));
+
+        session
+            .send_text(
+                view_id,
+                client_id,
+                attachment_epoch,
+                6,
+                "sleep 1 &\n".into(),
+            )
+            .unwrap();
+        thread::sleep(Duration::from_millis(250));
+        let _ = session.sample_activity();
+        assert!(wait_for_activity(
+            &session,
+            SessionActivityKind::ShellIdle,
+            Duration::from_secs(2)
+        ));
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+        exited_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("shell did not exit during test cleanup");
+        assert!(session.sample_activity().is_none());
     }
 }

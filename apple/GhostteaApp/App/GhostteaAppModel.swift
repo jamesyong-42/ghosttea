@@ -12,6 +12,7 @@ final class GhostteaAppModel: ObservableObject {
   @Published private(set) var sessions: [GhostteaSharedSessionSummary] = []
   @Published private(set) var selectedHostName: String?
   @Published private(set) var selectedSession: GhostteaSharedSessionSummary?
+  @Published private(set) var selectedActivity = GhostteaSessionActivity.unknown
   @Published private(set) var frame: Data?
   @Published private(set) var hasControl = false
   @Published private(set) var readWriteAllowed = false
@@ -157,6 +158,7 @@ final class GhostteaAppModel: ObservableObject {
         attachment = attached
         replicaPump = pump
         selectedSession = session
+        selectedActivity = session.activity
         readWriteAllowed = attachmentInfo.readWrite
         frame = nil
         inputSequence = 0
@@ -370,6 +372,8 @@ final class GhostteaAppModel: ObservableObject {
     case .selectionText(_, let text):
       UIPasteboard.general.string = text
       localStatus = "Copied \(text.utf8.count) bytes"
+    case .activityChanged(let activity):
+      selectedActivity = activity
     case .resynchronizing:
       localStatus = "Resynchronizing terminal state…"
     }
@@ -403,6 +407,7 @@ final class GhostteaAppModel: ObservableObject {
     controlEpoch = nil
     if clearSelection {
       selectedSession = nil
+      selectedActivity = .unknown
       selectedHost = nil
       selectedHostName = nil
       sessions = []

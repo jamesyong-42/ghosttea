@@ -11,6 +11,7 @@ public enum GhostteaRenderedAttachmentEvent: Sendable {
     rows: UInt16,
     layoutEpoch: UInt64
   )
+  case activityChanged(GhostteaSessionActivity)
   case selectionText(requestID: String, text: String)
   case resynchronizing
 }
@@ -45,6 +46,8 @@ public actor GhostteaTruffleReplicaPump {
         rows: rows,
         layoutEpoch: layout
       )
+    case .state(.activityChanged(let activity)):
+      return .activityChanged(activity)
     case .state(.snapshot(let snapshot)):
       let update = try await GhostteaPerformanceRecorder.shared.measure(
         .truffleReplicaPublication

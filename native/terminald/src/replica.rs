@@ -10,7 +10,7 @@ use ghosttea_text::TextEngine;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::session::SessionSummary;
+use crate::session::{SessionActivity, SessionSummary};
 
 /// Desktop host wrapper for the platform-neutral logical replica model.
 pub struct RemoteReplica {
@@ -52,6 +52,7 @@ impl RemoteReplica {
                 requested_termination: None,
                 exit_outcome: None,
                 owner_id,
+                activity: SessionActivity::default(),
             }),
             model: Mutex::new(LogicalReplicaModel::new(runtime, handle)),
             frames,
@@ -64,6 +65,10 @@ impl RemoteReplica {
 
     pub fn set_read_write(&self, read_write: bool) {
         self.summary.lock().unwrap().read_write = read_write;
+    }
+
+    pub fn set_activity(&self, activity: SessionActivity) {
+        self.summary.lock().unwrap().activity = activity;
     }
 
     pub fn publish(&self, snapshot: LogicalTerminalSnapshot) -> Result<()> {

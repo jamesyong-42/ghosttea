@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -32,6 +33,15 @@ const MAX_FRAME_SUBSCRIPTIONS: usize = 4096;
 const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
+const CONTROL_PROTOCOL_MAJOR: u16 = 1;
+const CONTROL_PROTOCOL_MINOR: u16 = 6;
+const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
+const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+
+fn client_accepts_event(event: &Value, protocol_minor: u16) -> bool {
+    event.get("type").and_then(Value::as_str) != Some("session-activity-changed")
+        || protocol_minor >= ACTIVITY_EVENT_PROTOCOL_MINOR
+}
 
 struct TaskGuard(JoinHandle<()>);
 
@@ -388,12 +398,30 @@ impl TerminalService {
         let (frame_tx, _) = broadcast::channel::<Vec<u8>>(32);
         let (event_tx, _) = broadcast::channel::<Value>(64);
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
+        let activity_registry = Arc::clone(&registry);
+        let _activity_sampler_task = TaskGuard(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ACTIVITY_SAMPLE_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let sessions = activity_registry
+                    .read()
+                    .unwrap()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for session in sessions {
+                    let _ = session.sample_activity();
+                }
+            }
+        }));
         let mesh_runtime = self
             .mesh
             .as_ref()
             .map(|mesh| mesh.runtime())
             .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
         let mut remote_controls = mesh_runtime.subscribe_control();
+        let mut remote_activities = mesh_runtime.subscribe_activity();
         let remote_events = event_tx.clone();
         let _remote_control_task = TaskGuard(tokio::spawn(async move {
             loop {
@@ -408,6 +436,23 @@ impl TerminalService {
                             "cols": changed.cols,
                             "rows": changed.rows,
                             "layoutEpoch": changed.layout_epoch,
+                        }));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+        let remote_activity_events = event_tx.clone();
+        let _remote_activity_task = TaskGuard(tokio::spawn(async move {
+            loop {
+                match remote_activities.recv().await {
+                    Ok(changed) => {
+                        let _ = remote_activity_events.send(json!({
+                            "requestId": 0,
+                            "type": "session-activity-changed",
+                            "sessionId": changed.session_id,
+                            "activity": changed.activity,
                         }));
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -513,17 +558,26 @@ async fn serve_control(
             let (mut reader, mut writer) = socket.into_split();
             let client_id = uuid::Uuid::new_v4().to_string();
             let mut attached = HashMap::<(String, String), u64>::new();
+            let mut client_protocol_minor = 0_u16;
             loop {
                 tokio::select! {
                     packet = read_packet(&mut reader, MAX_CONTROL_BYTES) => {
                         let Ok(packet) = packet else { break; };
                         let Ok(command) = serde_json::from_slice::<Envelope>(&packet) else { break; };
+                        if let Command::Hello { protocol_major, protocol_minor, .. } = &command.command
+                            && *protocol_major == CONTROL_PROTOCOL_MAJOR
+                        {
+                            client_protocol_minor = (*protocol_minor).min(CONTROL_PROTOCOL_MINOR);
+                        }
                         let notification = command.request_id == 0;
                         let response = handle_command(command, &client_id, &mut attached, &context).await;
                         if !notification && write_packet(&mut writer, &serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
                     }
                     event = events.recv() => match event {
                         Ok(event) => {
+                            if !client_accepts_event(&event, client_protocol_minor) {
+                                continue;
+                            }
                             if write_packet(&mut writer, &serde_json::to_vec(&event).unwrap()).await.is_err() { break; }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -563,8 +617,8 @@ async fn handle_command(
             } => {
                 let _client = (protocol_major, protocol_minor, client_build);
                 Ok(ResponseBody::Hello {
-                    protocol_major: 1,
-                    protocol_minor: 5,
+                    protocol_major: CONTROL_PROTOCOL_MAJOR,
+                    protocol_minor: CONTROL_PROTOCOL_MINOR,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
                 })
             }
@@ -604,8 +658,12 @@ async fn handle_command(
                 )?;
                 let summary = session.summary();
                 let mut controls = session.subscribe_control();
+                let mut activities = session.subscribe_activity();
                 let control_session_id = summary.id.clone();
+                let activity_session_id = summary.id.clone();
                 let control_events = event_tx.clone();
+                let activity_events = event_tx.clone();
+                let activity_session = Arc::clone(&session);
                 tokio::spawn(async move {
                     loop {
                         match controls.recv().await {
@@ -624,6 +682,23 @@ async fn handle_command(
                             Err(broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
+                    }
+                });
+                tokio::spawn(async move {
+                    loop {
+                        let activity = match activities.recv().await {
+                            Ok(activity) => activity,
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                activity_session.summary().activity
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        };
+                        let _ = activity_events.send(json!({
+                            "requestId": 0,
+                            "type": "session-activity-changed",
+                            "sessionId": activity_session_id,
+                            "activity": activity,
+                        }));
                     }
                 });
                 registry
@@ -1452,8 +1527,8 @@ mod protocol_tests {
         let value = serde_json::to_value(ResponseEnvelope {
             request_id: 7,
             body: ResponseBody::Hello {
-                protocol_major: 1,
-                protocol_minor: 5,
+                protocol_major: CONTROL_PROTOCOL_MAJOR,
+                protocol_minor: CONTROL_PROTOCOL_MINOR,
                 server_build: "test".to_owned(),
             },
         })
@@ -1461,6 +1536,21 @@ mod protocol_tests {
         assert_eq!(value["requestId"], 7);
         assert_eq!(value["type"], "hello");
         assert_eq!(value["protocolMajor"], 1);
+    }
+
+    #[test]
+    fn activity_events_are_gated_by_the_negotiated_minor_without_hiding_other_events() {
+        let activity = json!({ "type": "session-activity-changed" });
+        let exit = json!({ "type": "session-exited" });
+        assert!(!client_accepts_event(
+            &activity,
+            ACTIVITY_EVENT_PROTOCOL_MINOR - 1
+        ));
+        assert!(client_accepts_event(
+            &activity,
+            ACTIVITY_EVENT_PROTOCOL_MINOR
+        ));
+        assert!(client_accepts_event(&exit, 0));
     }
 
     #[test]

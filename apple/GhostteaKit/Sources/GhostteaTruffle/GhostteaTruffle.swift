@@ -12,7 +12,7 @@ public enum GhostteaTruffleContract {
   public static let compactTerminalPort: UInt16 = 9421
 
   public static let protocolMajor: UInt16 = 1
-  public static let protocolMinor: UInt16 = 3
+  public static let protocolMinor: UInt16 = 4
   public static let maximumControlMessageBytes = 1 * 1024 * 1024
   public static let maximumStateMessageBytes = 16 * 1024 * 1024
   public static let maximumPrefaceMetadataBytes = 4 * 1024
@@ -200,6 +200,64 @@ public struct GhostteaTerminalStreamPreface: Codable, Equatable, Sendable {
   }
 }
 
+public enum GhostteaSessionActivityKind: String, Codable, Equatable, Sendable {
+  case shellIdle = "shell-idle"
+  case foregroundJob = "foreground-job"
+  case unknown
+}
+
+public enum GhostteaSessionActivitySource: String, Codable, Equatable, Sendable {
+  case shellIntegration = "shell-integration"
+  case processGroup = "process-group"
+  case unsupported
+}
+
+public enum GhostteaSessionActivityConfidence: String, Codable, Equatable, Sendable {
+  case authoritative
+  case heuristic
+}
+
+public struct GhostteaSessionActivity: Codable, Equatable, Sendable {
+  public let kind: GhostteaSessionActivityKind
+  public let source: GhostteaSessionActivitySource
+  public let confidence: GhostteaSessionActivityConfidence
+  public let rootProcessGroupID: Int32?
+  public let foregroundProcessGroupID: Int32?
+  public let observedAtMs: UInt64
+
+  enum CodingKeys: String, CodingKey {
+    case kind, source, confidence
+    case rootProcessGroupID = "rootProcessGroupId"
+    case foregroundProcessGroupID = "foregroundProcessGroupId"
+    case observedAtMs
+  }
+
+  public init(
+    kind: GhostteaSessionActivityKind,
+    source: GhostteaSessionActivitySource,
+    confidence: GhostteaSessionActivityConfidence,
+    rootProcessGroupID: Int32?,
+    foregroundProcessGroupID: Int32?,
+    observedAtMs: UInt64
+  ) {
+    self.kind = kind
+    self.source = source
+    self.confidence = confidence
+    self.rootProcessGroupID = rootProcessGroupID
+    self.foregroundProcessGroupID = foregroundProcessGroupID
+    self.observedAtMs = observedAtMs
+  }
+
+  public static let unknown = GhostteaSessionActivity(
+    kind: .unknown,
+    source: .unsupported,
+    confidence: .heuristic,
+    rootProcessGroupID: nil,
+    foregroundProcessGroupID: nil,
+    observedAtMs: 0
+  )
+}
+
 public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
   public let sessionID: String
   public let title: String
@@ -208,6 +266,7 @@ public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
   public let attachable: Bool
   public let readWrite: Bool
   public let createdAtMs: UInt64
+  public let activity: GhostteaSessionActivity
 
   enum CodingKeys: String, CodingKey {
     case sessionID = "sessionId"
@@ -217,6 +276,7 @@ public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
     case attachable
     case readWrite
     case createdAtMs
+    case activity
   }
 
   public init(
@@ -226,7 +286,8 @@ public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
     running: Bool,
     attachable: Bool,
     readWrite: Bool,
-    createdAtMs: UInt64
+    createdAtMs: UInt64,
+    activity: GhostteaSessionActivity = .unknown
   ) {
     self.sessionID = sessionID
     self.title = title
@@ -235,6 +296,20 @@ public struct GhostteaSharedSessionSummary: Codable, Equatable, Sendable {
     self.attachable = attachable
     self.readWrite = readWrite
     self.createdAtMs = createdAtMs
+    self.activity = activity
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    sessionID = try values.decode(String.self, forKey: .sessionID)
+    title = try values.decode(String.self, forKey: .title)
+    cwdLabel = try values.decodeIfPresent(String.self, forKey: .cwdLabel)
+    running = try values.decode(Bool.self, forKey: .running)
+    attachable = try values.decode(Bool.self, forKey: .attachable)
+    readWrite = try values.decode(Bool.self, forKey: .readWrite)
+    createdAtMs = try values.decode(UInt64.self, forKey: .createdAtMs)
+    activity =
+      try values.decodeIfPresent(GhostteaSessionActivity.self, forKey: .activity) ?? .unknown
   }
 }
 
@@ -466,7 +541,7 @@ public actor GhostteaTruffleHostClient {
     switch response {
     case .serverHello(let major, let minor, let host, let echoedNonce, _):
       guard major == GhostteaTruffleContract.protocolMajor,
-        minor >= GhostteaTruffleContract.protocolMinor
+        minor > 0
       else {
         throw GhostteaTruffleError.unsupportedProtocol(major: major, minor: minor)
       }

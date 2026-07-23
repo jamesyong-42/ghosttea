@@ -202,6 +202,7 @@ export function ReplicatedRenderBenchmarkApp({ config }: { config: RenderBenchma
         const key = completionKey(benchmarkCase, measured, iteration);
         const session = await runtime.createSession({
           executable: config.workloadExecutable,
+          programKind: "application",
           args: workloadArguments(config, benchmarkCase, key),
           environment: {
             mode: "clean",

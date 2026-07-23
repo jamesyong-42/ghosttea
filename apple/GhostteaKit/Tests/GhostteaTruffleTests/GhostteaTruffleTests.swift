@@ -44,6 +44,7 @@ private struct ConnectionControlFixture: Decodable {
   #expect(requestID == "request-1")
   #expect(sessions.first?.sessionID == "session-1")
   #expect(sessions.first?.readWrite == true)
+  #expect(sessions.first?.activity == .unknown)
 }
 
 @Test func persistentReferencesContainOnlyDurableTruffleAndSessionIdentity() throws {
@@ -197,6 +198,41 @@ private struct ConnectionControlFixture: Decodable {
   )
   #expect(controlObject["controllerViewId"] as? String == "view-1")
   #expect(controlObject["controllerViewID"] == nil)
+
+  let activity = GhostteaSessionActivity(
+    kind: .foregroundJob,
+    source: .processGroup,
+    confidence: .heuristic,
+    rootProcessGroupID: 42,
+    foregroundProcessGroupID: 43,
+    observedAtMs: 100
+  )
+  let activityMessage = GhostteaTerminalStateMessage.activityChanged(activity)
+  let activityObject = try #require(
+    JSONSerialization.jsonObject(with: JSONEncoder().encode(activityMessage)) as? [String: Any]
+  )
+  #expect(activityObject["type"] as? String == "activity-changed")
+  #expect(activityObject["activity"] as? [String: Any] != nil)
+  #expect(
+    try JSONDecoder().decode(
+      GhostteaTerminalStateMessage.self,
+      from: JSONEncoder().encode(activityMessage)
+    ) == activityMessage
+  )
+  let compactActivity = try GhostteaTerminalStateCodec.decode(
+    JSONSerialization.data(withJSONObject: [
+      "a": [
+        "kind": "foreground-job",
+        "source": "process-group",
+        "confidence": "heuristic",
+        "rootProcessGroupId": 42,
+        "foregroundProcessGroupId": 43,
+        "observedAtMs": 100,
+      ]
+    ]),
+    codec: .compactJSONV1
+  )
+  #expect(compactActivity == activityMessage)
 }
 
 @Test func streamPrefaceMatchesTSP1HeaderAndDesktopMetadata() throws {
@@ -210,7 +246,7 @@ private struct ConnectionControlFixture: Decodable {
 
   #expect(Data(data.prefix(4)) == Data("TSP1".utf8))
   #expect(data[4] == 0 && data[5] == 1)
-  #expect(data[6] == 0 && data[7] == 3)
+  #expect(data[6] == 0 && data[7] == 4)
   #expect(data[8] == 2)
   #expect(data[9] == 0 && data[10] == 0 && data[11] == 0)
 
@@ -238,7 +274,7 @@ private struct ConnectionControlFixture: Decodable {
     switch hello {
     case .clientHello(let major, let minor, _, let localDeviceID, let value, let codecs):
       #expect(major == 1)
-      #expect(minor == 3)
+      #expect(minor == GhostteaTruffleContract.protocolMinor)
       #expect(localDeviceID == "ios-device")
       #expect(codecs == [.compactJSONV1])
       nonce = value

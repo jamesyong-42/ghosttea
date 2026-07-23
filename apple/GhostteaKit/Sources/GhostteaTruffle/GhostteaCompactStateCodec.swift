@@ -98,6 +98,8 @@ private struct CompactStateMessage: Decodable {
         layoutEpoch: tuple.decode(UInt64.self)
       )
       try requireEnd(tuple)
+    case "a":
+      message = try .activityChanged(values.decode(GhostteaSessionActivity.self, forKey: key))
     default:
       throw GhostteaTruffleError.malformedMessage
     }
