@@ -1,7 +1,7 @@
 export type DomEditCommand = "copy" | "paste" | "select-all";
 
 interface ClipboardBridge {
-  readClipboard: () => string;
+  readClipboard: () => string | Promise<string>;
   writeClipboard: (text: string) => void;
 }
 
@@ -19,7 +19,7 @@ function copyDocumentSelection(clipboard: ClipboardBridge): void {
  * main process has claimed an application edit accelerator. Terminal inputs
  * deliberately opt out because their owning TerminalSurface handles it.
  */
-export function handleDomEditCommand(command: DomEditCommand, clipboard: ClipboardBridge): void {
+export async function handleDomEditCommand(command: DomEditCommand, clipboard: ClipboardBridge): Promise<void> {
   const active = document.activeElement;
   if (active?.classList.contains("terminal-input")) return;
 
@@ -35,7 +35,7 @@ export function handleDomEditCommand(command: DomEditCommand, clipboard: Clipboa
       const text = active.value.slice(start, end);
       if (text) clipboard.writeClipboard(text);
     } else if (command === "paste") {
-      const text = clipboard.readClipboard();
+      const text = await clipboard.readClipboard();
       if (!text) return;
       active.setRangeText(text, start, end, "end");
       active.dispatchEvent(new Event("input", { bubbles: true }));
@@ -50,7 +50,7 @@ export function handleDomEditCommand(command: DomEditCommand, clipboard: Clipboa
   } else if (command === "paste" && active instanceof HTMLElement && active.isContentEditable) {
     const selection = window.getSelection();
     if (!selection?.rangeCount) return;
-    const text = clipboard.readClipboard();
+    const text = await clipboard.readClipboard();
     if (!text) return;
     const range = selection.getRangeAt(0);
     range.deleteContents();

@@ -23,11 +23,8 @@ function key(overrides: Partial<GhostteaKeyInput> = {}): GhostteaKeyInput {
 
 describe("Ghosttea Electron edit commands", () => {
   it("claims only Ghostty copy/select_all actions (not paste)", () => {
-    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.map((c) => c.ghosttyAction).sort()).toEqual([
-      "copy_to_clipboard",
-      "select_all",
-    ]);
-    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.some((c) => c.command === "paste")).toBe(false);
+    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.map((c) => c.ghosttyAction).sort()).toEqual(["copy_to_clipboard", "select_all"]);
+    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.map((c) => c.command)).not.toContain("paste");
   });
 
   it("routes the macOS Command edit shortcuts", () => {
@@ -72,5 +69,19 @@ describe("Ghosttea Electron edit commands", () => {
     uninstall();
     webContents.emit("before-input-event", { preventDefault }, key({ key: "a" }));
     expect(onCommand).toHaveBeenCalledOnce();
+  });
+
+  it("leaves an unperformable shortcut on the normal input path", () => {
+    const webContents = new EventEmitter();
+    const preventDefault = vi.fn();
+    const onCommand = vi.fn();
+    const canPerform = vi.fn(() => false);
+    installGhostteaEditShortcuts(webContents as unknown as WebContents, onCommand, "darwin", canPerform);
+
+    webContents.emit("before-input-event", { preventDefault }, key());
+
+    expect(canPerform).toHaveBeenCalledWith("copy");
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onCommand).not.toHaveBeenCalled();
   });
 });

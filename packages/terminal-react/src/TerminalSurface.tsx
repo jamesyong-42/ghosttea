@@ -21,7 +21,8 @@ export interface TerminalSurfaceProps {
   visible?: boolean;
   controlsResize?: boolean;
   onActivate?: () => void;
-  readClipboard?: () => string;
+  readClipboard?: () => string | Promise<string>;
+  onCopyAvailabilityChange?: (canCopy: boolean) => void;
   onContextMenu?: (canCopy: boolean) => void;
   onToggleFullscreen?: () => void;
   onMenuAction?: (listener: (action: TerminalMenuAction) => void) => () => void;
@@ -68,6 +69,7 @@ function TerminalSurfaceSession({
   controlsResize = active,
   onActivate,
   readClipboard,
+  onCopyAvailabilityChange,
   onContextMenu,
   onToggleFullscreen: _onToggleFullscreen,
   onMenuAction,
@@ -113,6 +115,21 @@ function TerminalSurfaceSession({
   const scrollbarRef = useRef(scrollbar);
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
 
+  const setLocalSelection = useCallback(
+    (selection: { anchor: CellPoint; focus: CellPoint } | null, selectAll = false): void => {
+      selectionRef.current = selection;
+      selectionAllRef.current = selection !== null && selectAll;
+      onCopyAvailabilityChange?.(selection !== null);
+    },
+    [onCopyAvailabilityChange],
+  );
+
+  useEffect(() => {
+    if (!onCopyAvailabilityChange) return;
+    onCopyAvailabilityChange(selectionRef.current !== null);
+    return () => onCopyAvailabilityChange(false);
+  }, [onCopyAvailabilityChange]);
+
   const releaseForwardedKeys = useCallback((): void => {
     for (const event of forwardedKeysRef.current.values()) {
       terminalRuntime.sendKey(session.id, viewId, {
@@ -141,12 +158,13 @@ function TerminalSurfaceSession({
 
       if (effect.type === "copy") {
         if (!selectionRef.current) return false;
-        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
+        void terminalRuntime
+          .copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current)
+          .catch((error: unknown) => console.error("[terminal-runtime] clipboard copy failed", error));
         return true;
       }
       if (effect.type === "select_all") {
-        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
-        selectionAllRef.current = true;
+        setLocalSelection({ anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } }, true);
         terminalRuntime.setSelection(
           session.handle,
           viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
@@ -155,21 +173,22 @@ function TerminalSurfaceSession({
         return true;
       }
       if (effect.type === "paste") {
-        if (!interactive) return false;
-        const text = readClipboard?.() ?? "";
-        if (!text) return false;
-        selectionAnchorRef.current = null;
-        selectionRef.current = null;
-        selectionAllRef.current = false;
-        terminalRuntime.setSelection(session.handle, null, viewId);
-        terminalRuntime.paste(session.id, viewId, text);
+        if (!interactive || !readClipboard) return false;
+        void Promise.resolve(readClipboard())
+          .then((text) => {
+            if (!text) return;
+            selectionAnchorRef.current = null;
+            setLocalSelection(null);
+            terminalRuntime.setSelection(session.handle, null, viewId);
+            terminalRuntime.paste(session.id, viewId, text);
+          })
+          .catch((error: unknown) => console.error("[terminal-runtime] clipboard paste failed", error));
         return true;
       }
       if (effect.type === "text" || effect.type === "clear_screen") {
         if (!interactive && effect.type === "text") return false;
         selectionAnchorRef.current = null;
-        selectionRef.current = null;
-        selectionAllRef.current = false;
+        setLocalSelection(null);
         terminalRuntime.setSelection(session.handle, null, viewId);
         terminalRuntime.sendText(session.id, viewId, effect.type === "clear_screen" ? "\u000c" : effect.text);
         return true;
@@ -219,8 +238,7 @@ function TerminalSurfaceSession({
           totalRows: total,
         });
         if (!nextFocus) return false;
-        selectionRef.current = { anchor: selection.anchor, focus: nextFocus };
-        selectionAllRef.current = false;
+        setLocalSelection({ anchor: selection.anchor, focus: nextFocus });
         // Keep keyboard-adjusted focus visible (Ghostty scrolls selection into view).
         const offset = scrollbarRef.current.offset;
         if (nextFocus.row < offset) {
@@ -237,7 +255,7 @@ function TerminalSurfaceSession({
       }
       return false;
     },
-    [interactive, readClipboard, session.handle, session.id, terminalRuntime, viewId],
+    [interactive, readClipboard, session.handle, session.id, setLocalSelection, terminalRuntime, viewId],
   );
 
   useEffect(() => {
@@ -306,13 +324,13 @@ function TerminalSurfaceSession({
       const edge = selectionAutoScrollEdgeRef.current;
       const anchor = selectionAnchorRef.current;
       if (edge && anchor && pointerModeRef.current === "selection") {
-        selectionRef.current = {
+        setLocalSelection({
           anchor,
           focus: {
             column: edge.column,
             row: detail.scrollbar.offset + (edge.direction < 0 ? 0 : rows - 1),
           },
-        };
+        });
       }
       terminalRuntime.setSelection(
         session.handle,
@@ -322,7 +340,7 @@ function TerminalSurfaceSession({
     };
     terminalRuntime.addEventListener("scrollbar-state", onScrollbar);
     return () => terminalRuntime.removeEventListener("scrollbar-state", onScrollbar);
-  }, [session.handle, terminalRuntime, viewId]);
+  }, [session.handle, setLocalSelection, terminalRuntime, viewId]);
 
   useEffect(
     () => () => {
@@ -393,8 +411,7 @@ function TerminalSurfaceSession({
       return;
     }
     selectionAnchorRef.current = null;
-    selectionRef.current = null;
-    selectionAllRef.current = false;
+    setLocalSelection(null);
     terminalRuntime.setSelection(session.handle, null, viewId);
     if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "c") {
       terminalRuntime.interrupt(session.id, viewId);
@@ -529,8 +546,7 @@ function TerminalSurfaceSession({
     if (!localSelection) {
       pointerModeRef.current = "mouse";
       selectionAnchorRef.current = null;
-      selectionRef.current = null;
-      selectionAllRef.current = false;
+      setLocalSelection(null);
       terminalRuntime.setSelection(session.handle, null, viewId);
       sendMouse(event, "press", mouseButton(event.button));
       return;
@@ -538,8 +554,7 @@ function TerminalSurfaceSession({
     pointerModeRef.current = "selection";
     const point = pointFromPointer(event);
     selectionAnchorRef.current = point;
-    selectionRef.current = { anchor: point, focus: point };
-    selectionAllRef.current = false;
+    setLocalSelection({ anchor: point, focus: point });
     const { cols, rows } = gridRef.current;
     terminalRuntime.setSelection(
       session.handle,
@@ -560,7 +575,7 @@ function TerminalSurfaceSession({
     const point = pointFromPointer(event);
     const bounds = event.currentTarget.getBoundingClientRect();
     updateSelectionAutoScroll(event.clientY < bounds.top ? -1 : event.clientY > bounds.bottom ? 1 : 0, point.column);
-    selectionRef.current = { anchor, focus: point };
+    setLocalSelection({ anchor, focus: point });
     const { cols, rows } = gridRef.current;
     terminalRuntime.setSelection(
       session.handle,
@@ -576,11 +591,12 @@ function TerminalSurfaceSession({
     } else if (pointerModeRef.current === "selection" && selectionRef.current) {
       const { anchor, focus } = selectionRef.current;
       if (anchor.row === focus.row && anchor.column === focus.column) {
-        selectionRef.current = null;
-        selectionAllRef.current = false;
+        setLocalSelection(null);
         terminalRuntime.setSelection(session.handle, null, viewId);
       } else {
-        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
+        void terminalRuntime
+          .copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current)
+          .catch((error: unknown) => console.error("[terminal-runtime] clipboard copy failed", error));
       }
     }
     pointerModeRef.current = null;

@@ -9,6 +9,7 @@ export function App() {
       platform: window.desktop.platform,
       defaultShell: window.desktop.defaultShell,
       readClipboard: window.desktop.readClipboard,
+      setCanCopy: window.desktop.setTerminalCanCopy,
       showContextMenu: window.desktop.showContextMenu,
       toggleFullscreen: window.desktop.toggleFullscreen,
       closeWindow: window.desktop.closeWindow,
@@ -35,7 +36,9 @@ export function App() {
     () =>
       window.desktop.onMenuAction((action) => {
         if (action === "copy" || action === "paste" || action === "select-all") {
-          handleDomEditCommand(action, window.desktop);
+          void handleDomEditCommand(action, window.desktop).catch((error: unknown) =>
+            console.error("[terminal-runtime] edit command failed", error),
+          );
         }
       }),
     [],

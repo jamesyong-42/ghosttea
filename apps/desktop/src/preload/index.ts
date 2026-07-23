@@ -1,4 +1,5 @@
-import { clipboard, contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
+import { createGhostteaClipboardBridge } from "@vibecook/ghosttea-electron/preload";
 import type { RendererPortBootstrapMessage } from "@vibecook/ghosttea-electron/types";
 
 console.info("[terminal-runtime] preload ready");
@@ -23,6 +24,8 @@ ipcRenderer.on("terminal-ports", (event) => {
   window.postMessage({ type: "ghosttea:ports" } satisfies RendererPortBootstrapMessage, "*", event.ports);
 });
 
+const clipboardBridge = createGhostteaClipboardBridge(ipcRenderer);
+
 contextBridge.exposeInMainWorld("desktop", {
   platform: process.platform,
   tabId,
@@ -30,8 +33,9 @@ contextBridge.exposeInMainWorld("desktop", {
   initialCwd,
   defaultShell:
     process.platform === "win32" ? (process.env.COMSPEC ?? "powershell.exe") : (process.env.SHELL ?? "/bin/zsh"),
-  writeClipboard: (text: string) => clipboard.writeText(text),
-  readClipboard: () => clipboard.readText(),
+  writeClipboard: clipboardBridge.writeText,
+  readClipboard: clipboardBridge.readText,
+  setTerminalCanCopy: clipboardBridge.setCanCopy,
   showContextMenu: (canCopy: boolean) => ipcRenderer.send("terminal-context-menu", canCopy),
   toggleFullscreen: () => ipcRenderer.send("terminal-toggle-fullscreen"),
   closeWindow: () => ipcRenderer.send("terminal-close-window"),

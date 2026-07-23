@@ -8,6 +8,7 @@ export {
   type SessionExitedEvent,
 } from "./automation.js";
 export { GhostteaElectronBridge, type GhostteaElectronBridgeOptions } from "./bridge.js";
+export { installGhostteaClipboardHost, type GhostteaClipboardHost } from "./clipboard.js";
 export { allSettledWithin } from "./deadline.js";
 export {
   ghostteaEditCommand,

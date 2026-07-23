@@ -55,7 +55,9 @@ export function workspaceOwnsHotkey(
 export interface GhostteaWorkspacePlatform {
   platform?: string;
   defaultShell: string;
-  readClipboard: () => string;
+  readClipboard: () => string | Promise<string>;
+  /** Report whether the active terminal pane currently has a copyable selection. */
+  setCanCopy?: (canCopy: boolean) => void;
   showContextMenu: (canCopy: boolean) => void;
   toggleFullscreen: () => void;
   closeWindow: () => void;
@@ -241,6 +243,7 @@ function SplitView({
           controlsResize
           onActivate={() => onActivate(node.id)}
           readClipboard={platform.readClipboard}
+          {...(active && platform.setCanCopy ? { onCopyAvailabilityChange: platform.setCanCopy } : {})}
           onContextMenu={platform.showContextMenu}
           onToggleFullscreen={platform.toggleFullscreen}
           onMenuAction={platform.onMenuAction}
@@ -743,14 +746,7 @@ export function GhostteaWorkspace({
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [
-    active,
-    activePane?.session.cwd,
-    enableRemoteSessions,
-    executeWorkspaceCommand,
-    platform,
-    remotePaletteOpen,
-  ]);
+  }, [active, activePane?.session.cwd, enableRemoteSessions, executeWorkspaceCommand, platform, remotePaletteOpen]);
 
   const workspaceContext = useMemo<GhostteaWorkspaceContext>(
     () => ({

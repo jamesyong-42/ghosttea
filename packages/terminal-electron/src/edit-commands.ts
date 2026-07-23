@@ -67,10 +67,11 @@ export function installGhostteaEditShortcuts(
   webContents: WebContents,
   onCommand: (command: GhostteaEditCommand) => void,
   platform: NodeJS.Platform = process.platform,
+  canPerform: (command: GhostteaEditCommand) => boolean = () => true,
 ): () => void {
   const listener = (event: Event, input: Input): void => {
     const command = ghostteaEditCommand(input, platform);
-    if (!command) return;
+    if (!command || !canPerform(command)) return;
     event.preventDefault();
     onCommand(command);
   };

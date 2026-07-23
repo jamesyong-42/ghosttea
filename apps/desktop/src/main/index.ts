@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
   GhostteaElectronBackend,
+  installGhostteaClipboardHost,
   installGhostteaEditShortcuts,
   type GhostteaElectronBackendOptions,
 } from "@vibecook/ghosttea-electron/main";
@@ -33,6 +34,8 @@ if (profile.name !== "default") {
 // profiles coexist; launching the same profile again activates its window.
 const ownsProfile = app.requestSingleInstanceLock({ profile: profile.name });
 if (!ownsProfile) app.quit();
+
+const clipboardHost = installGhostteaClipboardHost(ipcMain, clipboard);
 
 ipcMain.on("terminal-context-menu", (event, canCopy: boolean) => {
   const window = BrowserWindow.fromWebContents(event.sender);
@@ -350,8 +353,11 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
   // Terminal selections live in the render worker rather than the DOM, so
   // Electron's native edit role cannot copy them. Route the shortcut through
   // the same renderer command path as the terminal context menu.
-  installGhostteaEditShortcuts(window.webContents, (command) =>
-    window.webContents.send("terminal-menu-action", command),
+  installGhostteaEditShortcuts(
+    window.webContents,
+    (command) => window.webContents.send("terminal-menu-action", command),
+    process.platform,
+    (command) => command !== "copy" || clipboardHost.canCopy(window.webContents),
   );
 
   if (!app.isPackaged) {
