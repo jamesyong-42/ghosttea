@@ -18,8 +18,10 @@ class FakeWorker extends EventTarget {
 class FakePort extends EventTarget {
   readonly messages: Array<Record<string, unknown>> = [];
   attachReadWrite = true;
+  subscriptionAcknowledgements = true;
+  helloProtocolMinor: number | undefined;
   closed = false;
-  onmessage: ((event: MessageEvent<ArrayBuffer>) => void) | null = null;
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
 
   postMessage(message: Record<string, unknown>): void {
     this.messages.push(message);
@@ -31,9 +33,15 @@ class FakePort extends EventTarget {
             requestId,
             type: "hello",
             protocolMajor: message.protocolMajor,
-            protocolMinor: message.protocolMinor,
+            protocolMinor: this.helloProtocolMinor ?? message.protocolMinor,
             serverBuild: "test",
           },
+        }),
+      );
+    } else if (message.type === "subscribe" && this.subscriptionAcknowledgements) {
+      this.onmessage?.(
+        new MessageEvent("message", {
+          data: { type: "subscription-ack", requestId },
         }),
       );
     } else if (message.type === "attach-session") {
@@ -68,6 +76,10 @@ function canvas(): HTMLCanvasElement {
   return {
     transferControlToOffscreen: () => ({}) as OffscreenCanvas,
   } as HTMLCanvasElement;
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
 }
 
 const session = {
@@ -208,7 +220,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
     const selection = { anchor: { column: 1, row: 42 }, focus: { column: 4, row: 45 } };
 
     await expect(runtime.copySelection(session.id, "view-1", selection)).resolves.toBe("copied from terminal");
@@ -234,7 +246,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
 
     const observed: unknown[] = [];
     runtime.addEventListener("scrollbar-state", (event) => observed.push((event as CustomEvent).detail));
@@ -287,7 +299,8 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(control.messages.some((message) => message.type === "detach-session")).toBe(false);
   });
 
-  it("subscribes the frame bridge only to sessions registered in this runtime", async () => {
+  it("subscribes the frame bridge only while a session is mounted", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal("window", globalThis);
     const frames = new FakePort();
     const runtime = new GhostteaTerminalRuntime({
@@ -302,14 +315,86 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     });
     await runtime.connect();
     runtime.registerSession(session);
+    expect(
+      frames.messages.filter((message) => message.type === "subscribe").map((message) => message.sessionHandles),
+    ).toEqual([[]]);
+    const mount = runtime.mount(session.id, session.handle, "view-subscription", canvas());
+    await flushMicrotasks();
 
-    expect(frames.messages).toEqual([
-      { type: "subscribe", sessionHandles: [] },
-      { type: "subscribe", sessionHandles: [session.handle] },
-    ]);
+    expect(
+      frames.messages.filter((message) => message.type === "subscribe").map((message) => message.sessionHandles),
+    ).toEqual([[], [session.handle]]);
 
-    runtime.terminate(session.id);
-    expect(frames.messages.at(-1)).toEqual({ type: "subscribe", sessionHandles: [] });
+    mount.dispose();
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(frames.messages.at(-1)).toMatchObject({ type: "subscribe", sessionHandles: [] });
+  });
+
+  it("keeps older daemons responsive without enabling unsupported frame credits", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    control.helloProtocolMinor = 6;
+    frames.subscriptionAcknowledgements = false;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "legacy-view", canvas());
+    await flushMicrotasks();
+    worker.dispatchEvent(new MessageEvent("message", { data: { type: "frame-credit", bytes: 512 } }));
+
+    expect(control.messages).toContainEqual(
+      expect.objectContaining({ type: "attach-session", sessionId: session.id, viewId: "legacy-view" }),
+    );
+    expect(frames.messages.filter((message) => message.type === "subscribe")).not.toContainEqual(
+      expect.objectContaining({ frameCredits: true }),
+    );
+    expect(frames.messages.some((message) => message.type === "frame-credit")).toBe(false);
+  });
+
+  it("unregisters renderer state without terminating the underlying PTY", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-unregister", canvas());
+    await flushMicrotasks();
+
+    runtime.unregisterSession(session.id);
+
+    expect(control.messages.some((message) => message.type === "terminate")).toBe(false);
+    expect(control.messages).toContainEqual({
+      requestId: 0,
+      type: "detach-session",
+      sessionId: session.id,
+      viewId: "view-unregister",
+    });
+    expect(runtime.sessionMetadata(session.handle)).toBeUndefined();
+    expect(worker.messages).toContainEqual({ type: "drop-session", sessionHandle: session.handle });
+    expect(frames.messages.at(-1)).toMatchObject({ type: "subscribe", sessionHandles: [] });
   });
 
   it("applies unsolicited activity changes without waiting for a terminal frame", async () => {
@@ -376,6 +461,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     const exitingSession = { ...session, handle: "7" };
     runtime.registerSession(exitingSession);
+    runtime.setSessionPinned(exitingSession.handle, true);
     const updates: SessionSummary[] = [];
     runtime.addEventListener("session-metadata", (event) =>
       updates.push((event as CustomEvent<SessionSummary>).detail),
@@ -428,6 +514,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     const exitingSession = { ...session, handle: "8" };
     runtime.registerSession(exitingSession);
+    runtime.setSessionPinned(exitingSession.handle, true);
 
     const frame = new ArrayBuffer(16);
     new DataView(frame).setBigUint64(8, BigInt(exitingSession.handle), true);
@@ -483,7 +570,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       updates.push((event as CustomEvent<SessionSummary>).detail),
     );
     runtime.mount(session.id, session.handle, "view-only", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
 
     runtime.sendText(session.id, "view-only", "blocked");
 
@@ -509,11 +596,11 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
 
     runtime.dispose();
     runtime.dispose();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(control.messages.filter((message) => message.type === "detach-session")).toHaveLength(1);
     expect(control.closed).toBe(true);
@@ -588,7 +675,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
 
     runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     controlChanged(control, "view-1", 80, 24);
@@ -630,7 +717,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await runtime.connect();
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
-    await Promise.resolve();
+    await flushMicrotasks();
 
     runtime.setFocused(session.handle, "view-1", true, 80, 24);
     runtime.resize(session.id, "view-1", 110, 31);

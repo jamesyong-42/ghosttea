@@ -107,4 +107,34 @@ describe("terminal render worker surfaces", () => {
     await settle();
     expect(renderer.renderBatch).toHaveBeenLastCalledWith([expect.objectContaining({ id: "view-c" })]);
   });
+
+  it("returns byte credits after frame processing and requests full state after a transport gap", async () => {
+    const workerScope = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      postMessage: vi.fn(),
+      requestAnimationFrame: (callback: FrameRequestCallback): number => {
+        callback(performance.now());
+        return 1;
+      },
+    };
+    vi.stubGlobal("self", workerScope);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await import("./terminal-render.worker.js");
+    const dispatch = (data: unknown): void => workerScope.onmessage?.({ data } as MessageEvent);
+
+    dispatch({ type: "frame-gap", sessionHandles: ["session-a", "session-b"] });
+    dispatch({ type: "frame", packet: new ArrayBuffer(7) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(workerScope.postMessage).toHaveBeenCalledWith({
+      type: "frame-resync-needed",
+      sessionHandle: "session-a",
+    });
+    expect(workerScope.postMessage).toHaveBeenCalledWith({
+      type: "frame-resync-needed",
+      sessionHandle: "session-b",
+    });
+    expect(workerScope.postMessage).toHaveBeenCalledWith({ type: "frame-credit", bytes: 7 });
+    error.mockRestore();
+  });
 });

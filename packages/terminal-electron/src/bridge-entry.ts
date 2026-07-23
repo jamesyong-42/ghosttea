@@ -1,5 +1,6 @@
 import type { Socket } from "node:net";
 import { connectSocket, packet } from "./bridge-socket.js";
+import { FrameFlowControl } from "./frame-flow.js";
 import { isMainToBridgeMessage } from "./types.js";
 
 const parentPort = process.parentPort;
@@ -7,6 +8,7 @@ const parentPort = process.parentPort;
 const MAX_CONTROL_BYTES = 1024 * 1024;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_FRAME_SUBSCRIPTION_BYTES = 1024 * 1024;
+const FRAME_MAGIC = 0x31465254;
 
 async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[]): Promise<void> {
   const [controlPort, framePort] = ports;
@@ -17,6 +19,8 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
   let frameSocket: Socket | undefined;
   let rendererClosed = false;
   let connectionLost = false;
+  let frameFlowEnabled = false;
+  const frameFlow = new FrameFlowControl();
   const reportConnectionLost = (cause: unknown): void => {
     if (rendererClosed || connectionLost) return;
     connectionLost = true;
@@ -51,8 +55,34 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
       data.connection.authToken,
       MAX_FRAME_BYTES,
       (bytes) => {
-        const transferable = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-        framePort.postMessage(transferable);
+        try {
+          if (bytes.byteLength >= 4 && bytes.readUInt32LE(0) === FRAME_MAGIC) {
+            const transferable = bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength,
+            ) as ArrayBuffer;
+            const action = frameFlowEnabled ? frameFlow.accept(transferable.byteLength) : undefined;
+            try {
+              framePort.postMessage(transferable);
+            } catch (error) {
+              frameFlow.release(transferable.byteLength);
+              throw error;
+            }
+            if (action === "pause") frameSocket?.pause();
+            return;
+          }
+          const message = JSON.parse(bytes.toString("utf8")) as unknown;
+          if (
+            !message ||
+            typeof message !== "object" ||
+            !["subscription-ack", "frame-gap"].includes(String((message as { type?: unknown }).type))
+          ) {
+            throw new Error("terminald sent an invalid frame-channel message");
+          }
+          framePort.postMessage(message);
+        } catch (cause) {
+          reportConnectionLost(cause);
+        }
       },
       reportConnectionLost,
     );
@@ -77,6 +107,25 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
   });
   framePort.on("message", ({ data: subscription }) => {
     try {
+      if (
+        subscription &&
+        typeof subscription === "object" &&
+        (subscription as { type?: unknown }).type === "frame-credit"
+      ) {
+        if (!frameFlowEnabled) return;
+        const bytes = (subscription as { bytes?: unknown }).bytes;
+        if (!Number.isSafeInteger(bytes) || Number(bytes) < 0) throw new Error("invalid renderer frame credit");
+        if (frameFlow.release(Number(bytes)) === "resume") frameSocket.resume();
+        return;
+      }
+      if (
+        subscription &&
+        typeof subscription === "object" &&
+        (subscription as { type?: unknown }).type === "subscribe" &&
+        (subscription as { frameCredits?: unknown }).frameCredits === true
+      ) {
+        frameFlowEnabled = true;
+      }
       const encoded = Buffer.from(JSON.stringify(subscription));
       if (encoded.byteLength > MAX_FRAME_SUBSCRIPTION_BYTES) throw new Error("frame subscription exceeds quota");
       frameSocket.write(packet(encoded));

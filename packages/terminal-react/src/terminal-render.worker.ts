@@ -39,6 +39,7 @@ interface SessionSnapshot {
   nativeRows: GlyphInstance[][];
   nativeStyleRows: StyleRun[][];
   glyphDefinitions: Map<number, GlyphDefinition>;
+  glyphPixelBytes: number;
   styleDefinitions: Map<number, StyleDefinition>;
   rowRevisions: bigint[];
   cursor: CursorState;
@@ -72,7 +73,16 @@ interface SessionPresentationDefaults {
 
 const hiddenCursor: CursorState = { x: 0, y: 0, visible: false, style: 1, blinking: false };
 const CURSOR_BLINK_INTERVAL_MS = 600;
+const MAX_SESSION_GLYPH_DEFINITIONS = 65_536;
+const MAX_SESSION_GLYPH_PIXEL_BYTES = 64 * 1024 * 1024;
+const MAX_SESSION_STYLE_DEFINITIONS = 65_536;
+const MAX_SHARED_GLYPH_PIXEL_BYTES = 128 * 1024 * 1024;
+const MAX_PERFORMANCE_SAMPLES = 100_000;
+const FRAME_CREDIT_BATCH_BYTES = 4 * 1024 * 1024;
+const FRAME_CREDIT_MAX_DELAY_MS = 8;
 const snapshots = new Map<string, SessionSnapshot>();
+const sharedGlyphDefinitions = new Map<number, { definition: GlyphDefinition; references: number }>();
+let sharedGlyphPixelBytes = 0;
 const surfaces = new Map<string, SurfaceSnapshot>();
 const surfaceIdsBySession = new Map<string, Set<string>>();
 const noSurfaceIds: ReadonlySet<string> = new Set();
@@ -91,6 +101,8 @@ let recovering = false;
 let nativeTextAnnounced = false;
 let forceCanvasFallback = false;
 let partialRenderingEnabled = true;
+let pendingFrameCreditBytes = 0;
+let frameCreditTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface ActivePerformanceMeasurement {
   startedAt: number;
@@ -104,6 +116,28 @@ interface ActivePerformanceMeasurement {
 }
 
 let performanceMeasurement: ActivePerformanceMeasurement | undefined;
+
+function appendPerformanceSample(samples: number[], value: number): void {
+  if (samples.length < MAX_PERFORMANCE_SAMPLES) samples.push(value);
+}
+
+function flushFrameCredit(): void {
+  if (frameCreditTimer !== undefined) clearTimeout(frameCreditTimer);
+  frameCreditTimer = undefined;
+  if (pendingFrameCreditBytes === 0) return;
+  const bytes = pendingFrameCreditBytes;
+  pendingFrameCreditBytes = 0;
+  postToRenderer({ type: "frame-credit", bytes });
+}
+
+function returnFrameCredit(bytes: number): void {
+  pendingFrameCreditBytes += bytes;
+  if (pendingFrameCreditBytes >= FRAME_CREDIT_BATCH_BYTES) {
+    flushFrameCredit();
+  } else if (frameCreditTimer === undefined) {
+    frameCreditTimer = setTimeout(flushFrameCredit, FRAME_CREDIT_MAX_DELAY_MS);
+  }
+}
 
 function beginPerformanceMeasurement(): void {
   const now = performance.now();
@@ -229,6 +263,7 @@ function snapshot(sessionHandle: string): SessionSnapshot {
       nativeRows: [],
       nativeStyleRows: [],
       glyphDefinitions: new Map(),
+      glyphPixelBytes: 0,
       styleDefinitions: new Map(),
       rowRevisions: [],
       cursor: hiddenCursor,
@@ -241,6 +276,67 @@ function snapshot(sessionHandle: string): SessionSnapshot {
     snapshots.set(sessionHandle, value);
   }
   return value;
+}
+
+function clearSessionCatalog(session: SessionSnapshot): void {
+  for (const glyphId of session.glyphDefinitions.keys()) {
+    const shared = sharedGlyphDefinitions.get(glyphId);
+    if (!shared) continue;
+    shared.references -= 1;
+    if (shared.references <= 0) {
+      sharedGlyphDefinitions.delete(glyphId);
+      sharedGlyphPixelBytes -= shared.definition.pixels.byteLength;
+    }
+  }
+  session.glyphDefinitions.clear();
+  session.glyphPixelBytes = 0;
+  session.styleDefinitions.clear();
+}
+
+function installGlyphDefinitions(session: SessionSnapshot, definitions: readonly GlyphDefinition[]): boolean {
+  let overflowed = false;
+  for (const decoded of definitions) {
+    if (session.glyphDefinitions.has(decoded.id)) continue;
+    let shared = sharedGlyphDefinitions.get(decoded.id);
+    const pixelBytes = shared?.definition.pixels.byteLength ?? decoded.pixels.byteLength;
+    if (
+      session.glyphDefinitions.size >= MAX_SESSION_GLYPH_DEFINITIONS ||
+      session.glyphPixelBytes + pixelBytes > MAX_SESSION_GLYPH_PIXEL_BYTES ||
+      (!shared && sharedGlyphPixelBytes + pixelBytes > MAX_SHARED_GLYPH_PIXEL_BYTES)
+    ) {
+      overflowed = true;
+      continue;
+    }
+    if (shared) {
+      shared.references += 1;
+    } else {
+      shared = { definition: decoded, references: 1 };
+      sharedGlyphDefinitions.set(decoded.id, shared);
+      sharedGlyphPixelBytes += decoded.pixels.byteLength;
+    }
+    session.glyphDefinitions.set(decoded.id, shared.definition);
+    session.glyphPixelBytes += pixelBytes;
+  }
+  return overflowed;
+}
+
+function installStyleDefinitions(session: SessionSnapshot, definitions: readonly StyleDefinition[]): boolean {
+  let overflowed = false;
+  for (const definition of definitions) {
+    if (session.styleDefinitions.has(definition.id)) continue;
+    if (session.styleDefinitions.size >= MAX_SESSION_STYLE_DEFINITIONS) {
+      overflowed = true;
+      continue;
+    }
+    session.styleDefinitions.set(definition.id, definition);
+  }
+  return overflowed;
+}
+
+function dropSessionSnapshot(sessionHandle: string): void {
+  const session = snapshots.get(sessionHandle);
+  if (session) clearSessionCatalog(session);
+  snapshots.delete(sessionHandle);
 }
 
 function defaults(sessionHandle: string): SessionPresentationDefaults {
@@ -414,7 +510,7 @@ async function flush(): Promise<void> {
   const ids = [...dirty].filter((id) => !occluded.has(id));
   if (performanceMeasurement && ids.length > 0) {
     performanceMeasurement.scheduling.flushes += 1;
-    performanceMeasurement.scheduling.panesPerFlush.push(ids.length);
+    appendPerformanceSample(performanceMeasurement.scheduling.panesPerFlush, ids.length);
     performanceMeasurement.scheduling.maximumDirtyPanes = Math.max(
       performanceMeasurement.scheduling.maximumDirtyPanes,
       ids.length,
@@ -443,14 +539,16 @@ async function flush(): Promise<void> {
       }
       if (active && performanceMeasurement === active) {
         active.scheduling.renderCalls += entries.length;
-        active.samples.renderCpuMs.push(renderedAt - beforeRender);
+        appendPerformanceSample(active.samples.renderCpuMs, renderedAt - beforeRender);
         for (let index = 0; index < entries.length; index += 1) {
           const { id } = entries[index]!;
           const dirtySince = active.dirtySince.get(id);
           const sessionHandle = surfaces.get(id)?.sessionHandle;
           const lastFrameAt = sessionHandle ? active.lastFrameAt.get(sessionHandle) : undefined;
-          if (dirtySince !== undefined) active.samples.dirtyToRenderMs.push(renderedAt - dirtySince);
-          if (lastFrameAt !== undefined) active.samples.frameArrivalToRenderMs.push(renderedAt - lastFrameAt);
+          if (dirtySince !== undefined)
+            appendPerformanceSample(active.samples.dirtyToRenderMs, renderedAt - dirtySince);
+          if (lastFrameAt !== undefined)
+            appendPerformanceSample(active.samples.frameArrivalToRenderMs, renderedAt - lastFrameAt);
           active.dirtySince.delete(id);
           recordRenderMetrics(metrics[index] ?? emptyRenderMetrics());
         }
@@ -537,6 +635,16 @@ function applyFrame(packet: ArrayBuffer): void {
   }
   const previous = snapshot(id);
   const fullFrame = (frame.flags & FrameFlag.FullSnapshot) !== 0;
+  const catalogReset = (frame.flags & FrameFlag.CatalogReset) !== 0;
+  if (catalogReset && !fullFrame) {
+    if (active) {
+      active.frames.resyncRequested += 1;
+      appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
+    }
+    previous.awaitingResync = true;
+    postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
+    return;
+  }
   const classification = classifyFrame(previous, {
     sessionEpoch: frame.sessionEpoch,
     layoutEpoch: frame.layoutEpoch,
@@ -546,7 +654,7 @@ function applyFrame(packet: ArrayBuffer): void {
   if (classification === "stale") {
     if (active) {
       active.frames.stale += 1;
-      active.samples.frameApplyMs.push(performance.now() - applyStarted);
+      appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
     }
     return;
   }
@@ -554,19 +662,18 @@ function applyFrame(packet: ArrayBuffer): void {
   if (classification === "resync") {
     if (active) {
       active.frames.resyncRequested += 1;
-      active.samples.frameApplyMs.push(performance.now() - applyStarted);
+      appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
     }
     previous.awaitingResync = true;
     postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
     return;
   }
   const completingResync = previous.awaitingResync;
-  if (changedSession || completingResync) {
+  if (changedSession || completingResync || catalogReset) {
     previous.rows = [];
     previous.nativeRows = [];
     previous.nativeStyleRows = [];
-    previous.glyphDefinitions.clear();
-    previous.styleDefinitions.clear();
+    clearSessionCatalog(previous);
     previous.rowRevisions = [];
   }
   const rowSection = frame.sections.find((candidate) => candidate.kind === SectionKind.RowReplacements);
@@ -576,22 +683,24 @@ function applyFrame(packet: ArrayBuffer): void {
   const clipboardSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ClipboardWrite);
   const scrollbarSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ScrollbarState);
   if (!rowSection || !cursorSection) {
-    if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
+    if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
     return;
   }
 
+  let catalogOverflowed = false;
   if (glyphSection) {
     const definitions = decodeGlyphDefinitions(glyphSection);
     if (active) active.frames.glyphDefinitions += definitions.length;
-    for (const definition of definitions) previous.glyphDefinitions.set(definition.id, definition);
+    const glyphCatalogOverflowed = installGlyphDefinitions(previous, definitions);
+    catalogOverflowed ||= glyphCatalogOverflowed;
     if (!nativeTextAnnounced && definitions.length > 0) {
       nativeTextAnnounced = true;
       postToRenderer({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
     }
   }
   if (styleSection) {
-    for (const definition of decodeStyleDefinitions(styleSection))
-      previous.styleDefinitions.set(definition.id, definition);
+    const styleCatalogOverflowed = installStyleDefinitions(previous, decodeStyleDefinitions(styleSection));
+    catalogOverflowed ||= styleCatalogOverflowed;
   }
   if (clipboardSection) {
     postToRenderer({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
@@ -660,6 +769,10 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
+  if (catalogOverflowed && !catalogReset && !completingResync) {
+    previous.awaitingResync = true;
+    postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
+  }
   const requiresFullRedraw = full || changedSession || completingResync;
   if (!requiresFullRedraw && cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
   const hasRowDamage = damagedRows.length > 0;
@@ -668,7 +781,7 @@ function applyFrame(packet: ArrayBuffer): void {
     if (requiresFullRedraw) invalidateFull(surfaceId);
     else if (hasRowDamage) invalidateRows(surfaceId, damagedRows, geometryChanged);
   }
-  if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
+  if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
 }
 
 self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
@@ -706,8 +819,9 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
         cursorBlinkTimers.delete(surfaceId);
       }
       surfaceIdsBySession.delete(message.sessionHandle);
-      snapshots.delete(message.sessionHandle);
+      dropSessionSnapshot(message.sessionHandle);
       presentationDefaults.delete(message.sessionHandle);
+      performanceMeasurement?.lastFrameAt.delete(message.sessionHandle);
     } else if (message.type === "resize") {
       const mounted = mounts.get(message.surfaceId);
       if (!mounted) return;
@@ -718,7 +832,18 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       renderer?.resize(message.surfaceId, mounted.size);
       invalidateFull(message.surfaceId);
     } else if (message.type === "frame") {
-      applyFrame(message.packet);
+      try {
+        applyFrame(message.packet);
+      } finally {
+        returnFrameCredit(message.packet.byteLength);
+      }
+    } else if (message.type === "frame-gap") {
+      for (const sessionHandle of message.sessionHandles) {
+        const session = snapshot(sessionHandle);
+        if (session.awaitingResync) continue;
+        session.awaitingResync = true;
+        postToRenderer({ type: "frame-resync-needed", sessionHandle });
+      }
     } else if (message.type === "theme") {
       if (message.surfaceId) {
         surface(message.surfaceId, message.sessionHandle).theme = message.theme;

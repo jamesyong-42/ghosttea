@@ -284,6 +284,7 @@ impl LogicalReplicaModel {
             cells: &cache.cells,
             updated_rows,
             full_snapshot,
+            catalog_reset: full_snapshot,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &scrollbar,
             new_glyph_definitions: &definitions,

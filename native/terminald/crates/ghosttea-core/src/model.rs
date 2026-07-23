@@ -14,6 +14,8 @@ use crate::{
     TerminalUpdate, TextSnapshot, encode_text_snapshot,
 };
 
+const MAX_SENT_GLYPHS_PER_CATALOG: usize = 65_536;
+
 #[derive(Clone)]
 pub struct TerminalRuntime {
     text_engine: Arc<Mutex<TextEngine>>,
@@ -382,6 +384,13 @@ impl TerminalModel {
         if render == RenderRequest::Full {
             self.render_cache.force_full = true;
             self.render_cache.reset_catalog = true;
+        } else if self.render_cache.sent_glyphs.len() >= MAX_SENT_GLYPHS_PER_CATALOG {
+            // A catalog reset is rare and deliberately becomes a self-contained
+            // full frame. This caps both native sent-ID bookkeeping and the
+            // renderer's historical CPU glyph catalog without adding work to
+            // ordinary frames.
+            self.render_cache.force_full = true;
+            self.render_cache.reset_catalog = true;
         }
         let cursor = FrameCursor {
             x: snapshot.cursor.x,
@@ -390,7 +399,7 @@ impl TerminalModel {
             style: snapshot.cursor.style,
             blinking: snapshot.cursor.blinking,
         };
-        let (shaped_rows, updated_rows, full_snapshot, new_definitions, wait, hold) = {
+        let (shaped_rows, updated_rows, full_snapshot, catalog_reset, new_definitions, wait, hold) = {
             let cache = &mut self.render_cache;
             let row_count = snapshot.rows.len();
             let cache_resized = cache.rows.len() != row_count;
@@ -419,7 +428,8 @@ impl TerminalModel {
                     updated.insert(row as u16);
                 }
             }
-            if cache.reset_catalog {
+            let catalog_reset = cache.reset_catalog;
+            if catalog_reset {
                 cache.sent_glyphs.clear();
                 cache.reset_catalog = false;
             }
@@ -497,6 +507,7 @@ impl TerminalModel {
                 shaped_rows,
                 updated.into_iter().collect::<Vec<_>>(),
                 full_snapshot,
+                catalog_reset,
                 new_definitions.into_values().collect::<Vec<_>>(),
                 wait,
                 hold,
@@ -516,6 +527,7 @@ impl TerminalModel {
             cells: &snapshot.cells,
             updated_rows: &updated_rows,
             full_snapshot,
+            catalog_reset,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &snapshot.scrollbar,
             new_glyph_definitions: &new_definitions,

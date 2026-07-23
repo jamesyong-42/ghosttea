@@ -37,6 +37,7 @@ export interface GhostteaTerminalRuntimeOptions {
   workerFactory?: () => Worker;
   clientBuild?: string;
   sessionOwnerId?: string;
+  frameSubscriptionGraceMs?: number;
 }
 
 export type TerminalMount = {
@@ -63,6 +64,7 @@ interface MountedCanvas {
   generation: number;
   references: number;
   disposeTimer: number | undefined;
+  active: boolean;
 }
 
 interface ViewRuntimeState {
@@ -77,6 +79,13 @@ interface ViewRuntimeState {
   desiredRows: number | undefined;
   pendingInput: Array<(attachmentEpoch: number, inputSequence: number) => void>;
 }
+
+type FrameChannelMessage =
+  ArrayBuffer | { type: "subscription-ack"; requestId: number } | { type: "frame-gap"; skipped: number };
+
+const FRAME_SUBSCRIPTION_ACK_TIMEOUT_MS = 2_000;
+const FRAME_FLOW_CONTROL_PROTOCOL_MINOR = 7;
+const DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS = 1_000;
 
 export function waitForGhostteaRendererPorts(timeoutMs = 10_000): Promise<GhostteaRendererPorts> {
   return new Promise((resolve, reject) => {
@@ -100,11 +109,19 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #platform: GhostteaRendererPlatform;
   readonly #clientBuild: string;
   readonly #sessionOwnerId: string | undefined;
+  readonly #frameSubscriptionGraceMs: number;
   #control: ControlClient | undefined;
   #frames: MessagePort | undefined;
   #ready: Promise<void> | undefined;
   readonly #sessionByHandle = new Map<string, SessionSummary>();
   readonly #handleBySessionId = new Map<string, string>();
+  readonly #subscribedSessionHandles = new Set<string>();
+  readonly #pinnedSessionHandles = new Set<string>();
+  readonly #sessionMountReferences = new Map<string, number>();
+  readonly #sessionReleaseTimers = new Map<string, number>();
+  #frameSubscriptionRequestId = 1;
+  readonly #frameSubscriptionRequests = new Map<number, { resolve: () => void; timer: number }>();
+  #frameFlowControlEnabled = false;
   readonly #mountedCanvases = new WeakMap<HTMLCanvasElement, MountedCanvas>();
   readonly #mountedEntries = new Set<MountedCanvas>();
   readonly #mountGenerationBySurface = new Map<string, number>();
@@ -135,6 +152,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#platform = options.platform;
     this.#clientBuild = options.clientBuild ?? "ghosttea-react";
     this.#sessionOwnerId = options.sessionOwnerId;
+    this.#frameSubscriptionGraceMs = Math.max(
+      0,
+      options.frameSubscriptionGraceMs ?? DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS,
+    );
     this.#resync = new FrameResyncController((sessionHandle) => this.#refreshSession(sessionHandle), {
       onExhausted: (sessionHandle, error) => {
         console.error(`[terminal-runtime] frame resynchronization exhausted for ${sessionHandle}`, error);
@@ -169,6 +190,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.#resync.request(data.sessionHandle);
       } else if (data.type === "frame-resync-complete") {
         this.#resync.complete(data.sessionHandle);
+      } else if (data.type === "frame-credit" && this.#frameFlowControlEnabled) {
+        this.#frames?.postMessage({ type: "frame-credit", bytes: data.bytes });
       } else if (data.type === "performance-started") {
         this.#resolvePerformanceRequest(data.requestId, undefined);
       } else if (data.type === "performance-result") {
@@ -300,14 +323,32 @@ export class GhostteaTerminalRuntime extends EventTarget {
       }
     });
     this.#frames = ports.frames;
-    this.#frames.onmessage = ({ data }: MessageEvent<ArrayBuffer>) => {
-      if (data.byteLength < 16) return;
+    this.#frames.onmessage = ({ data }: MessageEvent<FrameChannelMessage>) => {
+      if (!(data instanceof ArrayBuffer)) {
+        if (data.type === "subscription-ack") {
+          const pending = this.#frameSubscriptionRequests.get(data.requestId);
+          if (!pending) return;
+          window.clearTimeout(pending.timer);
+          this.#frameSubscriptionRequests.delete(data.requestId);
+          pending.resolve();
+        } else if (data.type === "frame-gap") {
+          this.#postWorker({ type: "frame-gap", sessionHandles: [...this.#subscribedSessionHandles] });
+        }
+        return;
+      }
+      if (data.byteLength < 16) {
+        if (this.#frameFlowControlEnabled) this.#frames?.postMessage({ type: "frame-credit", bytes: data.byteLength });
+        return;
+      }
       const view = new DataView(data);
       const sessionHandle = view.getBigUint64(8, true).toString();
       // A frame can already be queued in the bridge when its session is
       // terminated. Do not recreate worker state for a session we deliberately
       // dropped, and do not render sessions owned only by automation clients.
-      if (!this.#sessionByHandle.has(sessionHandle)) return;
+      if (!this.#sessionByHandle.has(sessionHandle) || !this.#subscribedSessionHandles.has(sessionHandle)) {
+        if (this.#frameFlowControlEnabled) this.#frames?.postMessage({ type: "frame-credit", bytes: data.byteLength });
+        return;
+      }
       const tracking = (view.getUint16(6, true) & FrameFlag.MouseTracking) !== 0;
       if (this.#mouseTrackingByHandle.get(sessionHandle) !== tracking) {
         this.#mouseTrackingByHandle.set(sessionHandle, tracking);
@@ -317,7 +358,6 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.#postWorker({ type: "frame", packet: data }, [data]);
     };
     this.#frames.start();
-    this.#syncFrameSubscriptions();
     const hello = await this.#control.request({
       type: "hello",
       protocolMajor: PROTOCOL_MAJOR,
@@ -326,6 +366,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR)
       throw new Error("terminald protocol mismatch");
+    this.#frameFlowControlEnabled = hello.protocolMinor >= FRAME_FLOW_CONTROL_PROTOCOL_MINOR;
+    await this.#syncFrameSubscriptions();
     console.info("[terminal-runtime] authenticated terminald protocol");
   }
 
@@ -375,11 +417,95 @@ export class GhostteaTerminalRuntime extends EventTarget {
   registerSession(session: SessionSummary): void {
     this.#sessionByHandle.set(session.handle, session);
     this.#handleBySessionId.set(session.id, session.handle);
-    this.#syncFrameSubscriptions();
   }
 
-  #syncFrameSubscriptions(): void {
-    this.#frames?.postMessage({ type: "subscribe", sessionHandles: [...this.#sessionByHandle.keys()] });
+  #syncFrameSubscriptions(): Promise<void> {
+    const frames = this.#frames;
+    if (!frames) return Promise.resolve();
+    const requestId = this.#frameSubscriptionRequestId++;
+    const subscription = {
+      type: "subscribe",
+      requestId,
+      sessionHandles: [...this.#subscribedSessionHandles],
+      ...(this.#frameFlowControlEnabled ? { frameCredits: true } : {}),
+    };
+    if (!this.#frameFlowControlEnabled) {
+      frames.postMessage(subscription);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        if (!this.#frameSubscriptionRequests.delete(requestId)) return;
+        console.warn(`[terminal-runtime] frame subscription ${requestId} was not acknowledged`);
+        // Preserve compatibility with older externally managed daemons. Frame
+        // sequence validation still requests a full resynchronization if the
+        // initial snapshot was missed.
+        resolve();
+      }, FRAME_SUBSCRIPTION_ACK_TIMEOUT_MS);
+      this.#frameSubscriptionRequests.set(requestId, { resolve, timer });
+      frames.postMessage(subscription);
+    });
+  }
+
+  #retainFrameSubscription(sessionHandle: string): Promise<void> {
+    const releaseTimer = this.#sessionReleaseTimers.get(sessionHandle);
+    if (releaseTimer !== undefined) {
+      window.clearTimeout(releaseTimer);
+      this.#sessionReleaseTimers.delete(sessionHandle);
+    }
+    this.#sessionMountReferences.set(sessionHandle, (this.#sessionMountReferences.get(sessionHandle) ?? 0) + 1);
+    if (this.#subscribedSessionHandles.has(sessionHandle)) return Promise.resolve();
+    this.#subscribedSessionHandles.add(sessionHandle);
+    return this.#syncFrameSubscriptions();
+  }
+
+  #scheduleFrameSubscriptionRelease(sessionHandle: string): void {
+    if (
+      (this.#sessionMountReferences.get(sessionHandle) ?? 0) > 0 ||
+      this.#pinnedSessionHandles.has(sessionHandle) ||
+      !this.#subscribedSessionHandles.has(sessionHandle) ||
+      this.#sessionReleaseTimers.has(sessionHandle)
+    )
+      return;
+    const timer = window.setTimeout(() => {
+      this.#sessionReleaseTimers.delete(sessionHandle);
+      if ((this.#sessionMountReferences.get(sessionHandle) ?? 0) > 0 || this.#pinnedSessionHandles.has(sessionHandle))
+        return;
+      this.#subscribedSessionHandles.delete(sessionHandle);
+      void this.#syncFrameSubscriptions();
+      this.#resync.cancel(sessionHandle);
+      this.#postWorker({ type: "drop-session", sessionHandle });
+    }, this.#frameSubscriptionGraceMs);
+    this.#sessionReleaseTimers.set(sessionHandle, timer);
+  }
+
+  #releaseFrameSubscription(sessionHandle: string): void {
+    const references = Math.max(0, (this.#sessionMountReferences.get(sessionHandle) ?? 0) - 1);
+    if (references === 0) this.#sessionMountReferences.delete(sessionHandle);
+    else this.#sessionMountReferences.set(sessionHandle, references);
+    this.#scheduleFrameSubscriptionRelease(sessionHandle);
+  }
+
+  setSessionPinned(sessionHandle: string, pinned: boolean): void {
+    if (pinned) {
+      if (!this.#sessionByHandle.has(sessionHandle)) {
+        throw new Error(`Cannot pin unknown terminal session ${sessionHandle}`);
+      }
+      if (this.#pinnedSessionHandles.has(sessionHandle)) return;
+      this.#pinnedSessionHandles.add(sessionHandle);
+      const releaseTimer = this.#sessionReleaseTimers.get(sessionHandle);
+      if (releaseTimer !== undefined) {
+        window.clearTimeout(releaseTimer);
+        this.#sessionReleaseTimers.delete(sessionHandle);
+      }
+      if (!this.#subscribedSessionHandles.has(sessionHandle)) {
+        this.#subscribedSessionHandles.add(sessionHandle);
+        void this.#syncFrameSubscriptions();
+      }
+    } else {
+      if (!this.#pinnedSessionHandles.delete(sessionHandle)) return;
+      this.#scheduleFrameSubscriptionRelease(sessionHandle);
+    }
   }
 
   async createSession(options: CreateSessionOptions): Promise<SessionSummary> {
@@ -451,6 +577,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (this.#disposed) throw new Error("Cannot mount a disposed terminal runtime");
     const mounted = this.#mountedCanvases.get(canvas);
     if (mounted) {
+      if (!mounted.active) throw new Error("A released terminal canvas cannot be remounted");
       if (mounted.sessionHandle !== sessionHandle) {
         throw new Error("A terminal canvas cannot be reassigned to another session");
       }
@@ -463,6 +590,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
 
     const offscreen = canvas.transferControlToOffscreen();
+    const subscriptionReady = this.#retainFrameSubscription(sessionHandle);
     const generation = (this.#mountGenerationBySurface.get(viewId) ?? 0) + 1;
     this.#mountGenerationBySurface.set(viewId, generation);
     this.#postWorker({ type: "mount", surfaceId: viewId, sessionHandle, canvas: offscreen }, [offscreen]);
@@ -474,6 +602,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       generation,
       references: 1,
       disposeTimer: undefined,
+      active: true,
     };
     this.#mountedCanvases.set(canvas, entry);
     this.#mountedEntries.add(entry);
@@ -488,9 +617,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
       pendingInput: [],
     };
     this.#views.set(viewId, view);
-    void this.#control
-      ?.request({ type: "attach-session", sessionId, viewId }, 60_000)
+    void subscriptionReady
+      .then(() => {
+        const current = this.#views.get(viewId);
+        if (current !== view || !entry.active) return undefined;
+        return this.#control?.request({ type: "attach-session", sessionId, viewId }, 60_000);
+      })
       .then((response) => {
+        if (!response) return;
         if (response.type !== "view-attached" || response.viewId !== viewId) {
           throw new Error("terminald returned an invalid view attachment");
         }
@@ -528,11 +662,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
       dispose: () => {
         if (disposed) return;
         disposed = true;
+        if (!mounted.active) return;
         mounted.references -= 1;
         if (mounted.references !== 0) return;
         mounted.disposeTimer = window.setTimeout(() => {
           mounted.disposeTimer = undefined;
-          if (mounted.references !== 0) return;
+          if (mounted.references !== 0 || !mounted.active) return;
+          mounted.active = false;
           const ownsWorkerSurface = this.#mountGenerationBySurface.get(mounted.viewId) === mounted.generation;
           if (ownsWorkerSurface) {
             this.#postWorker({ type: "unmount", surfaceId: mounted.viewId });
@@ -543,6 +679,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
           }
           this.#mountedCanvases.delete(mounted.canvas);
           this.#mountedEntries.delete(mounted);
+          this.#releaseFrameSubscription(mounted.sessionHandle);
         }, 0);
       },
     };
@@ -730,24 +867,57 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (handle) this.#postWorker({ type: "cursor-activity", sessionHandle: handle });
   }
 
-  terminate(sessionId: string, source: TerminationSource = "user"): void {
-    this.#control?.notify({ type: "terminate", sessionId, source });
+  #removeRegisteredSession(sessionId: string, detachViews: boolean): void {
     const handle = this.#handleBySessionId.get(sessionId);
     if (!handle) return;
+    const releaseTimer = this.#sessionReleaseTimers.get(handle);
+    if (releaseTimer !== undefined) window.clearTimeout(releaseTimer);
+    this.#sessionReleaseTimers.delete(handle);
+    this.#pinnedSessionHandles.delete(handle);
+    this.#sessionMountReferences.delete(handle);
+    const subscriptionChanged = this.#subscribedSessionHandles.delete(handle);
     this.#cancelMetadataRefresh(handle);
     this.#mouseTrackingByHandle.delete(handle);
     this.#scrollbarByHandle.delete(handle);
+    for (const mounted of [...this.#mountedEntries]) {
+      if (mounted.sessionHandle !== handle) continue;
+      mounted.active = false;
+      if (mounted.disposeTimer !== undefined) window.clearTimeout(mounted.disposeTimer);
+      mounted.disposeTimer = undefined;
+      const ownsWorkerSurface = this.#mountGenerationBySurface.get(mounted.viewId) === mounted.generation;
+      if (ownsWorkerSurface) {
+        this.#postWorker({ type: "unmount", surfaceId: mounted.viewId });
+        this.#mountGenerationBySurface.delete(mounted.viewId);
+        if (detachViews)
+          this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId, viewId: mounted.viewId });
+        this.#views.delete(mounted.viewId);
+        this.#focusByView.delete(mounted.viewId);
+      }
+      this.#mountedCanvases.delete(mounted.canvas);
+      this.#mountedEntries.delete(mounted);
+    }
     for (const [viewId, view] of this.#views) {
       if (view.sessionId === sessionId) {
+        view.pendingInput.length = 0;
+        if (detachViews) this.#control?.notify({ type: "detach-session", sessionId, viewId });
         this.#views.delete(viewId);
         this.#focusByView.delete(viewId);
       }
     }
     this.#sessionByHandle.delete(handle);
     this.#handleBySessionId.delete(sessionId);
-    this.#syncFrameSubscriptions();
+    if (subscriptionChanged) void this.#syncFrameSubscriptions();
     this.#resync.cancel(handle);
     this.#postWorker({ type: "drop-session", sessionHandle: handle });
+  }
+
+  unregisterSession(sessionId: string): void {
+    this.#removeRegisteredSession(sessionId, true);
+  }
+
+  terminate(sessionId: string, source: TerminationSource = "user"): void {
+    this.#control?.notify({ type: "terminate", sessionId, source });
+    this.#removeRegisteredSession(sessionId, false);
   }
 
   resize(sessionId: string, viewId: string, cols: number, rows: number): void {
@@ -768,9 +938,17 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     for (const mounted of this.#mountedEntries) {
       if (mounted.disposeTimer !== undefined) window.clearTimeout(mounted.disposeTimer);
+      mounted.active = false;
       this.#mountedCanvases.delete(mounted.canvas);
     }
     this.#mountedEntries.clear();
+    for (const timer of this.#sessionReleaseTimers.values()) window.clearTimeout(timer);
+    this.#sessionReleaseTimers.clear();
+    for (const pending of this.#frameSubscriptionRequests.values()) {
+      window.clearTimeout(pending.timer);
+      pending.resolve();
+    }
+    this.#frameSubscriptionRequests.clear();
     for (const timer of this.#metadataTimers.values()) window.clearTimeout(timer);
     this.#metadataTimers.clear();
     this.#resync.dispose();
@@ -784,6 +962,9 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#mountGenerationBySurface.clear();
     this.#mouseTrackingByHandle.clear();
     this.#scrollbarByHandle.clear();
+    this.#subscribedSessionHandles.clear();
+    this.#pinnedSessionHandles.clear();
+    this.#sessionMountReferences.clear();
     this.#sessionByHandle.clear();
     this.#handleBySessionId.clear();
     if (this.#frames) {

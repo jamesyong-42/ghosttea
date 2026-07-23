@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 6;
+export const PROTOCOL_MINOR = 7;
 
 export type SessionActivityKind = "shell-idle" | "foreground-job" | "unknown";
 export type SessionActivitySource = "shell-integration" | "process-group" | "unsupported";

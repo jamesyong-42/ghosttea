@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -317,6 +317,7 @@ pub struct Session {
 }
 
 enum InputOperation {
+    Shutdown,
     Text(String),
     Paste(String),
     Key(KeyInput),
@@ -664,11 +665,21 @@ impl Session {
     }
 
     fn start_input_actor(session: &Arc<Self>, input_rx: mpsc::Receiver<InputOperation>) {
-        let session = Arc::clone(session);
+        let session_id = session.id();
+        let session = Arc::downgrade(session);
         std::thread::Builder::new()
-            .name(format!("pty-input-{}", session.id()))
+            .name(format!("pty-input-{session_id}"))
             .spawn(move || {
                 while let Ok(operation) = input_rx.recv() {
+                    if matches!(operation, InputOperation::Shutdown) {
+                        break;
+                    }
+                    let Some(session) = Weak::upgrade(&session) else {
+                        break;
+                    };
+                    if session.has_exited() {
+                        break;
+                    }
                     if let Err(error) = session.execute_input(operation) {
                         eprintln!(
                             "[ghosttea] PTY input failed for {}: {error:#}",
@@ -736,6 +747,11 @@ impl Session {
                     }
                 }
                 session.exited.store(true, Ordering::Release);
+                // Wake the input actor even when no more user input will arrive.
+                // The actor only holds a Weak reference while blocked, so this
+                // message is lifecycle coordination rather than an ownership
+                // requirement.
+                let _ = session.input_tx.try_send(InputOperation::Shutdown);
                 let observed = session.process.wait();
                 let requested_termination = *session.requested_termination.lock().unwrap();
                 let exit_outcome = classify_exit(
@@ -1200,6 +1216,7 @@ impl Session {
     fn execute_input(&self, operation: InputOperation) -> Result<()> {
         let _operation = self.model_operation.lock().unwrap();
         match operation {
+            InputOperation::Shutdown => Ok(()),
             InputOperation::Text(text) => self.process.write(text.as_bytes()),
             InputOperation::Paste(text) => {
                 let bytes = self.model.lock().unwrap().encode_paste(&text)?;
@@ -1606,6 +1623,55 @@ mod tests {
         assert_eq!(
             classify_process_group_activity(ResolvedProgramKind::Unknown, Some(10), Some(20)),
             SessionActivityKind::ForegroundJob
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn naturally_exited_sessions_release_under_churn() {
+        let (frames, _) = broadcast::channel(8);
+        let text_engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
+        let mut sessions = Vec::with_capacity(128);
+        for _ in 0..128 {
+            let (exited_tx, exited_rx) = mpsc::channel();
+            let session = Session::spawn(
+                SpawnOptions {
+                    executable: "/bin/sh".into(),
+                    args: vec!["-c".into(), "exit 0".into()],
+                    cwd: None,
+                    env: HashMap::new(),
+                    environment: Some(SessionEnvironment::Clean {
+                        variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                    }),
+                    cols: 80,
+                    rows: 24,
+                    persistence: Persistence::KeepUntilExit,
+                    program_kind: SessionProgramKind::Application,
+                    owner_id: None,
+                },
+                frames.clone(),
+                Arc::clone(&text_engine),
+                Arc::new(move |_, _, _| {
+                    let _ = exited_tx.send(());
+                }),
+            )
+            .unwrap();
+            sessions.push(Arc::downgrade(&session));
+            exited_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("short-lived session did not report exit");
+            drop(session);
+        }
+
+        let started = Instant::now();
+        while sessions.iter().any(|session| session.strong_count() > 0)
+            && started.elapsed() < Duration::from_secs(5)
+        {
+            thread::yield_now();
+        }
+        assert!(
+            sessions.iter().all(|session| session.strong_count() == 0),
+            "one or more exited sessions are still retained by a per-session actor"
         );
     }
 

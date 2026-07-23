@@ -6,6 +6,7 @@ export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 export const FrameFlag = {
   FullSnapshot: 1 << 0,
   MouseTracking: 1 << 1,
+  CatalogReset: 1 << 2,
 } as const;
 
 export enum SectionKind {

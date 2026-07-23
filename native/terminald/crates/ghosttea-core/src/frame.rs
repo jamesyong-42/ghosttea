@@ -15,6 +15,7 @@ pub const GLYPH_DEFINITIONS: u16 = 1;
 pub const CLIPBOARD_WRITE: u16 = 11;
 pub const FULL_SNAPSHOT: u16 = 1;
 pub const MOUSE_TRACKING: u16 = 1 << 1;
+pub const CATALOG_RESET: u16 = 1 << 2;
 
 pub struct FrameCursor {
     pub x: u16,
@@ -220,6 +221,7 @@ pub struct TextSnapshot<'a> {
     pub cells: &'a [Vec<TerminalCell>],
     pub updated_rows: &'a [u16],
     pub full_snapshot: bool,
+    pub catalog_reset: bool,
     pub mouse_tracking: bool,
     pub scrollbar: &'a TerminalScrollbar,
     pub new_glyph_definitions: &'a [GlyphDefinition],
@@ -240,6 +242,7 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         cells,
         updated_rows,
         full_snapshot,
+        catalog_reset,
         mouse_tracking,
         scrollbar,
         new_glyph_definitions,
@@ -385,7 +388,8 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         &mut packet,
         6,
         (if full_snapshot { FULL_SNAPSHOT } else { 0 })
-            | (if mouse_tracking { MOUSE_TRACKING } else { 0 }),
+            | (if mouse_tracking { MOUSE_TRACKING } else { 0 })
+            | (if catalog_reset { CATALOG_RESET } else { 0 }),
     );
     put_u64(&mut packet, 8, session_handle);
     put_u64(&mut packet, 16, session_handle);
@@ -567,6 +571,7 @@ mod tests {
             cells: &cells,
             updated_rows: &[0],
             full_snapshot: true,
+            catalog_reset: true,
             mouse_tracking: false,
             scrollbar: &TerminalScrollbar {
                 total: 30,
@@ -579,6 +584,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(&frame[0..4], &FRAME_MAGIC.to_le_bytes());
+        assert_eq!(
+            u16::from_le_bytes(frame[6..8].try_into().unwrap()) & CATALOG_RESET,
+            CATALOG_RESET
+        );
         assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()), 3);
         assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 6);
         assert_eq!(
@@ -654,6 +663,7 @@ mod tests {
             cells: &cells,
             updated_rows: &[1],
             full_snapshot: false,
+            catalog_reset: false,
             mouse_tracking: false,
             scrollbar: &TerminalScrollbar {
                 total: 24,
@@ -693,6 +703,7 @@ mod tests {
             cells: &[Vec::new()],
             updated_rows: &[0],
             full_snapshot: false,
+            catalog_reset: false,
             mouse_tracking: true,
             scrollbar: &TerminalScrollbar {
                 total: 48,
@@ -756,6 +767,7 @@ mod tests {
             cells: &snapshot.cells,
             updated_rows: &updated_rows,
             full_snapshot: true,
+            catalog_reset: true,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &snapshot.scrollbar,
             new_glyph_definitions: &[],

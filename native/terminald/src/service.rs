@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
@@ -13,7 +13,7 @@ use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    sync::broadcast,
+    sync::{broadcast, watch},
     task::JoinHandle,
 };
 
@@ -33,8 +33,9 @@ const MAX_FRAME_SUBSCRIPTIONS: usize = 4096;
 const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
+const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 6;
+const CONTROL_PROTOCOL_MINOR: u16 = 7;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -62,7 +63,33 @@ struct Envelope {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameSubscription {
+    #[serde(default)]
+    request_id: u64,
     session_handles: Vec<String>,
+}
+
+#[derive(Default)]
+struct OwnerTombstones {
+    owners: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl OwnerTombstones {
+    fn contains(&self, owner_id: &str) -> bool {
+        self.owners.contains(owner_id)
+    }
+
+    fn insert(&mut self, owner_id: String) {
+        if !self.owners.insert(owner_id.clone()) {
+            return;
+        }
+        self.order.push_back(owner_id);
+        while self.owners.len() > MAX_CLOSED_OWNER_TOMBSTONES {
+            if let Some(expired) = self.order.pop_front() {
+                self.owners.remove(&expired);
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -292,7 +319,7 @@ struct ControlContext {
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
-    closed_owners: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
 }
 
@@ -635,7 +662,10 @@ async fn handle_command(
                 }
                 let registry_on_exit = Arc::clone(registry);
                 let events_on_exit = event_tx.clone();
+                let (session_exit_tx, mut control_exit) = watch::channel(false);
+                let mut activity_exit = session_exit_tx.subscribe();
                 let on_exit: ExitCallback = Arc::new(move |session_id, exit, persistence| {
+                    session_exit_tx.send_replace(true);
                     if persistence != Persistence::KeepUntilExplicitClose {
                         registry_on_exit.write().unwrap().remove(&session_id);
                     }
@@ -663,35 +693,53 @@ async fn handle_command(
                 let activity_session_id = summary.id.clone();
                 let control_events = event_tx.clone();
                 let activity_events = event_tx.clone();
-                let activity_session = Arc::clone(&session);
+                let activity_session = Arc::downgrade(&session);
                 tokio::spawn(async move {
                     loop {
-                        match controls.recv().await {
-                            Ok(changed) => {
-                                let _ = control_events.send(json!({
-                                    "requestId": 0,
-                                    "type": "control-changed",
-                                    "sessionId": control_session_id,
-                                    "controllerViewId": changed.controller.view_id,
-                                    "controlEpoch": changed.controller.control_epoch,
-                                    "cols": changed.cols,
-                                    "rows": changed.rows,
-                                    "layoutEpoch": changed.layout_epoch,
-                                }));
+                        tokio::select! {
+                            changed = control_exit.changed() => {
+                                if changed.is_err() || *control_exit.borrow() {
+                                    break;
+                                }
                             }
-                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(broadcast::error::RecvError::Closed) => break,
+                            changed = controls.recv() => match changed {
+                                Ok(changed) => {
+                                    let _ = control_events.send(json!({
+                                        "requestId": 0,
+                                        "type": "control-changed",
+                                        "sessionId": control_session_id,
+                                        "controllerViewId": changed.controller.view_id,
+                                        "controlEpoch": changed.controller.control_epoch,
+                                        "cols": changed.cols,
+                                        "rows": changed.rows,
+                                        "layoutEpoch": changed.layout_epoch,
+                                    }));
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Closed) => break,
+                            },
                         }
                     }
                 });
                 tokio::spawn(async move {
                     loop {
-                        let activity = match activities.recv().await {
-                            Ok(activity) => activity,
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                activity_session.summary().activity
+                        let activity = tokio::select! {
+                            changed = activity_exit.changed() => {
+                                if changed.is_err() || *activity_exit.borrow() {
+                                    break;
+                                }
+                                continue;
                             }
-                            Err(broadcast::error::RecvError::Closed) => break,
+                            activity = activities.recv() => match activity {
+                                Ok(activity) => activity,
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    let Some(session) = activity_session.upgrade() else {
+                                        break;
+                                    };
+                                    session.summary().activity
+                                }
+                                Err(broadcast::error::RecvError::Closed) => break,
+                            },
                         };
                         let _ = activity_events.send(json!({
                             "requestId": 0,
@@ -1237,10 +1285,16 @@ async fn handle_command(
             Command::Terminate { session_id, source } => {
                 let local_session = { registry.read().unwrap().get(&session_id).cloned() };
                 if let Some(session) = local_session {
+                    for (view_id, _) in remove_session_attachments(attached, &session_id) {
+                        session.detach_view(&view_id, client_id);
+                    }
                     session.terminate(source)?;
                     registry.write().unwrap().remove(&session_id);
-                } else if !context.mesh_runtime.close_session(&session_id).await {
-                    bail!("unknown session");
+                } else {
+                    if !context.mesh_runtime.close_session(&session_id).await {
+                        bail!("unknown session");
+                    }
+                    remove_session_attachments(attached, &session_id);
                 }
                 Ok(ResponseBody::Ok)
             }
@@ -1258,6 +1312,9 @@ async fn handle_command(
                     .cloned()
                     .collect::<Vec<_>>();
                 for session in local_sessions {
+                    for (view_id, _) in remove_session_attachments(attached, &session.id()) {
+                        session.detach_view(&view_id, client_id);
+                    }
                     session.terminate(TerminationSource::User)?;
                     registry.write().unwrap().remove(&session.id());
                 }
@@ -1265,6 +1322,7 @@ async fn handle_command(
                 for session in remote_sessions {
                     if session.owner_id.as_deref() == Some(owner_id.as_str()) {
                         context.mesh_runtime.close_session(&session.id).await;
+                        remove_session_attachments(attached, &session.id);
                     }
                 }
                 drop(owner_lifecycle);
@@ -1323,6 +1381,21 @@ fn require_attachment(
     }
 }
 
+fn remove_session_attachments(
+    attached: &mut HashMap<(String, String), u64>,
+    session_id: &str,
+) -> Vec<(String, u64)> {
+    let mut removed = Vec::new();
+    attached.retain(|(attached_session_id, view_id), attachment_epoch| {
+        if attached_session_id != session_id {
+            return true;
+        }
+        removed.push((view_id.clone(), *attachment_epoch));
+        false
+    });
+    removed
+}
+
 async fn serve_frames(
     listener: UnixListener,
     token: String,
@@ -1355,6 +1428,14 @@ async fn serve_frames(
                             break;
                         };
                         subscriptions = parsed;
+                        let acknowledgement = serde_json::to_vec(&json!({
+                            "type": "subscription-ack",
+                            "requestId": subscription.request_id,
+                        }))
+                        .unwrap();
+                        if write_packet(&mut writer, &acknowledgement).await.is_err() {
+                            break;
+                        }
                     }
                     frame = rx.recv() => match frame {
                         Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
@@ -1366,7 +1447,16 @@ async fn serve_frames(
                             }
                         }
                         Ok(_) => break,
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            let notice = serde_json::to_vec(&json!({
+                                "type": "frame-gap",
+                                "skipped": skipped,
+                            }))
+                            .unwrap();
+                            if write_packet(&mut writer, &notice).await.is_err() {
+                                break;
+                            }
+                        }
                         Err(_) => break,
                     }
                 }
@@ -1488,15 +1578,50 @@ mod protocol_tests {
     fn frame_subscriptions_and_frame_handles_are_typed() {
         let subscription: FrameSubscription = serde_json::from_value(json!({
             "type": "subscribe",
+            "requestId": 9,
             "sessionHandles": ["7", "11"]
         }))
         .unwrap();
+        assert_eq!(subscription.request_id, 9);
         assert_eq!(subscription.session_handles, vec!["7", "11"]);
 
         let mut frame = vec![0_u8; 16];
         frame[8..16].copy_from_slice(&11_u64.to_le_bytes());
         assert_eq!(frame_session_handle(&frame), Some(11));
         assert_eq!(frame_session_handle(&frame[..15]), None);
+    }
+
+    #[test]
+    fn closed_owner_tombstones_have_a_fixed_capacity() {
+        let mut tombstones = OwnerTombstones::default();
+        for index in 0..=MAX_CLOSED_OWNER_TOMBSTONES {
+            tombstones.insert(format!("owner-{index}"));
+        }
+
+        assert_eq!(tombstones.owners.len(), MAX_CLOSED_OWNER_TOMBSTONES);
+        assert_eq!(tombstones.order.len(), MAX_CLOSED_OWNER_TOMBSTONES);
+        assert!(!tombstones.contains("owner-0"));
+        assert!(tombstones.contains(&format!("owner-{MAX_CLOSED_OWNER_TOMBSTONES}")));
+    }
+
+    #[test]
+    fn terminating_a_session_removes_all_of_its_attachment_bookkeeping() {
+        let mut attached = HashMap::from([
+            (("session-a".to_owned(), "view-1".to_owned()), 1),
+            (("session-a".to_owned(), "view-2".to_owned()), 2),
+            (("session-b".to_owned(), "view-3".to_owned()), 3),
+        ]);
+
+        let mut removed = remove_session_attachments(&mut attached, "session-a");
+        removed.sort();
+        assert_eq!(
+            removed,
+            vec![("view-1".to_owned(), 1), ("view-2".to_owned(), 2)]
+        );
+        assert_eq!(
+            attached,
+            HashMap::from([(("session-b".to_owned(), "view-3".to_owned()), 3)])
+        );
     }
 
     #[test]
