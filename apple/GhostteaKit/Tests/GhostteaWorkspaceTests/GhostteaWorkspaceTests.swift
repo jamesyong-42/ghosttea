@@ -40,6 +40,7 @@ private actor RestorationTerminationRecorder {
 func selectedTabSessionsDefineMemoryActivity() throws {
   let document = try restorationWorkspace()
   #expect(document.selectedTabSessionIDs == ["session-b", "session-c"])
+  #expect(document.selectedTabSessionControllerPaneIDs == ["pane-b", "pane-c"])
   #expect(document.inactiveSessionIDs == ["session-a"])
 }
 
@@ -379,6 +380,26 @@ func workspaceSchemaValidation() throws {
     activePaneID: "pane-1"
   )
   #expect(mirrored.sessionIDs == ["session-1", "session-1"])
+  let mirroredTabs = try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-1",
+    tabs: [GhostteaWorkspaceTab(id: "tab-1", workspace: mirrored)]
+  )
+  #expect(mirroredTabs.uniqueSessionIDs == ["session-1"])
+  #expect(mirroredTabs.selectedTabUniqueSessionIDs == ["session-1"])
+  #expect(mirroredTabs.selectedTabSessionControllerPaneIDs == ["pane-1"])
+  let activatedMirror = try mirrored.applying(.activate(paneID: "pane-2")).document
+  let activatedMirrorTabs = try GhostteaWorkspaceTabsDocument(
+    selectedTabID: "tab-1",
+    tabs: [GhostteaWorkspaceTab(id: "tab-1", workspace: activatedMirror)]
+  )
+  #expect(activatedMirrorTabs.selectedTabSessionControllerPaneIDs == ["pane-2"])
+  let persistedMirror = try GhostteaWorkspaceRestorationDocument(
+    workspace: mirroredTabs,
+    sessionProfiles: mirroredTabs.uniqueSessionIDs.map {
+      GhostteaWorkspaceSessionProfileBinding(sessionID: $0, profileID: "profile-1")
+    }
+  )
+  #expect(persistedMirror.sessionProfiles.map(\.sessionID) == ["session-1"])
   let transition = try mirrored.applying(.close)
   #expect(transition.closedSessionID == nil)
   #expect(transition.document.sessionIDs == ["session-1"])

@@ -13,15 +13,23 @@ export function connectSocket(
   limit: number,
   onPacket: (bytes: Buffer) => void,
   onDisconnect: (error: Error) => void,
+  timeoutMs = 10_000,
 ): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(path);
     let buffered = Buffer.alloc(0);
     let authenticated = false;
     let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`terminald connection timed out during authentication at ${path}`));
+    }, timeoutMs);
     socket.on("error", (error) => {
       if (!settled) {
         settled = true;
+        clearTimeout(timeout);
         reject(error);
       } else {
         console.error(`[terminal-bridge] socket error at ${path}: ${error.message}`);
@@ -31,6 +39,7 @@ export function connectSocket(
     socket.on("close", () => {
       if (!settled) {
         settled = true;
+        clearTimeout(timeout);
         reject(new Error(`terminald connection closed during authentication at ${path}`));
       } else if (authenticated) {
         onDisconnect(new Error(`terminald connection closed at ${path}`));
@@ -52,12 +61,14 @@ export function connectSocket(
         if (!authenticated) {
           if (body.toString() !== "ok") {
             settled = true;
+            clearTimeout(timeout);
             socket.destroy();
             reject(new Error("terminald authentication failed"));
             return;
           }
           authenticated = true;
           settled = true;
+          clearTimeout(timeout);
           resolve(socket);
         } else {
           onPacket(body);

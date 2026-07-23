@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
 import {
+  allSettledWithin,
   GhostteaElectronBackend,
   installGhostteaEditShortcuts,
   type GhostteaElectronBackendOptions,
@@ -103,6 +104,7 @@ let backend: GhostteaElectronBackend | undefined;
 let quitting = false;
 let quitCleanupComplete = false;
 let quitCleanup: Promise<void> | undefined;
+const QUIT_CLEANUP_TIMEOUT_MS = 5_000;
 const closingSessionOwners = new Set<Promise<void>>();
 let recoveringBackend: Promise<void> | undefined;
 let lastFocusedWindow: BrowserWindow | undefined;
@@ -390,13 +392,16 @@ app.on("before-quit", (event) => {
   if (quitCleanup) return;
   quitting = true;
   const ownerClosures = tabs.records().map((record) => closeSessionOwner(record.id, record.sessionIds));
-  quitCleanup = Promise.allSettled([...closingSessionOwners, ...ownerClosures]).then(() => {
-    try {
-      backend?.stop();
-    } catch (error) {
-      console.error("terminal backend shutdown failed", error);
-    }
-    quitCleanupComplete = true;
-    app.quit();
-  });
+  quitCleanup = allSettledWithin([...closingSessionOwners, ...ownerClosures], QUIT_CLEANUP_TIMEOUT_MS).then(
+    (settled) => {
+      if (!settled) console.warn("terminal session cleanup timed out during quit");
+      try {
+        backend?.stop();
+      } catch (error) {
+        console.error("terminal backend shutdown failed", error);
+      }
+      quitCleanupComplete = true;
+      app.quit();
+    },
+  );
 });

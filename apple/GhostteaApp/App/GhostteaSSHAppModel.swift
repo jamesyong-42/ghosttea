@@ -624,7 +624,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     guard let workspace, let restorationStore else { return }
     let document = try GhostteaWorkspaceRestorationDocument(
       workspace: workspace,
-      sessionProfiles: workspace.sessionIDs.compactMap { sessionID in
+      sessionProfiles: workspace.uniqueSessionIDs.compactMap { sessionID in
         sessionProfileIDs[sessionID].map {
           GhostteaWorkspaceSessionProfileBinding(sessionID: sessionID, profileID: $0)
         }
@@ -668,7 +668,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     }
     guard footprint > memoryBudget.softApplicationFootprintBytes else { return }
 
-    let selectedCount = workspace.selectedTabSessionIDs.filter {
+    let selectedCount = workspace.selectedTabUniqueSessionIDs.filter {
       !coldSessionIDs.contains($0)
     }.count
     let pressureCandidates = residency.evictionCandidates(

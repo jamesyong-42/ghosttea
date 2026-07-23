@@ -18,13 +18,37 @@ public struct GhostteaWorkspaceTabsDocument: Equatable, Sendable, Codable {
   public let tabs: [GhostteaWorkspaceTab]
 
   public var sessionIDs: [String] { tabs.flatMap { $0.workspace.sessionIDs } }
+  /// Resource identities in stable pane order, with mirrored panes collapsed.
+  public var uniqueSessionIDs: [String] {
+    var seen = Set<String>()
+    return sessionIDs.filter { seen.insert($0).inserted }
+  }
   public var selectedTabSessionIDs: [String] {
     tabs.first(where: { $0.id == selectedTabID })?.workspace.sessionIDs ?? []
   }
-  public var inactiveSessionIDs: [String] {
-    let selected = Set(selectedTabSessionIDs)
+  public var selectedTabUniqueSessionIDs: [String] {
     var seen = Set<String>()
-    return sessionIDs.filter { !selected.contains($0) && seen.insert($0).inserted }
+    return selectedTabSessionIDs.filter { seen.insert($0).inserted }
+  }
+  /// One geometry controller per selected-tab session; the focused mirror wins.
+  public var selectedTabSessionControllerPaneIDs: [String] {
+    guard let workspace = tabs.first(where: { $0.id == selectedTabID })?.workspace else { return [] }
+    let panes = workspace.root.panes
+    var controllerBySessionID = [String: String]()
+    for pane in panes where controllerBySessionID[pane.sessionID] == nil {
+      controllerBySessionID[pane.sessionID] = pane.id
+    }
+    let focusedPaneID = workspace.zoomedPaneID ?? workspace.activePaneID
+    if let focusedPane = panes.first(where: { $0.id == focusedPaneID }) {
+      controllerBySessionID[focusedPane.sessionID] = focusedPane.id
+    }
+    return panes.compactMap { pane in
+      controllerBySessionID[pane.sessionID] == pane.id ? pane.id : nil
+    }
+  }
+  public var inactiveSessionIDs: [String] {
+    let selected = Set(selectedTabUniqueSessionIDs)
+    return uniqueSessionIDs.filter { !selected.contains($0) }
   }
 
   private enum CodingKeys: String, CodingKey {

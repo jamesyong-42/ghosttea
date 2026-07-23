@@ -24,4 +24,17 @@ describe("bridge socket authentication", () => {
     await rejection;
     expect(onDisconnect).not.toHaveBeenCalled();
   });
+
+  it("times out and destroys a socket that never authenticates", async () => {
+    const socket = new FakeSocket();
+    createConnection.mockReturnValue(socket);
+    const { connectSocket } = await import("./bridge-socket");
+    const onDisconnect = vi.fn();
+
+    const connection = connectSocket("/tmp/control.sock", "token", 1024, vi.fn(), onDisconnect, 5);
+    await expect(connection).rejects.toThrow("timed out during authentication");
+
+    expect(socket.destroy).toHaveBeenCalledOnce();
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
 });

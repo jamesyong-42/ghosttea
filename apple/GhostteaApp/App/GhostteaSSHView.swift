@@ -117,7 +117,8 @@ struct GhostteaSSHView: View {
   }
 
   private func terminal(_ document: GhostteaWorkspaceTabsDocument) -> some View {
-    GhostteaWorkspaceView(
+    let gridControllerPaneIDs = Set(document.selectedTabSessionControllerPaneIDs)
+    return GhostteaWorkspaceView(
       document: document,
       tabTitle: { tab in
         tab.workspace.sessionIDs.first.map(model.title) ?? "Terminal"
@@ -132,6 +133,7 @@ struct GhostteaSSHView: View {
         sessionID: pane.sessionID,
         frame: model.frame(for: pane.sessionID),
         status: model.sessionStatus(for: pane.sessionID),
+        controlsGridSize: gridControllerPaneIDs.contains(pane.id),
         visible: scenePhase == .active)
     }
   }
@@ -151,6 +153,7 @@ private struct GhostteaSSHWorkspacePane: View {
   let sessionID: String
   let frame: Data?
   let status: String
+  let controlsGridSize: Bool
   let visible: Bool
 
   var body: some View {
@@ -160,6 +163,7 @@ private struct GhostteaSSHWorkspacePane: View {
         GhostteaSharedTerminalSurface(
           frame: frame,
           visible: visible,
+          controlsGridSize: controlsGridSize,
           accessibilityTitle: model.title(for: sessionID),
           accessibilityConnectionState: status,
           onGridSize: { model.updateGrid($0, sessionID: sessionID) },

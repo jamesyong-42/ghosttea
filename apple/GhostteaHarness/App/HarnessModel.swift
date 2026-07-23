@@ -1779,7 +1779,7 @@ final class HarnessModel: ObservableObject {
     guard let productionWorkspace else {
       throw HarnessError.sessionProbeMismatch("workspace restoration document")
     }
-    let bindings = try productionWorkspace.sessionIDs.map { sessionID in
+    let bindings = try productionWorkspace.uniqueSessionIDs.map { sessionID in
       guard let profileID = productionWorkspaceResources[sessionID]?.profileID else {
         throw HarnessError.sessionProbeMismatch("workspace restoration profile")
       }

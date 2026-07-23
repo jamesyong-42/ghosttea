@@ -4,6 +4,7 @@ import SwiftUI
 struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   let frame: Data
   let visible: Bool
+  var controlsGridSize = true
   var accessibilityTitle = "Shared terminal"
   var accessibilityConnectionState = "Connected through Truffle"
   let onGridSize: (GhostteaTerminalGridSize) -> Void
@@ -50,7 +51,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   }
 
   private func configure(_ view: GhostteaTerminalMetalView) {
-    view.onGridSizeChange = onGridSize
+    view.onGridSizeChange = controlsGridSize ? onGridSize : nil
     view.onNeedsFullRefresh = onNeedsFullRefresh
     view.onHardwareKeyEvent = onHardwareInput
     view.onSoftwareInputEvent = onSoftwareInput

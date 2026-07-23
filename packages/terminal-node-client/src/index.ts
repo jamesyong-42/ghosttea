@@ -50,6 +50,7 @@ function packet(bytes: Uint8Array): Buffer {
 
 export interface GhostteaAutomationClientOptions {
   clientBuild?: string;
+  connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }
 
@@ -108,6 +109,11 @@ export class GhostteaAutomationClient extends EventEmitter {
       };
       const onFailure = (error: Error): void => {
         cleanup();
+        if (this.#socket === socket) {
+          this.#socket = undefined;
+          this.#authenticated = false;
+        }
+        socket.destroy();
         reject(error);
       };
       const onClose = (): void => {
@@ -118,7 +124,12 @@ export class GhostteaAutomationClient extends EventEmitter {
         socket.off("close", onClose);
         this.off("authenticated", onAuthenticated);
         this.off("connection-error", onFailure);
+        clearTimeout(timeout);
       };
+      const timeout = setTimeout(
+        () => onFailure(new Error("Ghosttea control connection timed out during authentication")),
+        this.#options.connectTimeoutMs ?? 10_000,
+      );
       socket.once("connect", onConnect);
       socket.once("close", onClose);
       this.once("authenticated", onAuthenticated);

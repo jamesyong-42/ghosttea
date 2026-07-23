@@ -3,7 +3,7 @@ import type { Socket } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const commands: Record<string, unknown>[] = [];
-let socketBehavior: "normal" | "close-during-auth" = "normal";
+let socketBehavior: "normal" | "close-during-auth" | "silent-auth" = "normal";
 
 function packet(value: string | object): Buffer {
   const body = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
@@ -23,7 +23,7 @@ class FakeSocket extends EventEmitter {
       expect(body.toString()).toBe("secret");
       this.#authenticated = true;
       if (socketBehavior === "close-during-auth") queueMicrotask(() => this.emit("close"));
-      else queueMicrotask(() => this.emit("data", packet("ok")));
+      else if (socketBehavior === "normal") queueMicrotask(() => this.emit("data", packet("ok")));
       return true;
     }
     const command = JSON.parse(body.toString()) as Record<string, unknown>;
@@ -162,6 +162,20 @@ describe("GhostteaAutomationClient", () => {
     const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
     socketBehavior = "close-during-auth";
     await expect(client.connect()).rejects.toThrow("closed during authentication");
+
+    socketBehavior = "normal";
+    await expect(client.connect()).resolves.toBeUndefined();
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    client.dispose();
+  });
+
+  it("times out a silent authentication peer and reconnects cleanly", async () => {
+    const client = new GhostteaAutomationClient(
+      { controlSocket: "control.sock", authToken: "secret" },
+      { connectTimeoutMs: 5 },
+    );
+    socketBehavior = "silent-auth";
+    await expect(client.connect()).rejects.toThrow("timed out during authentication");
 
     socketBehavior = "normal";
     await expect(client.connect()).resolves.toBeUndefined();

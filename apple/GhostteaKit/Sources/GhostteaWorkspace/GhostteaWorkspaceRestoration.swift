@@ -99,11 +99,7 @@ public struct GhostteaWorkspaceRestorationDocument: Equatable, Sendable, Codable
     )
     self.version = version
     self.workspace = workspace
-    var emittedSessionIDs = Set<String>()
-    self.sessionProfiles = workspace.sessionIDs.compactMap { sessionID in
-      guard emittedSessionIDs.insert(sessionID).inserted else { return nil }
-      return bindingsBySessionID[sessionID]
-    }
+    self.sessionProfiles = workspace.uniqueSessionIDs.compactMap { bindingsBySessionID[$0] }
   }
 
   public init(from decoder: any Decoder) throws {
