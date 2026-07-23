@@ -103,10 +103,7 @@ test("comparison allows only an explicit encoded-geometry A/B difference", () =>
       "device, toolchain, suite, or workload configuration differs",
     ),
   );
-  assert.deepEqual(
-    validateComparableReports(disabled, enabled, { allowGeometryReuseDifference: true }),
-    [],
-  );
+  assert.deepEqual(validateComparableReports(disabled, enabled, { allowGeometryReuseDifference: true }), []);
 });
 
 test("comparison allows only codec and source-byte differences for an explicit codec A/B", () => {
@@ -116,11 +113,11 @@ test("comparison allows only codec and source-byte differences for an explicit c
   for (const sample of compact.results.cases["typing-1"].samples) sample.sourceBytes = 400;
 
   assert.ok(
-    validateComparableReports(json, compact).includes(
-      "device, toolchain, suite, or workload configuration differs",
-    ),
+    validateComparableReports(json, compact).includes("device, toolchain, suite, or workload configuration differs"),
   );
-  assert.ok(validateComparableReports(json, compact).includes("typing-1 changed the sourceBytes correctness invariant"));
+  assert.ok(
+    validateComparableReports(json, compact).includes("typing-1 changed the sourceBytes correctness invariant"),
+  );
   assert.deepEqual(validateComparableReports(json, compact, { allowStateCodecDifference: true }), []);
 
   compact.results.cases["typing-1"].samples[0].trf1Bytes += 1;
@@ -137,9 +134,7 @@ test("comparison allows only an explicit retained-state commit A/B difference", 
   copied.config.inPlaceRetainedStateCommitEnabled = false;
 
   assert.ok(
-    validateComparableReports(copied, inPlace).includes(
-      "device, toolchain, suite, or workload configuration differs",
-    ),
+    validateComparableReports(copied, inPlace).includes("device, toolchain, suite, or workload configuration differs"),
   );
   assert.deepEqual(
     validateComparableReports(copied, inPlace, {
@@ -173,9 +168,7 @@ test("comparison allows only an explicit row-geometry reuse A/B difference", () 
   direct.config.rowGeometryReuseEnabled = false;
 
   assert.ok(
-    validateComparableReports(direct, cached).includes(
-      "device, toolchain, suite, or workload configuration differs",
-    ),
+    validateComparableReports(direct, cached).includes("device, toolchain, suite, or workload configuration differs"),
   );
   assert.deepEqual(
     validateComparableReports(direct, cached, {
@@ -191,9 +184,7 @@ test("comparison allows only an explicit lazy color-atlas A/B difference", () =>
   eager.config.lazyColorAtlasEnabled = false;
 
   assert.ok(
-    validateComparableReports(eager, lazy).includes(
-      "device, toolchain, suite, or workload configuration differs",
-    ),
+    validateComparableReports(eager, lazy).includes("device, toolchain, suite, or workload configuration differs"),
   );
   assert.deepEqual(
     validateComparableReports(eager, lazy, {

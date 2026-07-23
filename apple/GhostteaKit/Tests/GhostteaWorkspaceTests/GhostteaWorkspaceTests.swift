@@ -356,7 +356,7 @@ func workspaceRestorationDropsStaleSessions() throws {
   #expect(empty == nil)
 }
 
-@Test("Workspace schema rejects duplicate identities and stale pane references")
+@Test("Workspace schema allows mirrored sessions and rejects stale pane references")
 func workspaceSchemaValidation() throws {
   let pane = GhostteaWorkspaceNode.pane(
     GhostteaWorkspacePane(id: "pane-1", sessionID: "session-1")
@@ -364,22 +364,24 @@ func workspaceSchemaValidation() throws {
   #expect(throws: GhostteaWorkspaceValidationError.missingActivePane("missing")) {
     try GhostteaWorkspaceDocument(root: pane, activePaneID: "missing")
   }
-  #expect(throws: GhostteaWorkspaceValidationError.duplicateSessionID("session-1")) {
-    try GhostteaWorkspaceDocument(
-      root: .split(
-        GhostteaWorkspaceSplit(
-          id: "split-1",
-          axis: .horizontal,
-          ratio: 0.5,
-          first: pane,
-          second: .pane(
-            GhostteaWorkspacePane(id: "pane-2", sessionID: "session-1")
-          )
+  let mirrored = try GhostteaWorkspaceDocument(
+    root: .split(
+      GhostteaWorkspaceSplit(
+        id: "split-1",
+        axis: .horizontal,
+        ratio: 0.5,
+        first: pane,
+        second: .pane(
+          GhostteaWorkspacePane(id: "pane-2", sessionID: "session-1")
         )
-      ),
-      activePaneID: "pane-1"
-    )
-  }
+      )
+    ),
+    activePaneID: "pane-1"
+  )
+  #expect(mirrored.sessionIDs == ["session-1", "session-1"])
+  let transition = try mirrored.applying(.close)
+  #expect(transition.closedSessionID == nil)
+  #expect(transition.document.sessionIDs == ["session-1"])
 }
 
 @Test("Workspace encoding contains no live session metadata")

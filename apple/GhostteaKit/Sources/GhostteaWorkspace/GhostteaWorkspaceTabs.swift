@@ -23,7 +23,8 @@ public struct GhostteaWorkspaceTabsDocument: Equatable, Sendable, Codable {
   }
   public var inactiveSessionIDs: [String] {
     let selected = Set(selectedTabSessionIDs)
-    return sessionIDs.filter { !selected.contains($0) }
+    var seen = Set<String>()
+    return sessionIDs.filter { !selected.contains($0) && seen.insert($0).inserted }
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -48,11 +49,12 @@ public struct GhostteaWorkspaceTabsDocument: Equatable, Sendable, Codable {
       guard tabIDs.insert(tab.id).inserted else {
         throw GhostteaWorkspaceValidationError.duplicateTabID(tab.id)
       }
-      for sessionID in tab.workspace.sessionIDs {
-        guard sessionIDs.insert(sessionID).inserted else {
-          throw GhostteaWorkspaceValidationError.duplicateSessionID(sessionID)
-        }
+      let tabSessionIDs = Set(tab.workspace.sessionIDs)
+      guard sessionIDs.isDisjoint(with: tabSessionIDs) else {
+        let duplicate = tabSessionIDs.first(where: { sessionIDs.contains($0) })!
+        throw GhostteaWorkspaceValidationError.duplicateSessionID(duplicate)
       }
+      sessionIDs.formUnion(tabSessionIDs)
     }
     guard tabIDs.contains(selectedTabID) else {
       throw GhostteaWorkspaceValidationError.missingSelectedTab(selectedTabID)
@@ -202,7 +204,9 @@ extension GhostteaWorkspaceTabsDocument {
       return GhostteaWorkspaceTabsTransition(
         document: try Self(selectedTabID: nextSelectedTabID, tabs: nextTabs),
         closedTabID: closed.id,
-        closedSessionIDs: closed.workspace.sessionIDs
+        closedSessionIDs: closed.workspace.sessionIDs.reduce(into: []) { result, sessionID in
+          if !result.contains(sessionID) { result.append(sessionID) }
+        }
       )
     }
   }

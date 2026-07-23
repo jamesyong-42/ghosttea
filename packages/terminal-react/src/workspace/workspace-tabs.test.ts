@@ -101,4 +101,41 @@ describe("workspace tabs model", () => {
       }).document,
     ).toBe(document);
   });
+
+  it("accepts mirrors within a tab and reports each closed session once", () => {
+    const mirrored: WorkspaceDocumentV1 = {
+      version: 1,
+      root: {
+        kind: "split",
+        id: "mirror-split",
+        axis: "horizontal",
+        ratio: 0.5,
+        first: { kind: "pane", id: "mirror-a", sessionId: "mirrored-session" },
+        second: { kind: "pane", id: "mirror-b", sessionId: "mirrored-session" },
+      },
+      activePaneId: "mirror-a",
+      zoomedPaneId: null,
+    };
+    const document = decodeWorkspaceTabsDocument({
+      version: 1,
+      selectedTabId: "mirrored-tab",
+      tabs: [
+        { id: "mirrored-tab", workspace: mirrored },
+        {
+          id: "other-tab",
+          workspace: {
+            version: 1,
+            root: { kind: "pane", id: "other-pane", sessionId: "other-session" },
+            activePaneId: "other-pane",
+            zoomedPaneId: null,
+          },
+        },
+      ],
+    });
+
+    expect(document).not.toBeNull();
+    expect(applyWorkspaceTabsAction(document!, { type: "close-tab", tabId: "mirrored-tab" }).closedSessionIds).toEqual([
+      "mirrored-session",
+    ]);
+  });
 });

@@ -95,7 +95,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #handleBySessionId = new Map<string, string>();
   readonly #mountedCanvases = new WeakMap<HTMLCanvasElement, MountedCanvas>();
   readonly #mountedEntries = new Set<MountedCanvas>();
-  readonly #mountGenerationByHandle = new Map<string, number>();
+  readonly #mountGenerationBySurface = new Map<string, number>();
   readonly #mouseTrackingByHandle = new Map<string, boolean>();
   readonly #scrollbarByHandle = new Map<string, TerminalScrollbarState>();
   readonly #focusByView = new Map<string, boolean>();
@@ -440,9 +440,9 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
 
     const offscreen = canvas.transferControlToOffscreen();
-    const generation = (this.#mountGenerationByHandle.get(sessionHandle) ?? 0) + 1;
-    this.#mountGenerationByHandle.set(sessionHandle, generation);
-    this.#postWorker({ type: "mount", sessionHandle, canvas: offscreen }, [offscreen]);
+    const generation = (this.#mountGenerationBySurface.get(viewId) ?? 0) + 1;
+    this.#mountGenerationBySurface.set(viewId, generation);
+    this.#postWorker({ type: "mount", surfaceId: viewId, sessionHandle, canvas: offscreen }, [offscreen]);
     const entry: MountedCanvas = {
       canvas,
       sessionHandle,
@@ -501,7 +501,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     let disposed = false;
     return {
       resize: (width, height, dpr) =>
-        this.#postWorker({ type: "resize", sessionHandle: mounted.sessionHandle, width, height, dpr }),
+        this.#postWorker({ type: "resize", surfaceId: mounted.viewId, width, height, dpr }),
       dispose: () => {
         if (disposed) return;
         disposed = true;
@@ -510,14 +510,14 @@ export class GhostteaTerminalRuntime extends EventTarget {
         mounted.disposeTimer = window.setTimeout(() => {
           mounted.disposeTimer = undefined;
           if (mounted.references !== 0) return;
-          const ownsWorkerSurface = this.#mountGenerationByHandle.get(mounted.sessionHandle) === mounted.generation;
+          const ownsWorkerSurface = this.#mountGenerationBySurface.get(mounted.viewId) === mounted.generation;
           if (ownsWorkerSurface) {
-            this.#postWorker({ type: "unmount", sessionHandle: mounted.sessionHandle });
-            this.#mountGenerationByHandle.delete(mounted.sessionHandle);
+            this.#postWorker({ type: "unmount", surfaceId: mounted.viewId });
+            this.#mountGenerationBySurface.delete(mounted.viewId);
+            this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId, viewId: mounted.viewId });
+            this.#views.delete(mounted.viewId);
+            this.#focusByView.delete(mounted.viewId);
           }
-          this.#control?.notify({ type: "detach-session", sessionId: mounted.sessionId, viewId: mounted.viewId });
-          this.#views.delete(mounted.viewId);
-          this.#focusByView.delete(mounted.viewId);
           this.#mountedCanvases.delete(mounted.canvas);
           this.#mountedEntries.delete(mounted);
         }, 0);
@@ -588,8 +588,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
     return this.#mouseTrackingByHandle.get(sessionHandle) ?? false;
   }
 
-  setTheme(sessionHandle: string, theme: TerminalTheme): void {
-    this.#postWorker({ type: "theme", sessionHandle, theme });
+  setTheme(sessionHandle: string, theme: TerminalTheme, surfaceId?: string): void {
+    this.#postWorker({ type: "theme", sessionHandle, ...(surfaceId ? { surfaceId } : {}), theme });
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
     const rgb = (color: TerminalTheme["foreground"]): [number, number, number] => [
@@ -606,12 +606,12 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
   }
 
-  setSelection(sessionHandle: string, selection: CellSelection | null): void {
-    this.#postWorker({ type: "selection", sessionHandle, selection });
+  setSelection(sessionHandle: string, selection: CellSelection | null, surfaceId?: string): void {
+    this.#postWorker({ type: "selection", sessionHandle, ...(surfaceId ? { surfaceId } : {}), selection });
   }
 
-  setVisible(sessionHandle: string, visible: boolean): void {
-    this.#postWorker({ type: "visibility", sessionHandle, visible });
+  setVisible(sessionHandle: string, visible: boolean, surfaceId?: string): void {
+    this.#postWorker({ type: "visibility", sessionHandle, ...(surfaceId ? { surfaceId } : {}), visible });
   }
 
   forceFullRedraw(sessionHandle: string): void {
@@ -654,7 +654,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     if (this.#focusByView.get(viewId) === focused) return;
     this.#focusByView.set(viewId, focused);
-    this.#postWorker({ type: "focus", sessionHandle, focused });
+    this.#postWorker({ type: "focus", surfaceId: viewId, sessionHandle, focused });
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
     this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) => {
@@ -758,7 +758,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#performanceRequests.clear();
     this.#views.clear();
     this.#focusByView.clear();
-    this.#mountGenerationByHandle.clear();
+    this.#mountGenerationBySurface.clear();
     this.#mouseTrackingByHandle.clear();
     this.#scrollbarByHandle.clear();
     this.#sessionByHandle.clear();

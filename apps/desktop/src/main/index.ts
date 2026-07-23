@@ -101,6 +101,9 @@ ipcMain.on("terminal-tab-active-cwd", (event, cwd: unknown) => {
 const tabs = new DesktopTabRegistry<BrowserWindow>();
 let backend: GhostteaElectronBackend | undefined;
 let quitting = false;
+let quitCleanupComplete = false;
+let quitCleanup: Promise<void> | undefined;
+const closingSessionOwners = new Set<Promise<void>>();
 let recoveringBackend: Promise<void> | undefined;
 let lastFocusedWindow: BrowserWindow | undefined;
 
@@ -206,19 +209,35 @@ function focusRelativeTab(window: BrowserWindow, offset: -1 | 1): void {
   focusTab(group[(index + offset + group.length) % group.length]?.window);
 }
 
-function terminateClosedTabSessions(ownerId: string, sessionIds: ReadonlySet<string>): void {
-  if (quitting || !backend) return;
-  const client = backend.automation;
-  void client.closeSessionOwner(ownerId).catch((ownerError) => {
+async function closeSessionOwner(ownerId: string, sessionIds: ReadonlySet<string>): Promise<void> {
+  const client = backend?.automation;
+  if (!client) return;
+  try {
+    await client.closeSessionOwner(ownerId);
+  } catch (ownerError) {
     console.warn(`[terminal-runtime] failed to close tab session owner ${ownerId}`, ownerError);
     // Compatibility fallback for an externally managed older daemon. This is
     // observational only; current daemons close the owner transactionally.
-    for (const sessionId of sessionIds) {
-      void client.terminate(sessionId, "user").catch((error) => {
-        console.warn(`[terminal-runtime] failed to terminate closed-tab session ${sessionId}`, error);
-      });
-    }
-  });
+    const orderedSessionIds = [...sessionIds];
+    const results = await Promise.allSettled(
+      orderedSessionIds.map(async (sessionId) => {
+        await client.terminate(sessionId, "user");
+      }),
+    );
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        const sessionId = orderedSessionIds[index];
+        console.warn(`[terminal-runtime] failed to terminate closed-tab session ${sessionId}`, result.reason);
+      }
+    });
+  }
+}
+
+function terminateClosedTabSessions(ownerId: string, sessionIds: ReadonlySet<string>): void {
+  if (quitting || !backend) return;
+  const task = closeSessionOwner(ownerId, sessionIds);
+  closingSessionOwners.add(task);
+  void task.finally(() => closingSessionOwners.delete(task));
 }
 
 interface CreateWindowOptions {
@@ -361,7 +380,23 @@ app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => 
   focusMainWindow();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (quitCleanupComplete) {
+    quitting = true;
+    backend?.stop();
+    return;
+  }
+  event.preventDefault();
+  if (quitCleanup) return;
   quitting = true;
-  backend?.stop();
+  const ownerClosures = tabs.records().map((record) => closeSessionOwner(record.id, record.sessionIds));
+  quitCleanup = Promise.allSettled([...closingSessionOwners, ...ownerClosures]).then(() => {
+    try {
+      backend?.stop();
+    } catch (error) {
+      console.error("terminal backend shutdown failed", error);
+    }
+    quitCleanupComplete = true;
+    app.quit();
+  });
 });

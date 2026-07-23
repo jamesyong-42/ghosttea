@@ -136,7 +136,13 @@ body {
   border-bottom-left-radius: 6px;
   color: #fff;
   background: var(--ghostty-pane-color, #111);
-  font: 700 10px/1.4 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font:
+    700 10px/1.4 ui-monospace,
+    "SFMono-Regular",
+    Menlo,
+    Monaco,
+    Consolas,
+    monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;

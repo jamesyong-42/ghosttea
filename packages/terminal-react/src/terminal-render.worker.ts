@@ -23,6 +23,7 @@ import {
   DEFAULT_THEME,
   type CellSelection,
   type PixelSize,
+  type RenderView,
   type TerminalRenderer,
   type TerminalTheme,
   renderedSizeChanged,
@@ -33,7 +34,7 @@ import { cursorActivityChangesPixels } from "./cursor-invalidation.js";
 import { emptyRenderMetrics, type TerminalRenderPerformanceSnapshot } from "./performance.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 
-interface Snapshot {
+interface SessionSnapshot {
   rows: string[];
   nativeRows: GlyphInstance[][];
   nativeStyleRows: StyleRun[][];
@@ -41,26 +42,39 @@ interface Snapshot {
   styleDefinitions: Map<number, StyleDefinition>;
   rowRevisions: bigint[];
   cursor: CursorState;
-  focused: boolean;
-  cursorBlinkVisible: boolean;
-  selection: CellSelection | null;
-  theme: TerminalTheme;
   layoutEpoch: bigint;
   sessionEpoch: bigint;
   sequence: bigint;
   awaitingResync: boolean;
   scrollbar: TerminalScrollbarState | null;
+}
+
+interface SurfaceSnapshot {
+  sessionHandle: string;
+  focused: boolean;
+  cursorBlinkVisible: boolean;
+  selection: CellSelection | null;
+  theme: TerminalTheme;
   damage: { full: boolean; rows: Set<number>; geometryChanged: boolean };
 }
 
 interface MountedCanvas {
   canvas: OffscreenCanvas;
   size: PixelSize;
+  sessionHandle: string;
+}
+
+interface SessionPresentationDefaults {
+  theme: TerminalTheme;
+  selection: CellSelection | null;
+  visible: boolean;
 }
 
 const hiddenCursor: CursorState = { x: 0, y: 0, visible: false, style: 1, blinking: false };
 const CURSOR_BLINK_INTERVAL_MS = 600;
-const snapshots = new Map<string, Snapshot>();
+const snapshots = new Map<string, SessionSnapshot>();
+const surfaces = new Map<string, SurfaceSnapshot>();
+const presentationDefaults = new Map<string, SessionPresentationDefaults>();
 const mounts = new Map<string, MountedCanvas>();
 const cursorBlinkTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const dirty = new Set<string>();
@@ -205,8 +219,8 @@ function postToRenderer(message: WorkerToRendererMessage): void {
   self.postMessage(message);
 }
 
-function snapshot(id: string): Snapshot {
-  let value = snapshots.get(id);
+function snapshot(sessionHandle: string): SessionSnapshot {
+  let value = snapshots.get(sessionHandle);
   if (!value) {
     value = {
       rows: [],
@@ -216,39 +230,96 @@ function snapshot(id: string): Snapshot {
       styleDefinitions: new Map(),
       rowRevisions: [],
       cursor: hiddenCursor,
-      focused: false,
-      cursorBlinkVisible: true,
-      selection: null,
-      theme: DEFAULT_THEME,
       layoutEpoch: 0n,
       sessionEpoch: 0n,
       sequence: 0n,
       awaitingResync: false,
       scrollbar: null,
-      damage: { full: true, rows: new Set(), geometryChanged: true },
     };
-    snapshots.set(id, value);
+    snapshots.set(sessionHandle, value);
   }
   return value;
 }
 
-function scheduleCursorBlink(id: string, reset: boolean): void {
-  const existing = cursorBlinkTimers.get(id);
+function defaults(sessionHandle: string): SessionPresentationDefaults {
+  let value = presentationDefaults.get(sessionHandle);
+  if (!value) {
+    value = { theme: DEFAULT_THEME, selection: null, visible: true };
+    presentationDefaults.set(sessionHandle, value);
+  }
+  return value;
+}
+
+function surface(surfaceId: string, sessionHandle: string): SurfaceSnapshot {
+  const existing = surfaces.get(surfaceId);
+  if (existing) {
+    if (existing.sessionHandle !== sessionHandle) throw new Error(`Surface ${surfaceId} changed sessions`);
+    return existing;
+  }
+  const initial = defaults(sessionHandle);
+  const value: SurfaceSnapshot = {
+    sessionHandle,
+    focused: false,
+    cursorBlinkVisible: true,
+    selection: initial.selection,
+    theme: initial.theme,
+    damage: { full: true, rows: new Set(), geometryChanged: true },
+  };
+  surfaces.set(surfaceId, value);
+  if (!initial.visible) occluded.add(surfaceId);
+  return value;
+}
+
+function surfaceIdsForSession(sessionHandle: string): string[] {
+  return [...surfaces].flatMap(([surfaceId, value]) => (value.sessionHandle === sessionHandle ? [surfaceId] : []));
+}
+
+function renderView(session: SessionSnapshot, presentation: SurfaceSnapshot): RenderView {
+  return {
+    rows: session.rows,
+    nativeRows: session.nativeRows,
+    nativeStyleRows: session.nativeStyleRows,
+    rowRevisions: session.rowRevisions,
+    glyphDefinitions: session.glyphDefinitions,
+    styleDefinitions: session.styleDefinitions,
+    sessionEpoch: session.sessionEpoch,
+    layoutEpoch: session.layoutEpoch,
+    cursor: session.cursor,
+    focused: presentation.focused,
+    cursorBlinkVisible: presentation.cursorBlinkVisible,
+    selection: presentation.selection,
+    theme: presentation.theme,
+    damage: presentation.damage,
+  };
+}
+
+function scheduleCursorBlink(surfaceId: string, reset: boolean): void {
+  const existing = cursorBlinkTimers.get(surfaceId);
   if (existing !== undefined) clearTimeout(existing);
-  cursorBlinkTimers.delete(id);
-  const value = snapshot(id);
+  cursorBlinkTimers.delete(surfaceId);
+  const value = surfaces.get(surfaceId);
+  if (!value) return;
+  const session = snapshot(value.sessionHandle);
   if (reset) value.cursorBlinkVisible = true;
-  if (occluded.has(id) || !value.focused || !value.cursor.visible || !value.cursor.blinking) return;
+  if (occluded.has(surfaceId) || !value.focused || !session.cursor.visible || !session.cursor.blinking) return;
   cursorBlinkTimers.set(
-    id,
+    surfaceId,
     setTimeout(() => {
-      cursorBlinkTimers.delete(id);
-      const current = snapshots.get(id);
-      if (occluded.has(id) || !current || !current.focused || !current.cursor.visible || !current.cursor.blinking)
+      cursorBlinkTimers.delete(surfaceId);
+      const current = surfaces.get(surfaceId);
+      const currentSession = current ? snapshots.get(current.sessionHandle) : undefined;
+      if (
+        occluded.has(surfaceId) ||
+        !current ||
+        !currentSession ||
+        !current.focused ||
+        !currentSession.cursor.visible ||
+        !currentSession.cursor.blinking
+      )
         return;
       current.cursorBlinkVisible = !current.cursorBlinkVisible;
-      invalidateRows(id, [current.cursor.y]);
-      scheduleCursorBlink(id, false);
+      invalidateRows(surfaceId, [currentSession.cursor.y]);
+      scheduleCursorBlink(surfaceId, false);
     }, CURSOR_BLINK_INTERVAL_MS),
   );
 }
@@ -333,8 +404,9 @@ async function flush(): Promise<void> {
   }
   for (const id of ids) dirty.delete(id);
   const entries = ids.flatMap((id) => {
-    const view = mounts.has(id) ? snapshots.get(id) : undefined;
-    return view ? [{ id, view }] : [];
+    const presentation = surfaces.get(id);
+    const session = presentation ? snapshots.get(presentation.sessionHandle) : undefined;
+    return mounts.has(id) && presentation && session ? [{ id, view: renderView(session, presentation) }] : [];
   });
   if (entries.length > 0) {
     try {
@@ -344,10 +416,12 @@ async function flush(): Promise<void> {
         ? backend.renderBatch(entries)
         : entries.map(({ id, view }) => backend.render(id, view));
       const renderedAt = active ? performance.now() : 0;
-      for (const { view } of entries) {
-        view.damage.full = false;
-        view.damage.rows.clear();
-        view.damage.geometryChanged = false;
+      for (const { id } of entries) {
+        const damage = surfaces.get(id)?.damage;
+        if (!damage) continue;
+        damage.full = false;
+        damage.rows.clear();
+        damage.geometryChanged = false;
       }
       if (active && performanceMeasurement === active) {
         active.scheduling.renderCalls += entries.length;
@@ -355,7 +429,8 @@ async function flush(): Promise<void> {
         for (let index = 0; index < entries.length; index += 1) {
           const { id } = entries[index]!;
           const dirtySince = active.dirtySince.get(id);
-          const lastFrameAt = active.lastFrameAt.get(id);
+          const sessionHandle = surfaces.get(id)?.sessionHandle;
+          const lastFrameAt = sessionHandle ? active.lastFrameAt.get(sessionHandle) : undefined;
           if (dirtySince !== undefined) active.samples.dirtyToRenderMs.push(renderedAt - dirtySince);
           if (lastFrameAt !== undefined) active.samples.frameArrivalToRenderMs.push(renderedAt - lastFrameAt);
           active.dirtySince.delete(id);
@@ -379,7 +454,9 @@ function markDirty(id: string): void {
 }
 
 function invalidateFull(id: string): void {
-  const damage = snapshot(id).damage;
+  const value = surfaces.get(id);
+  if (!value) return;
+  const damage = value.damage;
   damage.full = true;
   damage.rows.clear();
   damage.geometryChanged = true;
@@ -391,7 +468,9 @@ function invalidateRows(id: string, rows: Iterable<number>, geometryChanged = fa
     invalidateFull(id);
     return;
   }
-  const damage = snapshot(id).damage;
+  const value = surfaces.get(id);
+  if (!value) return;
+  const damage = value.damage;
   if (!damage.full) {
     damage.geometryChanged ||= geometryChanged;
     for (const row of rows) {
@@ -401,15 +480,26 @@ function invalidateRows(id: string, rows: Iterable<number>, geometryChanged = fa
   markDirty(id);
 }
 
-async function mount(id: string, canvas: OffscreenCanvas): Promise<void> {
-  if (mounts.has(id)) renderer?.unmount(id);
-  const entry: MountedCanvas = { canvas, size: { width: 1, height: 1, dpr: 1 } };
-  mounts.set(id, entry);
+function invalidateSessionFull(sessionHandle: string): void {
+  for (const surfaceId of surfaceIdsForSession(sessionHandle)) invalidateFull(surfaceId);
+}
+
+function invalidateSessionRows(sessionHandle: string, rows: Iterable<number>, geometryChanged = false): void {
+  const damagedRows = [...rows];
+  for (const surfaceId of surfaceIdsForSession(sessionHandle)) invalidateRows(surfaceId, damagedRows, geometryChanged);
+}
+
+async function mount(surfaceId: string, sessionHandle: string, canvas: OffscreenCanvas): Promise<void> {
+  if (mounts.has(surfaceId)) renderer?.unmount(surfaceId);
+  snapshot(sessionHandle);
+  surface(surfaceId, sessionHandle);
+  const entry: MountedCanvas = { canvas, size: { width: 1, height: 1, dpr: 1 }, sessionHandle };
+  mounts.set(surfaceId, entry);
   const backend = await ensureRenderer();
-  if (mounts.get(id) !== entry) return;
-  backend.mount(id, canvas);
-  backend.resize(id, entry.size);
-  invalidateFull(id);
+  if (mounts.get(surfaceId) !== entry) return;
+  backend.mount(surfaceId, canvas);
+  backend.resize(surfaceId, entry.size);
+  invalidateFull(surfaceId);
 }
 
 function applyFrame(packet: ArrayBuffer): void {
@@ -547,17 +637,19 @@ function applyFrame(packet: ArrayBuffer): void {
     nextCursor.style !== previousCursor.style ||
     nextCursor.blinking !== previousCursor.blinking;
   previous.cursor = nextCursor;
-  if (cursorChanged) scheduleCursorBlink(id, true);
+  if (cursorChanged) {
+    for (const surfaceId of surfaceIdsForSession(id)) scheduleCursorBlink(surfaceId, true);
+  }
   previous.layoutEpoch = frame.layoutEpoch;
   previous.sessionEpoch = frame.sessionEpoch;
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
   if (full || changedSession || completingResync) {
-    invalidateFull(id);
+    invalidateSessionFull(id);
   } else {
     if (cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
-    if (damagedRows.length > 0) invalidateRows(id, damagedRows, geometryChanged);
+    if (damagedRows.length > 0) invalidateSessionRows(id, damagedRows, geometryChanged);
   }
   if (active) active.samples.frameApplyMs.push(performance.now() - applyStarted);
 }
@@ -566,7 +658,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
   const message = event.data;
   try {
     if (message.type === "mount") {
-      void mount(message.sessionHandle, message.canvas).catch((error) => {
+      void mount(message.surfaceId, message.sessionHandle, message.canvas).catch((error) => {
         console.error("[terminal-renderer] mount failed", error);
       });
     } else if (message.type === "renderer-config") {
@@ -575,65 +667,95 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       partialRenderingEnabled = Boolean(message.enabled);
       for (const id of mounts.keys()) invalidateFull(id);
     } else if (message.type === "unmount") {
-      mounts.delete(message.sessionHandle);
-      dirty.delete(message.sessionHandle);
-      renderer?.unmount(message.sessionHandle);
-      const timer = cursorBlinkTimers.get(message.sessionHandle);
+      mounts.delete(message.surfaceId);
+      dirty.delete(message.surfaceId);
+      surfaces.delete(message.surfaceId);
+      occluded.delete(message.surfaceId);
+      renderer?.unmount(message.surfaceId);
+      const timer = cursorBlinkTimers.get(message.surfaceId);
       if (timer !== undefined) clearTimeout(timer);
-      cursorBlinkTimers.delete(message.sessionHandle);
+      cursorBlinkTimers.delete(message.surfaceId);
       // The session may be remounted after zoom/layout changes. Keep its decoded
       // snapshot; only drop-session represents terminal lifetime ending.
     } else if (message.type === "drop-session") {
-      mounts.delete(message.sessionHandle);
-      dirty.delete(message.sessionHandle);
+      for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
+        mounts.delete(surfaceId);
+        dirty.delete(surfaceId);
+        surfaces.delete(surfaceId);
+        occluded.delete(surfaceId);
+        renderer?.unmount(surfaceId);
+        const timer = cursorBlinkTimers.get(surfaceId);
+        if (timer !== undefined) clearTimeout(timer);
+        cursorBlinkTimers.delete(surfaceId);
+      }
       snapshots.delete(message.sessionHandle);
-      occluded.delete(message.sessionHandle);
-      renderer?.unmount(message.sessionHandle);
-      const timer = cursorBlinkTimers.get(message.sessionHandle);
-      if (timer !== undefined) clearTimeout(timer);
-      cursorBlinkTimers.delete(message.sessionHandle);
+      presentationDefaults.delete(message.sessionHandle);
     } else if (message.type === "resize") {
-      const mounted = mounts.get(message.sessionHandle);
+      const mounted = mounts.get(message.surfaceId);
       if (!mounted) return;
       const nextSize = { width: message.width, height: message.height, dpr: message.dpr };
       const changed = renderedSizeChanged(mounted.size, nextSize);
       mounted.size = nextSize;
       if (!changed) return;
-      renderer?.resize(message.sessionHandle, mounted.size);
-      invalidateFull(message.sessionHandle);
+      renderer?.resize(message.surfaceId, mounted.size);
+      invalidateFull(message.surfaceId);
     } else if (message.type === "frame") {
       applyFrame(message.packet);
     } else if (message.type === "theme") {
-      snapshot(message.sessionHandle).theme = message.theme;
-      invalidateFull(message.sessionHandle);
-    } else if (message.type === "selection") {
-      snapshot(message.sessionHandle).selection = message.selection;
-      invalidateFull(message.sessionHandle);
-    } else if (message.type === "visibility") {
-      if (message.visible) {
-        occluded.delete(message.sessionHandle);
-        invalidateFull(message.sessionHandle);
-        scheduleCursorBlink(message.sessionHandle, true);
+      if (message.surfaceId) {
+        surface(message.surfaceId, message.sessionHandle).theme = message.theme;
+        invalidateFull(message.surfaceId);
       } else {
-        occluded.add(message.sessionHandle);
-        const timer = cursorBlinkTimers.get(message.sessionHandle);
-        if (timer !== undefined) clearTimeout(timer);
-        cursorBlinkTimers.delete(message.sessionHandle);
+        defaults(message.sessionHandle).theme = message.theme;
+        for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
+          surfaces.get(surfaceId)!.theme = message.theme;
+          invalidateFull(surfaceId);
+        }
+      }
+    } else if (message.type === "selection") {
+      if (message.surfaceId) {
+        surface(message.surfaceId, message.sessionHandle).selection = message.selection;
+        invalidateFull(message.surfaceId);
+      } else {
+        defaults(message.sessionHandle).selection = message.selection;
+        for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
+          surfaces.get(surfaceId)!.selection = message.selection;
+          invalidateFull(surfaceId);
+        }
+      }
+    } else if (message.type === "visibility") {
+      if (!message.surfaceId) defaults(message.sessionHandle).visible = message.visible;
+      if (message.surfaceId) surface(message.surfaceId, message.sessionHandle);
+      const targetIds = message.surfaceId ? [message.surfaceId] : surfaceIdsForSession(message.sessionHandle);
+      for (const surfaceId of targetIds) {
+        if (message.visible) {
+          occluded.delete(surfaceId);
+          invalidateFull(surfaceId);
+          scheduleCursorBlink(surfaceId, true);
+        } else {
+          occluded.add(surfaceId);
+          const timer = cursorBlinkTimers.get(surfaceId);
+          if (timer !== undefined) clearTimeout(timer);
+          cursorBlinkTimers.delete(surfaceId);
+        }
       }
     } else if (message.type === "focus") {
-      const value = snapshot(message.sessionHandle);
+      const value = surface(message.surfaceId, message.sessionHandle);
       value.focused = Boolean(message.focused);
-      scheduleCursorBlink(message.sessionHandle, value.focused);
-      invalidateRows(message.sessionHandle, [value.cursor.y]);
+      scheduleCursorBlink(message.surfaceId, value.focused);
+      invalidateRows(message.surfaceId, [snapshot(message.sessionHandle).cursor.y]);
     } else if (message.type === "cursor-activity") {
-      const value = snapshot(message.sessionHandle);
-      const changesPixels = cursorActivityChangesPixels(value.cursor, value.focused, value.cursorBlinkVisible);
-      scheduleCursorBlink(message.sessionHandle, true);
-      if (changesPixels) invalidateRows(message.sessionHandle, [value.cursor.y]);
+      const session = snapshot(message.sessionHandle);
+      for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
+        const value = surfaces.get(surfaceId)!;
+        const changesPixels = cursorActivityChangesPixels(session.cursor, value.focused, value.cursorBlinkVisible);
+        scheduleCursorBlink(surfaceId, true);
+        if (changesPixels) invalidateRows(surfaceId, [session.cursor.y]);
+      }
     } else if (message.type === "force-full-redraw") {
-      invalidateFull(message.sessionHandle);
+      invalidateSessionFull(message.sessionHandle);
     } else if (message.type === "force-row-redraw") {
-      invalidateRows(message.sessionHandle, [message.row]);
+      invalidateSessionRows(message.sessionHandle, [message.row]);
     } else if (message.type === "performance-start") {
       void ensureRenderer()
         .then(() => {

@@ -99,7 +99,11 @@ public struct GhostteaWorkspaceRestorationDocument: Equatable, Sendable, Codable
     )
     self.version = version
     self.workspace = workspace
-    self.sessionProfiles = workspace.sessionIDs.compactMap { bindingsBySessionID[$0] }
+    var emittedSessionIDs = Set<String>()
+    self.sessionProfiles = workspace.sessionIDs.compactMap { sessionID in
+      guard emittedSessionIDs.insert(sessionID).inserted else { return nil }
+      return bindingsBySessionID[sessionID]
+    }
   }
 
   public init(from decoder: any Decoder) throws {
@@ -195,8 +199,9 @@ public enum GhostteaWorkspaceRestorer {
     in orderedSessionIDs: [String],
     using terminator: Terminator<Session>
   ) async {
+    var terminatedSessionIDs = Set<String>()
     for sessionID in orderedSessionIDs {
-      if let session = sessions[sessionID] {
+      if terminatedSessionIDs.insert(sessionID).inserted, let session = sessions[sessionID] {
         await terminator(sessionID, session)
       }
     }

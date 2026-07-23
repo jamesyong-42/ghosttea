@@ -40,7 +40,8 @@ public struct GhostteaWorkspaceSessionResidency: Equatable, Sendable {
     let excess = max(0, residentSessionIDs.count - max(0, maximumResidentSessions))
     guard excess > 0 else { return [] }
     let workspaceOrder = Dictionary(
-      uniqueKeysWithValues: document.sessionIDs.enumerated().map { ($0.element, $0.offset) }
+      document.sessionIDs.enumerated().map { ($0.element, $0.offset) },
+      uniquingKeysWith: { first, _ in first }
     )
     return document.inactiveSessionIDs
       .filter { residentSessionIDs.contains($0) }

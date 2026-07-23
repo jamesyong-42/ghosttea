@@ -125,7 +125,7 @@ export function applyWorkspaceTabsAction(
   return {
     document: { ...document, tabs, selectedTabId },
     closedTabId: closed.id,
-    closedSessionIds: workspaceSessionIds(closed.workspace),
+    closedSessionIds: [...new Set(workspaceSessionIds(closed.workspace))],
     shouldCloseWindow: false,
   };
 }

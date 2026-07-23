@@ -475,7 +475,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await expect(runtime.connect()).rejects.toThrow("disposed");
   });
 
-  it("detaches an obsolete view without unmounting its replacement worker surface", async () => {
+  it("mounts and unmounts mirrored session views as independent worker surfaces", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();
     const control = new FakePort();
@@ -503,7 +503,14 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       sessionId: "session",
       viewId: "view-1",
     });
-    expect(worker.messages).not.toContainEqual({ type: "unmount", sessionHandle: "handle" });
+    expect(worker.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "mount", surfaceId: "view-1", sessionHandle: "handle" }),
+        expect.objectContaining({ type: "mount", surfaceId: "view-2", sessionHandle: "handle" }),
+        { type: "unmount", surfaceId: "view-1" },
+      ]),
+    );
+    expect(worker.messages).not.toContainEqual({ type: "unmount", surfaceId: "view-2" });
 
     second.dispose();
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -513,7 +520,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       sessionId: "session",
       viewId: "view-2",
     });
-    expect(worker.messages).toContainEqual({ type: "unmount", sessionHandle: "handle" });
+    expect(worker.messages).toContainEqual({ type: "unmount", surfaceId: "view-2" });
   });
 
   it("keeps resizing an unfocused view while it remains controller of its own PTY", async () => {

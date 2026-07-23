@@ -299,7 +299,6 @@ public struct GhostteaWorkspaceDocument: Equatable, Sendable, Codable {
       throw GhostteaWorkspaceValidationError.unsupportedVersion(version)
     }
     var nodeIDs = Set<String>()
-    var sessionIDs = Set<String>()
     func validate(_ node: GhostteaWorkspaceNode) throws {
       guard !node.id.isEmpty else { throw GhostteaWorkspaceValidationError.emptyIdentity }
       guard nodeIDs.insert(node.id).inserted else {
@@ -308,9 +307,6 @@ public struct GhostteaWorkspaceDocument: Equatable, Sendable, Codable {
       switch node {
       case .pane(let pane):
         guard !pane.sessionID.isEmpty else { throw GhostteaWorkspaceValidationError.emptyIdentity }
-        guard sessionIDs.insert(pane.sessionID).inserted else {
-          throw GhostteaWorkspaceValidationError.duplicateSessionID(pane.sessionID)
-        }
       case .split(let split):
         try validate(split.first)
         try validate(split.second)
@@ -486,7 +482,8 @@ extension GhostteaWorkspaceDocument {
         root: root,
         activePaneID: next.id,
         zoomedPaneID: .some(nil),
-        closedSessionID: active.sessionID
+        closedSessionID: root.panes.contains(where: { $0.sessionID == active.sessionID })
+          ? nil : active.sessionID
       )
     }
   }

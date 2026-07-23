@@ -5,15 +5,15 @@ import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 export type RendererToWorkerMessage =
   | { type: "renderer-config"; forceCanvasFallback: boolean }
   | { type: "partial-rendering"; enabled: boolean }
-  | { type: "mount"; sessionHandle: string; canvas: OffscreenCanvas }
-  | { type: "unmount"; sessionHandle: string }
+  | { type: "mount"; surfaceId: string; sessionHandle: string; canvas: OffscreenCanvas }
+  | { type: "unmount"; surfaceId: string }
   | { type: "drop-session"; sessionHandle: string }
-  | { type: "resize"; sessionHandle: string; width: number; height: number; dpr: number }
+  | { type: "resize"; surfaceId: string; width: number; height: number; dpr: number }
   | { type: "frame"; packet: ArrayBuffer }
-  | { type: "theme"; sessionHandle: string; theme: TerminalTheme }
-  | { type: "selection"; sessionHandle: string; selection: CellSelection | null }
-  | { type: "visibility"; sessionHandle: string; visible: boolean }
-  | { type: "focus"; sessionHandle: string; focused: boolean }
+  | { type: "theme"; sessionHandle: string; surfaceId?: string; theme: TerminalTheme }
+  | { type: "selection"; sessionHandle: string; surfaceId?: string; selection: CellSelection | null }
+  | { type: "visibility"; sessionHandle: string; surfaceId?: string; visible: boolean }
+  | { type: "focus"; surfaceId: string; sessionHandle: string; focused: boolean }
   | { type: "cursor-activity"; sessionHandle: string }
   | { type: "force-full-redraw"; sessionHandle: string }
   | { type: "force-row-redraw"; sessionHandle: string; row: number }

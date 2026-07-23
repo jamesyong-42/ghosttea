@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -66,6 +69,46 @@ describe("TerminalSupervisor", () => {
     await second;
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(supervisor.running).toBe(true);
+    supervisor.stop();
+  });
+
+  it("preserves a caller-owned runtime directory on stop", async () => {
+    const runtimeDirectory = mkdtempSync(join(tmpdir(), "ghosttea-supervisor-test-"));
+    const sentinel = join(runtimeDirectory, "keep.txt");
+    writeFileSync(sentinel, "caller-owned");
+    const { TerminalSupervisor } = await import("./supervisor");
+    const supervisor = new TerminalSupervisor({
+      binary: { kind: "executable", path: "/opt/ghosttead" },
+      runtimeDirectory,
+    });
+
+    supervisor.stop();
+
+    expect(readFileSync(sentinel, "utf8")).toBe("caller-owned");
+    rmSync(runtimeDirectory, { recursive: true, force: true });
+  });
+
+  it("ignores the delayed exit of a stopped child after a restart", async () => {
+    const first = new FakeChild();
+    const second = new FakeChild();
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const { TerminalSupervisor } = await import("./supervisor");
+    const supervisor = new TerminalSupervisor({ binary: { kind: "executable", path: "/opt/ghosttead" } });
+    const unexpectedExit = vi.fn();
+    supervisor.on("unexpected-exit", unexpectedExit);
+
+    const firstStart = supervisor.start();
+    first.stdout.write("ghosttead ready\n");
+    await firstStart;
+    supervisor.stop();
+
+    const secondStart = supervisor.start();
+    second.stdout.write("ghosttead ready\n");
+    await secondStart;
+    first.emit("exit", 0, "SIGTERM");
+
+    expect(supervisor.running).toBe(true);
+    expect(unexpectedExit).not.toHaveBeenCalled();
     supervisor.stop();
   });
 });

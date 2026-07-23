@@ -123,8 +123,8 @@ function TerminalSurfaceSession({
   }, [session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
-    terminalRuntime.setTheme(session.handle, theme);
-  }, [session.handle, terminalRuntime, theme]);
+    terminalRuntime.setTheme(session.handle, theme, viewId);
+  }, [session.handle, terminalRuntime, theme, viewId]);
 
   useEffect(() => {
     void terminalKeyboardLayout.refresh();
@@ -154,6 +154,7 @@ function TerminalSurfaceSession({
         terminalRuntime.setSelection(
           session.handle,
           viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+          viewId,
         );
       } else if (action === "clear-screen") {
         terminalRuntime.sendText(session.id, viewId, "\u000c");
@@ -190,8 +191,8 @@ function TerminalSurfaceSession({
   }, [session.handle, session.id, terminalRuntime, viewId]);
 
   useEffect(() => {
-    terminalRuntime.setVisible(session.handle, visible);
-  }, [session.handle, terminalRuntime, visible]);
+    terminalRuntime.setVisible(session.handle, visible, viewId);
+  }, [session.handle, terminalRuntime, viewId, visible]);
 
   useEffect(() => {
     const onScrollbar = (event: Event): void => {
@@ -214,11 +215,12 @@ function TerminalSurfaceSession({
       terminalRuntime.setSelection(
         session.handle,
         viewportSelection(selectionRef.current, detail.scrollbar, cols, rows),
+        viewId,
       );
     };
     terminalRuntime.addEventListener("scrollbar-state", onScrollbar);
     return () => terminalRuntime.removeEventListener("scrollbar-state", onScrollbar);
-  }, [session.handle, terminalRuntime]);
+  }, [session.handle, terminalRuntime, viewId]);
 
   useEffect(
     () => () => {
@@ -276,7 +278,7 @@ function TerminalSurfaceSession({
       selectionAnchorRef.current = null;
       selectionRef.current = null;
       selectionAllRef.current = false;
-      terminalRuntime.setSelection(session.handle, null);
+      terminalRuntime.setSelection(session.handle, null, viewId);
       if (binding.type === "paste") {
         const text = readClipboard?.() ?? "";
         if (text) terminalRuntime.paste(session.id, viewId, text);
@@ -302,6 +304,7 @@ function TerminalSurfaceSession({
         terminalRuntime.setSelection(
           session.handle,
           viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+          viewId,
         );
         event.preventDefault();
       } else if (event.key === "Enter" || (event.ctrlKey && event.key.toLowerCase() === "f")) {
@@ -317,7 +320,7 @@ function TerminalSurfaceSession({
     selectionAnchorRef.current = null;
     selectionRef.current = null;
     selectionAllRef.current = false;
-    terminalRuntime.setSelection(session.handle, null);
+    terminalRuntime.setSelection(session.handle, null, viewId);
     if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "c") {
       terminalRuntime.interrupt(session.id, viewId);
       event.preventDefault();
@@ -453,7 +456,7 @@ function TerminalSurfaceSession({
       selectionAnchorRef.current = null;
       selectionRef.current = null;
       selectionAllRef.current = false;
-      terminalRuntime.setSelection(session.handle, null);
+      terminalRuntime.setSelection(session.handle, null, viewId);
       sendMouse(event, "press", mouseButton(event.button));
       return;
     }
@@ -466,6 +469,7 @@ function TerminalSurfaceSession({
     terminalRuntime.setSelection(
       session.handle,
       viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+      viewId,
     );
   };
 
@@ -486,6 +490,7 @@ function TerminalSurfaceSession({
     terminalRuntime.setSelection(
       session.handle,
       viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+      viewId,
     );
   };
 
@@ -498,7 +503,7 @@ function TerminalSurfaceSession({
       if (anchor.row === focus.row && anchor.column === focus.column) {
         selectionRef.current = null;
         selectionAllRef.current = false;
-        terminalRuntime.setSelection(session.handle, null);
+        terminalRuntime.setSelection(session.handle, null, viewId);
       } else {
         void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
       }

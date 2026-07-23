@@ -23,15 +23,9 @@ const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
 const candidate = JSON.parse(readFileSync(candidatePath, "utf8"));
 const issues = validateComparableReports(baseline, candidate, {
   allowGeometryReuseDifference: process.argv.includes("--allow-geometry-reuse-difference"),
-  allowRetainedStateCommitDifference: process.argv.includes(
-    "--allow-retained-state-commit-difference",
-  ),
-  allowInstancedSubmissionDifference: process.argv.includes(
-    "--allow-instanced-submission-difference",
-  ),
-  allowRowGeometryReuseDifference: process.argv.includes(
-    "--allow-row-geometry-reuse-difference",
-  ),
+  allowRetainedStateCommitDifference: process.argv.includes("--allow-retained-state-commit-difference"),
+  allowInstancedSubmissionDifference: process.argv.includes("--allow-instanced-submission-difference"),
+  allowRowGeometryReuseDifference: process.argv.includes("--allow-row-geometry-reuse-difference"),
   allowLazyColorAtlasDifference: process.argv.includes("--allow-lazy-color-atlas-difference"),
   allowStateCodecDifference: process.argv.includes("--allow-state-codec-difference"),
 });

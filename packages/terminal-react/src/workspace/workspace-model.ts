@@ -251,7 +251,9 @@ export function applyWorkspaceAction(document: WorkspaceDocumentV1, action: Work
   if (!root) return unchanged(document);
   return {
     document: { ...document, root, activePaneId: next.id, zoomedPaneId: null },
-    closedSessionId: active.sessionId,
+    closedSessionId: workspaceLeaves(root).some((pane) => pane.sessionId === active.sessionId)
+      ? null
+      : active.sessionId,
     shouldCloseWindow: false,
   };
 }

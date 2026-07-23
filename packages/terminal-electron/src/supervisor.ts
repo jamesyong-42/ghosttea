@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TerminalDaemonConnection } from "./types.js";
@@ -22,17 +22,21 @@ export class TerminalSupervisor extends EventEmitter {
   #child: ChildProcess | undefined;
   #startPromise: Promise<void> | undefined;
   #ready = false;
-  #stopping = false;
+  readonly #expectedExits = new WeakSet<ChildProcess>();
   readonly #options: TerminalSupervisorOptions;
   readonly #runtimeDir: string;
+  readonly #ownsRuntimeDir: boolean;
   readonly connection: TerminalDaemonConnection;
 
   constructor(options: TerminalSupervisorOptions) {
     super();
     this.#options = options;
+    this.#ownsRuntimeDir = options.runtimeDirectory === undefined;
     this.#runtimeDir =
-      options.runtimeDirectory ?? join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}`);
-    mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
+      options.runtimeDirectory !== undefined
+        ? options.runtimeDirectory
+        : mkdtempSync(join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}-`));
+    if (options.runtimeDirectory !== undefined) mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     this.connection = {
       controlSocket: join(this.#runtimeDir, "control.sock"),
       frameSocket: join(this.#runtimeDir, "frames.sock"),
@@ -49,7 +53,6 @@ export class TerminalSupervisor extends EventEmitter {
   }
 
   async #start(): Promise<void> {
-    this.#stopping = false;
     this.#ready = false;
     mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     rmSync(this.connection.controlSocket, { force: true });
@@ -102,9 +105,11 @@ export class TerminalSupervisor extends EventEmitter {
     }
     this.#ready = true;
     running?.once("exit", (code, signal) => {
-      if (this.#child === running) this.#child = undefined;
+      const expected = this.#expectedExits.delete(running);
+      if (this.#child !== running) return;
+      this.#child = undefined;
       this.#ready = false;
-      if (!this.#stopping) this.emit("unexpected-exit", { code, signal });
+      if (!expected) this.emit("unexpected-exit", { code, signal });
     });
   }
 
@@ -113,11 +118,16 @@ export class TerminalSupervisor extends EventEmitter {
   }
 
   stop(): void {
-    this.#stopping = true;
     this.#ready = false;
-    this.#child?.kill("SIGTERM");
-    this.#child = undefined;
-    rmSync(this.#runtimeDir, { recursive: true, force: true });
+    const child = this.#child;
+    if (child) {
+      this.#expectedExits.add(child);
+      child.kill("SIGTERM");
+      if (this.#child === child) this.#child = undefined;
+    }
+    rmSync(this.connection.controlSocket, { force: true });
+    rmSync(this.connection.frameSocket, { force: true });
+    if (this.#ownsRuntimeDir) rmSync(this.#runtimeDir, { recursive: true, force: true });
   }
 
   async #waitUntilReady(): Promise<void> {
