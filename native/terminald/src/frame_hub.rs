@@ -52,7 +52,7 @@ impl FrameHub {
             sender,
             state: Arc::new(Mutex::new(FrameHubState {
                 next_ordinal: 0,
-                history: VecDeque::with_capacity(history_capacity),
+                history: VecDeque::new(),
             })),
             history_capacity,
         }

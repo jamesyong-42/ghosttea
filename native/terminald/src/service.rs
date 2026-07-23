@@ -70,22 +70,13 @@ struct FrameSubscription {
     session_handles: Vec<String>,
 }
 
+#[derive(Default)]
 struct OwnerTombstones {
     recent_owners: HashSet<String>,
     order: VecDeque<String>,
     // The archive is monotonic: it can reject a never-seen owner on a rare
     // false positive, but it never forgets and reopens an owner that was closed.
-    archived: Box<[u64]>,
-}
-
-impl Default for OwnerTombstones {
-    fn default() -> Self {
-        Self {
-            recent_owners: HashSet::new(),
-            order: VecDeque::new(),
-            archived: vec![0; CLOSED_OWNER_BLOOM_BITS / u64::BITS as usize].into_boxed_slice(),
-        }
-    }
+    archived: Option<Box<[u64]>>,
 }
 
 impl OwnerTombstones {
@@ -110,14 +101,19 @@ impl OwnerTombstones {
     }
 
     fn archive(&mut self, owner_id: &str) {
+        let archived = self.archived.get_or_insert_with(|| {
+            vec![0; CLOSED_OWNER_BLOOM_BITS / u64::BITS as usize].into_boxed_slice()
+        });
         for index in owner_bloom_indexes(owner_id) {
-            self.archived[index / u64::BITS as usize] |= 1_u64 << (index % u64::BITS as usize);
+            archived[index / u64::BITS as usize] |= 1_u64 << (index % u64::BITS as usize);
         }
     }
 
     fn archived_contains(&self, owner_id: &str) -> bool {
-        owner_bloom_indexes(owner_id).into_iter().all(|index| {
-            self.archived[index / u64::BITS as usize] & (1_u64 << (index % u64::BITS as usize)) != 0
+        self.archived.as_ref().is_some_and(|archived| {
+            owner_bloom_indexes(owner_id).into_iter().all(|index| {
+                archived[index / u64::BITS as usize] & (1_u64 << (index % u64::BITS as usize)) != 0
+            })
         })
     }
 }
@@ -1691,6 +1687,7 @@ mod protocol_tests {
     #[test]
     fn closed_owner_tombstones_have_a_fixed_capacity() {
         let mut tombstones = OwnerTombstones::default();
+        assert!(tombstones.archived.is_none());
         let closed_owner_count = MAX_CLOSED_OWNER_TOMBSTONES + 50_000;
         for index in 0..closed_owner_count {
             tombstones.insert(format!("owner-{index}"));
@@ -1699,7 +1696,7 @@ mod protocol_tests {
         assert_eq!(tombstones.recent_owners.len(), MAX_CLOSED_OWNER_TOMBSTONES);
         assert_eq!(tombstones.order.len(), MAX_CLOSED_OWNER_TOMBSTONES);
         assert_eq!(
-            tombstones.archived.len(),
+            tombstones.archived.as_ref().unwrap().len(),
             CLOSED_OWNER_BLOOM_BITS / u64::BITS as usize
         );
         for index in [
