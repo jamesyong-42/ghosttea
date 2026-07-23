@@ -26,6 +26,12 @@
       "commandId": "ghosttea.workspace.select-tab"
     },
     {
+      "key": "9",
+      "meta": true,
+      "expected": { "type": "select-tab", "target": "last" },
+      "commandId": "ghosttea.workspace.select-tab"
+    },
+    {
       "key": "w",
       "meta": true,
       "alt": true,

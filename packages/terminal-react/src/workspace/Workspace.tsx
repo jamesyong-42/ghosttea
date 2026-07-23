@@ -32,7 +32,8 @@ import {
   type PaneNode,
   type SplitAxis,
 } from "./pane-layout.js";
-import { ghosttyHotkey } from "./hotkeys.js";
+import { resolveKeyEvent, routeConsumesInput } from "../bindings/action-route.js";
+import type { WorkspaceEffect } from "./hotkeys.js";
 import { PendingPromiseCache } from "./pending-cache.js";
 import { sessionsToClaim } from "./session-scope.js";
 import { decodeWorkspaceDocument } from "./workspace-model.js";
@@ -58,8 +59,18 @@ export interface GhostteaWorkspacePlatform {
   showContextMenu: (canCopy: boolean) => void;
   toggleFullscreen: () => void;
   closeWindow: () => void;
+  /** Ghostty `new_window`. Defaults to `newTab` when omitted. */
+  newWindow?: (cwd?: string) => void;
+  /** Ghostty `quit`. Host should quit the app process. */
+  quit?: () => void;
+  /** Ghostty `close_all_windows`. */
+  closeAllWindows?: () => void;
+  /** Ghostty `open_config` — open config in the OS editor/folder. */
+  openConfig?: () => void;
+  /** Ghostty `reload_config` — re-read runtime configuration. */
+  reloadConfig?: () => void;
   newTab?: (cwd?: string) => void;
-  selectTab?: (target: "previous" | "next" | number) => void;
+  selectTab?: (target: "previous" | "next" | "last" | number) => void;
   closeTab?: () => void;
   onMenuAction: (listener: (action: TerminalMenuAction) => void) => () => void;
 }
@@ -629,63 +640,114 @@ export function GhostteaWorkspace({
 
   const displayedLayout = zoomedPaneId ? leaves(layout).find((candidate) => candidate.id === zoomedPaneId) : layout;
 
+  const executeWorkspaceCommand = useCallback(
+    (command: WorkspaceEffect): void => {
+      if (command.type === "new-tab") {
+        platform.newTab?.(activePane?.session.cwd ?? undefined);
+      } else if (command.type === "select-tab") {
+        platform.selectTab?.(command.target);
+      } else if (command.type === "close-tab") {
+        platform.closeTab?.();
+      } else if (command.type === "remote-sessions") {
+        if (enableRemoteSessions) setRemotePaletteOpen(true);
+      } else if (command.type === "split") {
+        void newSplit(command.axis);
+      } else if (command.type === "focus-relative") {
+        focusRelative(command.offset);
+      } else if (command.type === "focus-direction") {
+        focusDirection(command.direction);
+      } else if (command.type === "resize") {
+        if (activePaneId) {
+          setLayout((current) =>
+            current ? resizeForPane(current, activePaneId, command.axis, command.delta)[0] : current,
+          );
+        }
+      } else if (command.type === "equalize") {
+        setLayout((current) => (current ? equalize(current) : current));
+      } else if (command.type === "toggle-zoom") {
+        setZoomedPaneId((current) => (current ? null : (activePaneId ?? null)));
+      } else if (command.type === "close-pane") {
+        closeActivePane();
+      }
+    },
+    [
+      activePane?.session.cwd,
+      activePaneId,
+      closeActivePane,
+      enableRemoteSessions,
+      focusDirection,
+      focusRelative,
+      newSplit,
+      platform,
+    ],
+  );
+
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (!workspaceOwnsHotkey(active, workspaceRef.current, event.target, document.activeElement)) return;
-      const action = ghosttyHotkey(event);
-      if (remotePaletteOpen) {
-        if (action?.type === "remote-sessions") {
-          setRemotePaletteOpen(false);
+
+      // Workspace owns chrome/platform/unhandled only; terminal effects stay on TerminalSurface.
+      const routed = resolveKeyEvent(event, {
+        extensions: true,
+        ...(platform.platform !== undefined ? { platform: platform.platform } : {}),
+        scopes: ["workspace", "platform", "unhandled"],
+      });
+      if (!routed) return;
+
+      // After a successful match, always consume. Missing hooks no-op the effect
+      // but must not leak Ghostty app binds into the PTY (review P0).
+      const consume = (): void => {
+        if (routeConsumesInput(routed)) {
           event.preventDefault();
           event.stopPropagation();
         }
+      };
+
+      if (remotePaletteOpen) {
+        if (routed.kind === "workspace" && routed.command.type === "remote-sessions") {
+          setRemotePaletteOpen(false);
+        }
+        // Drop other app binds while the palette is open; still consume them.
+        consume();
         return;
       }
-      if (!action || (!enableRemoteSessions && action.type === "remote-sessions")) return;
-      if (action.type === "new-tab") {
-        if (!platform.newTab) return;
-        platform.newTab(activePane?.session.cwd ?? undefined);
-      } else if (action.type === "select-tab") {
-        if (!platform.selectTab) return;
-        platform.selectTab(action.target);
-      } else if (action.type === "close-tab") {
-        if (!platform.closeTab) return;
-        platform.closeTab();
-      } else if (action.type === "remote-sessions") {
-        setRemotePaletteOpen(true);
-      } else if (action.type === "split") {
-        void newSplit(action.axis);
-      } else if (action.type === "focus-relative") {
-        focusRelative(action.offset);
-      } else if (action.type === "focus-direction") {
-        focusDirection(action.direction);
-      } else if (action.type === "resize") {
-        if (activePaneId) {
-          setLayout((current) =>
-            current ? resizeForPane(current, activePaneId, action.axis, action.delta)[0] : current,
-          );
+
+      if (routed.kind === "workspace") {
+        if (!(routed.command.type === "remote-sessions" && !enableRemoteSessions)) {
+          if (!(routed.command.type === "new-tab" && !platform.newTab)) {
+            if (!(routed.command.type === "select-tab" && !platform.selectTab)) {
+              if (!(routed.command.type === "close-tab" && !platform.closeTab)) {
+                executeWorkspaceCommand(routed.command);
+              }
+            }
+          }
         }
-      } else if (action.type === "equalize") {
-        setLayout((current) => (current ? equalize(current) : current));
-      } else if (action.type === "toggle-zoom") {
-        setZoomedPaneId((current) => (current ? null : (activePaneId ?? null)));
-      } else if (action.type === "close-pane") {
-        closeActivePane();
+      } else if (routed.kind === "platform") {
+        if (routed.effect.type === "toggle_fullscreen") platform.toggleFullscreen();
+        else if (routed.effect.type === "close_window") platform.closeWindow();
+        else if (routed.effect.type === "close_all_windows") {
+          (platform.closeAllWindows ?? platform.closeWindow)();
+        } else if (routed.effect.type === "new_window") {
+          (platform.newWindow ?? platform.newTab)?.(activePane?.session.cwd ?? undefined);
+        } else if (routed.effect.type === "quit") {
+          (platform.quit ?? platform.closeWindow)();
+        } else if (routed.effect.type === "open_config") {
+          platform.openConfig?.();
+        } else if (routed.effect.type === "reload_config") {
+          platform.reloadConfig?.();
+        }
       }
-      event.preventDefault();
-      event.stopPropagation();
+      // unhandled: consume only (prevent PTY leakage for non-performable app binds)
+
+      consume();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
-    activePane?.session.cwd,
-    activePaneId,
     active,
-    closeActivePane,
+    activePane?.session.cwd,
     enableRemoteSessions,
-    focusDirection,
-    focusRelative,
-    newSplit,
+    executeWorkspaceCommand,
     platform,
     remotePaletteOpen,
   ]);

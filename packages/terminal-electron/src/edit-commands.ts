@@ -2,6 +2,31 @@ import type { Event, Input, WebContents } from "electron";
 
 export type GhostteaEditCommand = "copy" | "paste" | "select-all";
 
+/**
+ * Ghostty actions that Chromium would otherwise steal as DOM edit roles.
+ * Full binding table lives in `@vibecook/ghosttea-react` (`bindings/`); this
+ * package only claims the subset that must run in the main process.
+ *
+ * Paste is deliberately omitted: the focused terminal textarea needs the
+ * renderer keydown/paste path to inject clipboard text into the PTY.
+ */
+export type GhostteaMainClaimGhosttyAction = "copy_to_clipboard" | "select_all";
+
+export interface GhostteaMainClaim {
+  /** Canonical Ghostty action name (ground truth). */
+  ghosttyAction: GhostteaMainClaimGhosttyAction;
+  /** Renderer menu / surface command string. */
+  command: Exclude<GhostteaEditCommand, "paste">;
+  /** Key identity (letter), matched case-insensitively. */
+  key: string;
+}
+
+/** Allowlist aligned with Ghostty default copy / select-all binds. */
+export const GHOSTTEA_MAIN_EDIT_CLAIMS: readonly GhostteaMainClaim[] = [
+  { ghosttyAction: "copy_to_clipboard", command: "copy", key: "c" },
+  { ghosttyAction: "select_all", command: "select-all", key: "a" },
+] as const;
+
 export interface GhostteaKeyInput {
   type: string;
   key: string;
@@ -14,8 +39,10 @@ export interface GhostteaKeyInput {
 
 /**
  * Resolve edit shortcuts that must bypass Chromium's DOM editing path.
- * Paste is deliberately not claimed: the focused terminal textarea needs the
- * renderer keydown/paste event so it can send clipboard text to the PTY.
+ *
+ * Modifiers match Ghostty defaults:
+ * - macOS: super (+ no ctrl/shift/alt)
+ * - Linux/Windows: ctrl+shift (+ no meta/alt)
  */
 export function ghostteaEditCommand(input: GhostteaKeyInput, platform: NodeJS.Platform): GhostteaEditCommand | null {
   if (input.type !== "keyDown" || input.isAutoRepeat || input.alt) return null;
@@ -24,14 +51,11 @@ export function ghostteaEditCommand(input: GhostteaKeyInput, platform: NodeJS.Pl
     platform === "darwin" ? input.meta && !input.control && !input.shift : input.control && input.shift && !input.meta;
   if (!hasEditModifier) return null;
 
-  switch (input.key.toLowerCase()) {
-    case "c":
-      return "copy";
-    case "a":
-      return "select-all";
-    default:
-      return null;
+  const key = input.key.toLowerCase();
+  for (const claim of GHOSTTEA_MAIN_EDIT_CLAIMS) {
+    if (claim.key === key) return claim.command;
   }
+  return null;
 }
 
 /**

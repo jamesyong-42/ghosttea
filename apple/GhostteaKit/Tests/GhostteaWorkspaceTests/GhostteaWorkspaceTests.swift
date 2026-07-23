@@ -601,6 +601,7 @@ private struct CommandConformanceFixture: Decodable {
     enum Target: Decodable {
       case previous
       case next
+      case last
       case index(Int)
 
       init(from decoder: any Decoder) throws {
@@ -611,6 +612,7 @@ private struct CommandConformanceFixture: Decodable {
           switch try container.decode(String.self) {
           case "previous": self = .previous
           case "next": self = .next
+          case "last": self = .last
           default:
             throw DecodingError.dataCorruptedError(
               in: container,
@@ -630,6 +632,7 @@ private struct CommandConformanceFixture: Decodable {
           switch try #require(target) {
           case .previous: return .selectTab(.previous)
           case .next: return .selectTab(.next)
+          case .last: return .selectTab(.last)
           case .index(let index): return .selectTab(.index(index))
           }
         case "close-tab": return .closeTab
@@ -693,7 +696,15 @@ func workspaceCommandsRouteToReducerOrHost() throws {
     GhostteaWorkspaceCommand.closePane.route(in: document)
       == .reducer(.applyToSelected(.close))
   )
-  #expect(GhostteaWorkspaceCommand.selectTab(.index(2)).route(in: document) == nil)
+  // Ghostty goto_tab clamps high indexes to the last tab.
+  #expect(
+    GhostteaWorkspaceCommand.selectTab(.index(2)).route(in: document)
+      == .reducer(.selectTab(id: "tab"))
+  )
+  #expect(
+    GhostteaWorkspaceCommand.selectTab(.last).route(in: document)
+      == .reducer(.selectTab(id: "tab"))
+  )
 }
 
 @Test("Workspace shortcut presses dispatch once and consume their matching release")

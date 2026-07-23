@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "bootstrap:ghostty-vt": "node scripts/bootstrap-ghostty-vt.mjs",
+    "extract:ghostty-ux": "node scripts/extract-ghostty-ux.mjs",
     "bootstrap:ghostty-vt:apple": "node scripts/bootstrap-ghostty-vt-apple.mjs",
     "bootstrap:ssh:apple": "node scripts/bootstrap-ssh-candidate-apple.mjs",
     "build": "npm run build:sdk && npm run build --workspace ghosttea-demo",

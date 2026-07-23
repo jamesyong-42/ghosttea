@@ -1,17 +1,24 @@
-import type { SplitAxis } from "./pane-layout";
+/**
+ * Workspace command DTOs and stable `ghosttea.workspace.*` command IDs.
+ *
+ * Binding match + route live in `../bindings/`. This module is the workspace
+ * facade used by GhostteaWorkspace and the desktop/iOS conformance fixture.
+ */
 
-export type GhosttyHotkey =
-  | { type: "remote-sessions" }
-  | { type: "new-tab" }
-  | { type: "select-tab"; target: "previous" | "next" | number }
-  | { type: "close-tab" }
-  | { type: "split"; axis: SplitAxis }
-  | { type: "focus-relative"; offset: -1 | 1 }
-  | { type: "focus-direction"; direction: "left" | "right" | "up" | "down" }
-  | { type: "resize"; axis: SplitAxis; delta: number }
-  | { type: "equalize" }
-  | { type: "toggle-zoom" }
-  | { type: "close-pane" };
+import {
+  resolveKeyEvent,
+  workspaceEffectFromAction,
+  workspaceEffectFromGhosttyAction,
+  type WorkspaceEffect,
+} from "../bindings/action-route.js";
+import type { GhostteaBindingAction, GhosttyAction } from "../bindings/ghostty-actions.js";
+import type { KeyEventLike } from "../bindings/ghostty-triggers.js";
+import type { SplitAxis } from "./pane-layout.js";
+
+/** @deprecated Prefer WorkspaceEffect; alias kept for public API stability. */
+export type GhosttyHotkey = WorkspaceEffect;
+
+export type { WorkspaceEffect };
 
 export type WorkspaceCommandId =
   | "ghosttea.workspace.remote-sessions"
@@ -26,46 +33,32 @@ export type WorkspaceCommandId =
   | "ghosttea.workspace.toggle-zoom"
   | "ghosttea.workspace.close-pane";
 
-export function workspaceCommandId(command: GhosttyHotkey): WorkspaceCommandId {
+export function workspaceCommandId(command: WorkspaceEffect): WorkspaceCommandId {
   return `ghosttea.workspace.${command.type}`;
 }
 
-type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "shiftKey" | "altKey" | "ctrlKey">;
-
-export function ghosttyHotkey(event: KeyLike): GhosttyHotkey | null {
-  const key = event.key.toLowerCase();
-  if (!event.metaKey && event.ctrlKey && !event.altKey && key === "tab") {
-    return { type: "select-tab", target: event.shiftKey ? "previous" : "next" };
-  }
-  if (!event.metaKey) return null;
-  if (key === "t" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "new-tab" };
-  if (event.shiftKey && !event.altKey && !event.ctrlKey && (key === "[" || key === "{")) {
-    return { type: "select-tab", target: "previous" };
-  }
-  if (event.shiftKey && !event.altKey && !event.ctrlKey && (key === "]" || key === "}")) {
-    return { type: "select-tab", target: "next" };
-  }
-  if (/^[1-9]$/.test(key) && !event.shiftKey && !event.altKey && !event.ctrlKey) {
-    return { type: "select-tab", target: Number(key) };
-  }
-  if (key === "w" && !event.shiftKey && event.altKey && !event.ctrlKey) return { type: "close-tab" };
-  if (key === "o" && event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "remote-sessions" };
-  if (key === "d" && !event.altKey && !event.ctrlKey)
-    return { type: "split", axis: event.shiftKey ? "vertical" : "horizontal" };
-  if (key === "[" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "focus-relative", offset: -1 };
-  if (key === "]" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "focus-relative", offset: 1 };
-  if (event.altKey && ["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
-    return { type: "focus-direction", direction: key.slice(5) as "left" | "right" | "up" | "down" };
-  }
-  if (event.ctrlKey && ["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
-    return {
-      type: "resize",
-      axis: key === "arrowleft" || key === "arrowright" ? "horizontal" : "vertical",
-      delta: key === "arrowleft" || key === "arrowup" ? -0.05 : 0.05,
-    };
-  }
-  if (event.ctrlKey && (key === "=" || key === "+")) return { type: "equalize" };
-  if (key === "enter" && event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "toggle-zoom" };
-  if (key === "w" && !event.shiftKey && !event.altKey && !event.ctrlKey) return { type: "close-pane" };
-  return null;
+export function workspaceHotkeyFromAction(action: GhostteaBindingAction): WorkspaceEffect | null {
+  return workspaceEffectFromAction(action);
 }
+
+export function workspaceHotkeyFromGhosttyAction(action: GhosttyAction): WorkspaceEffect | null {
+  return workspaceEffectFromGhosttyAction(action);
+}
+
+/**
+ * Resolve a keyboard event to a workspace command only.
+ * Terminal/platform/unhandled routes return null (see `resolveKeyEvent`).
+ */
+export function ghosttyHotkey(event: KeyEventLike, platform: string = "darwin"): WorkspaceEffect | null {
+  const routed = resolveKeyEvent(event, {
+    extensions: true,
+    platform,
+    scopes: ["workspace"],
+  });
+  return routed?.kind === "workspace" ? routed.command : null;
+}
+
+/** Type-level check that workspace axes stay aligned with pane-layout. */
+export type _AssertSplitAxis = Extract<WorkspaceEffect, { type: "split" }>["axis"] extends SplitAxis
+  ? true
+  : never;

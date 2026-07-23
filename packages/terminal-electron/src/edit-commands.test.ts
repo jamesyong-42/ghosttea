@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
-import { ghostteaEditCommand, installGhostteaEditShortcuts, type GhostteaKeyInput } from "./edit-commands";
+import {
+  GHOSTTEA_MAIN_EDIT_CLAIMS,
+  ghostteaEditCommand,
+  installGhostteaEditShortcuts,
+  type GhostteaKeyInput,
+} from "./edit-commands";
 
 function key(overrides: Partial<GhostteaKeyInput> = {}): GhostteaKeyInput {
   return {
@@ -17,6 +22,14 @@ function key(overrides: Partial<GhostteaKeyInput> = {}): GhostteaKeyInput {
 }
 
 describe("Ghosttea Electron edit commands", () => {
+  it("claims only Ghostty copy/select_all actions (not paste)", () => {
+    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.map((c) => c.ghosttyAction).sort()).toEqual([
+      "copy_to_clipboard",
+      "select_all",
+    ]);
+    expect(GHOSTTEA_MAIN_EDIT_CLAIMS.some((c) => c.command === "paste")).toBe(false);
+  });
+
   it("routes the macOS Command edit shortcuts", () => {
     expect(ghostteaEditCommand(key(), "darwin")).toBe("copy");
     expect(ghostteaEditCommand(key({ key: "a" }), "darwin")).toBe("select-all");

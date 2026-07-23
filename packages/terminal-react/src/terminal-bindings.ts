@@ -1,27 +1,44 @@
-type KeyLike = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "shiftKey" | "altKey" | "ctrlKey">;
-
-export type GhosttyTerminalBinding = { type: "paste" } | { type: "text"; text: string };
+import {
+  resolveKeyEvent,
+  type TerminalEffect,
+} from "./bindings/action-route.js";
+import type { GhosttyBindingFlags } from "./bindings/ghostty-bindings.js";
+import type { KeyEventLike } from "./bindings/ghostty-triggers.js";
 
 /**
- * Ghostty's default macOS "natural text editing" bindings.
- *
- * These are application bindings, not terminal key encodings. Keeping them
- * here mirrors Ghostty's config layer before input reaches libghostty.
+ * @deprecated Prefer TerminalEffect from bindings/action-route.
+ * Kept for tests and callers that only need terminal-scoped effects.
  */
-export function ghosttyTerminalBinding(event: KeyLike, platform: string | undefined): GhosttyTerminalBinding | null {
-  if (platform !== "darwin" || event.shiftKey || event.ctrlKey) return null;
+export type GhosttyTerminalBinding = TerminalEffect;
 
-  if (event.metaKey && !event.altKey) {
-    if (event.key.toLowerCase() === "v") return { type: "paste" };
-    if (event.code === "ArrowRight") return { type: "text", text: "\u0005" };
-    if (event.code === "ArrowLeft") return { type: "text", text: "\u0001" };
-    if (event.code === "Backspace") return { type: "text", text: "\u0015" };
-  }
+export type ResolvedTerminalBinding = {
+  effect: TerminalEffect;
+  flags: GhosttyBindingFlags;
+};
 
-  if (event.altKey && !event.metaKey) {
-    if (event.code === "ArrowLeft") return { type: "text", text: "\u001bb" };
-    if (event.code === "ArrowRight") return { type: "text", text: "\u001bf" };
-  }
+/**
+ * Resolve terminal-scoped Ghostty application bindings for the active surface.
+ * Workspace/platform/unhandled binds are intentionally excluded (other owners).
+ *
+ * Uses the platform default table (macOS super vs Linux ctrl+shift).
+ */
+export function resolveTerminalBinding(
+  event: KeyEventLike,
+  platform: string | undefined,
+): ResolvedTerminalBinding | null {
+  const routed = resolveKeyEvent(event, {
+    extensions: true,
+    ...(platform !== undefined ? { platform } : {}),
+    scopes: ["terminal"],
+  });
+  if (routed?.kind !== "terminal") return null;
+  return { effect: routed.effect, flags: routed.flags };
+}
 
-  return null;
+/** Convenience: effect only (tests). */
+export function ghosttyTerminalBinding(
+  event: KeyEventLike,
+  platform: string | undefined,
+): TerminalEffect | null {
+  return resolveTerminalBinding(event, platform)?.effect ?? null;
 }

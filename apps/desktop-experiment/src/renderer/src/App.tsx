@@ -24,6 +24,8 @@ function DesktopApp() {
       showContextMenu: window.desktop.showContextMenu,
       toggleFullscreen: window.desktop.toggleFullscreen,
       closeWindow: window.desktop.closeWindow,
+      newWindow: window.desktop.newWindow,
+      quit: window.desktop.quit,
       newTab: window.desktop.newTab,
       selectTab: window.desktop.selectTab,
       closeTab: window.desktop.closeTab,

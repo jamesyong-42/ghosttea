@@ -1,0 +1,10 @@
+{
+  "description": "Ghosttea-only binding extensions (not part of Ghostty defaults).",
+  "bindings": [
+    {
+      "trigger": "super+shift+o",
+      "action": "ghosttea.remote_sessions",
+      "note": "Remote session palette. Intentional product extension; keep this binding."
+    }
+  ]
+}

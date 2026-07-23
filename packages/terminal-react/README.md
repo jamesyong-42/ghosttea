@@ -26,3 +26,17 @@ credential state.
 Ghostty-style application shortcuts expose stable `ghosttea.workspace.*`
 command IDs through `workspaceCommandId`. These IDs are shared with the Swift
 workspace package even where platform-default key bindings eventually differ.
+
+Default macOS keybinds are table-driven from the Ghostty ground-truth dump
+(`src/bindings/fixtures/keybinds-macos-default.json`, refreshed via
+`npm run extract:ghostty-ux`).
+
+Architecture:
+
+1. **Match** — `matchGhostteaBinding` (Ghostty defaults + extensions)
+2. **Route** — `resolveKeyEvent` → `workspace` | `terminal` | `platform` | `unhandled`
+3. **Execute** — Workspace owns chrome/platform/unhandled; TerminalSurface owns terminal effects
+
+**⌘⇧O** (`super+shift+o`) is a Ghosttea product extension (remote sessions) and is kept outside Ghostty defaults.
+
+Open / deferred Ghostty UX work (font-size protocol, search, undo, jump_to_prompt, mouse goldens, etc.) is tracked in the monorepo at [`bench/ghostty-ux/OPEN-ITEMS.md`](../../bench/ghostty-ux/OPEN-ITEMS.md).

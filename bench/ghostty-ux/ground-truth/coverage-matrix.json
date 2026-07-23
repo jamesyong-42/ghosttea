@@ -1,0 +1,842 @@
+{
+  "description": "Initial Ghosttea vs Ghostty default UX coverage matrix (macOS).",
+  "legend": {
+    "partial": "Some path exists in Ghosttea but incomplete or mismatched",
+    "missing": "Not implemented",
+    "pass": "Matches Ghostty (reserved for future suite results)",
+    "n/a": "Platform/runtime unsupported by design"
+  },
+  "binding_counts": {
+    "missing": 49,
+    "partial": 44
+  },
+  "action_counts": {
+    "missing": 71,
+    "partial": 14
+  },
+  "notes": [
+    "\u2318\u21e7O remote sessions is a Ghosttea product extension (not Ghostty); keep it.",
+    "super+9 is last_tab (Ghostty); implemented as select-tab target last.",
+    "performable binds (escape=end_search, search, undo) pass through until implementable.",
+    "goto_tab clamps high indexes to last tab (Ghostty semantics).",
+    "resize_split maps Ghostty 10px units to fractional 0.05 steps.",
+    "Linux default keybind set not dumped yet."
+  ],
+  "ghosttea_extensions": [
+    {
+      "trigger": "super+shift+o",
+      "action": "ghosttea.remote_sessions",
+      "note": "Remote session palette. Intentional product extension; keep this binding.",
+      "status": "keep"
+    }
+  ],
+  "bindings": [
+    {
+      "trigger": "super+shift+,",
+      "action": "reload_config",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+,",
+      "action": "open_config",
+      "status": "missing"
+    },
+    {
+      "trigger": "copy",
+      "action": "copy_to_clipboard:mixed",
+      "status": "missing"
+    },
+    {
+      "trigger": "paste",
+      "action": "paste_from_clipboard",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+c",
+      "action": "copy_to_clipboard:mixed",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+v",
+      "action": "paste_from_clipboard",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+=",
+      "action": "increase_font_size:1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super++",
+      "action": "increase_font_size:1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+-",
+      "action": "decrease_font_size:1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+0",
+      "action": "reset_font_size",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+ctrl+shift+j",
+      "action": "write_screen_file:copy,plain",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+j",
+      "action": "write_screen_file:paste,plain",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+alt+shift+j",
+      "action": "write_screen_file:open,plain",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+arrow_left",
+      "action": "adjust_selection:left",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+arrow_right",
+      "action": "adjust_selection:right",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+arrow_up",
+      "action": "adjust_selection:up",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+arrow_down",
+      "action": "adjust_selection:down",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+page_up",
+      "action": "adjust_selection:page_up",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+page_down",
+      "action": "adjust_selection:page_down",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+home",
+      "action": "adjust_selection:home",
+      "status": "missing"
+    },
+    {
+      "trigger": "shift+end",
+      "action": "adjust_selection:end",
+      "status": "missing"
+    },
+    {
+      "trigger": "ctrl+shift+tab",
+      "action": "previous_tab",
+      "status": "partial"
+    },
+    {
+      "trigger": "ctrl+tab",
+      "action": "next_tab",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_1",
+      "action": "goto_tab:1",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+1",
+      "action": "goto_tab:1",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_2",
+      "action": "goto_tab:2",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+2",
+      "action": "goto_tab:2",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_3",
+      "action": "goto_tab:3",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+3",
+      "action": "goto_tab:3",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_4",
+      "action": "goto_tab:4",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+4",
+      "action": "goto_tab:4",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_5",
+      "action": "goto_tab:5",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+5",
+      "action": "goto_tab:5",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_6",
+      "action": "goto_tab:6",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+6",
+      "action": "goto_tab:6",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_7",
+      "action": "goto_tab:7",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+7",
+      "action": "goto_tab:7",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+digit_8",
+      "action": "goto_tab:8",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+8",
+      "action": "goto_tab:8",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+9",
+      "action": "last_tab",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+enter",
+      "action": "toggle_fullscreen",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+enter",
+      "action": "toggle_split_zoom",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+shift+p",
+      "action": "toggle_command_palette",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+q",
+      "action": "quit",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+k",
+      "action": "clear_screen",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+a",
+      "action": "select_all",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+t",
+      "action": "undo",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+z",
+      "action": "undo",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+z",
+      "action": "redo",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+home",
+      "action": "scroll_to_top",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+end",
+      "action": "scroll_to_bottom",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+page_up",
+      "action": "scroll_page_up",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+page_down",
+      "action": "scroll_page_down",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+j",
+      "action": "scroll_to_selection",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+arrow_up",
+      "action": "jump_to_prompt:-1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+arrow_down",
+      "action": "jump_to_prompt:1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+n",
+      "action": "new_window",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+w",
+      "action": "close_surface",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+alt+w",
+      "action": "close_tab:this",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+shift+w",
+      "action": "close_window",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+alt+shift+w",
+      "action": "close_all_windows",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+t",
+      "action": "new_tab",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+shift+[",
+      "action": "previous_tab",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+shift+]",
+      "action": "next_tab",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+d",
+      "action": "new_split:right",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+shift+d",
+      "action": "new_split:down",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+[",
+      "action": "goto_split:previous",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+]",
+      "action": "goto_split:next",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+alt+arrow_up",
+      "action": "goto_split:up",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+alt+arrow_down",
+      "action": "goto_split:down",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+alt+arrow_left",
+      "action": "goto_split:left",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+alt+arrow_right",
+      "action": "goto_split:right",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+ctrl+arrow_up",
+      "action": "resize_split:up,10",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+ctrl+arrow_down",
+      "action": "resize_split:down,10",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+ctrl+arrow_left",
+      "action": "resize_split:left,10",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+ctrl+arrow_right",
+      "action": "resize_split:right,10",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+ctrl+=",
+      "action": "equalize_splits",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+arrow_up",
+      "action": "jump_to_prompt:-1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+arrow_down",
+      "action": "jump_to_prompt:1",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+f",
+      "action": "start_search",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+e",
+      "action": "search_selection",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+f",
+      "action": "end_search",
+      "status": "missing"
+    },
+    {
+      "trigger": "escape",
+      "action": "end_search",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+g",
+      "action": "navigate_search:next",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+g",
+      "action": "navigate_search:previous",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+alt+i",
+      "action": "inspector:toggle",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+ctrl+f",
+      "action": "toggle_fullscreen",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+shift+v",
+      "action": "paste_from_selection",
+      "status": "missing"
+    },
+    {
+      "trigger": "super+arrow_right",
+      "action": "text:\\\\x05",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+arrow_left",
+      "action": "text:\\\\x01",
+      "status": "partial"
+    },
+    {
+      "trigger": "super+backspace",
+      "action": "text:\\\\x15",
+      "status": "partial"
+    },
+    {
+      "trigger": "alt+arrow_left",
+      "action": "esc:b",
+      "status": "partial"
+    },
+    {
+      "trigger": "alt+arrow_right",
+      "action": "esc:f",
+      "status": "partial"
+    }
+  ],
+  "actions": [
+    {
+      "action": "ignore",
+      "status": "missing"
+    },
+    {
+      "action": "unbind",
+      "status": "missing"
+    },
+    {
+      "action": "csi",
+      "status": "missing"
+    },
+    {
+      "action": "esc",
+      "status": "partial"
+    },
+    {
+      "action": "text",
+      "status": "partial"
+    },
+    {
+      "action": "cursor_key",
+      "status": "missing"
+    },
+    {
+      "action": "reset",
+      "status": "missing"
+    },
+    {
+      "action": "copy_to_clipboard",
+      "status": "missing"
+    },
+    {
+      "action": "paste_from_clipboard",
+      "status": "partial"
+    },
+    {
+      "action": "paste_from_selection",
+      "status": "missing"
+    },
+    {
+      "action": "copy_url_to_clipboard",
+      "status": "missing"
+    },
+    {
+      "action": "copy_title_to_clipboard",
+      "status": "missing"
+    },
+    {
+      "action": "increase_font_size",
+      "status": "missing"
+    },
+    {
+      "action": "decrease_font_size",
+      "status": "missing"
+    },
+    {
+      "action": "reset_font_size",
+      "status": "missing"
+    },
+    {
+      "action": "set_font_size",
+      "status": "missing"
+    },
+    {
+      "action": "search",
+      "status": "missing"
+    },
+    {
+      "action": "search_selection",
+      "status": "missing"
+    },
+    {
+      "action": "navigate_search",
+      "status": "missing"
+    },
+    {
+      "action": "start_search",
+      "status": "missing"
+    },
+    {
+      "action": "end_search",
+      "status": "missing"
+    },
+    {
+      "action": "clear_screen",
+      "status": "missing"
+    },
+    {
+      "action": "select_all",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_to_top",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_to_bottom",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_to_selection",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_to_row",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_page_up",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_page_down",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_page_fractional",
+      "status": "missing"
+    },
+    {
+      "action": "scroll_page_lines",
+      "status": "missing"
+    },
+    {
+      "action": "adjust_selection",
+      "status": "missing"
+    },
+    {
+      "action": "jump_to_prompt",
+      "status": "missing"
+    },
+    {
+      "action": "write_scrollback_file",
+      "status": "missing"
+    },
+    {
+      "action": "write_screen_file",
+      "status": "missing"
+    },
+    {
+      "action": "write_selection_file",
+      "status": "missing"
+    },
+    {
+      "action": "new_window",
+      "status": "missing"
+    },
+    {
+      "action": "new_tab",
+      "status": "partial"
+    },
+    {
+      "action": "previous_tab",
+      "status": "partial"
+    },
+    {
+      "action": "next_tab",
+      "status": "partial"
+    },
+    {
+      "action": "last_tab",
+      "status": "missing"
+    },
+    {
+      "action": "goto_tab",
+      "status": "partial"
+    },
+    {
+      "action": "move_tab",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_tab_overview",
+      "status": "missing"
+    },
+    {
+      "action": "prompt_surface_title",
+      "status": "missing"
+    },
+    {
+      "action": "prompt_tab_title",
+      "status": "missing"
+    },
+    {
+      "action": "set_surface_title",
+      "status": "missing"
+    },
+    {
+      "action": "set_tab_title",
+      "status": "missing"
+    },
+    {
+      "action": "new_split",
+      "status": "partial"
+    },
+    {
+      "action": "goto_split",
+      "status": "partial"
+    },
+    {
+      "action": "goto_window",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_split_zoom",
+      "status": "partial"
+    },
+    {
+      "action": "toggle_readonly",
+      "status": "missing"
+    },
+    {
+      "action": "resize_split",
+      "status": "partial"
+    },
+    {
+      "action": "equalize_splits",
+      "status": "partial"
+    },
+    {
+      "action": "reset_window_size",
+      "status": "missing"
+    },
+    {
+      "action": "inspector",
+      "status": "missing"
+    },
+    {
+      "action": "show_gtk_inspector",
+      "status": "missing"
+    },
+    {
+      "action": "show_on_screen_keyboard",
+      "status": "missing"
+    },
+    {
+      "action": "open_config",
+      "status": "missing"
+    },
+    {
+      "action": "reload_config",
+      "status": "missing"
+    },
+    {
+      "action": "close_surface",
+      "status": "partial"
+    },
+    {
+      "action": "close_tab",
+      "status": "partial"
+    },
+    {
+      "action": "close_window",
+      "status": "missing"
+    },
+    {
+      "action": "close_all_windows",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_maximize",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_fullscreen",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_window_decorations",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_window_float_on_top",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_secure_input",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_mouse_reporting",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_command_palette",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_quick_terminal",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_visibility",
+      "status": "missing"
+    },
+    {
+      "action": "toggle_background_opacity",
+      "status": "missing"
+    },
+    {
+      "action": "check_for_updates",
+      "status": "missing"
+    },
+    {
+      "action": "undo",
+      "status": "missing"
+    },
+    {
+      "action": "redo",
+      "status": "missing"
+    },
+    {
+      "action": "end_key_sequence",
+      "status": "missing"
+    },
+    {
+      "action": "activate_key_table",
+      "status": "missing"
+    },
+    {
+      "action": "activate_key_table_once",
+      "status": "missing"
+    },
+    {
+      "action": "deactivate_key_table",
+      "status": "missing"
+    },
+    {
+      "action": "deactivate_all_key_tables",
+      "status": "missing"
+    },
+    {
+      "action": "quit",
+      "status": "missing"
+    },
+    {
+      "action": "crash",
+      "status": "missing"
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
   GhostteaElectronBackend,
@@ -56,6 +56,28 @@ ipcMain.on("terminal-close-window", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
+ipcMain.on("terminal-new-window", (event, cwd: unknown) => {
+  void createWindow({
+    initialCwd: typeof cwd === "string" && cwd.trim() ? cwd : undefined,
+  }).catch((error) => console.error("failed to create window", error));
+});
+
+ipcMain.on("terminal-quit", () => {
+  app.quit();
+});
+
+ipcMain.on("terminal-close-all-windows", () => {
+  for (const window of BrowserWindow.getAllWindows()) window.close();
+});
+
+ipcMain.on("terminal-open-config", () => {
+  void shell.openPath(app.getPath("userData")).catch((error) => console.error("failed to open config path", error));
+});
+
+ipcMain.on("terminal-reload-config", () => {
+  for (const window of BrowserWindow.getAllWindows()) window.webContents.reload();
+});
+
 ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) return;
@@ -73,11 +95,17 @@ ipcMain.on("terminal-select-tab", (event, target: unknown) => {
   } else if (target === "next") {
     if (process.platform === "darwin") window.selectNextTab();
     else focusRelativeTab(window, 1);
-  } else if (typeof target === "number" && Number.isSafeInteger(target)) {
+  } else if (target === "last" || (typeof target === "number" && Number.isSafeInteger(target))) {
     const current = tabs.get(window);
     if (!current) return;
     const group = tabs.group(current.groupId);
     const orderedWindows = orderNativeTabs(group.map((record) => record.window));
+    if (orderedWindows.length === 0) return;
+    if (target === "last") {
+      focusTab(orderedWindows[orderedWindows.length - 1]);
+      return;
+    }
+    // Ghostty goto_tab: indexes above the tab count select the last tab.
     const index = Math.min(Math.max(target, 1), orderedWindows.length) - 1;
     focusTab(orderedWindows[index]);
   }

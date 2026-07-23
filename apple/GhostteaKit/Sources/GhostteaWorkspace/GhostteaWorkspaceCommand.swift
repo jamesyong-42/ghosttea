@@ -17,6 +17,7 @@ public enum GhostteaWorkspaceCommandID: String, Codable, Sendable {
 public enum GhostteaWorkspaceTabTarget: Equatable, Sendable {
   case previous
   case next
+  case last
   case index(Int)
 }
 
@@ -101,8 +102,12 @@ public struct GhostteaWorkspaceKeyChord: Equatable, Sendable {
     if shift, !option, !control, key == "]" || key == "}" {
       return .selectTab(.next)
     }
-    if let index = Int(key), (1...9).contains(index), !shift, !option, !control {
+    // Ghostty: super+1..8 = goto_tab, super+9 = last_tab
+    if let index = Int(key), (1...8).contains(index), !shift, !option, !control {
       return .selectTab(.index(index))
+    }
+    if key == "9", !shift, !option, !control {
+      return .selectTab(.last)
     }
     if key == "w", !shift, option, !control { return .closeTab }
     if key == "o", shift, !option, !control { return .remoteSessions }
@@ -213,9 +218,14 @@ extension GhostteaWorkspaceCommand {
         return .reducer(.selectRelative(offset: -1))
       case .next:
         return .reducer(.selectRelative(offset: 1))
+      case .last:
+        guard let last = document.tabs.last else { return nil }
+        return .reducer(.selectTab(id: last.id))
       case .index(let index):
-        guard document.tabs.indices.contains(index - 1) else { return nil }
-        return .reducer(.selectTab(id: document.tabs[index - 1].id))
+        // Ghostty goto_tab: if the index is higher than the tab count, go to the last tab.
+        guard !document.tabs.isEmpty else { return nil }
+        let clamped = min(max(index, 1), document.tabs.count)
+        return .reducer(.selectTab(id: document.tabs[clamped - 1].id))
       }
     case .closeTab:
       return .reducer(.closeTab(id: document.selectedTabID))

@@ -1,0 +1,505 @@
+{
+  "platform": "linux",
+  "source": "derived from native/vendor/ghostty/src/config/Config.zig Keybinds.init non-Darwin branch + shared defaults",
+  "count": 71,
+  "flagsNote": "performable flags from Config.zig putFlags (Linux).",
+  "bindings": [
+    {
+      "trigger": "copy",
+      "action": "copy_to_clipboard:mixed",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "paste",
+      "action": "paste_from_clipboard",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+c",
+      "action": "copy_to_clipboard:mixed",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+v",
+      "action": "paste_from_clipboard",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+=",
+      "action": "increase_font_size:1",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl++",
+      "action": "increase_font_size:1",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+-",
+      "action": "decrease_font_size:1",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+0",
+      "action": "reset_font_size",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "super+ctrl+shift+j",
+      "action": "write_screen_file:copy,plain",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+j",
+      "action": "write_screen_file:paste,plain",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+alt+shift+j",
+      "action": "write_screen_file:open,plain",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "shift+arrow_left",
+      "action": "adjust_selection:left",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "shift+arrow_right",
+      "action": "adjust_selection:right",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "shift+arrow_up",
+      "action": "adjust_selection:up",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "shift+arrow_down",
+      "action": "adjust_selection:down",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+tab",
+      "action": "previous_tab",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+tab",
+      "action": "next_tab",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+n",
+      "action": "new_window",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+w",
+      "action": "close_tab:this",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+q",
+      "action": "quit",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "alt+f4",
+      "action": "close_window",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+t",
+      "action": "new_tab",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+arrow_left",
+      "action": "previous_tab",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+arrow_right",
+      "action": "next_tab",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+page_up",
+      "action": "previous_tab",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+page_down",
+      "action": "next_tab",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+o",
+      "action": "new_split:right",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+e",
+      "action": "new_split:down",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+super+[",
+      "action": "goto_split:previous",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+super+]",
+      "action": "goto_split:next",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+alt+arrow_up",
+      "action": "goto_split:up",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+alt+arrow_down",
+      "action": "goto_split:down",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+alt+arrow_left",
+      "action": "goto_split:left",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+alt+arrow_right",
+      "action": "goto_split:right",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "super+ctrl+shift+arrow_up",
+      "action": "resize_split:up,10",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "super+ctrl+shift+arrow_down",
+      "action": "resize_split:down,10",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "super+ctrl+shift+arrow_left",
+      "action": "resize_split:left,10",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "super+ctrl+shift+arrow_right",
+      "action": "resize_split:right,10",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "shift+home",
+      "action": "scroll_to_top",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "shift+end",
+      "action": "scroll_to_bottom",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "shift+page_up",
+      "action": "scroll_page_up",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "shift+page_down",
+      "action": "scroll_page_down",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+arrow_up",
+      "action": "jump_to_prompt:-1",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+arrow_down",
+      "action": "jump_to_prompt:1",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+page_up",
+      "action": "move_tab:-1",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+page_down",
+      "action": "move_tab:1",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+f",
+      "action": "start_search",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "escape",
+      "action": "end_search",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+shift+i",
+      "action": "inspector:toggle",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+a",
+      "action": "select_all",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "shift+insert",
+      "action": "paste_from_selection",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "alt+digit_1",
+      "action": "goto_tab:1",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+1",
+      "action": "goto_tab:1",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_2",
+      "action": "goto_tab:2",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+2",
+      "action": "goto_tab:2",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_3",
+      "action": "goto_tab:3",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+3",
+      "action": "goto_tab:3",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_4",
+      "action": "goto_tab:4",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+4",
+      "action": "goto_tab:4",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_5",
+      "action": "goto_tab:5",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+5",
+      "action": "goto_tab:5",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_6",
+      "action": "goto_tab:6",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+6",
+      "action": "goto_tab:6",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_7",
+      "action": "goto_tab:7",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+7",
+      "action": "goto_tab:7",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+digit_8",
+      "action": "goto_tab:8",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+8",
+      "action": "goto_tab:8",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "alt+9",
+      "action": "last_tab",
+      "flags": {
+        "performable": true
+      }
+    },
+    {
+      "trigger": "ctrl+enter",
+      "action": "toggle_fullscreen",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+enter",
+      "action": "toggle_split_zoom",
+      "flags": {
+        "performable": false
+      }
+    },
+    {
+      "trigger": "ctrl+shift+p",
+      "action": "toggle_command_palette",
+      "flags": {
+        "performable": false
+      }
+    }
+  ]
+}

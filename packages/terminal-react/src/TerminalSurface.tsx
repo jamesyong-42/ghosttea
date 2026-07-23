@@ -3,10 +3,11 @@ import type { ClipboardEvent, KeyboardEvent, PointerEvent, WheelEvent } from "re
 import type { SessionSummary, TerminalKeyEvent, TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { useGhostteaRuntime } from "./context.js";
 import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
-import { ghosttyTerminalBinding } from "./terminal-bindings.js";
+import { terminalEffectShouldConsume, type TerminalEffect } from "./bindings/action-route.js";
+import { resolveTerminalBinding } from "./terminal-bindings.js";
 import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
 import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
-import { usesLocalSelection } from "./selection-input.js";
+import { adjustSelectionFocus, usesLocalSelection } from "./selection-input.js";
 
 export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
 
@@ -68,9 +69,11 @@ function TerminalSurfaceSession({
   onActivate,
   readClipboard,
   onContextMenu,
-  onToggleFullscreen,
+  onToggleFullscreen: _onToggleFullscreen,
   onMenuAction,
 }: TerminalSurfaceProps) {
+  // Fullscreen is owned by Workspace platform routing (toggle_fullscreen).
+  void _onToggleFullscreen;
   const terminalRuntime = useGhostteaRuntime();
   const interactive = session.readWrite;
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -130,6 +133,113 @@ function TerminalSurfaceSession({
     void terminalKeyboardLayout.refresh();
   }, []);
 
+  const executeTerminalEffect = useCallback(
+    (effect: TerminalEffect): boolean => {
+      const { cols, rows } = gridRef.current;
+      const total = Math.max(rows, scrollbarRef.current.total);
+      const viewportLen = Math.max(1, scrollbarRef.current.length || rows);
+
+      if (effect.type === "copy") {
+        if (!selectionRef.current) return false;
+        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
+        return true;
+      }
+      if (effect.type === "select_all") {
+        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
+        selectionAllRef.current = true;
+        terminalRuntime.setSelection(
+          session.handle,
+          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+          viewId,
+        );
+        return true;
+      }
+      if (effect.type === "paste") {
+        if (!interactive) return false;
+        const text = readClipboard?.() ?? "";
+        if (!text) return false;
+        selectionAnchorRef.current = null;
+        selectionRef.current = null;
+        selectionAllRef.current = false;
+        terminalRuntime.setSelection(session.handle, null, viewId);
+        terminalRuntime.paste(session.id, viewId, text);
+        return true;
+      }
+      if (effect.type === "text" || effect.type === "clear_screen") {
+        if (!interactive && effect.type === "text") return false;
+        selectionAnchorRef.current = null;
+        selectionRef.current = null;
+        selectionAllRef.current = false;
+        terminalRuntime.setSelection(session.handle, null, viewId);
+        terminalRuntime.sendText(session.id, viewId, effect.type === "clear_screen" ? "\u000c" : effect.text);
+        return true;
+      }
+      if (effect.type === "scroll_to_top") {
+        terminalRuntime.scrollTo(session.id, viewId, 0);
+        return true;
+      }
+      if (effect.type === "scroll_to_bottom") {
+        terminalRuntime.scrollTo(session.id, viewId, Math.max(0, total - viewportLen));
+        return true;
+      }
+      if (effect.type === "scroll_to_row") {
+        terminalRuntime.scrollTo(session.id, viewId, Math.max(0, effect.row));
+        return true;
+      }
+      if (effect.type === "scroll_to_selection") {
+        const selection = selectionRef.current;
+        if (!selection) return false;
+        const row = Math.min(selection.anchor.row, selection.focus.row);
+        terminalRuntime.scrollTo(session.id, viewId, Math.max(0, row));
+        return true;
+      }
+      if (effect.type === "scroll_page_up") {
+        terminalRuntime.scroll(session.id, viewId, -rows);
+        return true;
+      }
+      if (effect.type === "scroll_page_down") {
+        terminalRuntime.scroll(session.id, viewId, rows);
+        return true;
+      }
+      if (effect.type === "scroll_page_fractional") {
+        const delta = Math.trunc(rows * effect.amount);
+        if (delta !== 0) terminalRuntime.scroll(session.id, viewId, delta);
+        return true;
+      }
+      if (effect.type === "scroll_page_lines") {
+        if (effect.lines !== 0) terminalRuntime.scroll(session.id, viewId, effect.lines);
+        return true;
+      }
+      if (effect.type === "adjust_selection") {
+        const selection = selectionRef.current;
+        if (!selection) return false;
+        const nextFocus = adjustSelectionFocus(selection.focus, effect.direction, {
+          cols,
+          rows,
+          totalRows: total,
+        });
+        if (!nextFocus) return false;
+        selectionRef.current = { anchor: selection.anchor, focus: nextFocus };
+        selectionAllRef.current = false;
+        // Keep keyboard-adjusted focus visible (Ghostty scrolls selection into view).
+        const offset = scrollbarRef.current.offset;
+        if (nextFocus.row < offset) {
+          terminalRuntime.scrollTo(session.id, viewId, nextFocus.row);
+        } else if (nextFocus.row >= offset + rows) {
+          terminalRuntime.scrollTo(session.id, viewId, Math.max(0, nextFocus.row - rows + 1));
+        }
+        terminalRuntime.setSelection(
+          session.handle,
+          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
+          viewId,
+        );
+        return true;
+      }
+      return false;
+    },
+    [interactive, readClipboard, session.handle, session.id, terminalRuntime, viewId],
+  );
+
   useEffect(() => {
     if (!onMenuAction) return;
     return onMenuAction((action) => {
@@ -140,27 +250,19 @@ function TerminalSurfaceSession({
           focused instanceof HTMLTextAreaElement ||
           (focused instanceof HTMLElement && focused.isContentEditable));
       if (!active || editingAnotherControl) return;
-      if (action === "copy" && selectionRef.current) {
-        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
-      } else if (action === "paste") {
-        if (!interactive) return;
-        const text = readClipboard?.() ?? "";
-        if (text) terminalRuntime.paste(session.id, viewId, text);
-      } else if (action === "select-all") {
-        const { cols, rows } = gridRef.current;
-        const total = Math.max(rows, scrollbarRef.current.total);
-        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
-        selectionAllRef.current = true;
-        terminalRuntime.setSelection(
-          session.handle,
-          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
-          viewId,
-        );
-      } else if (action === "clear-screen") {
-        terminalRuntime.sendText(session.id, viewId, "\u000c");
-      }
+      const effect: TerminalEffect | null =
+        action === "copy"
+          ? { type: "copy" }
+          : action === "paste"
+            ? { type: "paste" }
+            : action === "select-all"
+              ? { type: "select_all" }
+              : action === "clear-screen"
+                ? { type: "clear_screen" }
+                : null;
+      if (effect) executeTerminalEffect(effect);
     });
-  }, [active, interactive, onMenuAction, readClipboard, session.handle, session.id, terminalRuntime, viewId]);
+  }, [active, executeTerminalEffect, onMenuAction]);
 
   useEffect(() => {
     if (active && document.hasFocus()) inputRef.current?.focus({ preventScroll: true });
@@ -273,46 +375,19 @@ function TerminalSurfaceSession({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing) return;
-    const binding = ghosttyTerminalBinding(event.nativeEvent, platform);
-    if (binding && interactive && (binding.type !== "paste" || readClipboard)) {
-      selectionAnchorRef.current = null;
-      selectionRef.current = null;
-      selectionAllRef.current = false;
-      terminalRuntime.setSelection(session.handle, null, viewId);
-      if (binding.type === "paste") {
-        const text = readClipboard?.() ?? "";
-        if (text) terminalRuntime.paste(session.id, viewId, text);
-      } else {
-        terminalRuntime.sendText(session.id, viewId, binding.text);
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    if (event.metaKey) {
-      if (event.key.toLowerCase() === "c" && selectionRef.current) {
-        void terminalRuntime.copySelection(session.id, viewId, selectionRef.current, selectionAllRef.current);
+
+    // Terminal-scoped Ghostty binds only (workspace/platform/unhandled owned by Workspace).
+    const terminalMatch = resolveTerminalBinding(event.nativeEvent, platform);
+    if (terminalMatch) {
+      const applied = executeTerminalEffect(terminalMatch.effect);
+      // Performable binds only consume when applied (Ghostty Binding.Flags.performable).
+      if (terminalEffectShouldConsume(terminalMatch.effect, applied, terminalMatch.flags)) {
         event.preventDefault();
-      } else if (event.key.toLowerCase() === "k") {
-        terminalRuntime.sendText(session.id, viewId, "\u000c");
-        event.preventDefault();
-      } else if (event.key.toLowerCase() === "a") {
-        const { cols, rows } = gridRef.current;
-        const total = Math.max(rows, scrollbarRef.current.total);
-        selectionRef.current = { anchor: { column: 0, row: 0 }, focus: { column: cols - 1, row: total - 1 } };
-        selectionAllRef.current = true;
-        terminalRuntime.setSelection(
-          session.handle,
-          viewportSelection(selectionRef.current, scrollbarRef.current, cols, rows),
-          viewId,
-        );
-        event.preventDefault();
-      } else if (event.key === "Enter" || (event.ctrlKey && event.key.toLowerCase() === "f")) {
-        onToggleFullscreen?.();
-        event.preventDefault();
+        event.stopPropagation();
       }
       return;
     }
+
     if (!interactive) {
       event.preventDefault();
       return;

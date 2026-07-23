@@ -18,7 +18,9 @@ declare global {
       toggleFullscreen: () => void;
       closeWindow: () => void;
       newTab: (cwd?: string) => void;
-      selectTab: (target: "previous" | "next" | number) => void;
+      newWindow: (cwd?: string) => void;
+      quit: () => void;
+      selectTab: (target: "previous" | "next" | "last" | number) => void;
       closeTab: () => void;
       updateTabSessions: (sessionIds: readonly string[]) => void;
       updateActiveCwd: (cwd?: string) => void;
