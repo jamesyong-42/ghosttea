@@ -219,12 +219,35 @@ try {
   const control = await open(controlSocket);
   const frames = await open(frameSocket);
   const frameHandles = new Set();
+  const pendingFrameSubscriptions = new Set();
+  const nextFrameChannelPacket = frames.next;
+  frames.next = async () => {
+    for (;;) {
+      const candidate = await nextFrameChannelPacket();
+      if (candidate.length >= 4 && candidate.readUInt32LE(0) === 0x31465254) return candidate;
+      let message;
+      try {
+        message = JSON.parse(candidate.toString());
+      } catch {
+        throw new Error("terminald emitted an invalid frame-channel packet");
+      }
+      if (message.type === "subscription-ack" && pendingFrameSubscriptions.delete(message.requestId)) continue;
+      if (message.type === "frame-gap") {
+        throw new Error(`terminald dropped ${message.skipped} frame(s) during the integration smoke test`);
+      }
+      throw new Error(`terminald emitted an unexpected frame-channel message: ${JSON.stringify(message)}`);
+    }
+  };
+  let frameSubscriptionRequestId = 1;
   const subscribeFrames = (handle) => {
     frameHandles.add(handle);
+    const requestId = frameSubscriptionRequestId++;
+    pendingFrameSubscriptions.add(requestId);
     frames.socket.write(
       packet(
         JSON.stringify({
           type: "subscribe",
+          requestId,
           sessionHandles: [...frameHandles],
         }),
       ),
