@@ -39,6 +39,7 @@ Run from a clean checkout of the release commit:
 ```sh
 npm ci --ignore-scripts
 npm audit --audit-level=high
+npm run bootstrap:ghostty-vt:apple
 npm run ci:desktop
 cargo audit
 ```

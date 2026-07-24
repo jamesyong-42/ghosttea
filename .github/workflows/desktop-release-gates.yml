@@ -36,6 +36,7 @@ jobs:
           components: clippy, rustfmt
 
       - run: npm ci --ignore-scripts
+      - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
   minimum-rust:
