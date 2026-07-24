@@ -29,7 +29,7 @@ Publish npm packages in dependency order:
 6. `@vibecook/ghosttea-react`
 
 Development and published Rust builds pin the registry release of
-`truffle-core` 0.7.2. Every crate sharing an application-owned Truffle node
+`truffle-core` 0.7.6. Every crate sharing an application-owned Truffle node
 must resolve the same version and source so its `Node` type is identical.
 
 ## Release gate
