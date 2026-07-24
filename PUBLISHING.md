@@ -154,25 +154,35 @@ After the first manual release:
    - Workflow: `publish-release.yml`
    - Environment: `release`
 3. Allow `npm publish` for each npm trusted publisher. With an authenticated
-   npm 12 session, the six npm trust relationships can be created with:
+   npm 12 session, the six npm trust relationships can be created with the
+   following subshell:
 
    ```sh
-   for release_package in \
-     @vibecook/ghosttea-protocol \
-     @vibecook/ghosttea-frame \
-     @vibecook/ghosttea \
-     @vibecook/ghosttea-client \
-     @vibecook/ghosttea-electron \
-     @vibecook/ghosttea-react
-   do
-     npm trust github "$release_package" \
-       --repository jamesyong-42/ghosttea \
-       --file publish-release.yml \
-       --environment release \
-       --allow-publish \
-       --yes
-   done
+   (
+     set -e
+     for release_package in \
+       @vibecook/ghosttea-protocol \
+       @vibecook/ghosttea-frame \
+       @vibecook/ghosttea \
+       @vibecook/ghosttea-client \
+       @vibecook/ghosttea-electron \
+       @vibecook/ghosttea-react
+     do
+       npm trust github "$release_package" \
+         --repository jamesyong-42/ghosttea \
+         --file publish-release.yml \
+         --environment release \
+         --allow-publish \
+         --yes
+       sleep 2
+     done
+   )
    ```
+
+   The first attempt exits with an npm browser-authentication URL. Approve it,
+   select npm's option to skip repeated 2FA for the next five minutes, and
+   rerun the subshell. Then verify each relationship with
+   `npm trust list PACKAGE`.
 
 4. Set the repository variable `OIDC_RELEASE_ENABLED=true`.
 5. Revoke obsolete registry automation tokens and configure npm to require
