@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { compareReports, validateComparableReports } from "./lib/compare.mjs";
+import { compareReports, formatMetricValue, validateComparableReports } from "./lib/compare.mjs";
 
 function option(name, fallback) {
   const prefix = `--${name}=`;
@@ -37,11 +37,11 @@ for (const caseName of [...new Set(comparisons.map((comparison) => comparison.ca
       comparison.deltaPercent == null
         ? "n/a"
         : `${comparison.deltaPercent >= 0 ? "+" : ""}${comparison.deltaPercent.toFixed(1)}%`;
-    const interval = comparison.confidenceInterval95.every((value) => value != null)
+    const interval = comparison.confidenceInterval95.every(Number.isFinite)
       ? `[${comparison.confidenceInterval95[0].toFixed(1)}%, ${comparison.confidenceInterval95[1].toFixed(1)}%]`
       : "[n/a]";
     console.log(
-      `  ${comparison.assessment.padEnd(12)} ${comparison.label.padEnd(24)} ${comparison.baselineMedian.toFixed(2).padStart(10)} → ${comparison.candidateMedian.toFixed(2).padStart(10)}  ${delta.padStart(8)}  95% ${interval}`,
+      `  ${comparison.assessment.padEnd(12)} ${comparison.label.padEnd(24)} ${formatMetricValue(comparison.baselineMedian)} → ${formatMetricValue(comparison.candidateMedian)}  ${delta.padStart(8)}  95% ${interval}`,
     );
   }
   console.log("");

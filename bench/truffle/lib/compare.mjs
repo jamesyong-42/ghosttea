@@ -1,5 +1,9 @@
 import { bootstrapRelativeMedianDelta, median } from "../../render/lib/compare.mjs";
 
+export function formatMetricValue(value) {
+  return Number.isFinite(value) ? value.toFixed(2).padStart(10) : "n/a".padStart(10);
+}
+
 export const METRICS = [
   { key: "wallMs", label: "wall", unit: "ms", direction: "lower", select: (sample) => sample.wallMs },
   {

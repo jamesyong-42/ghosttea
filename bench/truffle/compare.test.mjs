@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareReports, validateComparableReports } from "./lib/compare.mjs";
+import { compareReports, formatMetricValue, validateComparableReports } from "./lib/compare.mjs";
 
 function report(values, overrides = {}) {
   const samples = values.map((wallMs) => ({
@@ -82,4 +82,17 @@ test("comparison rejects dirty and mismatched runs", () => {
     "machine, runtime, suite, or workload configuration differs",
     "candidate was captured from a dirty worktree",
   ]);
+});
+
+test("comparison formatting tolerates metrics absent from an older report", () => {
+  const baseline = report([100, 101, 99, 102, 98]);
+  for (const sample of baseline.results.cases.sparse.samples) {
+    delete sample.replicaRowPrepareMs;
+  }
+  const comparison = compareReports(baseline, report([100, 101, 99, 102, 98])).find(
+    (metric) => metric.metric === "replicaRowPrepareMs",
+  );
+  assert.equal(comparison.baselineMedian, null);
+  assert.equal(formatMetricValue(comparison.baselineMedian), "       n/a");
+  assert.equal(formatMetricValue(comparison.candidateMedian), "      5.00");
 });
