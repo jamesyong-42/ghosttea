@@ -97,15 +97,9 @@ describe("performable policy (Ghostty Binding.Flags.performable)", () => {
   });
 
   it("terminalEffectShouldConsume respects performable + applied", () => {
-    expect(
-      terminalEffectShouldConsume({ type: "copy" }, false, { performable: true }),
-    ).toBe(false);
-    expect(
-      terminalEffectShouldConsume({ type: "copy" }, true, { performable: true }),
-    ).toBe(true);
-    expect(
-      terminalEffectShouldConsume({ type: "scroll_to_top" }, false, { performable: false }),
-    ).toBe(true);
+    expect(terminalEffectShouldConsume({ type: "copy" }, false, { performable: true })).toBe(false);
+    expect(terminalEffectShouldConsume({ type: "copy" }, true, { performable: true })).toBe(true);
+    expect(terminalEffectShouldConsume({ type: "scroll_to_top" }, false, { performable: false })).toBe(true);
   });
 });
 

@@ -26,14 +26,14 @@ This bench is the first step of TDD:
 
 ## Sources of truth (priority order)
 
-| Priority | Source | Location / command |
-| --- | --- | --- |
-| 1 | Vendored Ghostty source at lock | `native/vendor/ghostty` @ `native/ghostty.lock.json` |
-| 2 | Default keybinds in source | `src/config/Config.zig` → `Keybinds.init` |
-| 3 | Action enum + docs | `src/input/Binding.zig` → `Action` |
-| 4 | Installed Ghostty CLI dump | `ghostty +list-keybinds --default --plain` |
-| 5 | Default config dump | `ghostty +show-config --default` |
-| 6 | Action list dump | `ghostty +list-actions` / `--docs` |
+| Priority | Source                          | Location / command                                   |
+| -------- | ------------------------------- | ---------------------------------------------------- |
+| 1        | Vendored Ghostty source at lock | `native/vendor/ghostty` @ `native/ghostty.lock.json` |
+| 2        | Default keybinds in source      | `src/config/Config.zig` → `Keybinds.init`            |
+| 3        | Action enum + docs              | `src/input/Binding.zig` → `Action`                   |
+| 4        | Installed Ghostty CLI dump      | `ghostty +list-keybinds --default --plain`           |
+| 5        | Default config dump             | `ghostty +show-config --default`                     |
+| 6        | Action list dump                | `ghostty +list-actions` / `--docs`                   |
 
 CLI dumps are convenient snapshots. When they disagree with the locked
 vendor commit, **the locked source wins**.
@@ -42,16 +42,16 @@ vendor commit, **the locked source wins**.
 
 Captured under [`ground-truth/`](./ground-truth/):
 
-| File | Contents |
-| --- | --- |
-| `vendor-commit.txt` | Pinned Ghostty git commit used for builds |
-| `ghostty-version.txt` | Installed app version that produced CLI dumps |
-| `keybinds-macos-default.txt` | Raw `+list-keybinds --default --plain` |
-| `keybinds-macos-default.json` | Structured trigger → action pairs |
-| `actions.txt` | Full action names (`+list-actions`) |
-| `actions-docs.txt` | Actions with documentation |
-| `actions-from-source.json` | Actions parsed from `Binding.zig` |
-| `config-macos-default.txt` | Full default config (`+show-config --default`) |
+| File                          | Contents                                       |
+| ----------------------------- | ---------------------------------------------- |
+| `vendor-commit.txt`           | Pinned Ghostty git commit used for builds      |
+| `ghostty-version.txt`         | Installed app version that produced CLI dumps  |
+| `keybinds-macos-default.txt`  | Raw `+list-keybinds --default --plain`         |
+| `keybinds-macos-default.json` | Structured trigger → action pairs              |
+| `actions.txt`                 | Full action names (`+list-actions`)            |
+| `actions-docs.txt`            | Actions with documentation                     |
+| `actions-from-source.json`    | Actions parsed from `Binding.zig`              |
+| `config-macos-default.txt`    | Full default config (`+show-config --default`) |
 
 **Scale (macOS defaults):**
 
@@ -136,14 +136,14 @@ Keybinds are only one plane. Parity work should track all of these:
 
 ## Ghosttea coverage snapshot (today)
 
-| Layer | Location | Status |
-| --- | --- | --- |
-| Match + flags | `packages/terminal-react/src/bindings/` | macOS + Linux tables, performable overlay |
-| Route | `bindings/action-route.ts` | workspace / terminal / platform / unhandled |
-| Workspace execute | `workspace/Workspace.tsx` | tabs/splits/zoom + platform hooks; always consume after match |
-| Terminal execute | `TerminalSurface.tsx` | paste/text/copy/select/clear/scroll/adjust_selection |
-| Product extension | `extensions.json` | **⌘⇧O** remote sessions — **keep** |
-| Open / deferred features | **[OPEN-ITEMS.md](./OPEN-ITEMS.md)** | font-size protocol, search, undo, jump_to_prompt, … |
+| Layer                    | Location                                | Status                                                        |
+| ------------------------ | --------------------------------------- | ------------------------------------------------------------- |
+| Match + flags            | `packages/terminal-react/src/bindings/` | macOS + Linux tables, performable overlay                     |
+| Route                    | `bindings/action-route.ts`              | workspace / terminal / platform / unhandled                   |
+| Workspace execute        | `workspace/Workspace.tsx`               | tabs/splits/zoom + platform hooks; always consume after match |
+| Terminal execute         | `TerminalSurface.tsx`                   | paste/text/copy/select/clear/scroll/adjust_selection          |
+| Product extension        | `extensions.json`                       | **⌘⇧O** remote sessions — **keep**                            |
+| Open / deferred features | **[OPEN-ITEMS.md](./OPEN-ITEMS.md)**    | font-size protocol, search, undo, jump_to_prompt, …           |
 
 **Intentional Ghosttea-only bind (keep):**
 

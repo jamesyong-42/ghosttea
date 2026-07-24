@@ -172,16 +172,16 @@ duplicates row text for desktop renderers that do not consume the accessibility
 section. The JavaScript decoder creates an object per glyph/style and copies
 each glyph pixel payload.
 
-terminald broadcasts `Vec<u8>` frames globally; each renderer connection can
-clone a packet before filtering subscriptions. Use `Arc<[u8]>` as an immediate
-improvement and per-session fanout as the scalable design. Renderer windows
-should subscribe only to mounted session handles. The Electron bridge should
-replace repeated `Buffer.concat` and packet slicing with a chunk queue/ring
-parser.
+terminald now shares frame bytes through `Arc<[u8]>`, renderer windows subscribe
+only to mounted or explicitly pinned session handles, and a grace-period
+unsubscribe drops worker session state before requesting a full refresh on
+remount. The bridge and render worker negotiate byte credits, while bounded
+native gap history targets resynchronization to affected sessions.
 
-Fully occluded tabs currently avoid GPU rendering but continue to receive and
-decode subscribed frames. A grace-period unsubscribe plus full refresh on
-visibility restoration is worth measuring for background energy usage.
+Per-session native fanout remains a possible scaling step if subscription
+filtering itself becomes measurable. The Electron bridge's packet parser also
+still uses concatenation/slicing and should move to a reusable chunk queue only
+after profiling attributes meaningful CPU or allocation pressure to it.
 
 ## Measurement requirements
 
@@ -213,7 +213,8 @@ inconclusive.
 ## Proposed order after the baseline exists
 
 1. Remove redundant cursor renders and physical-pixel resize churn.
-2. Subscribe only mounted sessions and reduce broadcast/parser copies.
+2. Measure whether per-session fanout or a reusable bridge parser still beats
+   the bounded shared-frame and mounted-subscription design.
 3. Align worker flushing to display frames and batch pane submissions.
 4. Preserve dirty rows and cache per-row geometry.
 5. Convert rectangles/glyphs to packed instances.

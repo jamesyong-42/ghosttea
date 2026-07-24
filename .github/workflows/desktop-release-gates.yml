@@ -1,0 +1,67 @@
+name: Desktop release gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GHOSTTEA_SOAK_SESSIONS: ${{ github.event_name == 'schedule' && '1024' || '256' }}
+      GHOSTTEA_SOAK_ROUNDS: ${{ github.event_name == 'schedule' && '4' || '1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - run: npm ci --ignore-scripts
+      - run: npm run ci:desktop
+
+  minimum-rust:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - run: cargo check --workspace --all-targets --all-features --locked
+
+  dependency-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit

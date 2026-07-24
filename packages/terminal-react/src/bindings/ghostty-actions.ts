@@ -17,16 +17,7 @@ export type CloseTabMode = "this" | "other" | "right";
 export type InspectorMode = "toggle" | "show" | "hide";
 export type NavigateSearch = "previous" | "next";
 export type AdjustSelection =
-  | "left"
-  | "right"
-  | "up"
-  | "down"
-  | "page_up"
-  | "page_down"
-  | "home"
-  | "end"
-  | "beginning_of_line"
-  | "end_of_line";
+  "left" | "right" | "up" | "down" | "page_up" | "page_down" | "home" | "end" | "beginning_of_line" | "end_of_line";
 export type CrashThread = "main" | "io" | "render";
 
 export type GhosttyAction =
@@ -160,9 +151,7 @@ function parseNumber(value: string, label: string): number {
 function parseWriteScreen(param: string): { action: WriteScreenAction; format: WriteScreenFormat } {
   const [actionRaw, formatRaw] = param.split(",", 2);
   const action = parseEnum(actionRaw ?? "", ["copy", "paste", "open"] as const, "write screen action");
-  const format = formatRaw
-    ? parseEnum(formatRaw, ["plain", "vt", "html"] as const, "write screen format")
-    : "plain";
+  const format = formatRaw ? parseEnum(formatRaw, ["plain", "vt", "html"] as const, "write screen format") : "plain";
   return { action, format };
 }
 
@@ -198,9 +187,7 @@ export function parseGhosttyAction(raw: string): GhosttyAction {
     case "copy_to_clipboard":
       return {
         type: "copy_to_clipboard",
-        format: param
-          ? parseEnum(param, ["plain", "vt", "html", "mixed"] as const, "copy format")
-          : "mixed",
+        format: param ? parseEnum(param, ["plain", "vt", "html", "mixed"] as const, "copy format") : "mixed",
       };
     case "paste_from_clipboard":
       return { type: "paste_from_clipboard" };
@@ -325,11 +312,7 @@ export function parseGhosttyAction(raw: string): GhosttyAction {
       const normalized = param === "top" ? "up" : param === "bottom" ? "down" : param;
       return {
         type: "goto_split",
-        direction: parseEnum(
-          normalized,
-          ["previous", "next", "up", "left", "down", "right"] as const,
-          "goto_split",
-        ),
+        direction: parseEnum(normalized, ["previous", "next", "up", "left", "down", "right"] as const, "goto_split"),
       };
     }
     case "goto_window":

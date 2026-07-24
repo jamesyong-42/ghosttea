@@ -10,8 +10,8 @@ description = "Platform-neutral terminal model contracts for Ghosttea"
 
 [dependencies]
 anyhow.workspace = true
-ghosttea-text = { version = "0.1.0", path = "../text-engine" }
-ghosttea-vt = { version = "0.1.0", path = "../ghostty-adapter" }
+ghosttea-text = { version = "0.2.0", path = "../text-engine" }
+ghosttea-vt = { version = "0.2.0", path = "../ghostty-adapter" }
 serde.workspace = true
 smallvec.workspace = true
 

@@ -59,6 +59,4 @@ export function ghosttyHotkey(event: KeyEventLike, platform: string = "darwin"):
 }
 
 /** Type-level check that workspace axes stay aligned with pane-layout. */
-export type _AssertSplitAxis = Extract<WorkspaceEffect, { type: "split" }>["axis"] extends SplitAxis
-  ? true
-  : never;
+export type _AssertSplitAxis = Extract<WorkspaceEffect, { type: "split" }>["axis"] extends SplitAxis ? true : never;

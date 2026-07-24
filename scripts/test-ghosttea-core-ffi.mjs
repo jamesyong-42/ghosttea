@@ -31,14 +31,27 @@ writeFileSync(
   ].join("\n"),
 );
 run("clang", ["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-I", headerDirectory, headerProbe]);
-run("cargo", ["test", "-p", "ghosttea-ffi"]);
-run("cargo", ["clippy", "-p", "ghosttea-ffi", "--all-targets", "--", "-D", "warnings"]);
-run("cargo", ["test", "-p", "ghosttea-ffi", "--test", "parity", "--", "--ignored"], { GHOSTTEA_FONT_DIR: fonts });
+run("cargo", ["test", "-p", "ghosttea-ffi", "--locked"]);
+run("cargo", ["clippy", "-p", "ghosttea-ffi", "--all-targets", "--locked", "--", "-D", "warnings"]);
+run("cargo", ["test", "-p", "ghosttea-ffi", "--test", "parity", "--locked", "--", "--ignored"], {
+  GHOSTTEA_FONT_DIR: fonts,
+});
 
 if (process.platform === "darwin" && process.arch === "arm64") {
   run(
     "cargo",
-    ["test", "-p", "ghosttea-ffi", "--target", "aarch64-apple-darwin", "--test", "parity", "--", "--ignored"],
+    [
+      "test",
+      "-p",
+      "ghosttea-ffi",
+      "--target",
+      "aarch64-apple-darwin",
+      "--test",
+      "parity",
+      "--locked",
+      "--",
+      "--ignored",
+    ],
     {
       CARGO_TARGET_DIR: join(root, "native/build/ghosttea-ffi-asan"),
       GHOSTTEA_FONT_DIR: fonts,

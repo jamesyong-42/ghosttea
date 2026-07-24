@@ -4,6 +4,7 @@ import { basename, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
+const packageVersion = readJSON("package.json").version;
 const resourcesDirectory = resolve(root, "apple/GhostteaApp/Resources");
 const noticePath = resolve(resourcesDirectory, "THIRD-PARTY-NOTICES.txt");
 const bundledBomPath = resolve(resourcesDirectory, "Ghosttea-iOS.cdx.json");
@@ -39,7 +40,7 @@ const metadata = JSON.parse(metadataResult.stdout);
 const componentNotices = [];
 const documentsByHash = new Map();
 
-addComponent("ghosttea-ffi", "0.1.0", "MIT", ["native/terminald/LICENSE"]);
+addComponent("ghosttea-ffi", packageVersion, "MIT", ["native/terminald/LICENSE"]);
 addComponent("Ghostty VT", versionOf("Ghostty VT"), "MIT", ["native/vendor/ghostty/LICENSE"]);
 addComponent("OpenSSL", versionOf("OpenSSL"), "Apache-2.0", ["native/vendor/openssl/LICENSE.txt"]);
 addComponent(

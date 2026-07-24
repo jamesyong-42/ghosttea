@@ -2048,14 +2048,13 @@ async fn spawn_state_stream(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
             };
-            if let Some(message) = message {
-                if state
+            if let Some(message) = message
+                && state
                     .write_state_message(&message, state_codec)
                     .await
                     .is_err()
-                {
-                    break;
-                }
+            {
+                break;
             }
         }
     });

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
+const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const artifact = join(root, "apple/GhostteaKit/Artifacts/GhostteaCoreFFI.xcframework");
 const headers = join(root, "native/terminald/crates/ghosttea-ffi/include");
 const ghosttyArtifact = join(root, "apple/GhostteaKit/Artifacts/ghostty-vt.xcframework");
@@ -114,7 +115,7 @@ writeFileSync(
     {
       schemaVersion: 1,
       abiVersion: 1,
-      packageVersion: "0.1.0",
+      packageVersion,
       sourceCommit: capture("git", ["rev-parse", "HEAD"]),
       sourceDirty: capture("git", ["status", "--porcelain"]).length > 0,
       rustc: capture("rustc", ["--version"]),

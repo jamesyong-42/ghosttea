@@ -111,9 +111,7 @@ export const GHOSTTEA_BINDING_EXTENSIONS: readonly GhostteaExtensionEntry[] = lo
 export type BindingPlatform = "darwin" | "macos" | "linux" | "win32" | string;
 
 /** Resolve which default table to use for a host platform. */
-export function defaultBindingsForPlatform(
-  platform: BindingPlatform | undefined,
-): readonly GhosttyBindingEntry[] {
+export function defaultBindingsForPlatform(platform: BindingPlatform | undefined): readonly GhosttyBindingEntry[] {
   if (platform === "linux" || platform === "win32") return GHOSTTY_LINUX_DEFAULT_BINDINGS;
   // darwin / macos / undefined → macOS defaults (primary desktop target).
   return GHOSTTY_MACOS_DEFAULT_BINDINGS;

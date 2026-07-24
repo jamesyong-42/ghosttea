@@ -124,9 +124,7 @@ try {
   process.stdout.write(run(process.execPath, ["smoke.mjs"], { cwd: fixture }) + "\n");
 
   for (const crate of rustPackages) {
-    const files = new Set(
-      run("cargo", ["package", "--list", "--allow-dirty", "--offline", "--package", crate]).split("\n"),
-    );
+    const files = new Set(run("cargo", ["package", "--list", "--allow-dirty", "--package", crate]).split("\n"));
     for (const required of ["Cargo.toml", "LICENSE", "README.md"]) {
       if (!files.has(required)) throw new Error(`${crate} package is missing ${required}`);
     }
@@ -143,7 +141,7 @@ try {
   const rustCrates = join(fixture, "rust-crates");
   mkdirSync(rustCrates);
   for (const crate of publishableRustLeaves) {
-    run("cargo", ["package", "--allow-dirty", "--no-verify", "--offline", "--package", crate]);
+    run("cargo", ["package", "--allow-dirty", "--no-verify", "--package", crate]);
     run("tar", ["-xzf", join(root, `target/package/${crate}-${version}.crate`), "-C", rustCrates]);
   }
 
@@ -157,7 +155,7 @@ try {
       'name = "ghosttea-external-consumer"',
       'version = "0.0.0"',
       'edition = "2024"',
-      'rust-version = "1.85"',
+      'rust-version = "1.88"',
       "",
       "[dependencies]",
       `ghosttea-vt-sys = { path = ${JSON.stringify(cratePath("ghosttea-vt-sys"))} }`,
@@ -173,7 +171,7 @@ try {
       "",
     ].join("\n"),
   );
-  run("cargo", ["build", "--offline"], {
+  run("cargo", ["build"], {
     cwd: rustConsumer,
     env: {
       ...process.env,
@@ -193,7 +191,7 @@ try {
       'name = "ghosttea-embedding-consumer"',
       'version = "0.0.0"',
       'edition = "2024"',
-      'rust-version = "1.85"',
+      'rust-version = "1.88"',
       "",
       "[dependencies]",
       'anyhow = "1"',
@@ -201,9 +199,6 @@ try {
       `ghosttea-truffle = { path = ${JSON.stringify(sourcePath("native/terminald/crates/truffle"))} }`,
       'tokio = { version = "1.45", features = ["full"] }',
       'truffle-core = "0.7.2"',
-      "",
-      "[patch.crates-io]",
-      `truffle-core = { path = ${JSON.stringify(sourcePath("../p008/truffle/crates/truffle-core"))} }`,
       "",
     ].join("\n"),
   );
@@ -237,7 +232,7 @@ try {
       "",
     ].join("\n"),
   );
-  run("cargo", ["check", "--offline"], {
+  run("cargo", ["check"], {
     cwd: embeddingConsumer,
     env: {
       ...process.env,

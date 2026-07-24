@@ -1,7 +1,4 @@
-import {
-  resolveKeyEvent,
-  type TerminalEffect,
-} from "./bindings/action-route.js";
+import { resolveKeyEvent, type TerminalEffect } from "./bindings/action-route.js";
 import type { GhosttyBindingFlags } from "./bindings/ghostty-bindings.js";
 import type { KeyEventLike } from "./bindings/ghostty-triggers.js";
 
@@ -36,9 +33,6 @@ export function resolveTerminalBinding(
 }
 
 /** Convenience: effect only (tests). */
-export function ghosttyTerminalBinding(
-  event: KeyEventLike,
-  platform: string | undefined,
-): TerminalEffect | null {
+export function ghosttyTerminalBinding(event: KeyEventLike, platform: string | undefined): TerminalEffect | null {
   return resolveTerminalBinding(event, platform)?.effect ?? null;
 }

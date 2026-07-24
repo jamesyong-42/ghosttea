@@ -125,8 +125,7 @@ function main() {
     source: "ghostty +list-keybinds --default --plain",
     ghostty_app: version.match(/version:\s*(\S+)/)?.[1] ?? "unknown",
     count: bindings.length,
-    flagsNote:
-      "performable flags from Ghostty src/config/Config.zig Keybinds.init (macOS). CLI dump omits flags.",
+    flagsNote: "performable flags from Ghostty src/config/Config.zig Keybinds.init (macOS). CLI dump omits flags.",
     bindings,
   };
   write(join(outDir, "keybinds-macos-default.json"), JSON.stringify(keybindsJson, null, 2));

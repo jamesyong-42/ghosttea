@@ -32,7 +32,7 @@ The current vertical slice includes:
 
 ## Run
 
-Requirements: Node 22+, Rust 1.85+, Docker, and a POSIX host for the current
+Requirements: Node 22+, Rust 1.88+, Docker, and a POSIX host for the current
 PTY backend. The current native artifact targets Apple Silicon macOS.
 
 ```sh
@@ -122,9 +122,10 @@ For development, the demo can attach to an already-running service with
 
 ## Terminal mirroring
 
-The current development dependency targets Truffle 0.7.2 from the sibling
-checkout at `../p008/truffle`. Put `TRUFFLE_TEST_AUTHKEY` in an untracked
-`.env` to enable the Truffle node during development, or set
+The current dependency pins the registry release of Truffle 0.7.2 so clean
+checkouts and published consumers resolve the same transport implementation.
+Put `TRUFFLE_TEST_AUTHKEY` in an untracked `.env` to enable the Truffle node
+during development, or set
 `GHOSTTEA_TRUFFLE_ENABLED=false` to keep the runtime local-only.
 
 The reusable `ghosttea` crate is transport-neutral and does not depend on
@@ -236,3 +237,18 @@ Packaging boundaries, dry-run checks, and release order are documented in
 This implements the Phase 4 production text-engine vertical slice on macOS.
 Phase 5 adds infinite-canvas virtualization, headless/thumbnail/visible states,
 and shared GPU memory budgets across many terminal cards.
+
+## Release qualification
+
+`npm run ci:desktop` is the local equivalent of the required desktop release
+gate. It runs formatting, lint, TypeScript checks, JavaScript and Rust tests,
+strict Clippy, C ABI/font parity and sanitizer checks, the daemon integration
+smoke, benchmark-harness tests, external package-consumer checks, and a
+release-daemon lifecycle soak. The soak creates, attaches, subscribes to,
+naturally exits, and forgets at least 256 sessions, then requires daemon thread
+count and RSS to return within fixed guardrails.
+
+GitHub also checks the declared Rust 1.88 minimum and audits npm and Rust
+dependencies. The scheduled desktop workflow extends the lifecycle soak to
+4,096 sessions. Machine-local WebGPU comparisons remain a pre-release evidence
+step because GitHub-hosted GPU timing is not a stable performance baseline.

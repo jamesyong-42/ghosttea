@@ -58,9 +58,7 @@ describe("ghostty default binding golden suite (macOS)", () => {
         continue;
       }
       if (matched.type !== entry.action.type || JSON.stringify(matched) !== JSON.stringify(entry.action)) {
-        failures.push(
-          `${entry.triggerRaw}: expected ${entry.actionRaw}, got ${JSON.stringify(matched)}`,
-        );
+        failures.push(`${entry.triggerRaw}: expected ${entry.actionRaw}, got ${JSON.stringify(matched)}`);
       }
     }
     expect(failures, failures.join("\n")).toEqual([]);

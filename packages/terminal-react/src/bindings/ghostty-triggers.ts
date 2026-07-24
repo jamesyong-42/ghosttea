@@ -17,9 +17,7 @@ export type GhosttyMods = {
 };
 
 export type GhosttyTriggerKey =
-  | { kind: "unicode"; value: string }
-  | { kind: "physical"; name: string }
-  | { kind: "special"; name: "copy" | "paste" };
+  { kind: "unicode"; value: string } | { kind: "physical"; name: string } | { kind: "special"; name: "copy" | "paste" };
 
 export type GhosttyTrigger = {
   mods: GhosttyMods;

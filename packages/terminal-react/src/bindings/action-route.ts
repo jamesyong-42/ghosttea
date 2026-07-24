@@ -12,16 +12,8 @@
  * - Unmatched keys return null (fall through to terminal key encoding).
  */
 
-import type {
-  AdjustSelection,
-  GhostteaBindingAction,
-  GhosttyAction,
-} from "./ghostty-actions.js";
-import {
-  matchGhostteaBindingEntry,
-  type GhosttyBindingFlags,
-  type MatchBindingOptions,
-} from "./ghostty-bindings.js";
+import type { AdjustSelection, GhostteaBindingAction, GhosttyAction } from "./ghostty-actions.js";
+import { matchGhostteaBindingEntry, type GhosttyBindingFlags, type MatchBindingOptions } from "./ghostty-bindings.js";
 import type { KeyEventLike } from "./ghostty-triggers.js";
 
 export type WorkspaceSplitAxis = "horizontal" | "vertical";
@@ -243,10 +235,7 @@ export type ResolveKeyEventOptions = MatchBindingOptions & {
  * - the bind is `performable` and currently unhandled (cannot perform → acts absent), or
  * - the route kind is filtered out by `scopes`.
  */
-export function resolveKeyEvent(
-  event: KeyEventLike,
-  options: ResolveKeyEventOptions = {},
-): RoutedAction | null {
+export function resolveKeyEvent(event: KeyEventLike, options: ResolveKeyEventOptions = {}): RoutedAction | null {
   const match = matchGhostteaBindingEntry(event, options);
   if (!match) return null;
   const routed = routeBindingAction(match.action, match.flags);
@@ -274,7 +263,11 @@ export function routeConsumesInput(route: RoutedAction): boolean {
  * Terminal effects that are performable in Ghostty only consume when the
  * executor actually applied them (selection present, clipboard non-empty, …).
  */
-export function terminalEffectShouldConsume(effect: TerminalEffect, applied: boolean, flags: GhosttyBindingFlags): boolean {
+export function terminalEffectShouldConsume(
+  effect: TerminalEffect,
+  applied: boolean,
+  flags: GhosttyBindingFlags,
+): boolean {
   if (flags.performable) return applied;
   return true;
 }

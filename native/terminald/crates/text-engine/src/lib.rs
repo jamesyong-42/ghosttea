@@ -533,10 +533,10 @@ impl TextEngine {
 
     fn fallback_for(&mut self, cluster: &str) -> Option<ID> {
         let representative = cluster.chars().find(|character| !character.is_control())?;
-        if let Some(face) = self.fallback_faces.get(&representative) {
-            if self.face_supports(*face, cluster).unwrap_or(false) {
-                return Some(*face);
-            }
+        if let Some(face) = self.fallback_faces.get(&representative)
+            && self.face_supports(*face, cluster).unwrap_or(false)
+        {
+            return Some(*face);
         }
         let prefer_emoji = cluster.chars().any(is_emoji);
         let mut ids = self

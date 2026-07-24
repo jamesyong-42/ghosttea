@@ -240,6 +240,10 @@ export class TerminaldHarness {
   control;
   frames;
 
+  get pid() {
+    return this.#child?.pid;
+  }
+
   static async start({ timeoutMs = 120_000 } = {}) {
     const harness = new TerminaldHarness();
     await harness.#boot(timeoutMs);
@@ -327,15 +331,28 @@ export class TerminaldHarness {
     this.control.socket.write(packet(JSON.stringify({ requestId: 0, type, ...body })));
   }
 
-  async createAttachedSession({ cols = 120, rows = 40, executable = "/bin/sh", args = [] } = {}) {
+  async createAttachedSession({
+    cols = 120,
+    rows = 40,
+    executable = "/bin/sh",
+    args = [],
+    persistence = "terminate-with-app",
+  } = {}) {
     const created = await this.request("create-session", {
       options: {
         executable,
         args,
-        env: { TERM: "xterm-256color", LANG: process.env.LANG ?? "en_US.UTF-8" },
+        environment: {
+          mode: "clean",
+          variables: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            TERM: "xterm-256color",
+            LANG: process.env.LANG ?? "en_US.UTF-8",
+          },
+        },
         cols,
         rows,
-        persistence: "terminate-with-app",
+        persistence,
       },
     });
     if (created.type !== "session-created") throw new Error("unexpected create-session response");
@@ -384,6 +401,11 @@ export class TerminaldHarness {
 
   #syncFrameSubscriptions() {
     this.frames.socket.write(packet(JSON.stringify({ sessionHandles: [...this.#sessionHandles] })));
+  }
+
+  setFrameSubscriptions(sessionHandles) {
+    this.#sessionHandles = new Set(sessionHandles);
+    this.#syncFrameSubscriptions();
   }
 
   /**

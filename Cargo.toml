@@ -13,9 +13,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["James Yong"]
 license = "MIT"
 repository = "https://github.com/jamesyong-42/ghosttea"
@@ -32,10 +32,4 @@ subtle = "2"
 tempfile = "3.20"
 tokio = { version = "1.45", features = ["full"] }
 uuid = { version = "1.16", features = ["v4"] }
-truffle-core = "0.7.2"
-
-# Development uses the sibling Truffle checkout while published manifests keep
-# a normal registry dependency. Remove this patch once the registry release is
-# the default development source as well.
-[patch.crates-io]
-truffle-core = { path = "../p008/truffle/crates/truffle-core" }
+truffle-core = "=0.7.2"

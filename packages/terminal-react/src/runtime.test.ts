@@ -579,6 +579,49 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(frames.messages.at(-1)).toMatchObject({ type: "subscribe", sessionHandles: [] });
   });
 
+  it("returns renderer subscriptions and metadata to baseline after session churn", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const frames = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: frames as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+
+    const sessionCount = 256;
+    for (let index = 0; index < sessionCount; index += 1) {
+      const current = {
+        ...session,
+        id: `churn-session-${index}`,
+        handle: String(10_000 + index),
+      };
+      runtime.registerSession(current);
+      runtime.mount(current.id, current.handle, `churn-view-${index}`, canvas());
+      await flushMicrotasks();
+      runtime.unregisterSession(current.id);
+      await flushMicrotasks();
+      expect(runtime.sessionMetadata(current.handle)).toBeUndefined();
+    }
+
+    expect(control.messages.some((message) => message.type === "terminate")).toBe(false);
+    expect(frames.messages.at(-1)).toMatchObject({ type: "subscribe", sessionHandles: [] });
+    expect(
+      worker.messages.filter(
+        (message) =>
+          message !== null && typeof message === "object" && "type" in message && message.type === "drop-session",
+      ),
+    ).toHaveLength(sessionCount);
+    runtime.dispose();
+  });
+
   it("applies unsolicited activity changes without waiting for a terminal frame", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();
