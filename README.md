@@ -218,6 +218,18 @@ cargo test --package ghosttea-truffle \
   latest_truffle_quic_round_trip -- --ignored
 ```
 
+The live test needs `TRUFFLE_SIDECAR_PATH` in `.env` as well as
+`TRUFFLE_TEST_AUTHKEY`. `ghosttea-truffle` depends on `truffle-core`, which
+does not carry the build-time sidecar downloader, so supply the binary
+explicitly. Download the `tsnet-sidecar-<platform>` asset from the matching
+`truffle-vX.Y.Z` release, verify it against the pinned checksum in that
+version's `crates/truffle-sidecar/sidecar-checksums.json`, then point
+`TRUFFLE_SIDECAR_PATH` at the executable. Release assets are built after the
+release commit, so a version's checksums appear in the commit that follows its
+tag rather than at the tag itself. The test enrolls two ephemeral, randomly
+named Tailscale devices under the `ghosttea-test` app ID and stops both on
+completion.
+
 ## Benchmark
 
 Compare the `ghosttead` sidecar path against a classic `node-pty` + xterm.js
