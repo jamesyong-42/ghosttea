@@ -63,10 +63,11 @@ cargo publish \
   --exclude ghosttea-font-fixture-ffi
 ```
 
-Dry-run each npm package with local provenance disabled:
+Dry-run each npm package with local provenance disabled explicitly. The command
+line flag is intentional: it takes precedence over the manifests'
+`publishConfig.provenance=true` on every supported npm CLI:
 
 ```sh
-export NPM_CONFIG_PROVENANCE=false
 export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
 
 for release_package in \
@@ -77,10 +78,14 @@ for release_package in \
   @vibecook/ghosttea-electron \
   @vibecook/ghosttea-react
 do
-  npm publish --dry-run --workspace "$release_package" --access public
+  npm publish \
+    --dry-run \
+    --workspace "$release_package" \
+    --access public \
+    --provenance=false
 done
 
-unset NPM_CONFIG_PROVENANCE npm_config_cache
+unset npm_config_cache
 ```
 
 The Ghostty VT artifact referenced by
@@ -119,12 +124,12 @@ for the first local publish, which has no CI identity:
 export NPM_CONFIG_PROVENANCE=false
 export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
 
-npm publish --workspace @vibecook/ghosttea-protocol --access public
-npm publish --workspace @vibecook/ghosttea-frame --access public
-npm publish --workspace @vibecook/ghosttea --access public
-npm publish --workspace @vibecook/ghosttea-client --access public
-npm publish --workspace @vibecook/ghosttea-electron --access public
-npm publish --workspace @vibecook/ghosttea-react --access public
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-protocol
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-frame
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-client
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-electron
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-react
 
 unset NPM_CONFIG_PROVENANCE npm_config_cache
 ```
@@ -148,7 +153,27 @@ After the first manual release:
    - Repository: `ghosttea`
    - Workflow: `publish-release.yml`
    - Environment: `release`
-3. Allow `npm publish` for each npm trusted publisher.
+3. Allow `npm publish` for each npm trusted publisher. With an authenticated
+   npm 12 session, the six npm trust relationships can be created with:
+
+   ```sh
+   for release_package in \
+     @vibecook/ghosttea-protocol \
+     @vibecook/ghosttea-frame \
+     @vibecook/ghosttea \
+     @vibecook/ghosttea-client \
+     @vibecook/ghosttea-electron \
+     @vibecook/ghosttea-react
+   do
+     npm trust github "$release_package" \
+       --repository jamesyong-42/ghosttea \
+       --file publish-release.yml \
+       --environment release \
+       --allow-publish \
+       --yes
+   done
+   ```
+
 4. Set the repository variable `OIDC_RELEASE_ENABLED=true`.
 5. Revoke obsolete registry automation tokens and configure npm to require
    two-factor authentication while disallowing token publishing.
@@ -160,4 +185,6 @@ same job's OIDC identity automatically and generates package provenance.
 
 The publish helpers safely skip an exact version that already exists, making a
 workflow rerun resumable after partial registry success. They never overwrite
-or replace a published artifact.
+or replace a published artifact. After an upload succeeds, they wait for the
+exact version to become publicly resolvable so ordinary registry propagation
+does not produce a false release failure.
