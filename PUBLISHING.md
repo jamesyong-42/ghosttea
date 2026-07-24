@@ -1,100 +1,162 @@
 # Publishing Ghosttea
 
-Ghosttea uses one version across its Rust and npm packages. The private
-`ghosttead` binary and `ghosttea-demo` workspace are integration fixtures and
+Ghosttea publishes one shared version across six npm packages and six Rust
+crates. The `ghosttead`, `ghosttea-ffi`, and `ghosttea-font-fixture-ffi` Rust
+packages and both desktop applications are private integration targets and
 must never be published.
 
-## Package graph
+Registry versions are immutable. Every release starts from a clean, pushed
+commit whose signed `vX.Y.Z` tag matches the root package version.
 
-```text
-Rust
-ghosttea-vt-sys ─> ghosttea-vt ─┐
-ghosttea-text ──────────────────┴─> ghosttea
-                    └─> ghosttea-truffle (private until its synchronized release)
-                         └─> ghosttead (private)
+## Package graph and order
 
-npm
-@vibecook/ghosttea-protocol ─┬─> @vibecook/ghosttea
-                             └─> @vibecook/ghosttea-client
-@vibecook/ghosttea-frame
-@vibecook/ghosttea-client ─> @vibecook/ghosttea-electron
-@vibecook/ghosttea + frame + protocol ─> @vibecook/ghosttea-react
-```
+Publish Rust crates in dependency order:
 
-Development and published builds both pin the registry release of
-`truffle-core` 0.7.2. A clean checkout must not depend on a sibling source tree.
+1. `ghosttea-vt-sys`
+2. `ghosttea-text`
+3. `ghosttea-vt`
+4. `ghosttea-core`
+5. `ghosttea`
+6. `ghosttea-truffle`
 
-## Local package verification
+Publish npm packages in dependency order:
 
-```sh
-npm run check
-npm run package:check
-cargo test --workspace
-```
+1. `@vibecook/ghosttea-protocol`
+2. `@vibecook/ghosttea-frame`
+3. `@vibecook/ghosttea`
+4. `@vibecook/ghosttea-client`
+5. `@vibecook/ghosttea-electron`
+6. `@vibecook/ghosttea-react`
 
-`npm run package:check` builds the SDK, downloads and verifies the locked native
-artifact when it is not already cached, creates the six npm tarballs, installs
-them into a temporary consumer outside the monorepo, imports their public
-runtime APIs, and checks the file lists of the publishable Rust crates. It also
-packages `ghosttea-vt-sys`, installs that `.crate` into an external Rust
-consumer, and builds it using the checksummed release bundle.
+Development and published Rust builds pin the registry release of
+`truffle-core` 0.7.2. Every crate sharing an application-owned Truffle node
+must resolve the same version and source so its `Node` type is identical.
 
-To reproduce the deterministic native asset itself rather than consume the
-attested release bundle:
+## Release gate
+
+Run from a clean checkout of the release commit:
 
 ```sh
-npm run bootstrap:ghostty-vt
-npm run build:ghostty-vt
-npm run package:ghostty-vt
+npm ci --ignore-scripts
+npm audit --audit-level=high
+npm run ci:desktop
+cargo audit
 ```
 
-The resulting tarball, checksum metadata, and SPDX 2.3 SBOM are written under
-`artifacts/ghostty-vt/`. Packaging fails if they do not match the target record
-embedded in `ghosttea-vt-sys/artifacts.json`.
+The desktop gate builds and tests every workspace, validates npm and Rust
+package archives, builds external consumers exclusively from those archives,
+and runs the native lifecycle soak. GitHub separately checks the declared Rust
+1.88 minimum and extends the lifecycle soak on its weekly schedule.
 
-Before each release, verify the leaf Rust crates against crates.io:
+Before publishing, perform Cargo's atomic workspace dry-run. This uses Cargo's
+temporary registry to verify the unpublished synchronized dependency graph
+without uploading anything:
 
 ```sh
-GHOSTTEA_GHOSTTY_VT_BUNDLE="$PWD/artifacts/ghostty-vt/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar" \
-  cargo publish --dry-run --package ghosttea-vt-sys
-cargo publish --dry-run --package ghosttea-text
+cargo publish \
+  --dry-run \
+  --locked \
+  --workspace \
+  --exclude ghosttead \
+  --exclude ghosttea-ffi \
+  --exclude ghosttea-font-fixture-ffi
 ```
 
-For a new synchronized version, `ghosttea-vt` can resolve only after
-`ghosttea-vt-sys` exists on crates.io, and `ghosttea` can resolve only after
-both safe leaf crates exist. Run each dependent dry-run immediately after its
-dependencies are published and before publishing that crate.
+Dry-run each npm package with local provenance disabled:
 
-The `Ghostty VT artifact` workflow runs on a native Linux arm64 runner, rebuilds
-the pinned source in the locked container, checks the deterministic manifest,
-attests the bundle and its SPDX SBOM, and creates the matching GitHub
-release when the `ghostty-vt-f8041e849b36` tag is pushed. Manual runs only
-produce an attested workflow artifact.
+```sh
+export NPM_CONFIG_PROVENANCE=false
+export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
 
-## Release order
+for release_package in \
+  @vibecook/ghosttea-protocol \
+  @vibecook/ghosttea-frame \
+  @vibecook/ghosttea \
+  @vibecook/ghosttea-client \
+  @vibecook/ghosttea-electron \
+  @vibecook/ghosttea-react
+do
+  npm publish --dry-run --workspace "$release_package" --access public
+done
 
-1. Run `npm run ci:desktop` (including font/FFI parity and sanitizer checks),
-   the live Truffle QUIC test, and the same-machine WebGPU performance
-   comparison.
-2. Update `CHANGELOG.md`, commit the synchronized version, push it, and require
-   the desktop release workflow to pass.
-3. Push `ghostty-vt-f8041e849b36` only when the pinned native input changed;
-   verify its release attestation.
-4. Publish `ghosttea-vt-sys` and `ghosttea-text` to crates.io.
-5. Dry-run and publish `ghosttea-vt`.
-6. Dry-run and publish `ghosttea` after its exact leaf versions resolve.
-7. Publish `@vibecook/ghosttea-protocol` and `@vibecook/ghosttea-frame`.
-8. Publish `@vibecook/ghosttea` and `@vibecook/ghosttea-client`.
-9. Publish `@vibecook/ghosttea-electron`, then `@vibecook/ghosttea-react`.
-10. Enable and publish `ghosttea-truffle` with the synchronized Ghosttea version.
-    `truffle-core` 0.7.2 is registry-resolvable; the adapter remains private
-    until its manifest, package fixture, and release ordering are enabled.
+unset NPM_CONFIG_PROVENANCE npm_config_cache
+```
 
-Use npm provenance from trusted CI. Do not publish from a developer machine or
-publish the private demo workspaces.
+The Ghostty VT artifact referenced by
+`native/terminald/crates/ghostty-vt-sys/artifacts.json` must already exist in
+the matching GitHub release. The crate downloads it and verifies its archive,
+static library, and public headers before linking. Push a new `ghostty-vt-*`
+tag only when this pinned native input changes.
 
-All npm packages configure `publish-npm.yml` as their trusted GitHub publisher.
-The workflow contains no registry token: npm exchanges GitHub's short-lived
-OIDC identity for publish access and generates provenance automatically. It
-verifies the version tag, requires the complete macOS desktop release gate, and
-only then publishes all six packages in dependency order.
+Machine-local WebGPU comparisons and the authenticated live Truffle QUIC test
+remain manual pre-release evidence because hosted GPU timing and tailnet
+credentials are not stable CI inputs.
+
+## First manual publish
+
+The first release of a package or crate must exist before its trusted
+publisher can be configured. Authenticate interactively with npm and
+crates.io, then create and push the signed release tag. Never move the tag
+after publishing any artifact.
+
+Publish one Rust crate at a time in the order above. Wait for
+`cargo info NAME@VERSION` to succeed before publishing its dependents:
+
+```sh
+cargo publish --locked --package ghosttea-vt-sys
+cargo publish --locked --package ghosttea-text
+cargo publish --locked --package ghosttea-vt
+cargo publish --locked --package ghosttea-core
+cargo publish --locked --package ghosttea
+cargo publish --locked --package ghosttea-truffle
+```
+
+The npm manifests enable provenance for trusted CI publishing. Disable it only
+for the first local publish, which has no CI identity:
+
+```sh
+export NPM_CONFIG_PROVENANCE=false
+export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
+
+npm publish --workspace @vibecook/ghosttea-protocol --access public
+npm publish --workspace @vibecook/ghosttea-frame --access public
+npm publish --workspace @vibecook/ghosttea --access public
+npm publish --workspace @vibecook/ghosttea-client --access public
+npm publish --workspace @vibecook/ghosttea-electron --access public
+npm publish --workspace @vibecook/ghosttea-react --access public
+
+unset NPM_CONFIG_PROVENANCE npm_config_cache
+```
+
+Verify every exact version from clean external npm and Rust consumers before
+creating the GitHub release. Revoke the temporary crates.io token after the
+manual release. If an uploaded artifact is defective, deprecate or yank it and
+release the next patch version; never try to replace a registry version.
+
+## Trusted publishing
+
+The `Publish release` workflow validates every `v*` tag. Registry mutation is
+disabled until the repository variable `OIDC_RELEASE_ENABLED` is exactly
+`true`.
+
+After the first manual release:
+
+1. Create a protected GitHub environment named `release`.
+2. Configure every npm package and crates.io crate to trust:
+   - GitHub owner: `jamesyong-42`
+   - Repository: `ghosttea`
+   - Workflow: `publish-release.yml`
+   - Environment: `release`
+3. Allow `npm publish` for each npm trusted publisher.
+4. Set the repository variable `OIDC_RELEASE_ENABLED=true`.
+5. Revoke obsolete registry automation tokens and configure npm to require
+   two-factor authentication while disallowing token publishing.
+
+The release job runs on an Apple Silicon GitHub-hosted runner because the
+current verified Ghostty VT artifact targets `aarch64-apple-darwin`. It obtains
+a fresh short-lived crates.io token before each Rust upload; npm exchanges the
+same job's OIDC identity automatically and generates package provenance.
+
+The publish helpers safely skip an exact version that already exists, making a
+workflow rerun resumable after partial registry success. They never overwrite
+or replace a published artifact.

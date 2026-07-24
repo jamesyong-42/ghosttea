@@ -1,0 +1,132 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-audit:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit
+
+  validate:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Require the package version to match the tag
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+      - run: npm run ci:desktop
+
+  publish:
+    needs:
+      - rust-audit
+      - validate
+    if: >-
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v') &&
+      vars.OIDC_RELEASE_ENABLED == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Require the package version to match the tag
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build:sdk
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-vt-sys
+      - name: Publish ghosttea-vt-sys
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-vt-sys.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-vt-sys
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-text
+      - name: Publish ghosttea-text
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-text.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-text
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-vt
+      - name: Publish ghosttea-vt
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-vt.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-vt
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-core
+      - name: Publish ghosttea-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-core.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-core
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-service
+      - name: Publish ghosttea
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-service.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-truffle
+      - name: Publish ghosttea-truffle
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-truffle.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-truffle
+
+      - name: Publish npm packages
+        run: |
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-protocol
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-frame
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-client
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-electron
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-react

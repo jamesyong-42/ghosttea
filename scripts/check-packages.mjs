@@ -25,8 +25,14 @@ const npmPackages = [
   "@vibecook/ghosttea-react",
 ];
 
-const rustPackages = ["ghosttea-vt-sys", "ghosttea-text", "ghosttea-vt", "ghosttea"];
-const publishableRustLeaves = ["ghosttea-vt-sys", "ghosttea-text"];
+const rustPackages = [
+  "ghosttea-vt-sys",
+  "ghosttea-text",
+  "ghosttea-vt",
+  "ghosttea-core",
+  "ghosttea",
+  "ghosttea-truffle",
+];
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const nativeArtifact = JSON.parse(
   readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
@@ -140,65 +146,47 @@ try {
 
   const rustCrates = join(fixture, "rust-crates");
   mkdirSync(rustCrates);
-  for (const crate of publishableRustLeaves) {
-    run("cargo", ["package", "--allow-dirty", "--no-verify", "--package", crate]);
+  run("cargo", [
+    "package",
+    "--workspace",
+    "--exclude",
+    "ghosttead",
+    "--exclude",
+    "ghosttea-ffi",
+    "--exclude",
+    "ghosttea-font-fixture-ffi",
+    "--allow-dirty",
+    "--no-verify",
+  ]);
+  for (const crate of rustPackages) {
     run("tar", ["-xzf", join(root, `target/package/${crate}-${version}.crate`), "-C", rustCrates]);
   }
 
-  const rustConsumer = join(fixture, "rust-consumer");
-  mkdirSync(join(rustConsumer, "src"), { recursive: true });
-  const cratePath = (name) => join(rustCrates, `${name}-${version}`).replaceAll("\\", "/");
-  writeFileSync(
-    join(rustConsumer, "Cargo.toml"),
-    [
-      "[package]",
-      'name = "ghosttea-external-consumer"',
-      'version = "0.0.0"',
-      'edition = "2024"',
-      'rust-version = "1.88"',
-      "",
-      "[dependencies]",
-      `ghosttea-vt-sys = { path = ${JSON.stringify(cratePath("ghosttea-vt-sys"))} }`,
-      "",
-    ].join("\n"),
-  );
-  writeFileSync(
-    join(rustConsumer, "src/main.rs"),
-    [
-      "fn main() {",
-      "    let _native_link_contract = std::any::TypeId::of::<ghosttea_vt_sys::LinkContract>();",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  run("cargo", ["build"], {
-    cwd: rustConsumer,
-    env: {
-      ...process.env,
-      CARGO_TARGET_DIR: join(fixture, "rust-target"),
-      GHOSTTEA_GHOSTTY_VT_BUNDLE: join(root, "artifacts/ghostty-vt", nativeArtifact.filename),
-    },
-  });
-  console.log("external Rust consumer fixture passed");
-
   const embeddingConsumer = join(fixture, "rust-embedding-consumer");
   mkdirSync(join(embeddingConsumer, "src"), { recursive: true });
-  const sourcePath = (path) => resolve(root, path).replaceAll("\\", "/");
+  const cratePath = (name) => join(rustCrates, `${name}-${version}`).replaceAll("\\", "/");
   writeFileSync(
     join(embeddingConsumer, "Cargo.toml"),
     [
       "[package]",
-      'name = "ghosttea-embedding-consumer"',
+      'name = "ghosttea-external-embedding-consumer"',
       'version = "0.0.0"',
       'edition = "2024"',
       'rust-version = "1.88"',
       "",
       "[dependencies]",
       'anyhow = "1"',
-      `ghosttea = { path = ${JSON.stringify(sourcePath("native/terminald"))} }`,
-      `ghosttea-truffle = { path = ${JSON.stringify(sourcePath("native/terminald/crates/truffle"))} }`,
+      `ghosttea = { path = ${JSON.stringify(cratePath("ghosttea"))} }`,
+      `ghosttea-truffle = { path = ${JSON.stringify(cratePath("ghosttea-truffle"))} }`,
       'tokio = { version = "1.45", features = ["full"] }',
-      'truffle-core = "0.7.2"',
+      'truffle-core = "=0.7.2"',
+      "",
+      "[patch.crates-io]",
+      `ghosttea-vt-sys = { path = ${JSON.stringify(cratePath("ghosttea-vt-sys"))} }`,
+      `ghosttea-text = { path = ${JSON.stringify(cratePath("ghosttea-text"))} }`,
+      `ghosttea-vt = { path = ${JSON.stringify(cratePath("ghosttea-vt"))} }`,
+      `ghosttea-core = { path = ${JSON.stringify(cratePath("ghosttea-core"))} }`,
+      `ghosttea = { path = ${JSON.stringify(cratePath("ghosttea"))} }`,
       "",
     ].join("\n"),
   );
@@ -240,7 +228,7 @@ try {
       GHOSTTEA_GHOSTTY_VT_BUNDLE: join(root, "artifacts/ghostty-vt", nativeArtifact.filename),
     },
   });
-  console.log("external Rust embedding fixture passed");
+  console.log("external packaged Rust embedding fixture passed");
   console.log("Ghosttea package layouts passed");
 } finally {
   rmSync(fixture, { recursive: true, force: true });

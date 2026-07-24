@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Truffle transport adapter for Ghosttea"
-publish = false
+readme = "README.md"
 
 [dependencies]
 anyhow.workspace = true
