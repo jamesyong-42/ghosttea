@@ -39,6 +39,36 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
+  # Windows runs the same formatting, lint, type, Clippy, and test gates as the
+  # macOS job. It omits the two stages of `ci:desktop` that cannot pass here
+  # yet: `package:check:built` downloads the locked Ghostty VT bundle, which has
+  # no published Windows asset, and `test:lifecycle:soak` declares support for
+  # darwin and linux only. The VT artifact is built from the pinned source
+  # instead, which is also how a Windows contributor works today.
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - run: npm ci --ignore-scripts
+      - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run check:desktop
+      - run: npm run test:desktop
+
   minimum-rust:
     runs-on: macos-15
     timeout-minutes: 20
