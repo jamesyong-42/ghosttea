@@ -1,0 +1,7 @@
+# Check every text file out with LF, on every platform.
+#
+# Prettier writes and verifies LF, so a CRLF checkout makes `npm run format:check`
+# fail on the whole tree before it can report a real formatting problem. Without
+# this, `core.autocrlf=true` — the default from Git for Windows' installer —
+# produces exactly that checkout.
+* text=auto eol=lf
