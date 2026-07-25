@@ -3,9 +3,12 @@
 //! Both channels are private to the host user and carry the same bearer token.
 //! The transport underneath differs by platform:
 //!
-//! - Unix hosts use a filesystem-bound Unix-domain socket per channel.
+//! - Unix hosts use a filesystem-bound Unix-domain socket per channel, scoped
+//!   by the runtime directory's permissions.
 //! - Windows hosts use a named pipe per channel, because Windows has no
-//!   equivalent filesystem socket that Node's `net` module can dial.
+//!   equivalent filesystem socket that Node's `net` module can dial. Pipes get
+//!   a permissive default DACL, so [`security`] narrows each one to the account
+//!   running the service.
 //!
 //! A Unix listener yields a fresh stream from every `accept`. A named pipe
 //! server instance instead *becomes* the connection once a client arrives, so
@@ -23,6 +26,9 @@
 //! while the listener can only await one at a time.
 
 use anyhow::Result;
+
+#[cfg(windows)]
+mod security;
 
 /// One authenticated local connection.
 ///
@@ -61,6 +67,9 @@ pub struct Listener {
     // Always `Some` between accepts; taken only while a replacement is made.
     #[cfg(windows)]
     idle: Option<tokio::net::windows::named_pipe::NamedPipeServer>,
+    // Built once: every instance of one pipe carries the same access rules.
+    #[cfg(windows)]
+    security: security::CurrentUserOnly,
 }
 
 #[cfg(unix)]
@@ -91,16 +100,23 @@ impl Listener {
     ///
     /// `first_pipe_instance` fails the bind when the name already exists, which
     /// stops another process from publishing this pipe first and collecting
-    /// connections intended for the service.
+    /// connections intended for the service. The descriptor then limits the
+    /// pipe to the account running the service.
     pub fn bind(endpoint: &str) -> Result<Self> {
         use tokio::net::windows::named_pipe::ServerOptions;
 
-        let idle = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(endpoint)?;
+        let mut security = security::CurrentUserOnly::new()?;
+        // SAFETY: `security` owns a valid SECURITY_ATTRIBUTES that lives across
+        // this call and every later instance created from it.
+        let idle = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create_with_security_attributes_raw(endpoint, security.as_raw())
+        }?;
         Ok(Self {
             name: endpoint.into(),
             idle: Some(idle),
+            security,
         })
     }
 
@@ -118,7 +134,12 @@ impl Listener {
         // Replace the instance before handing this one out so the name stays
         // published. `first_pipe_instance` is deliberately not set here: the
         // name already exists and every later instance must join it.
-        self.idle = Some(tokio::net::windows::named_pipe::ServerOptions::new().create(&self.name)?);
+        //
+        // SAFETY: as in `bind`, the descriptor outlives this call.
+        self.idle = Some(unsafe {
+            tokio::net::windows::named_pipe::ServerOptions::new()
+                .create_with_security_attributes_raw(&self.name, self.security.as_raw())
+        }?);
         Ok(server)
     }
 }
@@ -306,6 +327,38 @@ mod tests {
         let endpoint = unique_endpoint("exclusive");
         let _listener = Listener::bind(&endpoint.name).unwrap();
         assert!(Listener::bind(&endpoint.name).is_err());
+    }
+
+    /// The pipe a client can reach must grant only the account running the
+    /// service. Windows gives a named pipe a permissive default DACL — read
+    /// access for Everyone and for Anonymous — so this asserts against the live
+    /// handle rather than against the descriptor the listener built.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn grants_pipe_access_to_the_owning_account_only() {
+        use std::os::windows::io::AsRawHandle;
+
+        let endpoint = unique_endpoint("dacl");
+        let mut listener = Listener::bind(&endpoint.name).unwrap();
+        let sid = security::current_user_sid().unwrap();
+
+        let bound = security::dacl_of(listener.idle.as_ref().unwrap().as_raw_handle()
+            as std::os::windows::raw::HANDLE as isize)
+        .unwrap();
+        // `P` protects the DACL; `FA` is the full-access form Windows reports
+        // for the GENERIC_ALL that was requested.
+        assert_eq!(bound, format!("D:P(A;;FA;;;{sid})"), "on bind");
+
+        // The replacement instance created by accept must be just as narrow.
+        let client = tokio::spawn({
+            let name = endpoint.name.clone();
+            async move { dial(&name).await }
+        });
+        let _accepted = listener.accept().await.unwrap();
+        let _client = client.await.unwrap();
+        let rotated =
+            security::dacl_of(listener.idle.as_ref().unwrap().as_raw_handle() as isize).unwrap();
+        assert_eq!(rotated, format!("D:P(A;;FA;;;{sid})"), "after rotation");
     }
 
     #[test]

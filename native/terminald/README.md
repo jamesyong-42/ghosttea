@@ -66,6 +66,15 @@ listener refuses to bind a name that already exists. That refusal is what stops
 another process from publishing the pipe first and collecting connections meant
 for the service.
 
+A named pipe created without an explicit security descriptor gets a permissive
+default DACL — read access for Everyone and for Anonymous. The listener instead
+builds `D:P(A;;GA;;;<current user SID>)`, a protected DACL granting full access
+to the account running the service and nothing to anyone else, and applies it to
+every instance it creates. On Unix the runtime directory's permissions provide
+the same boundary. `ipc::Listener` asserts the resulting DACL against a live
+pipe handle in its tests, because passing a descriptor that never reaches the
+object fails silently.
+
 A pipe can only offer one instance at a time, so a client that dials while the
 listener is between instances, or while another client is being accepted, gets
 `ERROR_PIPE_BUSY`. Windows expects clients to wait and retry; `openEndpoint` in
