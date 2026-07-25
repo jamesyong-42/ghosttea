@@ -147,6 +147,7 @@ try {
     await churn(harness, sessionsPerRound, `round-${round}`);
     await delay(750);
     const current = await stableProcessSample(harness.pid);
+    const liveSessions = (await harness.request("list-sessions")).sessions?.length ?? null;
     const rssGrowthKiB = current.rssKiB - baseline.rssKiB;
     const threadGrowth = current.threads - baseline.threads;
     console.log(
@@ -155,6 +156,7 @@ try {
         sessions: sessionsPerRound,
         baseline,
         current,
+        liveSessions,
         rssGrowthMiB: Number((rssGrowthKiB / 1024).toFixed(2)),
         threadGrowth,
       }),
@@ -172,8 +174,14 @@ try {
     if (current.handles !== undefined) {
       const handleGrowth = current.handles - baseline.handles;
       if (handleGrowth > maximumHandleGrowth) {
+        // Whether the registry still holds the sessions separates a retained
+        // session object, which would keep every handle it owns, from a single
+        // operating-system handle outliving a session that was already dropped.
+        const live = await harness.request("list-sessions");
         throw new Error(
-          `ghosttead retained ${handleGrowth} handles after lifecycle churn; allowed growth is ${maximumHandleGrowth}`,
+          `ghosttead retained ${handleGrowth} handles after ${sessionsPerRound} sessions ` +
+            `(${(handleGrowth / sessionsPerRound).toFixed(2)} per session); allowed growth is ` +
+            `${maximumHandleGrowth}. ${live.sessions?.length ?? "?"} session(s) remain in the registry.`,
         );
       }
     }
