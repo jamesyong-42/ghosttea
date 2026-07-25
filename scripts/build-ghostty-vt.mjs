@@ -42,16 +42,21 @@ if (capture("git", ["status", "--porcelain"], vendor) !== "") {
 
 mkdirSync(output, { recursive: true });
 
-/** Zig invocation shared by both builders, rooted at a builder-visible base. */
-function zigArguments(base) {
+/**
+ * Zig invocation shared by both builders.
+ *
+ * `resolve` differs per builder because the paths are not in the same
+ * namespace: the container sees its mount points, the host sees its own tree.
+ */
+function zigArguments(resolve) {
   return [
     "build",
     "--cache-dir",
-    `${base}/cache`,
+    resolve("cache"),
     "--global-cache-dir",
-    `${base}/global`,
+    resolve("global"),
     "--prefix",
-    `${base}/install`,
+    resolve("install"),
     "-Demit-lib-vt",
     "-Doptimize=ReleaseFast",
     `-Dtarget=${config.zigTarget}`,
@@ -86,7 +91,8 @@ function containerBuild() {
       "/src",
       lock.builder.image,
       "/zig/zig",
-      ...zigArguments("/out"),
+      // Mount points inside the container, not host paths.
+      ...zigArguments((part) => `/out/${part}`),
     ],
     { cwd: root, stdio: "inherit" },
   );
@@ -98,7 +104,11 @@ function containerBuild() {
  * container and must find an installed MSVC and Windows SDK.
  */
 function nativeBuild() {
-  return spawnSync(zig, zigArguments(output), { cwd: vendor, stdio: "inherit" });
+  return spawnSync(
+    zig,
+    zigArguments((part) => join(output, part)),
+    { cwd: vendor, stdio: "inherit" },
+  );
 }
 
 const result = config.build === "container" ? containerBuild() : nativeBuild();

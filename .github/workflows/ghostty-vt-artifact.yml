@@ -70,10 +70,10 @@ jobs:
           expected="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].release")"
           test "$RELEASE_TAG" = "$expected"
 
-      - name: Resolve locked artifact paths
+      - name: Resolve produced artifact paths
         id: ghostty_artifact
         run: |
-          filename="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].filename")"
+          filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=aarch64-apple-darwin)"
           echo "path=artifacts/ghostty-vt/$filename" >> "$GITHUB_OUTPUT"
           echo "sbom=artifacts/ghostty-vt/$filename.spdx.json" >> "$GITHUB_OUTPUT"
 
@@ -133,13 +133,13 @@ jobs:
       - name: Resolve produced artifact paths
         id: ghostty_artifact
         run: |
-          filename="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['x86_64-pc-windows-msvc'].filename")"
+          filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=x86_64-pc-windows-msvc)"
           echo "path=artifacts/ghostty-vt/$filename" >> "$GITHUB_OUTPUT"
           echo "sbom=artifacts/ghostty-vt/$filename.spdx.json" >> "$GITHUB_OUTPUT"
 
       - name: Report the manifest entry to lock
         run: |
-          filename="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['x86_64-pc-windows-msvc'].filename")"
+          filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=x86_64-pc-windows-msvc)"
           {
             echo '### Windows artifact produced by this run'
             echo
