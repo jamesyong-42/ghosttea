@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { localEndpoints, openEndpoint } from "./ipc-endpoints.mjs";
 import { nowMs } from "./stats.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -92,11 +92,7 @@ function packets(socket) {
 }
 
 async function openSocket(path, token) {
-  const socket = connect(path);
-  await new Promise((resolveConnected, reject) => {
-    socket.once("connect", resolveConnected);
-    socket.once("error", reject);
-  });
+  const socket = await openEndpoint(path, Date.now() + 10_000);
   const next = packets(socket);
   socket.write(packet(token));
   const response = await next(5_000);
@@ -252,8 +248,9 @@ export class TerminaldHarness {
 
   async #boot(timeoutMs) {
     this.#runtimeDir = mkdtempSync(join(tmpdir(), "ghosttea-bench-"));
-    this.#controlPath = join(this.#runtimeDir, "control.sock");
-    this.#framePath = join(this.#runtimeDir, "frames.sock");
+    const endpoints = localEndpoints(this.#runtimeDir);
+    this.#controlPath = endpoints.controlSocket;
+    this.#framePath = endpoints.frameSocket;
     this.#token = `bench-${process.pid}-${Date.now()}`;
 
     const binary = resolveTerminaldBinary();

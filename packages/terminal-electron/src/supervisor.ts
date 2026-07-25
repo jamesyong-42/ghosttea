@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { endpointPersists, localEndpoints } from "@vibecook/ghosttea-client";
 import type { TerminalDaemonConnection } from "./types.js";
 
 export type GhostteaBinary =
@@ -38,8 +39,7 @@ export class TerminalSupervisor extends EventEmitter {
         : mkdtempSync(join(tmpdir(), `ghosttea-${process.getuid?.() ?? "user"}-${process.pid}-`));
     if (options.runtimeDirectory !== undefined) mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
     this.connection = {
-      controlSocket: join(this.#runtimeDir, "control.sock"),
-      frameSocket: join(this.#runtimeDir, "frames.sock"),
+      ...localEndpoints(this.#runtimeDir),
       authToken: randomBytes(32).toString("hex"),
     };
   }
@@ -55,8 +55,11 @@ export class TerminalSupervisor extends EventEmitter {
   async #start(): Promise<void> {
     this.#ready = false;
     mkdirSync(this.#runtimeDir, { recursive: true, mode: 0o700 });
-    rmSync(this.connection.controlSocket, { force: true });
-    rmSync(this.connection.frameSocket, { force: true });
+    if (endpointPersists()) {
+      // A socket left by a previous run would make the daemon's bind fail.
+      rmSync(this.connection.controlSocket, { force: true });
+      rmSync(this.connection.frameSocket, { force: true });
+    }
     const environment = {
       ...process.env,
       ...this.#options.environment,

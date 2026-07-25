@@ -26,6 +26,15 @@ class FakeSocket extends EventEmitter {
   }
 }
 
+/**
+ * `connectSocket` owns dialing, so it authenticates only after the endpoint is
+ * connected. Let the connect settle before driving the authentication step.
+ */
+function connected(socket: FakeSocket): Promise<void> {
+  queueMicrotask(() => socket.emit("connect"));
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 describe("bridge socket authentication", () => {
   it("rejects if the socket closes before the authentication response", async () => {
     const socket = new FakeSocket();
@@ -35,6 +44,7 @@ describe("bridge socket authentication", () => {
 
     const connection = connectSocket("/tmp/control.sock", "token", 1024, vi.fn(), onDisconnect);
     const rejection = expect(connection).rejects.toThrow("closed during authentication");
+    await connected(socket);
     socket.emit("close");
 
     await rejection;
@@ -48,10 +58,22 @@ describe("bridge socket authentication", () => {
     const onDisconnect = vi.fn();
 
     const connection = connectSocket("/tmp/control.sock", "token", 1024, vi.fn(), onDisconnect, 5);
+    await connected(socket);
     await expect(connection).rejects.toThrow("timed out during authentication");
 
     expect(socket.destroy).toHaveBeenCalledOnce();
     expect(onDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("authenticates as soon as the endpoint connects", async () => {
+    const socket = new FakeSocket();
+    createConnection.mockReturnValue(socket);
+    const { connectSocket, packet } = await import("./bridge-socket");
+
+    void connectSocket("/tmp/control.sock", "token", 1024, vi.fn(), vi.fn());
+    await connected(socket);
+
+    expect(socket.write).toHaveBeenCalledWith(packet(Buffer.from("token")));
   });
 
   it("keeps complete buffered packets queued while the consumer is paused", async () => {
@@ -69,7 +91,7 @@ describe("bridge socket authentication", () => {
       },
       vi.fn(),
     );
-    socket.emit("connect");
+    await connected(socket);
     socket.emit(
       "data",
       Buffer.concat([packet(Buffer.from("ok")), packet(Buffer.from("one")), packet(Buffer.from("two"))]),

@@ -169,6 +169,9 @@ impl Default for SessionActivity {
     }
 }
 
+/// Infer activity from the PTY's foreground process group. Windows has no
+/// process groups and reports `SessionActivity::unsupported` instead.
+#[cfg(unix)]
 fn classify_process_group_activity(
     program_kind: ResolvedProgramKind,
     root_process_group_id: Option<i32>,
@@ -335,6 +338,9 @@ struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    /// Read only by the process-group paths. Windows signals the child through
+    /// `Child::kill` and never addresses it by identifier.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
 }
 
@@ -344,6 +350,9 @@ struct ObservedProcessExit {
 }
 
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
+/// Grace between SIGTERM and SIGKILL. Windows escalates straight from the
+/// interrupt to `Child::kill`, so it has no intermediate step to wait out.
+#[cfg(unix)]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 impl PtyProcess {
@@ -1596,6 +1605,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn classifies_process_groups_only_when_program_identity_supports_the_inference() {
         assert_eq!(

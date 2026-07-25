@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    path::Path,
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
@@ -12,13 +11,12 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{UnixListener, UnixStream},
     sync::{broadcast, watch},
     task::JoinHandle,
 };
 
 use crate::{
-    FrameHub, mesh, session,
+    FrameHub, ipc, mesh, session,
     session::{
         AutomationInputOperation, ExitCallback, KeyInput, MouseInput, Persistence, Session,
         SpawnOptions, TerminationSource,
@@ -367,6 +365,9 @@ struct ControlContext {
 }
 
 /// Local IPC endpoints and bearer token owned by the embedding application.
+///
+/// An endpoint is a Unix-domain socket path on Unix hosts and a named pipe
+/// name such as `\\.\pipe\ghosttea-<instance>-control` on Windows.
 pub struct TerminalServiceConfig {
     pub control_socket: String,
     pub frame_socket: String,
@@ -376,14 +377,14 @@ pub struct TerminalServiceConfig {
 /// Pre-bound local IPC listeners supplied by an embedding application.
 ///
 /// Constructing these outside [`TerminalService`] lets a host own runtime
-/// directory creation, socket replacement, permissions, and startup order.
+/// directory creation, endpoint replacement, permissions, and startup order.
 pub struct TerminalServiceListeners {
-    control: UnixListener,
-    frames: UnixListener,
+    control: ipc::Listener,
+    frames: ipc::Listener,
 }
 
 impl TerminalServiceListeners {
-    pub fn new(control: UnixListener, frames: UnixListener) -> Self {
+    pub fn new(control: ipc::Listener, frames: ipc::Listener) -> Self {
         Self { control, frames }
     }
 }
@@ -443,14 +444,14 @@ impl TerminalService {
         self
     }
 
-    /// Bind the configured paths using Ghosttea's convenience stale-socket
+    /// Bind the configured endpoints using Ghosttea's convenience stale-endpoint
     /// replacement policy.
     pub fn bind(&self) -> Result<TerminalServiceListeners> {
-        remove_stale_socket(&self.config.control_socket)?;
-        remove_stale_socket(&self.config.frame_socket)?;
+        ipc::remove_stale_endpoint(&self.config.control_socket)?;
+        ipc::remove_stale_endpoint(&self.config.frame_socket)?;
         Ok(TerminalServiceListeners::new(
-            UnixListener::bind(&self.config.control_socket)?,
-            UnixListener::bind(&self.config.frame_socket)?,
+            ipc::Listener::bind(&self.config.control_socket)?,
+            ipc::Listener::bind(&self.config.frame_socket)?,
         ))
     }
 
@@ -569,13 +570,6 @@ impl TerminalService {
     }
 }
 
-fn remove_stale_socket(path: &str) -> Result<()> {
-    if Path::new(path).exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 async fn read_packet<R: AsyncRead + Unpin>(stream: &mut R, limit: usize) -> Result<Vec<u8>> {
     let length = stream.read_u32_le().await? as usize;
     if length > limit {
@@ -603,7 +597,10 @@ fn auth_tokens_equal(received: &[u8], expected: &[u8]) -> bool {
     bool::from(received_padded.ct_eq(&expected_padded) & received.len().ct_eq(&expected.len()))
 }
 
-async fn authenticate(stream: &mut UnixStream, expected: &str) -> Result<()> {
+async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    expected: &str,
+) -> Result<()> {
     let token = read_packet(stream, MAX_AUTH_TOKEN_BYTES).await?;
     if !auth_tokens_equal(&token, expected.as_bytes()) {
         bail!("authentication failed");
@@ -612,12 +609,12 @@ async fn authenticate(stream: &mut UnixStream, expected: &str) -> Result<()> {
 }
 
 async fn serve_control(
-    listener: UnixListener,
+    mut listener: ipc::Listener,
     token: String,
     context: ControlContext,
 ) -> Result<()> {
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let mut socket = listener.accept().await?;
         let token = token.clone();
         let context = context.clone();
         tokio::spawn(async move {
@@ -625,7 +622,7 @@ async fn serve_control(
                 return;
             }
             let mut events = context.event_tx.subscribe();
-            let (mut reader, mut writer) = socket.into_split();
+            let (mut reader, mut writer) = tokio::io::split(socket);
             let client_id = uuid::Uuid::new_v4().to_string();
             let mut attached = HashMap::<(String, String), u64>::new();
             let mut client_protocol_minor = 0_u16;
@@ -1439,9 +1436,9 @@ fn remove_session_attachments(
     removed
 }
 
-async fn serve_frames(listener: UnixListener, token: String, frames: FrameHub) -> Result<()> {
+async fn serve_frames(mut listener: ipc::Listener, token: String, frames: FrameHub) -> Result<()> {
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let mut socket = listener.accept().await?;
         let token = token.clone();
         let frames = frames.clone();
         let (mut rx, mut last_seen_ordinal) = frames.subscribe();
@@ -1449,7 +1446,7 @@ async fn serve_frames(listener: UnixListener, token: String, frames: FrameHub) -
             if authenticate(&mut socket, &token).await.is_err() {
                 return;
             }
-            let (mut reader, mut writer) = socket.into_split();
+            let (mut reader, mut writer) = tokio::io::split(socket);
             let mut subscription_starts = HashMap::<u64, u64>::new();
             loop {
                 tokio::select! {

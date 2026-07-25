@@ -8,7 +8,7 @@ describe("desktop profiles", () => {
       name: "default",
       root: "/app/Ghostty",
       electronData: "/app/Ghostty",
-      truffleState: "/app/Ghostty/truffle",
+      truffleState: join("/app/Ghostty", "truffle"),
     });
     expect(desktopProfile("/app/Ghostty", "alpha")).toEqual({
       name: "alpha",

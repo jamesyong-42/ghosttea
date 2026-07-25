@@ -1,4 +1,5 @@
-import { createConnection, type Socket } from "node:net";
+import { type Socket } from "node:net";
+import { openEndpoint } from "@vibecook/ghosttea-client";
 
 export function packet(bytes: Uint8Array): Buffer {
   const output = Buffer.allocUnsafe(4 + bytes.byteLength);
@@ -7,7 +8,7 @@ export function packet(bytes: Uint8Array): Buffer {
   return output;
 }
 
-export function connectSocket(
+export async function connectSocket(
   path: string,
   token: string,
   limit: number,
@@ -15,18 +16,23 @@ export function connectSocket(
   onDisconnect: (error: Error) => void,
   timeoutMs = 10_000,
 ): Promise<Socket> {
+  // One budget covers waiting for a free endpoint and authenticating on it.
+  const deadline = Date.now() + timeoutMs;
+  const socket = await openEndpoint(path, deadline);
   return new Promise((resolve, reject) => {
-    const socket = createConnection(path);
     let buffered = Buffer.alloc(0);
     let draining = false;
     let authenticated = false;
     let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      reject(new Error(`terminald connection timed out during authentication at ${path}`));
-    }, timeoutMs);
+    const timeout = setTimeout(
+      () => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        reject(new Error(`terminald connection timed out during authentication at ${path}`));
+      },
+      Math.max(0, deadline - Date.now()),
+    );
     socket.on("error", (error) => {
       if (!settled) {
         settled = true;
@@ -46,7 +52,8 @@ export function connectSocket(
         onDisconnect(new Error(`terminald connection closed at ${path}`));
       }
     });
-    socket.on("connect", () => socket.write(packet(Buffer.from(token))));
+    // `openEndpoint` resolves only once connected, so authenticate now.
+    socket.write(packet(Buffer.from(token)));
     const drainPackets = (): void => {
       if (draining || socket.isPaused()) return;
       draining = true;

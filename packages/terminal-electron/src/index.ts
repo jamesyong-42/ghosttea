@@ -9,6 +9,7 @@ export {
 } from "./automation.js";
 export { GhostteaElectronBridge, type GhostteaElectronBridgeOptions } from "./bridge.js";
 export { allSettledWithin } from "./deadline.js";
+export { endpointPersists, localEndpoints, openEndpoint, type LocalEndpoints } from "@vibecook/ghosttea-client";
 export {
   ghostteaEditCommand,
   installGhostteaEditShortcuts,
