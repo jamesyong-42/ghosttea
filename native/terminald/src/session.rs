@@ -360,6 +360,15 @@ struct ObservedProcessExit {
 }
 
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
+/// How long a Windows session outlives its child.
+///
+/// A session ends when its pseudoconsole closes, so this is both the window the
+/// reader has to drain the child's last output and the window in which a client
+/// can still attach to a session whose program returned at once. The Windows
+/// integration fixtures print a marker and exit immediately, and rely on the
+/// second of those; `windows_sessions_outlive_a_fast_child` states the bound.
+#[cfg(windows)]
+const EXIT_DRAIN: Duration = Duration::from_millis(150);
 /// Grace between SIGTERM and SIGKILL. Windows escalates straight from the
 /// interrupt to `Child::kill`, so it has no intermediate step to wait out.
 #[cfg(unix)]
@@ -624,6 +633,16 @@ impl Session {
         // Adopt the tree before anything else so a shell that starts a
         // background job is already inside the job object. A failure here is
         // not fatal: termination falls back to the direct child.
+        // Duplicated before the child moves behind its mutex, so the exit
+        // watcher never has to take that lock to learn the child is gone.
+        #[cfg(windows)]
+        let exit_handle = child.as_raw_handle().and_then(|handle| {
+            process_tree::ExitHandle::duplicate(handle as isize)
+                .inspect_err(|error| {
+                    eprintln!("[ghosttea] failed to duplicate the child handle: {error}");
+                })
+                .ok()
+        });
         #[cfg(windows)]
         let process_tree = pid.and_then(|pid| match process_tree::ProcessTree::adopt(pid) {
             Ok(tree) => Some(tree),
@@ -706,7 +725,7 @@ impl Session {
         let _ = session.sample_activity();
         Self::start_input_actor(&session, input_rx);
         #[cfg(windows)]
-        Self::start_exit_watcher(&session);
+        Self::start_exit_watcher(&session, exit_handle);
         Self::start_reader(&session, reader);
         Ok(session)
     }
@@ -753,12 +772,18 @@ impl Session {
     /// Releasing the master closes the pseudoconsole and ends the reader, which
     /// runs the same teardown a Unix session reaches by itself.
     #[cfg(windows)]
-    fn start_exit_watcher(session: &Arc<Self>) {
-        /// How often to ask whether the child is gone.
-        const POLL: Duration = Duration::from_millis(50);
+    fn start_exit_watcher(session: &Arc<Self>, exit: Option<process_tree::ExitHandle>) {
+        /// How long to block on the child before checking whether the session
+        /// still exists. Long enough that an idle pane costs almost nothing,
+        /// short enough that a dropped session releases its watcher promptly.
+        const POLL: Duration = Duration::from_millis(500);
         /// Time for the reader to drain what the child wrote just before
         /// exiting. Closing the pseudoconsole discards anything still buffered.
-        const DRAIN: Duration = Duration::from_millis(150);
+        ///
+        /// This also decides how long a session that exits immediately stays
+        /// attachable, which the integration fixtures rely on; see
+        /// [`EXIT_DRAIN`] and the test that holds the two together.
+        const DRAIN: Duration = EXIT_DRAIN;
 
         let watcher_id = session.id();
         let session = Arc::downgrade(session);
@@ -766,23 +791,29 @@ impl Session {
             .name(format!("pty-exit-{watcher_id}"))
             .spawn(move || {
                 loop {
-                    std::thread::sleep(POLL);
-                    // The session was dropped, which released the master with
-                    // it, so there is nothing left to close.
-                    let Some(alive) = Weak::upgrade(&session) else {
-                        return;
+                    // Waiting on an owned duplicate rather than polling the
+                    // child keeps this off the lock that terminating needs, and
+                    // costs one wake per interval instead of one per poll.
+                    let exited = match &exit {
+                        Some(exit) => exit.exited(POLL),
+                        // Without a handle to wait on, fall back to asking.
+                        None => {
+                            std::thread::sleep(POLL);
+                            match Weak::upgrade(&session) {
+                                Some(alive) => matches!(
+                                    alive.process.child.lock().unwrap().try_wait(),
+                                    Ok(Some(_))
+                                ),
+                                None => return,
+                            }
+                        }
                     };
-                    if alive.has_exited() {
-                        return;
-                    }
-                    // `try_wait` rather than `wait`: holding the child lock
-                    // across a blocking wait would stall termination, which
-                    // needs the same lock to fall back to `Child::kill`.
-                    let exited =
-                        matches!(alive.process.child.lock().unwrap().try_wait(), Ok(Some(_)));
-                    // Do not hold the session across the drain.
-                    drop(alive);
                     if !exited {
+                        // The session was dropped, which released the master
+                        // with it, so there is nothing left to close.
+                        if Weak::upgrade(&session).is_none() {
+                            return;
+                        }
                         continue;
                     }
                     std::thread::sleep(DRAIN);
@@ -1590,6 +1621,20 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    /// The Windows integration fixtures create a session, then subscribe and
+    /// attach before reading the marker it printed. Their programs return
+    /// immediately, so the session has to outlive its child by long enough for
+    /// those round trips. Shortening this silently breaks them, in a way that
+    /// looks like a lost marker rather than a timing change.
+    #[cfg(windows)]
+    #[test]
+    fn windows_sessions_outlive_a_fast_child() {
+        assert!(
+            super::EXIT_DRAIN >= std::time::Duration::from_millis(100),
+            "the fixtures need a session to stay attachable for at least 100ms"
+        );
+    }
+
     use super::*;
 
     #[cfg(unix)]

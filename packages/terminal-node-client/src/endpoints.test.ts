@@ -71,6 +71,35 @@ describe("opening an endpoint", () => {
     expect(createConnection).toHaveBeenCalledOnce();
   });
 
+  it("gives up quickly when nothing is listening, rather than hanging", async () => {
+    createConnection.mockImplementation(() => {
+      const socket = new FakeSocket();
+      queueMicrotask(() => socket.emit("error", busy("ENOENT")));
+      return socket;
+    });
+
+    // An unpublished name is momentary while the service replaces an instance,
+    // but it is also what a service that never started looks like.
+    const started = Date.now();
+    await expect(openEndpoint("\\\\.\\pipe\\ghosttea-test", Date.now() + 30_000, "win32")).rejects.toThrow("ENOENT");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("keeps waiting on a busy endpoint for the caller's whole budget", async () => {
+    let attempts = 0;
+    createConnection.mockImplementation(() => {
+      const socket = new FakeSocket();
+      attempts += 1;
+      // Busy for longer than the grace an unpublished name would get.
+      queueMicrotask(() => socket.emit(attempts > 80 ? "connect" : "error", busy("EBUSY")));
+      return socket;
+    });
+
+    const opened = await openEndpoint("\\\\.\\pipe\\ghosttea-test", Date.now() + 30_000, "win32");
+    expect(opened).toBeDefined();
+    expect(attempts).toBeGreaterThan(80);
+  });
+
   it("stops retrying once the caller's deadline passes", async () => {
     const socket = new FakeSocket();
     createConnection.mockReturnValue(socket);
