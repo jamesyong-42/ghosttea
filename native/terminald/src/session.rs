@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+mod process_tree;
+
 use anyhow::{Context, Result};
 use ghosttea_core::{
     ClipboardRequest, ControlChanged, ControllerState, InputOrderState, LogicalTerminalSnapshot,
@@ -338,10 +341,15 @@ struct PtyProcess {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
-    /// Read only by the process-group paths. Windows signals the child through
-    /// `Child::kill` and never addresses it by identifier.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    /// Addresses the process group when signalling. Windows has no equivalent
+    /// and consumes the identifier at spawn to build `tree` instead, so it
+    /// keeps no copy.
+    #[cfg(unix)]
     pid: Option<u32>,
+    /// Owns the session's whole process tree. `None` when the job could not be
+    /// created, which leaves termination on the direct child alone.
+    #[cfg(windows)]
+    tree: Option<process_tree::ProcessTree>,
 }
 
 struct ObservedProcessExit {
@@ -601,6 +609,17 @@ impl Session {
             .spawn_command(command)
             .context("failed to spawn PTY command")?;
         let pid = child.process_id();
+        // Adopt the tree before anything else so a shell that starts a
+        // background job is already inside the job object. A failure here is
+        // not fatal: termination falls back to the direct child.
+        #[cfg(windows)]
+        let process_tree = pid.and_then(|pid| match process_tree::ProcessTree::adopt(pid) {
+            Ok(tree) => Some(tree),
+            Err(error) => {
+                eprintln!("[ghosttea] failed to own the process tree for pid {pid}: {error}");
+                None
+            }
+        });
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -651,7 +670,10 @@ impl Session {
                 master: Mutex::new(pair.master),
                 writer: Mutex::new(writer),
                 child: Mutex::new(child),
+                #[cfg(unix)]
                 pid,
+                #[cfg(windows)]
+                tree: process_tree,
             },
             model: Mutex::new(model),
             model_operation: Mutex::new(()),
@@ -1460,7 +1482,29 @@ impl Session {
                         );
                     }
                 }
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    // The interrupt above is this platform's graceful step, so
+                    // there is no second signal to wait out before sweeping.
+                    if !session.has_exited() {
+                        match &session.process.tree {
+                            // Reaches whatever the session started, which
+                            // `Child::kill` on its own would leave running.
+                            Some(tree) => {
+                                if let Err(error) = tree.terminate() {
+                                    eprintln!(
+                                        "[ghosttea] failed to sweep process tree {}: {error:#}",
+                                        session.id()
+                                    );
+                                }
+                            }
+                            None => {
+                                let _ = session.process.child.lock().unwrap().kill();
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(any(unix, windows)))]
                 {
                     if !session.has_exited() {
                         let _ = session.process.child.lock().unwrap().kill();
