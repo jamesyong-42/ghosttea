@@ -11,7 +11,25 @@ import GhostteaSession
 import GhostteaTerminal
 import GhostteaTransport
 import GhostteaWorkspace
+import OSLog
 import UIKit
+
+/// Trace-borne completion signal for the Instruments performance qualification.
+///
+/// `xctrace --target-stdout` does not deliver a device-launched application's
+/// standard output, so the recorded trace itself carries the proof that a
+/// workload ran to completion. The signpost is emitted on the Points of
+/// Interest category already recorded by the qualification template, and the
+/// host verifies it by exporting the trace's `os-signpost` table.
+enum HarnessPerformanceTraceSignpost {
+  static let subsystem = "com.vibecook.ghosttea.harness.performance"
+  static let completeName: StaticString = "GhostteaPerformanceTraceComplete"
+}
+
+private let harnessPerformanceTraceSignposter = OSSignposter(
+  subsystem: HarnessPerformanceTraceSignpost.subsystem,
+  category: .pointsOfInterest
+)
 
 @MainActor
 final class HarnessModel: ObservableObject {
@@ -340,6 +358,10 @@ final class HarnessModel: ObservableObject {
       try await HarnessPerformanceTraceWorkload.run(
         scenario: scenario,
         durationSeconds: durationSeconds
+      )
+      harnessPerformanceTraceSignposter.emitEvent(
+        HarnessPerformanceTraceSignpost.completeName,
+        "scenario=\(scenario.rawValue, privacy: .public) duration=\(durationSeconds, privacy: .public)"
       )
       print("GHOSTTEA_PERFORMANCE_TRACE_COMPLETE \(scenario.rawValue) \(durationSeconds)")
     } catch {

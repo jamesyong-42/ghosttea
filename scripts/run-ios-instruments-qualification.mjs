@@ -8,6 +8,7 @@ import {
   readlinkSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,13 @@ const release = process.argv.includes("--release");
 const quick = process.argv.includes("--quick") || !release;
 const expectedTemplates = ["Time Profiler"];
 const expectedInstruments = ["Metal Application", "Points of Interest", "Power Profiler", "Thermal State"];
+// Workload completion is proven from the recorded trace rather than the
+// launched process's standard output: xctrace opens the --target-stdout sink
+// for a device-launched application but never writes to it, so the harness
+// emits a Points of Interest signpost that the recording captures instead.
+const signpostXPath = '/trace-toc/run[@number="1"]/data/table[@schema="os-signpost"]';
+const signpostSubsystem = "com.vibecook.ghosttea.harness.performance";
+const signpostName = "GhostteaPerformanceTraceComplete";
 const scenarios = [
   { id: "idle", workload: "idle", durationSeconds: quick ? 5 : 60 },
   { id: "rendered-output-1", workload: "output1", durationSeconds: quick ? 10 : 120 },
@@ -137,8 +145,10 @@ async function captureTraces(result, selectedDevice) {
     const traceName = `${scenario.id}.trace`;
     const tracePath = join(outputDirectory, traceName);
     const tocPath = join(outputDirectory, `${scenario.id}.toc.xml`);
+    const signpostPath = join(outputDirectory, `${scenario.id}.signposts.xml`);
     rmSync(tracePath, { recursive: true, force: true });
     rmSync(tocPath, { force: true });
+    rmSync(signpostPath, { force: true });
     requireUnlocked(selectedDevice);
     let recording;
     try {
@@ -181,11 +191,6 @@ async function captureTraces(result, selectedDevice) {
       result.blockers.push(`${scenario.id} xctrace recording failed with status ${recording.status ?? -1}`);
       continue;
     }
-    const completionMarker = `GHOSTTEA_PERFORMANCE_TRACE_COMPLETE ${scenario.workload} ${scenario.durationSeconds}`;
-    if (!recording.stdout.includes(completionMarker)) {
-      result.blockers.push(`${scenario.id} workload did not report completion`);
-      continue;
-    }
     if (!existsSync(tracePath)) {
       result.blockers.push(`${scenario.id} did not produce a trace bundle`);
       continue;
@@ -208,11 +213,21 @@ async function captureTraces(result, selectedDevice) {
       result.blockers.push(`${scenario.id} trace duration is shorter than its workload`);
       continue;
     }
+    if (!exportSignpostTable(tracePath, signpostPath)) {
+      result.blockers.push(`${scenario.id} signpost table export failed`);
+      continue;
+    }
+    const signposts = readFileSync(signpostPath, "utf8");
+    if (!reportsWorkloadCompletion(signposts, scenario)) {
+      result.blockers.push(`${scenario.id} workload did not report completion`);
+      continue;
+    }
     result.traces.push({
       id: scenario.id,
       durationSeconds: traceDurationSeconds,
       traceBundleSha256: hashTree(tracePath),
       tocSha256: sha256(readFileSync(tocPath)),
+      signpostsSha256: sha256(readFileSync(signpostPath)),
     });
     writeEvidence(result);
   }
@@ -369,6 +384,67 @@ function firstMatch(value, pattern) {
   const match = value.match(pattern)?.[1];
   if (!match) throw new Error(`Could not parse required value with ${pattern}`);
   return match.trim();
+}
+
+// `xctrace export` intermittently fails on a freshly written trace bundle and
+// succeeds on an identical retry, so a bounded number of attempts keeps a
+// transient tool failure from discarding an otherwise valid recording. A
+// genuinely unreadable bundle still exhausts the attempts and blocks.
+function exportSignpostTable(tracePath, signpostPath) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    rmSync(signpostPath, { force: true });
+    const exported = execute(
+      "xcrun",
+      ["xctrace", "export", "--input", tracePath, "--xpath", signpostXPath, "--output", signpostPath],
+      { capture: true, allowFailure: true },
+    );
+    if (exported.status === 0 && existsSync(signpostPath) && statSync(signpostPath).size > 0) return true;
+  }
+  return false;
+}
+
+// The exported signpost table interns repeated values: the first occurrence
+// carries the literal text under an `id`, and later rows reference that `id`
+// with `ref`. Resolving the identifiers keeps the check row-correlated, so a
+// completion signpost cannot be inferred from unrelated rows that merely
+// mention the same subsystem or scenario elsewhere in the trace.
+function reportsWorkloadCompletion(document, scenario) {
+  const subsystems = internedIdentifiers(document, "subsystem", signpostSubsystem);
+  const names = internedIdentifiers(document, "signpost-name", signpostName);
+  if (subsystems.size === 0 || names.size === 0) return false;
+  // Instruments renders signpost arguments with separating whitespace, so the
+  // recorded metadata reads `scenario= idle  duration= 5` rather than the
+  // literal interpolation. Tolerate that spacing while still refusing a
+  // neighbouring scenario or a longer duration that merely shares a prefix.
+  const scenarioPattern = new RegExp(`scenario=\\s*${scenario.workload}(?![\\w-])`);
+  const durationPattern = new RegExp(`duration=\\s*${scenario.durationSeconds}(?!\\d)`);
+  return document
+    .split("<row>")
+    .slice(1)
+    .some(
+      (row) =>
+        referencesInternedIdentifier(row, "subsystem", subsystems) &&
+        referencesInternedIdentifier(row, "signpost-name", names) &&
+        scenarioPattern.test(row) &&
+        durationPattern.test(row),
+    );
+}
+
+function internedIdentifiers(document, element, expected) {
+  const identifiers = new Set();
+  const pattern = new RegExp(`<${element}\\s+id="(\\d+)"[^>]*>([^<]*)</${element}>`, "g");
+  for (const match of document.matchAll(pattern)) {
+    if (match[2].trim() === expected) identifiers.add(match[1]);
+  }
+  return identifiers;
+}
+
+function referencesInternedIdentifier(row, element, identifiers) {
+  const pattern = new RegExp(`<${element}\\s+(?:id|ref)="(\\d+)"`, "g");
+  for (const match of row.matchAll(pattern)) {
+    if (identifiers.has(match[1])) return true;
+  }
+  return false;
 }
 
 function capture(program, args) {

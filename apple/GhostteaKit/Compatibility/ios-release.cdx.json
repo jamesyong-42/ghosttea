@@ -54,9 +54,9 @@
       "components": [
         {
           "type": "application",
-          "bom-ref": "ghosttea:toolchain/xcode@26.1+17B55",
+          "bom-ref": "ghosttea:toolchain/xcode@26.6+17F113",
           "name": "Xcode",
-          "version": "26.1 (17B55)",
+          "version": "26.6 (17F113)",
           "properties": [
             {
               "name": "ghosttea:developer-directory",
@@ -64,47 +64,47 @@
             },
             {
               "name": "ghosttea:clang-version",
-              "value": "17.0.0"
+              "value": "21.0.0"
             },
             {
               "name": "ghosttea:clang-build",
-              "value": "clang-1700.4.4.1"
+              "value": "clang-2100.1.1.101"
             }
           ]
         },
         {
           "type": "framework",
-          "bom-ref": "ghosttea:toolchain/swift@6.2.1",
+          "bom-ref": "ghosttea:toolchain/swift@6.3.3",
           "name": "Apple Swift",
-          "version": "6.2.1",
+          "version": "6.3.3",
           "properties": [
             {
               "name": "ghosttea:compiler-build",
-              "value": "swiftlang-6.2.1.4.8"
+              "value": "swiftlang-6.3.3.1.3"
             }
           ]
         },
         {
           "type": "application",
-          "bom-ref": "ghosttea:toolchain/rustc@1.95.0",
+          "bom-ref": "ghosttea:toolchain/rustc@1.97.1",
           "name": "Rust compiler",
-          "version": "1.95.0",
+          "version": "1.97.1",
           "properties": [
             {
               "name": "ghosttea:rustc-commit",
-              "value": "59807616e1fa2540724bfbac14d7976d7e4a3860"
+              "value": "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
             },
             {
               "name": "ghosttea:cargo-version",
-              "value": "1.95.0"
+              "value": "1.97.1"
             },
             {
               "name": "ghosttea:cargo-commit",
-              "value": "f2d3ce0bd"
+              "value": "c980f4866"
             },
             {
               "name": "ghosttea:llvm-version",
-              "value": "22.1.2"
+              "value": "22.1.6"
             },
             {
               "name": "ghosttea:apple-target",
