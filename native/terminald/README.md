@@ -81,6 +81,22 @@ listener is between instances, or while another client is being accepted, gets
 `@vibecook/ghosttea-client` implements that, and any other client must do the
 same. Unix sockets queue in the kernel and never take this path.
 
+## Known Windows session cost
+
+A Windows session retains one kernel handle after it ends. The lifecycle soak
+measures this and holds it to a documented rate rather than ignoring it.
+
+It is not the job object each session owns: disabling adoption entirely leaves
+the growth unchanged at exactly one handle per session, and 256 sessions retain
+256 handles whether or not a job is ever created. The registry is empty at that
+point and thread count falls, so no session object is being held either. It is
+the ConPTY session path itself, and it was only measured once this soak began
+running on Windows. macOS and Linux retain nothing.
+
+At roughly one handle per terminal pane opened over a process lifetime this is
+slow rather than dangerous, but it is unbounded and worth tracing to the
+specific handle.
+
 The bearer token authenticates both local endpoints. Keep the runtime directory
 private to the host user and do not place the token in a child environment.
 The built-in Ghosttea, legacy terminald, external-connection, and Truffle
