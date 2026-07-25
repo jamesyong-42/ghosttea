@@ -167,11 +167,15 @@ jobs:
           path: artifacts/ghostty-vt/
           if-no-files-found: error
 
+      # Deliberately no --clobber. A native build is not reproducible, so the
+      # published bytes are the ones artifacts.json is locked against; replacing
+      # them would leave every consumer's checksum check failing. A re-run for a
+      # release that already carries this asset should fail here and be resolved
+      # by cutting a new release, not by overwriting one.
       - name: Attach to release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$GITHUB_REF_NAME" artifacts/ghostty-vt/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
+            --repo "$GITHUB_REPOSITORY"
