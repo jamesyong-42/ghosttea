@@ -385,16 +385,21 @@ mod tests {
     }
 
     /// A supervisor restarting its service rebinds the endpoint it already
-    /// published, because the endpoint has to stay valid across the restart.
-    /// Windows refuses a name until the previous owner's last handle closes.
+    /// published, because that endpoint has to stay valid across the restart.
+    ///
+    /// Both steps the service takes are exercised here, because each platform
+    /// needs a different one: Unix leaves a socket file behind that has to be
+    /// unlinked before rebinding, and Windows has nothing to remove but refuses
+    /// the name until the previous owner's last handle closes.
     #[tokio::test]
     async fn rebinds_an_endpoint_its_previous_owner_just_released() {
         let endpoint = unique_endpoint("rebind");
         let first = Listener::bind(&endpoint.name).unwrap();
-        // Hold a connection open so the name is as busy as a live service's.
+        // Hold a connection open so the endpoint is as busy as a live service's.
         let client = dial(&endpoint.name).await;
         drop(first);
 
+        remove_stale_endpoint(&endpoint.name).unwrap();
         let second = Listener::bind(&endpoint.name).expect("rebind after release");
         drop(client);
         drop(second);
