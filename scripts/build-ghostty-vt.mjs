@@ -1,13 +1,25 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  assertBuildableHost,
+  installPrefix,
+  libraryPath,
+  lock,
+  resolveTarget,
+  root,
+  targetConfig,
+  zigExecutable,
+  zigRoot,
+} from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
+const target = resolveTarget();
+const config = targetConfig(target);
+assertBuildableHost(target);
+
 const vendor = join(root, "native/vendor/ghostty");
-const zigRoot = join(root, `.tools/zig-aarch64-linux-${lock.zig.version}`);
-const zig = join(zigRoot, "zig");
-const output = join(root, "native/build/ghostty");
+const output = installPrefix(target);
+const zig = zigExecutable(target);
 
 function capture(command, args, cwd = root) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8" });
@@ -17,7 +29,9 @@ function capture(command, args, cwd = root) {
 }
 
 if (!existsSync(join(vendor, ".git")) || !existsSync(zig)) {
-  throw new Error("Ghostty sources or Zig are missing. Run `npm run bootstrap:ghostty-vt` first.");
+  throw new Error(
+    `Ghostty sources or Zig are missing. Run \`npm run bootstrap:ghostty-vt -- --target=${target}\` first.`,
+  );
 }
 if (capture("git", ["rev-parse", "HEAD"], vendor) !== lock.ghostty.commit) {
   throw new Error(`Ghostty source is not at locked commit ${lock.ghostty.commit}`);
@@ -27,46 +41,72 @@ if (capture("git", ["status", "--porcelain"], vendor) !== "") {
 }
 
 mkdirSync(output, { recursive: true });
-const certCandidates = ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"];
-const cert = certCandidates.find(existsSync);
-if (!cert) throw new Error("A host CA certificate bundle is required for Zig dependency downloads.");
 
-const args = [
-  "run",
-  "--rm",
-  "--platform",
-  lock.builder.platform,
-  "--user",
-  `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-  "-v",
-  `${vendor}:/src:ro`,
-  "-v",
-  `${zigRoot}:/zig:ro`,
-  "-v",
-  `${output}:/out`,
-  "-v",
-  `${cert}:/etc/ssl/certs/ca-certificates.crt:ro`,
-  "-w",
-  "/src",
-  lock.builder.image,
-  "/zig/zig",
-  "build",
-  "--cache-dir",
-  "/out/cache",
-  "--global-cache-dir",
-  "/out/global",
-  "--prefix",
-  "/out/install",
-  "-Demit-lib-vt",
-  "-Doptimize=ReleaseFast",
-  `-Dtarget=${lock.builder.target}`,
-];
-const result = spawnSync("docker", args, { cwd: root, stdio: "inherit" });
+/** Zig invocation shared by both builders, rooted at a builder-visible base. */
+function zigArguments(base) {
+  return [
+    "build",
+    "--cache-dir",
+    `${base}/cache`,
+    "--global-cache-dir",
+    `${base}/global`,
+    "--prefix",
+    `${base}/install`,
+    "-Demit-lib-vt",
+    "-Doptimize=ReleaseFast",
+    `-Dtarget=${config.zigTarget}`,
+  ];
+}
+
+/**
+ * Cross-compile inside the pinned builder image. Running Zig in a minimal
+ * Linux container avoids coupling the output to the host SDK.
+ */
+function containerBuild() {
+  const cert = ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"].find(existsSync);
+  if (!cert) throw new Error("A host CA certificate bundle is required for Zig dependency downloads.");
+  return spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--platform",
+      lock.builder.platform,
+      "--user",
+      `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      "-v",
+      `${vendor}:/src:ro`,
+      "-v",
+      `${zigRoot(target)}:/zig:ro`,
+      "-v",
+      `${output}:/out`,
+      "-v",
+      `${cert}:/etc/ssl/certs/ca-certificates.crt:ro`,
+      "-w",
+      "/src",
+      lock.builder.image,
+      "/zig/zig",
+      ...zigArguments("/out"),
+    ],
+    { cwd: root, stdio: "inherit" },
+  );
+}
+
+/**
+ * Build on the host. Required for MSVC targets: Microsoft's CRT headers and
+ * import libraries are not redistributable, so Zig cannot supply them from a
+ * container and must find an installed MSVC and Windows SDK.
+ */
+function nativeBuild() {
+  return spawnSync(zig, zigArguments(output), { cwd: vendor, stdio: "inherit" });
+}
+
+const result = config.build === "container" ? containerBuild() : nativeBuild();
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-const library = join(output, "install/lib/libghostty-vt.a");
-if (!existsSync(library)) throw new Error("Ghostty build completed without libghostty-vt.a");
+const library = join(output, "install", libraryPath(target));
+if (!existsSync(library)) throw new Error(`Ghostty build completed without ${libraryPath(target)}`);
 const licenseDirectory = join(output, "install/share/licenses/ghostty");
 mkdirSync(licenseDirectory, { recursive: true });
 copyFileSync(join(vendor, "LICENSE"), join(licenseDirectory, "LICENSE"));

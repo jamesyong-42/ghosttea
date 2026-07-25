@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveTarget, root } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const target = "aarch64-apple-darwin";
+const target = resolveTarget();
 const manifest = JSON.parse(readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"));
 const artifact = manifest.targets[target];
 if (!artifact) throw new Error(`No locked Ghostty VT artifact exists for ${target}`);
