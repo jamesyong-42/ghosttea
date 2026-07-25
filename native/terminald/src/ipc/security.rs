@@ -40,9 +40,12 @@ pub struct CurrentUserOnly {
 impl CurrentUserOnly {
     pub fn new() -> io::Result<Self> {
         let sid = current_user_sid()?;
-        // `D:P` is a protected DACL, so no inherited entry can widen it. `GA` is
-        // GENERIC_ALL, granted to the single account named by its SID.
-        let sddl = encode_wide(&format!("D:P(A;;GA;;;{sid})"));
+        // `D:P` is a protected DACL, so no inherited entry can widen it. `FA` is
+        // FILE_ALL_ACCESS, granted to the single account named by its SID; it
+        // covers creating further pipe instances. Naming it rather than
+        // GENERIC_ALL keeps the descriptor identical to what the object reports
+        // back, because Windows maps a generic right to this on the way in.
+        let sddl = encode_wide(&format!("D:P(A;;FA;;;{sid})"));
         let mut descriptor: *mut c_void = ptr::null_mut();
         // SAFETY: `sddl` is NUL-terminated and outlives the call, and
         // `descriptor` is a valid out-pointer. A null size pointer is allowed.
@@ -100,7 +103,7 @@ impl Drop for OwnedToken {
 }
 
 /// The SDDL form of the SID that owns this process.
-pub(super) fn current_user_sid() -> io::Result<String> {
+fn current_user_sid() -> io::Result<String> {
     let mut raw_token: HANDLE = 0;
     // SAFETY: `raw_token` is a valid out-pointer. `GetCurrentProcess` returns a
     // pseudo-handle that needs no release.
@@ -165,6 +168,48 @@ unsafe fn decode_wide(raw: *mut u16) -> String {
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(raw, length) })
 }
 
+/// A descriptor's DACL in SDDL form.
+///
+/// Windows renders a well-known account through its SDDL alias rather than its
+/// raw SID — the built-in Administrator becomes `LA` — so a caller comparing
+/// two descriptors must render both through this rather than build a string.
+#[cfg(test)]
+fn render_dacl(descriptor: *mut c_void) -> io::Result<String> {
+    use windows_sys::Win32::Security::{
+        Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
+        DACL_SECURITY_INFORMATION,
+    };
+
+    let mut raw = ptr::null_mut();
+    // SAFETY: `descriptor` is a valid security descriptor owned by the caller.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut raw,
+            ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: on success `raw` is a NUL-terminated UTF-16 string we now own.
+    let sddl = unsafe { decode_wide(raw) };
+    // SAFETY: released exactly once.
+    unsafe { LocalFree(raw as HLOCAL) };
+    Ok(sddl)
+}
+
+#[cfg(test)]
+impl CurrentUserOnly {
+    /// What this descriptor's DACL looks like once Windows renders it, which is
+    /// the form [`dacl_of`] reads back off an object.
+    pub fn dacl(&self) -> io::Result<String> {
+        render_dacl(self.descriptor)
+    }
+}
+
 /// The DACL a live pipe handle actually carries, in SDDL form.
 ///
 /// Only tests need this: it is how they confirm the descriptor built here
@@ -172,9 +217,7 @@ unsafe fn decode_wide(raw: *mut u16) -> String {
 #[cfg(test)]
 pub fn dacl_of(handle: HANDLE) -> io::Result<String> {
     use windows_sys::Win32::Security::{
-        Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_KERNEL_OBJECT,
-        },
+        Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT},
         DACL_SECURITY_INFORMATION,
     };
 
@@ -197,31 +240,11 @@ pub fn dacl_of(handle: HANDLE) -> io::Result<String> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
 
-    let mut raw = ptr::null_mut();
-    // SAFETY: `descriptor` is the self-relative descriptor just returned.
-    let converted = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut raw,
-            ptr::null_mut(),
-        )
-    };
-    if converted == 0 {
-        let error = io::Error::last_os_error();
-        // SAFETY: GetSecurityInfo allocates the descriptor with LocalAlloc.
-        unsafe { LocalFree(descriptor as HLOCAL) };
-        return Err(error);
-    }
-    // SAFETY: on success `raw` is a NUL-terminated UTF-16 string we now own.
-    let sddl = unsafe { decode_wide(raw) };
-    // SAFETY: both allocations are released exactly once.
-    unsafe {
-        LocalFree(raw as HLOCAL);
-        LocalFree(descriptor as HLOCAL);
-    }
-    Ok(sddl)
+    let rendered = render_dacl(descriptor);
+    // SAFETY: GetSecurityInfo allocates the descriptor with LocalAlloc, and it
+    // is released exactly once here.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    rendered
 }
 
 #[cfg(test)]

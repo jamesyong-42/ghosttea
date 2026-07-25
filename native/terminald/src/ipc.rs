@@ -172,20 +172,24 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// An endpoint name no other test shares, plus any directory that owns it.
+    /// An endpoint name no other test shares.
     struct Endpoint {
         name: String,
-        #[cfg_attr(windows, allow(dead_code))]
-        directory: Option<tempfile::TempDir>,
+        /// Never read: held so the socket's directory outlives the test. A pipe
+        /// name needs no directory, so this only exists on Unix.
+        #[cfg(unix)]
+        #[allow(dead_code)]
+        directory: tempfile::TempDir,
     }
 
     fn unique_endpoint(label: &str) -> Endpoint {
-        let id = uuid::Uuid::new_v4();
         #[cfg(windows)]
         {
+            // Pipe names share one machine-wide namespace, so uniqueness has to
+            // come from the name itself.
+            let id = uuid::Uuid::new_v4();
             Endpoint {
                 name: format!(r"\\.\pipe\ghosttea-test-{label}-{id}"),
-                directory: None,
             }
         }
         #[cfg(unix)]
@@ -196,10 +200,7 @@ mod tests {
                 .join(format!("{label}.sock"))
                 .to_string_lossy()
                 .into_owned();
-            Endpoint {
-                name,
-                directory: Some(directory),
-            }
+            Endpoint { name, directory }
         }
     }
 
@@ -340,14 +341,24 @@ mod tests {
 
         let endpoint = unique_endpoint("dacl");
         let mut listener = Listener::bind(&endpoint.name).unwrap();
-        let sid = security::current_user_sid().unwrap();
+        // Rendered by Windows rather than written out here: it reports a
+        // well-known account through its SDDL alias, so the built-in
+        // Administrator reads as `LA` and never as its SID.
+        let expected = security::CurrentUserOnly::new().unwrap().dacl().unwrap();
+        // `P` protects the DACL, and one entry means one account.
+        assert!(
+            expected.starts_with("D:P("),
+            "not a protected DACL: {expected}"
+        );
+        assert_eq!(
+            expected.matches("(A;").count(),
+            1,
+            "not one entry: {expected}"
+        );
 
-        let bound = security::dacl_of(listener.idle.as_ref().unwrap().as_raw_handle()
-            as std::os::windows::raw::HANDLE as isize)
-        .unwrap();
-        // `P` protects the DACL; `FA` is the full-access form Windows reports
-        // for the GENERIC_ALL that was requested.
-        assert_eq!(bound, format!("D:P(A;;FA;;;{sid})"), "on bind");
+        let bound =
+            security::dacl_of(listener.idle.as_ref().unwrap().as_raw_handle() as isize).unwrap();
+        assert_eq!(bound, expected, "on bind");
 
         // The replacement instance created by accept must be just as narrow.
         let client = tokio::spawn({
@@ -358,7 +369,7 @@ mod tests {
         let _client = client.await.unwrap();
         let rotated =
             security::dacl_of(listener.idle.as_ref().unwrap().as_raw_handle() as isize).unwrap();
-        assert_eq!(rotated, format!("D:P(A;;FA;;;{sid})"), "after rotation");
+        assert_eq!(rotated, expected, "after rotation");
     }
 
     #[test]

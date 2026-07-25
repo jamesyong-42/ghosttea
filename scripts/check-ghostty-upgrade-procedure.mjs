@@ -115,6 +115,13 @@ for (const text of [
   if (!workflow.includes(text)) throw new Error(`Ghostty artifact workflow omits ${text}.`);
 }
 
+// The multi-target scripts read the pin through one shared module rather than
+// each opening the lock, so that module has to be the thing that reads it.
+const sharedTargets = "scripts/ghostty-vt-target.mjs";
+if (!read(sharedTargets).includes("native/ghostty.lock.json")) {
+  throw new Error(`${sharedTargets} does not read native/ghostty.lock.json.`);
+}
+
 for (const path of [
   "scripts/bootstrap-ghostty-vt.mjs",
   "scripts/bootstrap-ghostty-vt-apple.mjs",
@@ -122,7 +129,10 @@ for (const path of [
   "scripts/build-ghostty-vt-apple.mjs",
 ]) {
   const source = read(path);
-  for (const text of ["native/ghostty.lock.json", "rev-parse", "lock.ghostty.commit"]) {
+  if (!source.includes("native/ghostty.lock.json") && !source.includes("./ghostty-vt-target.mjs")) {
+    throw new Error(`${path} does not read native/ghostty.lock.json.`);
+  }
+  for (const text of ["rev-parse", "lock.ghostty.commit"]) {
     if (!source.includes(text)) throw new Error(`${path} does not enforce ${text}.`);
   }
 }

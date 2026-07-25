@@ -68,7 +68,7 @@ for the service.
 
 A named pipe created without an explicit security descriptor gets a permissive
 default DACL — read access for Everyone and for Anonymous. The listener instead
-builds `D:P(A;;GA;;;<current user SID>)`, a protected DACL granting full access
+builds `D:P(A;;FA;;;<current user SID>)`, a protected DACL granting full access
 to the account running the service and nothing to anyone else, and applies it to
 every instance it creates. On Unix the runtime directory's permissions provide
 the same boundary. `ipc::Listener` asserts the resulting DACL against a live
