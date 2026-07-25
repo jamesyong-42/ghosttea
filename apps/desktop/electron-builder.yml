@@ -6,9 +6,12 @@ directories:
 files:
   - out/**
   - package.json
+# Copy the directory rather than one filename: `stage:ghosttead` writes
+# `ghosttead` or `ghosttead.exe` depending on the host, and the main process
+# looks for the matching name under `Resources/bin`.
 extraResources:
-  - from: build/bin/ghosttead
-    to: bin/ghosttead
+  - from: build/bin
+    to: bin
 mac:
   category: public.app-category.developer-tools
   extraResources:
@@ -19,4 +22,10 @@ mac:
     - zip
   hardenedRuntime: true
   gatekeeperAssess: false
+win:
+  # The native tab helper is macOS-only, so Windows ships only the app and the
+  # staged terminal service from the shared extraResources above.
+  target:
+    - nsis
+    - zip
 artifactName: ${productName}-${version}-${arch}.${ext}

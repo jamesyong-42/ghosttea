@@ -8,12 +8,29 @@
     "linuxAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
     "linuxAarch64Sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f",
     "macosAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz",
-    "macosAarch64Sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
+    "macosAarch64Sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+    "windowsX8664Url": "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip",
+    "windowsX8664Sha256": "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
   },
   "builder": {
     "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
     "platform": "linux/arm64",
     "target": "aarch64-macos"
+  },
+  "targets": {
+    "aarch64-apple-darwin": {
+      "zigTarget": "aarch64-macos",
+      "build": "container",
+      "zigDistribution": "linuxAarch64",
+      "libraryPath": "lib/libghostty-vt.a"
+    },
+    "x86_64-pc-windows-msvc": {
+      "zigTarget": "x86_64-windows-msvc",
+      "build": "native",
+      "zigDistribution": "windowsX8664",
+      "hostPlatform": "win32",
+      "libraryPath": "lib/ghostty-vt-static.lib"
+    }
   },
   "appleBuilder": {
     "architecture": "arm64",

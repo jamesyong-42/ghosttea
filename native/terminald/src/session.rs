@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+mod process_tree;
+
 use anyhow::{Context, Result};
 use ghosttea_core::{
     ClipboardRequest, ControlChanged, ControllerState, InputOrderState, LogicalTerminalSnapshot,
@@ -169,6 +172,9 @@ impl Default for SessionActivity {
     }
 }
 
+/// Infer activity from the PTY's foreground process group. Windows has no
+/// process groups and reports `SessionActivity::unsupported` instead.
+#[cfg(unix)]
 fn classify_process_group_activity(
     program_kind: ResolvedProgramKind,
     root_process_group_id: Option<i32>,
@@ -332,10 +338,20 @@ enum InputOperation {
 }
 
 struct PtyProcess {
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    /// Released when the session ends. On Windows that release is what lets the
+    /// reader observe end of file; see `Session::start_exit_watcher`.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    /// Addresses the process group when signalling. Windows has no equivalent
+    /// and consumes the identifier at spawn to build `tree` instead, so it
+    /// keeps no copy.
+    #[cfg(unix)]
     pid: Option<u32>,
+    /// Owns the session's whole process tree. `None` when the job could not be
+    /// created, which leaves termination on the direct child alone.
+    #[cfg(windows)]
+    tree: Option<process_tree::ProcessTree>,
 }
 
 struct ObservedProcessExit {
@@ -344,6 +360,9 @@ struct ObservedProcessExit {
 }
 
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
+/// Grace between SIGTERM and SIGKILL. Windows escalates straight from the
+/// interrupt to `Child::kill`, so it has no intermediate step to wait out.
+#[cfg(unix)]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 impl PtyProcess {
@@ -358,7 +377,12 @@ impl PtyProcess {
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        self.master.lock().unwrap().resize(PtySize {
+        let master = self.master.lock().unwrap();
+        // Released once the session ends; a late resize has nothing to apply.
+        let Some(master) = master.as_ref() else {
+            return Ok(());
+        };
+        master.resize(PtySize {
             rows,
             cols,
             pixel_width: 0,
@@ -390,7 +414,12 @@ impl PtyProcess {
         program_kind: ResolvedProgramKind,
         observed_at_ms: u64,
     ) -> SessionActivity {
-        let foreground_process_group_id = self.master.lock().unwrap().process_group_leader();
+        let foreground_process_group_id = self
+            .master
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|master| master.process_group_leader());
         let root_process_group_id = self.pid.and_then(|pid| {
             let pid = i32::try_from(pid).ok()?;
             let process_group_id = unsafe { libc::getpgid(pid) };
@@ -592,6 +621,17 @@ impl Session {
             .spawn_command(command)
             .context("failed to spawn PTY command")?;
         let pid = child.process_id();
+        // Adopt the tree before anything else so a shell that starts a
+        // background job is already inside the job object. A failure here is
+        // not fatal: termination falls back to the direct child.
+        #[cfg(windows)]
+        let process_tree = pid.and_then(|pid| match process_tree::ProcessTree::adopt(pid) {
+            Ok(tree) => Some(tree),
+            Err(error) => {
+                eprintln!("[ghosttea] failed to own the process tree for pid {pid}: {error}");
+                None
+            }
+        });
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -639,10 +679,13 @@ impl Session {
             }),
             created_at_ms,
             process: PtyProcess {
-                master: Mutex::new(pair.master),
+                master: Mutex::new(Some(pair.master)),
                 writer: Mutex::new(writer),
                 child: Mutex::new(child),
+                #[cfg(unix)]
                 pid,
+                #[cfg(windows)]
+                tree: process_tree,
             },
             model: Mutex::new(model),
             model_operation: Mutex::new(()),
@@ -662,6 +705,8 @@ impl Session {
         });
         let _ = session.sample_activity();
         Self::start_input_actor(&session, input_rx);
+        #[cfg(windows)]
+        Self::start_exit_watcher(&session);
         Self::start_reader(&session, reader);
         Ok(session)
     }
@@ -694,6 +739,61 @@ impl Session {
                 }
             })
             .expect("PTY input actor");
+    }
+
+    /// Make a Windows session's exit observable.
+    ///
+    /// A Unix PTY reports end of file on the master once the last slave handle
+    /// closes, so the reader ends on its own when the child exits. ConPTY keeps
+    /// the output pipe open until the pseudoconsole itself closes, which
+    /// `portable-pty` does when the master drops — so without this the reader
+    /// blocks forever, the session never reports its exit, and it never leaves
+    /// the registry.
+    ///
+    /// Releasing the master closes the pseudoconsole and ends the reader, which
+    /// runs the same teardown a Unix session reaches by itself.
+    #[cfg(windows)]
+    fn start_exit_watcher(session: &Arc<Self>) {
+        /// How often to ask whether the child is gone.
+        const POLL: Duration = Duration::from_millis(50);
+        /// Time for the reader to drain what the child wrote just before
+        /// exiting. Closing the pseudoconsole discards anything still buffered.
+        const DRAIN: Duration = Duration::from_millis(150);
+
+        let watcher_id = session.id();
+        let session = Arc::downgrade(session);
+        std::thread::Builder::new()
+            .name(format!("pty-exit-{watcher_id}"))
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(POLL);
+                    // The session was dropped, which released the master with
+                    // it, so there is nothing left to close.
+                    let Some(alive) = Weak::upgrade(&session) else {
+                        return;
+                    };
+                    if alive.has_exited() {
+                        return;
+                    }
+                    // `try_wait` rather than `wait`: holding the child lock
+                    // across a blocking wait would stall termination, which
+                    // needs the same lock to fall back to `Child::kill`.
+                    let exited =
+                        matches!(alive.process.child.lock().unwrap().try_wait(), Ok(Some(_)));
+                    // Do not hold the session across the drain.
+                    drop(alive);
+                    if !exited {
+                        continue;
+                    }
+                    std::thread::sleep(DRAIN);
+                    let Some(alive) = Weak::upgrade(&session) else {
+                        return;
+                    };
+                    alive.process.master.lock().unwrap().take();
+                    return;
+                }
+            })
+            .expect("PTY exit watcher");
     }
 
     fn start_reader(session: &Arc<Self>, mut reader: Box<dyn Read + Send>) {
@@ -1451,7 +1551,29 @@ impl Session {
                         );
                     }
                 }
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    // The interrupt above is this platform's graceful step, so
+                    // there is no second signal to wait out before sweeping.
+                    if !session.has_exited() {
+                        match &session.process.tree {
+                            // Reaches whatever the session started, which
+                            // `Child::kill` on its own would leave running.
+                            Some(tree) => {
+                                if let Err(error) = tree.terminate() {
+                                    eprintln!(
+                                        "[ghosttea] failed to sweep process tree {}: {error:#}",
+                                        session.id()
+                                    );
+                                }
+                            }
+                            None => {
+                                let _ = session.process.child.lock().unwrap().kill();
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(any(unix, windows)))]
                 {
                     if !session.has_exited() {
                         let _ = session.process.child.lock().unwrap().kill();
@@ -1596,6 +1718,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn classifies_process_groups_only_when_program_identity_supports_the_inference() {
         assert_eq!(

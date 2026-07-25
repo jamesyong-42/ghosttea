@@ -4,11 +4,20 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { GhostteaAutomationClient } from "@vibecook/ghosttea-client";
+import { localEndpoints } from "../../bench/lib/ipc-endpoints.mjs";
+
+if (process.platform === "win32") {
+  // The transport itself is covered on Windows by the `ipc` tests in the
+  // ghosttea crate. This fixture additionally drives POSIX shells and python3
+  // and asserts signal-based exit semantics, so porting it needs a
+  // platform-specific fixture rather than substituted paths.
+  console.log("SKIP terminald smoke: the session fixture requires a POSIX shell");
+  process.exit(0);
+}
 
 const root = resolve(import.meta.dirname, "../..");
 const runtimeDir = mkdtempSync(join(tmpdir(), "terminald-smoke-"));
-const controlSocket = join(runtimeDir, "control.sock");
-const frameSocket = join(runtimeDir, "frame.sock");
+const { controlSocket, frameSocket } = localEndpoints(runtimeDir);
 const token = "smoke-test-token";
 const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghosttead/Cargo.toml"], {
   cwd: root,

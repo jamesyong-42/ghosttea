@@ -14,19 +14,18 @@ the core's effect order across concurrent PTY output, view actions, and input.
 ## Embedded service mode
 
 `TerminalService::run()` is the standalone convenience path used by
-`ghosttead`: it removes stale socket paths, binds both configured Unix sockets,
-and serves them. An application that owns its runtime directory, socket
+`ghosttead`: it removes stale endpoints, binds both configured endpoints, and
+serves them. An application that owns its runtime directory, endpoint
 permissions, and startup ordering can instead create the listeners and pass
 them to `serve()`:
 
 ```rust,ignore
 use ghosttea::{
-    TerminalService, TerminalServiceConfig, TerminalServiceListeners,
+    ipc, TerminalService, TerminalServiceConfig, TerminalServiceListeners,
 };
-use tokio::net::UnixListener;
 
-let control = UnixListener::bind(&control_path)?;
-let frames = UnixListener::bind(&frame_path)?;
+let control = ipc::Listener::bind(&control_path)?;
+let frames = ipc::Listener::bind(&frame_path)?;
 set_private_socket_permissions(&control_path)?;
 set_private_socket_permissions(&frame_path)?;
 
@@ -47,12 +46,58 @@ service
 ```
 
 The host owns listener creation, replacement, permissions, and unlinking when
-it supplies listeners. Dropping or cancelling the `serve()` future stops
-accepting traffic and aborts the terminal mesh task, but it is not a graceful
-session-drain API. A host that needs classified shutdown events should
-terminate its sessions before cancellation.
+it supplies listeners. On Unix an endpoint is a socket path and
+`ipc::Listener` also accepts a `tokio::net::UnixListener` through `From`, so a
+host that binds its own socket can pass it straight in. Dropping or cancelling
+the `serve()` future stops accepting traffic and aborts the terminal mesh task,
+but it is not a graceful session-drain API. A host that needs classified
+shutdown events should terminate its sessions before cancellation.
 
-The bearer token authenticates both local sockets. Keep the runtime directory
+## Local endpoints by platform
+
+| Platform | Control | Frames |
+| --- | --- | --- |
+| macOS, Linux | Unix-domain socket | second Unix-domain socket |
+| Windows | named pipe | second named pipe |
+
+Windows pipe names share one flat, machine-wide namespace instead of sitting
+under a private directory, so each name carries an instance suffix and the
+listener refuses to bind a name that already exists. That refusal is what stops
+another process from publishing the pipe first and collecting connections meant
+for the service.
+
+A named pipe created without an explicit security descriptor gets a permissive
+default DACL — read access for Everyone and for Anonymous. The listener instead
+builds `D:P(A;;FA;;;<current user SID>)`, a protected DACL granting full access
+to the account running the service and nothing to anyone else, and applies it to
+every instance it creates. On Unix the runtime directory's permissions provide
+the same boundary. `ipc::Listener` asserts the resulting DACL against a live
+pipe handle in its tests, because passing a descriptor that never reaches the
+object fails silently.
+
+A pipe can only offer one instance at a time, so a client that dials while the
+listener is between instances, or while another client is being accepted, gets
+`ERROR_PIPE_BUSY`. Windows expects clients to wait and retry; `openEndpoint` in
+`@vibecook/ghosttea-client` implements that, and any other client must do the
+same. Unix sockets queue in the kernel and never take this path.
+
+## Known Windows session cost
+
+A Windows session retains one kernel handle after it ends. The lifecycle soak
+measures this and holds it to a documented rate rather than ignoring it.
+
+It is not the job object each session owns: disabling adoption entirely leaves
+the growth unchanged at exactly one handle per session, and 256 sessions retain
+256 handles whether or not a job is ever created. The registry is empty at that
+point and thread count falls, so no session object is being held either. It is
+the ConPTY session path itself, and it was only measured once this soak began
+running on Windows. macOS and Linux retain nothing.
+
+At roughly one handle per terminal pane opened over a process lifetime this is
+slow rather than dangerous, but it is unbounded and worth tracing to the
+specific handle.
+
+The bearer token authenticates both local endpoints. Keep the runtime directory
 private to the host user and do not place the token in a child environment.
 The built-in Ghosttea, legacy terminald, external-connection, and Truffle
 variables are removed from inherited PTY environments. Embedding applications

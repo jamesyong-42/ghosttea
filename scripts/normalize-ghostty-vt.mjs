@@ -1,11 +1,20 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { installPrefix, libraryPath, resolveTarget, targetConfig } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const library = resolve(process.argv[2] ?? `${root}/native/build/ghostty/install/lib/libghostty-vt.a`);
+const target = resolveTarget();
+const config = targetConfig(target);
+const positional = process.argv.slice(2).find((value) => !value.startsWith("--"));
+const library = resolve(positional ?? join(installPrefix(target), "install", libraryPath(target)));
 
+if (config.build !== "container") {
+  // Normalization exists to make the container cross-build byte-identical
+  // across hosts. A native build embeds the building machine's absolute paths
+  // in its archive member table, which no postprocessing step can canonicalize.
+  throw new Error(`${target} is built natively and has no normalization step.`);
+}
 if (process.platform !== "darwin") {
   throw new Error("Ghostty VT release archives must be normalized on macOS with Apple strip.");
 }

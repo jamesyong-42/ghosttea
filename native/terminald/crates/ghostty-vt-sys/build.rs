@@ -25,6 +25,80 @@ struct TargetArtifact {
     size: u64,
     library_sha256: String,
     headers_sha256: String,
+    /// Bundle-relative path of the static archive. Optional so existing
+    /// manifests keep working; when absent the platform default applies.
+    #[serde(default)]
+    library_path: Option<String>,
+    /// Whether a local build of this target reproduces the released bytes.
+    ///
+    /// Container cross-builds compile at fixed in-container paths, so any host
+    /// reproduces them. Native builds embed the building machine's absolute
+    /// paths in the archive, so their locked checksums describe the published
+    /// bundle only. Absent means reproducible, which keeps existing manifests
+    /// on the stricter behavior.
+    #[serde(default = "reproducible_by_default")]
+    reproducible: bool,
+}
+
+fn reproducible_by_default() -> bool {
+    true
+}
+
+/// Where an install tree came from, which decides whether its bytes must match
+/// the locked checksums.
+enum Prefix {
+    /// Built in this checkout from the pinned Ghostty commit.
+    Repository(PathBuf),
+    /// Extracted from a downloaded or caller-supplied release bundle.
+    Bundle(PathBuf),
+}
+
+impl Prefix {
+    fn path(&self) -> &Path {
+        match self {
+            Prefix::Repository(path) | Prefix::Bundle(path) => path,
+        }
+    }
+}
+
+impl TargetArtifact {
+    fn library_path(&self, layout: &Layout) -> String {
+        self.library_path
+            .clone()
+            .unwrap_or_else(|| layout.library_path.to_owned())
+    }
+}
+
+/// Per-target naming for the static archive Ghostty installs and for the
+/// private copy Cargo links against.
+///
+/// Ghostty installs the Windows static archive as `ghostty-vt-static.lib` so it
+/// cannot collide with `ghostty-vt.lib`, the DLL import library that sits beside
+/// it. Everywhere else it installs `libghostty-vt.a`.
+struct Layout {
+    library_path: &'static str,
+    link_file_name: &'static str,
+}
+
+const LINK_NAME: &str = "ghosttea_ghostty_vt_static";
+
+fn layout() -> Layout {
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let abi = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    Layout {
+        library_path: if os == "windows" {
+            "lib/ghostty-vt-static.lib"
+        } else {
+            "lib/libghostty-vt.a"
+        },
+        // MSVC resolves `-l static=NAME` as `NAME.lib`; every other toolchain
+        // expects `libNAME.a`. Both spellings must track LINK_NAME.
+        link_file_name: if abi == "msvc" {
+            "ghosttea_ghostty_vt_static.lib"
+        } else {
+            "libghosttea_ghostty_vt_static.a"
+        },
+    }
 }
 
 fn main() {
@@ -44,10 +118,11 @@ fn main() {
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
     let target = env::var("TARGET").expect("Cargo target triple");
+    let layout = layout();
     if let Some(prefix) = env::var_os("GHOSTTY_VT_PREFIX") {
         let prefix = PathBuf::from(prefix);
-        validate_local_override(&prefix);
-        link(&prefix, &out);
+        validate_local_override(&prefix, &layout);
+        link(&prefix, &out, &layout);
         return;
     }
     let manifest: ArtifactManifest = serde_json::from_str(include_str!("artifacts.json"))
@@ -68,19 +143,44 @@ fn main() {
         )
     });
 
-    let prefix = resolve_prefix(&manifest_dir, &out, artifact);
-    validate_install(&prefix, artifact);
-    link(&prefix, &out);
+    let prefix = resolve_prefix(&manifest_dir, &out, &target, artifact, &layout);
+    match &prefix {
+        // A release bundle is untrusted input; its bytes are always verified.
+        Prefix::Bundle(path) => validate_install(path, artifact, &layout),
+        // A repository build already comes from the pinned Ghostty commit, so
+        // its checksum is a reproducibility check rather than a trust boundary.
+        // Only targets that reproduce byte-for-byte can be held to it.
+        Prefix::Repository(path) => {
+            if artifact.reproducible {
+                validate_install(path, artifact, &layout);
+            }
+        }
+    }
+    link(prefix.path(), &out, &layout);
 }
 
-fn resolve_prefix(manifest_dir: &Path, out: &Path, artifact: &TargetArtifact) -> PathBuf {
+fn resolve_prefix(
+    manifest_dir: &Path,
+    out: &Path,
+    target: &str,
+    artifact: &TargetArtifact,
+    layout: &Layout,
+) -> Prefix {
     if let Some(bundle) = env::var_os("GHOSTTEA_GHOSTTY_VT_BUNDLE") {
-        return extract_bundle(&PathBuf::from(bundle), out, artifact);
+        return Prefix::Bundle(extract_bundle(&PathBuf::from(bundle), out, artifact));
     }
 
-    let repository_prefix = manifest_dir.join("../../../build/ghostty/install");
-    if repository_prefix.join("lib/libghostty-vt.a").is_file() {
-        return repository_prefix;
+    // Repository builds keep one install tree per target so a checkout can hold
+    // more than one platform's output at a time.
+    let build_root = manifest_dir.join("../../../build/ghostty");
+    let library_path = artifact.library_path(layout);
+    for candidate in [
+        build_root.join(target).join("install"),
+        build_root.join("install"),
+    ] {
+        if candidate.join(&library_path).is_file() {
+            return Prefix::Repository(candidate);
+        }
     }
 
     if offline() {
@@ -104,15 +204,16 @@ fn resolve_prefix(manifest_dir: &Path, out: &Path, artifact: &TargetArtifact) ->
         .read_to_vec()
         .unwrap_or_else(|error| panic!("failed to read Ghostty VT bundle from {url}: {error}"));
     fs::write(&bundle, contents).expect("write downloaded Ghostty VT bundle");
-    extract_bundle(&bundle, out, artifact)
+    Prefix::Bundle(extract_bundle(&bundle, out, artifact))
 }
 
-fn validate_local_override(prefix: &Path) {
-    let library = prefix.join("lib/libghostty-vt.a");
+fn validate_local_override(prefix: &Path, layout: &Layout) {
+    let library = prefix.join(layout.library_path);
     let header = prefix.join("include/ghostty/vt.h");
     assert!(
         library.is_file() && header.is_file(),
-        "GHOSTTY_VT_PREFIX must contain lib/libghostty-vt.a and include/ghostty/vt.h"
+        "GHOSTTY_VT_PREFIX must contain {} and include/ghostty/vt.h",
+        layout.library_path
     );
     println!("cargo:rerun-if-changed={}", library.display());
     println!("cargo:rerun-if-changed={}", header.display());
@@ -146,8 +247,8 @@ fn extract_bundle(bundle: &Path, out: &Path, artifact: &TargetArtifact) -> PathB
     prefix
 }
 
-fn validate_install(prefix: &Path, artifact: &TargetArtifact) {
-    let library = prefix.join("lib/libghostty-vt.a");
+fn validate_install(prefix: &Path, artifact: &TargetArtifact, layout: &Layout) {
+    let library = prefix.join(artifact.library_path(layout));
     let contents = fs::read(&library).unwrap_or_else(|error| {
         panic!(
             "failed to read required artifact {}: {error}",
@@ -221,14 +322,21 @@ fn verify_hash(path: &Path, contents: &[u8], expected: &str) {
     );
 }
 
-fn link(prefix: &Path, out: &Path) {
-    let library = prefix.join("lib/libghostty-vt.a");
+fn link(prefix: &Path, out: &Path, layout: &Layout) {
+    let library = prefix.join(layout.library_path);
     let include = prefix.join("include");
 
     // Give the static archive a unique link name. macOS's linker can otherwise
-    // prefer a sibling dylib even when Cargo requests a static library.
-    let static_library = out.join("libghosttea_ghostty_vt_static.a");
-    fs::copy(&library, &static_library).expect("copy libghostty-vt static archive");
+    // prefer a sibling dylib even when Cargo requests a static library, and on
+    // Windows the installed `ghostty-vt.lib` import library sits in the same
+    // directory as the static `ghostty-vt-static.lib`.
+    let static_library = out.join(layout.link_file_name);
+    fs::copy(&library, &static_library).unwrap_or_else(|error| {
+        panic!(
+            "failed to copy Ghostty VT static archive {}: {error}",
+            library.display()
+        )
+    });
 
     cc::Build::new()
         .file("src/ghostty_shim.c")
@@ -239,7 +347,7 @@ fn link(prefix: &Path, out: &Path) {
         .compile("ghosttea_ghostty_shim");
 
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=ghosttea_ghostty_vt_static");
+    println!("cargo:rustc-link-lib=static={LINK_NAME}");
 }
 
 fn offline() -> bool {

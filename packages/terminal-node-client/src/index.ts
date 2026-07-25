@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { createConnection, type Socket } from "node:net";
+import { type Socket } from "node:net";
+import { openEndpoint } from "./endpoints.js";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
@@ -11,6 +12,8 @@ import {
   type SessionSummary,
   type TerminationSource,
 } from "@vibecook/ghosttea-protocol";
+
+export { endpointPersists, localEndpoints, openEndpoint, type LocalEndpoints } from "./endpoints.js";
 
 export type GhostteaControlCommand = ClientCommand extends infer Command
   ? Command extends { requestId: number }
@@ -92,7 +95,10 @@ export class GhostteaAutomationClient extends EventEmitter {
   }
 
   async #open(): Promise<void> {
-    const socket = createConnection(this.#connection.controlSocket);
+    // One budget covers waiting for a free endpoint and authenticating on it,
+    // so a slow connect cannot silently double the caller's timeout.
+    const deadline = Date.now() + (this.#options.connectTimeoutMs ?? 10_000);
+    const socket = await openEndpoint(this.#connection.controlSocket, deadline);
     this.#socket = socket;
     this.#buffer = Buffer.alloc(0);
     this.#authenticated = false;
@@ -100,9 +106,6 @@ export class GhostteaAutomationClient extends EventEmitter {
     socket.on("error", (error) => this.#onSocketError(socket, error));
     socket.on("close", () => this.#onSocketClose(socket));
     await new Promise<void>((resolve, reject) => {
-      const onConnect = (): void => {
-        socket.write(packet(Buffer.from(this.#connection.authToken)));
-      };
       const onAuthenticated = (): void => {
         cleanup();
         resolve();
@@ -120,7 +123,6 @@ export class GhostteaAutomationClient extends EventEmitter {
         onFailure(new Error("Ghosttea control connection closed during authentication"));
       };
       const cleanup = (): void => {
-        socket.off("connect", onConnect);
         socket.off("close", onClose);
         this.off("authenticated", onAuthenticated);
         this.off("connection-error", onFailure);
@@ -128,12 +130,13 @@ export class GhostteaAutomationClient extends EventEmitter {
       };
       const timeout = setTimeout(
         () => onFailure(new Error("Ghosttea control connection timed out during authentication")),
-        this.#options.connectTimeoutMs ?? 10_000,
+        Math.max(0, deadline - Date.now()),
       );
-      socket.once("connect", onConnect);
       socket.once("close", onClose);
       this.once("authenticated", onAuthenticated);
       this.once("connection-error", onFailure);
+      // `openEndpoint` resolves only once connected, so authenticate now.
+      socket.write(packet(Buffer.from(this.#connection.authToken)));
     });
     try {
       const hello = await this.#requestConnected({

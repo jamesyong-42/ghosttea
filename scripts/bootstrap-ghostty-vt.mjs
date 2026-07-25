@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { lock, resolveTarget, root, zigDistribution, zigExecutable } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
+const target = resolveTarget();
 const vendor = join(root, "native/vendor/ghostty");
 const tools = join(root, ".tools");
-const zig = join(tools, `zig-aarch64-linux-${lock.zig.version}`, "zig");
+const distribution = zigDistribution(target);
+const zig = zigExecutable(target);
 
 function run(command, args, cwd = root) {
   const result = spawnSync(command, args, { cwd, stdio: "inherit" });
@@ -32,20 +33,27 @@ if (revision.status !== 0 || revision.stdout.trim() !== lock.ghostty.commit) {
 }
 
 if (!existsSync(zig)) {
-  const archive = join(tmpdir(), basename(new URL(lock.zig.linuxAarch64Url).pathname));
-  const response = await fetch(lock.zig.linuxAarch64Url);
+  const archive = join(tmpdir(), basename(new URL(distribution.url).pathname));
+  const response = await fetch(distribution.url);
   if (!response.ok) throw new Error(`Zig download failed: ${response.status}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   const checksum = createHash("sha256").update(bytes).digest("hex");
-  if (checksum !== lock.zig.linuxAarch64Sha256) {
-    throw new Error(`Zig checksum mismatch: expected ${lock.zig.linuxAarch64Sha256}, received ${checksum}`);
+  if (checksum !== distribution.sha256) {
+    throw new Error(`Zig checksum mismatch: expected ${distribution.sha256}, received ${checksum}`);
   }
   writeFileSync(archive, bytes);
   try {
-    run("tar", ["-xf", archive, "-C", tools]);
+    // Zig ships .tar.xz for POSIX hosts and .zip for Windows. Git for Windows
+    // puts GNU tar ahead of the system bsdtar on PATH and GNU tar cannot read a
+    // zip, so name the Windows archiver explicitly rather than trusting
+    // resolution order.
+    const bsdtar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+    const archiver = distribution.archive === "zip" && existsSync(bsdtar) ? bsdtar : "tar";
+    run(archiver, ["-xf", archive, "-C", tools]);
   } finally {
     rmSync(archive, { force: true });
   }
+  if (!existsSync(zig)) throw new Error(`Zig ${lock.zig.version} did not extract to ${zig}`);
 }
 
-console.log(`Ghostty ${lock.ghostty.commit} and Zig ${lock.zig.version} are ready.`);
+console.log(`Ghostty ${lock.ghostty.commit} and Zig ${lock.zig.version} are ready for ${target}.`);

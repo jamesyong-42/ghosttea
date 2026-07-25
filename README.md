@@ -9,7 +9,8 @@ An implementation of the terminal runtime described in
 The current vertical slice includes:
 
 - a persistent Rust sidecar with PTY-backed sessions;
-- independent authenticated control and frame Unix sockets;
+- independent authenticated control and frame endpoints, using Unix-domain
+  sockets on macOS and Linux and named pipes on Windows;
 - a pinned `libghostty-vt` terminal core with title, cwd, bell, damage,
   scrollback, reflow, and terminal-aware key encoding;
 - revisioned full-viewport row-replacement frames with cursor state;

@@ -39,6 +39,35 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
+  # Windows runs the same release gate as macOS. It bootstraps the Ghostty VT
+  # artifact from the pinned source rather than the Apple prebuild, which is
+  # also how a Windows contributor works today.
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      GHOSTTEA_SOAK_SESSIONS: ${{ github.event_name == 'schedule' && '1024' || '256' }}
+      GHOSTTEA_SOAK_ROUNDS: ${{ github.event_name == 'schedule' && '4' || '1' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - run: npm ci --ignore-scripts
+      - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run ci:desktop
+
   minimum-rust:
     runs-on: macos-15
     timeout-minutes: 20

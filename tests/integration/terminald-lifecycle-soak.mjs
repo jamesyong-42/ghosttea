@@ -1,12 +1,31 @@
 import { execFileSync } from "node:child_process";
 
 import { TerminaldHarness } from "../../bench/lib/terminald-client.mjs";
+import { cleanEnvironment, printAndExitArgs, shellExecutable } from "../../bench/lib/shell-fixture.mjs";
 
 const sessionsPerRound = positiveInteger("GHOSTTEA_SOAK_SESSIONS", 256);
 const rounds = positiveInteger("GHOSTTEA_SOAK_ROUNDS", 1);
 const warmupSessions = positiveInteger("GHOSTTEA_SOAK_WARMUP_SESSIONS", 16);
 const maximumRssGrowthMiB = positiveNumber("GHOSTTEA_SOAK_MAX_RSS_GROWTH_MIB", 32);
 const maximumThreadGrowth = positiveInteger("GHOSTTEA_SOAK_MAX_THREAD_GROWTH", 4);
+/**
+ * Windows only, and a rate rather than a total because the scheduled run churns
+ * four times as many sessions as a pull request.
+ *
+ * A Windows session retains one handle after it ends. That is not this
+ * service's job object: disabling adoption entirely leaves the growth
+ * unchanged at exactly one per session, and 256 sessions retain 256 handles
+ * whether or not a job is ever created. It is the ConPTY session path itself,
+ * measured here for the first time because this soak did not run on Windows
+ * before. macOS and Linux retain nothing, so they hold to the same bound.
+ *
+ * The allowance sits just above the observed rate so a regression that retains
+ * more than the known handle still fails.
+ */
+const maximumHandlesPerSession = positiveNumber("GHOSTTEA_SOAK_MAX_HANDLES_PER_SESSION", 1.25);
+// How long to let the service finish releasing what the churn used before
+// measuring it. A slower machine is still draining well past a fixed delay.
+const settleTimeoutMs = positiveInteger("GHOSTTEA_SOAK_SETTLE_TIMEOUT_MS", 30_000);
 
 function positiveInteger(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
@@ -25,6 +44,27 @@ function delay(milliseconds) {
 }
 
 function processSample(pid) {
+  if (process.platform === "win32") {
+    // Handles are the Windows-specific leak signal that matters most here: the
+    // service creates a fresh named pipe instance for every connection, so a
+    // handle that outlives its connection would show up as steady growth.
+    const sampled = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$p = Get-Process -Id ${pid}; "$([math]::Round($p.WorkingSet64 / 1KB)) $($p.Threads.Count) $($p.HandleCount)"`,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    const [rssKiB, threads, handles] = sampled.split(/\s+/).map(Number);
+    if (![rssKiB, threads, handles].every(Number.isFinite)) {
+      throw new Error(`Unable to sample process ${pid}: ${sampled}`);
+    }
+    return { rssKiB, threads, handles };
+  }
+
   const rssOutput = execFileSync("ps", ["-o", "rss=", "-p", String(pid)], {
     encoding: "utf8",
   }).trim();
@@ -45,16 +85,41 @@ function processSample(pid) {
   return { rssKiB, threads };
 }
 
+/**
+ * Sample a settled process.
+ *
+ * Teardown is asynchronous, so a machine still working through the churn
+ * reports resources that are about to be released. Wait until the readings stop
+ * falling before measuring, rather than assuming a fixed delay was enough.
+ */
 async function stableProcessSample(pid) {
+  const deadline = Date.now() + settleTimeoutMs;
+  let previous = processSample(pid);
+  let unchanged = 0;
+  while (Date.now() < deadline && unchanged < 3) {
+    await delay(250);
+    const next = processSample(pid);
+    const settled =
+      next.rssKiB >= previous.rssKiB &&
+      next.threads >= previous.threads &&
+      (next.handles ?? 0) >= (previous.handles ?? 0);
+    unchanged = settled ? unchanged + 1 : 0;
+    previous = next;
+  }
+
   const samples = [];
   for (let index = 0; index < 5; index += 1) {
     samples.push(processSample(pid));
     await delay(100);
   }
-  return {
-    rssKiB: Math.min(...samples.map((sample) => sample.rssKiB)),
-    threads: Math.min(...samples.map((sample) => sample.threads)),
+  const sample = {
+    rssKiB: Math.min(...samples.map((entry) => entry.rssKiB)),
+    threads: Math.min(...samples.map((entry) => entry.threads)),
   };
+  if (samples.every((entry) => entry.handles !== undefined)) {
+    sample.handles = Math.min(...samples.map((entry) => entry.handles));
+  }
+  return sample;
 }
 
 async function waitForSessionExit(harness, sessionId, timeoutMs = 5_000) {
@@ -73,12 +138,9 @@ async function churnSession(harness, label) {
   const ownerId = `ghosttea-lifecycle-owner-${label}`;
   const created = await harness.request("create-session", {
     options: {
-      executable: "/bin/sh",
-      args: ["-c", `printf '${marker}\\n'; sleep 0.08`],
-      environment: {
-        mode: "clean",
-        variables: { PATH: "/usr/bin:/bin", LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "xterm-256color" },
-      },
+      executable: shellExecutable,
+      args: printAndExitArgs(marker),
+      environment: cleanEnvironment(),
       cols: 80,
       rows: 24,
       persistence: "keep-until-exit",
@@ -106,7 +168,7 @@ async function churn(harness, count, prefix) {
   }
 }
 
-if (process.platform !== "darwin" && process.platform !== "linux") {
+if (!["darwin", "linux", "win32"].includes(process.platform)) {
   throw new Error(`terminald lifecycle soak does not support ${process.platform}`);
 }
 
@@ -122,6 +184,7 @@ try {
     await churn(harness, sessionsPerRound, `round-${round}`);
     await delay(750);
     const current = await stableProcessSample(harness.pid);
+    const liveSessions = (await harness.request("list-sessions")).sessions?.length ?? null;
     const rssGrowthKiB = current.rssKiB - baseline.rssKiB;
     const threadGrowth = current.threads - baseline.threads;
     console.log(
@@ -130,8 +193,13 @@ try {
         sessions: sessionsPerRound,
         baseline,
         current,
+        liveSessions,
         rssGrowthMiB: Number((rssGrowthKiB / 1024).toFixed(2)),
         threadGrowth,
+        handlesPerSession:
+          current.handles === undefined
+            ? null
+            : Number(((current.handles - baseline.handles) / sessionsPerRound).toFixed(2)),
       }),
     );
     if (threadGrowth > maximumThreadGrowth) {
@@ -143,6 +211,20 @@ try {
       throw new Error(
         `ghosttead RSS grew ${(rssGrowthKiB / 1024).toFixed(2)} MiB after lifecycle churn; allowed growth is ${maximumRssGrowthMiB} MiB`,
       );
+    }
+    if (current.handles !== undefined) {
+      const handlesPerSession = (current.handles - baseline.handles) / sessionsPerRound;
+      if (handlesPerSession > maximumHandlesPerSession) {
+        // Whether the registry still holds the sessions separates a retained
+        // session object, which would keep every handle it owns, from an
+        // operating-system handle outliving a session that was already dropped.
+        const live = await harness.request("list-sessions");
+        throw new Error(
+          `ghosttead retained ${handlesPerSession.toFixed(2)} handles per session across ` +
+            `${sessionsPerRound} sessions; allowed is ${maximumHandlesPerSession}. ` +
+            `${live.sessions?.length ?? "?"} session(s) remain in the registry.`,
+        );
+      }
     }
   }
 

@@ -875,6 +875,14 @@ mod tests {
         assert_eq!(restored.scrollbar, bottom.scrollbar);
     }
 
+    /// Ghostty performs strict page reclamation only on 64-bit Linux and
+    /// Darwin (`src/terminal/mem.zig`). Elsewhere full compression reports
+    /// unsupported and leaves scrollback memory resident.
+    const SCROLLBACK_RECLAIM_SUPPORTED: bool = cfg!(all(
+        target_pointer_width = "64",
+        any(target_os = "linux", target_vendor = "apple")
+    ));
+
     #[test]
     fn full_scrollback_compression_preserves_logical_content() {
         let mut terminal = GhosttyTerminalCore::new(20, 3, 1_000_000).unwrap();
@@ -884,7 +892,12 @@ mod tests {
         let before = terminal.selection_text((0, 0), (0, 0), true).unwrap();
         let before_scrollbar = terminal.snapshot().unwrap().scrollbar;
 
-        assert!(terminal.compress_scrollback_full().unwrap());
+        // Logical content must survive either outcome; only reclamation is
+        // platform-dependent.
+        assert_eq!(
+            terminal.compress_scrollback_full().unwrap(),
+            SCROLLBACK_RECLAIM_SUPPORTED
+        );
 
         let after = terminal.selection_text((0, 0), (0, 0), true).unwrap();
         let after_scrollbar = terminal.snapshot().unwrap().scrollbar;

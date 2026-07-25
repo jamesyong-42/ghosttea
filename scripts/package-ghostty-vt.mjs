@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
+import { installPrefix, libraryPath, lock, resolveTarget, root, targetConfig } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
 const allowMismatch = process.argv.includes("--allow-mismatch");
-const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
-const target = "aarch64-apple-darwin";
+const target = resolveTarget();
+const config = targetConfig(target);
+const library = libraryPath(target);
+// Container cross-builds are byte-reproducible, so their locked checksums also
+// gate repository builds. Native builds depend on the host toolchain, so their
+// checksums only gate downloaded bundles.
+const reproducible = config.build === "container";
 const revision = lock.ghostty.commit.slice(0, 12);
 const release = `ghostty-vt-${revision}`;
 const filename = `${release}-${target}.tar`;
@@ -24,20 +29,20 @@ function compareText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-const includeRoot = join(root, "native/build/ghostty/install/include");
+const install = join(installPrefix(target), "install");
+const includeRoot = join(install, "include");
 const headerInputs = filesBelow(includeRoot).map((sourcePath) => ({
-  bundlePath: `include/${relative(includeRoot, sourcePath)}`,
+  bundlePath: `include/${relative(includeRoot, sourcePath).replaceAll("\\", "/")}`,
   sourcePath,
 }));
 const inputs = [
   ...headerInputs,
-  {
-    bundlePath: "lib/libghostty-vt.a",
-    sourcePath: join(root, "native/build/ghostty/install/lib/libghostty-vt.a"),
-  },
+  // Only the static archive ships. On Windows the install tree also holds
+  // ghostty-vt.lib, the DLL import library, which must not be bundled.
+  { bundlePath: library, sourcePath: join(install, library) },
   {
     bundlePath: "LICENSES/Ghostty.txt",
-    sourcePath: join(root, "native/build/ghostty/install/share/licenses/ghostty/LICENSE"),
+    sourcePath: join(install, "share/licenses/ghostty/LICENSE"),
   },
 ].map((file) => ({ ...file, contents: readFileSync(file.sourcePath) }));
 
@@ -65,17 +70,26 @@ const artifact = {
     repository: lock.ghostty.repository,
     commit: lock.ghostty.commit,
   },
-  builder: {
-    image: lock.builder.image,
-    platform: lock.builder.platform,
-    zigVersion: lock.zig.version,
-    zigTarget: lock.builder.target,
-    postprocessor: {
-      tool: "Apple strip",
-      flags: ["-S"],
-      canonicalArchiveMetadata: true,
-    },
-  },
+  builder: reproducible
+    ? {
+        mode: "container",
+        image: lock.builder.image,
+        platform: lock.builder.platform,
+        zigVersion: lock.zig.version,
+        zigTarget: config.zigTarget,
+        postprocessor: {
+          tool: "Apple strip",
+          flags: ["-S"],
+          canonicalArchiveMetadata: true,
+        },
+      }
+    : {
+        mode: "native",
+        hostPlatform: config.hostPlatform,
+        zigVersion: lock.zig.version,
+        zigTarget: config.zigTarget,
+        postprocessor: null,
+      },
   files: Object.fromEntries(
     inputs.map((file) => [file.bundlePath, { sha256: digest("sha256", file.contents), size: file.contents.length }]),
   ),
@@ -180,8 +194,10 @@ const result = {
   url: `https://github.com/jamesyong-42/ghosttea/releases/download/${release}/${filename}`,
   sha256: digest("sha256", bundle),
   size: bundle.length,
-  librarySha256: artifact.files["lib/libghostty-vt.a"].sha256,
+  libraryPath: library,
+  librarySha256: artifact.files[library].sha256,
   headersSha256: treeDigest(inputs.filter((file) => file.bundlePath.startsWith("include/"))),
+  reproducible,
 };
 writeFileSync(join(outputDirectory, `${filename}.json`), stableJson(result));
 writeFileSync(join(outputDirectory, `${filename}.spdx.json`), stableJson(sbom));
@@ -190,7 +206,17 @@ const lockedManifest = JSON.parse(
   readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
 );
 const lockedTarget = lockedManifest.targets[target];
-for (const field of ["release", "filename", "url", "sha256", "size", "librarySha256", "headersSha256"]) {
+for (const field of [
+  "release",
+  "filename",
+  "url",
+  "sha256",
+  "size",
+  "libraryPath",
+  "librarySha256",
+  "headersSha256",
+  "reproducible",
+]) {
   if (lockedTarget?.[field] !== result[field]) {
     const message = `native artifact manifest mismatch for ${field}: expected ${JSON.stringify(lockedTarget?.[field])}, got ${JSON.stringify(result[field])}`;
     if (!allowMismatch) throw new Error(message);

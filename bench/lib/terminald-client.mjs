@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { localEndpoints, openEndpoint } from "./ipc-endpoints.mjs";
+import { cleanEnvironment, shellExecutable } from "./shell-fixture.mjs";
 import { nowMs } from "./stats.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -12,9 +13,10 @@ export function resolveTerminaldBinary() {
   if (configuredBinary && existsSync(configuredBinary)) {
     return { kind: "bin", path: configuredBinary };
   }
-  const release = join(root, "target/release/ghosttead");
+  const executable = process.platform === "win32" ? "ghosttead.exe" : "ghosttead";
+  const release = join(root, "target/release", executable);
   if (existsSync(release)) return { kind: "bin", path: release };
-  const debug = join(root, "target/debug/ghosttead");
+  const debug = join(root, "target/debug", executable);
   if (existsSync(debug)) return { kind: "bin", path: debug };
   return {
     kind: "cargo",
@@ -92,11 +94,7 @@ function packets(socket) {
 }
 
 async function openSocket(path, token) {
-  const socket = connect(path);
-  await new Promise((resolveConnected, reject) => {
-    socket.once("connect", resolveConnected);
-    socket.once("error", reject);
-  });
+  const socket = await openEndpoint(path, Date.now() + 10_000);
   const next = packets(socket);
   socket.write(packet(token));
   const response = await next(5_000);
@@ -240,6 +238,14 @@ export class TerminaldHarness {
   control;
   frames;
 
+  /**
+   * Credentials for a second client on the same daemon. `request` consumes the
+   * control stream, so a test that needs events subscribes separately.
+   */
+  get connection() {
+    return { controlSocket: this.#controlPath, authToken: this.#token };
+  }
+
   get pid() {
     return this.#child?.pid;
   }
@@ -252,8 +258,9 @@ export class TerminaldHarness {
 
   async #boot(timeoutMs) {
     this.#runtimeDir = mkdtempSync(join(tmpdir(), "ghosttea-bench-"));
-    this.#controlPath = join(this.#runtimeDir, "control.sock");
-    this.#framePath = join(this.#runtimeDir, "frames.sock");
+    const endpoints = localEndpoints(this.#runtimeDir);
+    this.#controlPath = endpoints.controlSocket;
+    this.#framePath = endpoints.frameSocket;
     this.#token = `bench-${process.pid}-${Date.now()}`;
 
     const binary = resolveTerminaldBinary();
@@ -334,22 +341,17 @@ export class TerminaldHarness {
   async createAttachedSession({
     cols = 120,
     rows = 40,
-    executable = "/bin/sh",
+    executable = shellExecutable,
     args = [],
     persistence = "terminate-with-app",
+    // Workloads run real tools, so the host's search path carries over.
+    environment = cleanEnvironment(process.env.PATH ? { PATH: process.env.PATH } : {}),
   } = {}) {
     const created = await this.request("create-session", {
       options: {
         executable,
         args,
-        environment: {
-          mode: "clean",
-          variables: {
-            PATH: process.env.PATH ?? "/usr/bin:/bin",
-            TERM: "xterm-256color",
-            LANG: process.env.LANG ?? "en_US.UTF-8",
-          },
-        },
+        environment,
         cols,
         rows,
         persistence,

@@ -1,6 +1,7 @@
 //! Reusable, transport-neutral Ghosttea terminal service.
 
 mod frame_hub;
+pub mod ipc;
 pub mod mesh;
 pub mod replica;
 mod service;

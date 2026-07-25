@@ -1455,7 +1455,16 @@ mod tests {
             ghosttea_terminal_compress_scrollback_full(pointer, &mut supported),
             GHOSTTEA_STATUS_OK
         );
-        assert!(supported);
+        // Ghostty performs strict page reclamation only on 64-bit Linux and
+        // Darwin (`src/terminal/mem.zig`); elsewhere it reports unsupported.
+        // The call still succeeds and must preserve logical content.
+        assert_eq!(
+            supported,
+            cfg!(all(
+                target_pointer_width = "64",
+                any(target_os = "linux", target_vendor = "apple")
+            ))
+        );
         let after = terminal_operation(pointer, PanicScope::Terminal, |model| {
             model
                 .selection_text((0, 0), (0, 0), true)
