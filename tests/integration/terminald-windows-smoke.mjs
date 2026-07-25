@@ -39,11 +39,12 @@ const childrenOf = (pid) =>
     .map((line) => Number(line.trim()))
     .filter(Boolean);
 
+// Each check shells out to PowerShell, so poll sparingly.
 async function until(predicate, what, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
   throw new Error(`timed out waiting for ${what}`);
 }

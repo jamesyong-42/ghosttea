@@ -18,8 +18,9 @@ export const shellExecutable = windows ? (process.env.COMSPEC ?? "cmd.exe") : "/
  * A marker is only observable by a caller that attached a view before the
  * session left the registry, and `printf` returns immediately, so the POSIX
  * form waits briefly on the way out. Windows needs no equivalent: a session
- * ends when its pseudoconsole closes, which `Session::start_exit_watcher`
- * does a drain interval after the child exits.
+ * ends when its pseudoconsole closes, which happens `EXIT_DRAIN` after the
+ * child exits. That dependency is held in place by the `session` unit test
+ * `windows_sessions_outlive_a_fast_child` rather than left to this comment.
  *
  * `/d` skips the AutoRun registry command so an unrelated profile cannot add
  * output the harness would then have to tolerate.

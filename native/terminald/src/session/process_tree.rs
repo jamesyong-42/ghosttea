@@ -10,10 +10,12 @@
 //! crashes cannot leave a session's tree behind: the kernel reaps it when the
 //! last job handle closes.
 
-use std::io;
+use std::{io, time::Duration};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{
+        CloseHandle, DuplicateHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -25,11 +27,59 @@ use windows_sys::Win32::{
             SetInformationJobObject, TerminateJobObject,
         },
         Threading::{
-            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-            PROCESS_TERMINATE,
+            GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
         },
     },
 };
+
+/// A handle that becomes signalled when a process exits.
+///
+/// Owning a duplicate lets a session wait for its child without touching the
+/// PTY's own handle, so waiting never contends with terminating.
+pub struct ExitHandle(HANDLE);
+
+// SAFETY: a duplicated process handle has no thread affinity and this value
+// owns it exclusively.
+unsafe impl Send for ExitHandle {}
+
+impl ExitHandle {
+    /// Duplicate a process handle for waiting only.
+    pub fn duplicate(process: HANDLE) -> io::Result<Self> {
+        let mut copy = 0;
+        // SAFETY: both process arguments are the current-process pseudo-handle,
+        // which needs no release, and `copy` is a valid out-pointer.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                process,
+                GetCurrentProcess(),
+                &mut copy,
+                PROCESS_SYNCHRONIZE,
+                0,
+                0,
+            )
+        };
+        if duplicated == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(copy))
+    }
+
+    /// Whether the process has exited, waiting up to `timeout` for it.
+    pub fn exited(&self, timeout: Duration) -> bool {
+        let milliseconds = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: `self.0` is live until this value drops.
+        unsafe { WaitForSingleObject(self.0, milliseconds) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for ExitHandle {
+    fn drop(&mut self) {
+        // SAFETY: owned here and closed exactly once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
 
 /// A job object holding one session's process tree.
 pub struct ProcessTree {
@@ -266,7 +316,8 @@ mod tests {
             {
                 return (parent, pid);
             }
-            sleep(Duration::from_millis(100));
+            // Each poll starts a PowerShell process, so keep them sparse.
+            sleep(Duration::from_millis(300));
         }
         panic!("grandchild never appeared");
     }
@@ -277,7 +328,7 @@ mod tests {
             if !is_running(pid) {
                 return;
             }
-            sleep(Duration::from_millis(100));
+            sleep(Duration::from_millis(300));
         }
         panic!("{what} ({pid}) survived");
     }

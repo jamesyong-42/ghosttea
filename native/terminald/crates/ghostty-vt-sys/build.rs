@@ -146,13 +146,21 @@ fn main() {
     let prefix = resolve_prefix(&manifest_dir, &out, &target, artifact, &layout);
     match &prefix {
         // A release bundle is untrusted input; its bytes are always verified.
-        Prefix::Bundle(path) => validate_install(path, artifact, &layout),
-        // A repository build already comes from the pinned Ghostty commit, so
-        // its checksum is a reproducibility check rather than a trust boundary.
-        // Only targets that reproduce byte-for-byte can be held to it.
+        Prefix::Bundle(path) => {
+            validate_headers(path, artifact);
+            validate_library(path, artifact, &layout);
+        }
         Prefix::Repository(path) => {
+            // Headers are generated from the pinned Ghostty source and are
+            // identical for every target, so this catches an install tree left
+            // behind by a different commit even where the library cannot be
+            // compared.
+            validate_headers(path, artifact);
+            // The library is a reproducibility check rather than a trust
+            // boundary here: it already came from the pinned commit, and only
+            // targets that build byte-for-byte can be held to its checksum.
             if artifact.reproducible {
-                validate_install(path, artifact, &layout);
+                validate_library(path, artifact, &layout);
             }
         }
     }
@@ -247,7 +255,7 @@ fn extract_bundle(bundle: &Path, out: &Path, artifact: &TargetArtifact) -> PathB
     prefix
 }
 
-fn validate_install(prefix: &Path, artifact: &TargetArtifact, layout: &Layout) {
+fn validate_library(prefix: &Path, artifact: &TargetArtifact, layout: &Layout) {
     let library = prefix.join(artifact.library_path(layout));
     let contents = fs::read(&library).unwrap_or_else(|error| {
         panic!(
@@ -257,7 +265,12 @@ fn validate_install(prefix: &Path, artifact: &TargetArtifact, layout: &Layout) {
     });
     verify_hash(&library, &contents, &artifact.library_sha256);
     println!("cargo:rerun-if-changed={}", library.display());
+}
 
+/// Headers come from the pinned Ghostty source rather than the compiler, so
+/// every target's manifest records the same digest and any install tree can be
+/// held to it.
+fn validate_headers(prefix: &Path, artifact: &TargetArtifact) {
     let include = prefix.join("include");
     let actual_headers = header_tree_hash(&include);
     assert_eq!(

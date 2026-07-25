@@ -26,6 +26,8 @@
 //! while the listener can only await one at a time.
 
 use anyhow::Result;
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 mod security;
@@ -103,67 +105,77 @@ impl Listener {
     /// connections intended for the service. The descriptor then limits the
     /// pipe to the account running the service.
     pub fn bind(endpoint: &str) -> Result<Self> {
-        use tokio::net::windows::named_pipe::ServerOptions;
+        /// A name released by an exiting process is still refused until its
+        /// last handle closes. A supervisor restarting its service reuses the
+        /// same name, so wait that teardown out. Kept short: a name held by a
+        /// process that is not exiting must still be refused.
+        const REBIND_BUDGET: Duration = Duration::from_millis(1_000);
+        const REBIND_INTERVAL: Duration = Duration::from_millis(25);
+        /// Returned while the previous owner's handles are still open.
+        const ERROR_ACCESS_DENIED: i32 = 5;
 
         let mut security = security::CurrentUserOnly::new()?;
-        // SAFETY: `security` owns a valid SECURITY_ATTRIBUTES that lives across
-        // this call and every later instance created from it.
-        let idle = unsafe {
-            ServerOptions::new()
-                .first_pipe_instance(true)
-                .create_with_security_attributes_raw(endpoint, security.as_raw())
-        }?;
-        Ok(Self {
-            name: endpoint.into(),
-            idle: Some(idle),
-            security,
-        })
+        let deadline = Instant::now() + REBIND_BUDGET;
+        loop {
+            // SAFETY: `security` owns a valid SECURITY_ATTRIBUTES that lives
+            // across this call and every later instance created from it.
+            let created = unsafe {
+                tokio::net::windows::named_pipe::ServerOptions::new()
+                    .first_pipe_instance(true)
+                    .create_with_security_attributes_raw(endpoint, security.as_raw())
+            };
+            match created {
+                Ok(idle) => {
+                    return Ok(Self {
+                        name: endpoint.into(),
+                        idle: Some(idle),
+                        security,
+                    });
+                }
+                Err(error)
+                    if error.raw_os_error() == Some(ERROR_ACCESS_DENIED)
+                        && Instant::now() < deadline => {}
+                Err(error) => return Err(error.into()),
+            }
+            std::thread::sleep(REBIND_INTERVAL);
+        }
+    }
+
+    /// An instance that joins the already-published name.
+    ///
+    /// `first_pipe_instance` belongs only to the bind: the name exists by now,
+    /// and every later instance has to join it rather than claim it.
+    fn instance(&mut self) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+        // SAFETY: as in `bind`, the descriptor outlives this call.
+        Ok(unsafe {
+            tokio::net::windows::named_pipe::ServerOptions::new()
+                .create_with_security_attributes_raw(&self.name, self.security.as_raw())
+        }?)
     }
 
     pub async fn accept(&mut self) -> Result<Stream> {
-        let server = self
-            .idle
-            .take()
-            .expect("listener holds an idle pipe instance between accepts");
+        // Recreated rather than asserted: a previous accept may have served its
+        // client but failed to leave a replacement behind.
+        let server = match self.idle.take() {
+            Some(server) => server,
+            None => self.instance()?,
+        };
         if let Err(error) = server.connect().await {
             // Keep the instance so a later accept can retry on it; dropping it
             // would unbind the name while the service is still running.
             self.idle = Some(server);
             return Err(error.into());
         }
-        // Replace the instance before handing this one out so the name stays
-        // published. `first_pipe_instance` is deliberately not set here: the
-        // name already exists and every later instance must join it.
-        //
-        // SAFETY: as in `bind`, the descriptor outlives this call.
-        self.idle = Some(unsafe {
-            tokio::net::windows::named_pipe::ServerOptions::new()
-                .create_with_security_attributes_raw(&self.name, self.security.as_raw())
-        }?);
+        // Republish the name before handing this connection out. Failing to
+        // do so must not cost the caller the connection it just accepted, so
+        // the next accept recreates instead.
+        match self.instance() {
+            Ok(idle) => self.idle = Some(idle),
+            Err(error) => {
+                eprintln!("[ghosttea] failed to republish {:?}: {error:#}", self.name);
+            }
+        }
         Ok(server)
-    }
-}
-
-/// The two local endpoints a service publishes.
-///
-/// Windows pipe names live in a flat, machine-wide namespace rather than under
-/// a private directory, so each channel's name has to be unique on its own.
-pub fn default_endpoint_names(runtime_directory: &str, instance: &str) -> (String, String) {
-    #[cfg(windows)]
-    {
-        let _ = runtime_directory;
-        (
-            format!(r"\\.\pipe\ghosttea-{instance}-control"),
-            format!(r"\\.\pipe\ghosttea-{instance}-frames"),
-        )
-    }
-    #[cfg(unix)]
-    {
-        let _ = instance;
-        (
-            format!("{runtime_directory}/control.sock"),
-            format!("{runtime_directory}/frames.sock"),
-        )
     }
 }
 
@@ -372,15 +384,47 @@ mod tests {
         assert_eq!(rotated, expected, "after rotation");
     }
 
-    #[test]
-    fn names_both_channels_distinctly() {
-        let (control, frames) = default_endpoint_names("/run/ghosttea", "instance");
-        assert_ne!(control, frames);
-        if cfg!(windows) {
-            assert!(control.starts_with(r"\\.\pipe\"), "{control}");
-            assert!(frames.starts_with(r"\\.\pipe\"), "{frames}");
-        } else {
-            assert!(control.starts_with("/run/ghosttea/"), "{control}");
-        }
+    /// A supervisor restarting its service rebinds the endpoint it already
+    /// published, because that endpoint has to stay valid across the restart.
+    ///
+    /// Both steps the service takes are exercised here, because each platform
+    /// needs a different one: Unix leaves a socket file behind that has to be
+    /// unlinked before rebinding, and Windows has nothing to remove but refuses
+    /// the name until the previous owner's last handle closes.
+    #[tokio::test]
+    async fn rebinds_an_endpoint_its_previous_owner_just_released() {
+        let endpoint = unique_endpoint("rebind");
+        let first = Listener::bind(&endpoint.name).unwrap();
+        // Hold a connection open so the endpoint is as busy as a live service's.
+        let client = dial(&endpoint.name).await;
+        drop(first);
+
+        remove_stale_endpoint(&endpoint.name).unwrap();
+        let second = Listener::bind(&endpoint.name).expect("rebind after release");
+        drop(client);
+        drop(second);
+    }
+
+    /// The listener has to survive a failed republish rather than strand
+    /// itself: the connection it just accepted is already the caller's.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn accepts_again_after_losing_its_idle_instance() {
+        let endpoint = unique_endpoint("recreate");
+        let mut listener = Listener::bind(&endpoint.name).unwrap();
+        // Stand in for a republish that failed after a connection was served.
+        listener.idle = None;
+
+        let client = tokio::spawn({
+            let name = endpoint.name.clone();
+            async move {
+                let mut stream = dial(&name).await;
+                stream.write_u8(9).await.unwrap();
+                stream.flush().await.unwrap();
+                stream.read_u8().await.unwrap()
+            }
+        });
+        assert_eq!(echo_once(&mut listener).await, 9);
+        assert_eq!(client.await.unwrap(), 9);
     }
 }
