@@ -113,7 +113,7 @@
     "dist": "npm run dist --workspace ghosttea-demo",
     "test": "npm run build:sdk && npm run test --workspaces --if-present && cargo test --workspace && npm run test:integration:built",
     "test:integration": "npm run build --workspace @vibecook/ghosttea-protocol && npm run build --workspace @vibecook/ghosttea-client && npm run test:integration:built",
-    "test:integration:built": "node tests/integration/terminald-smoke.mjs",
+    "test:integration:built": "node tests/integration/terminald-smoke.mjs && node tests/integration/terminald-windows-smoke.mjs",
     "ghosttead": "cargo run -p ghosttead",
     "terminald": "npm run ghosttead",
     "lint": "eslint apps packages scripts tests bench *.js --max-warnings 0",

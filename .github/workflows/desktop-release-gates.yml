@@ -40,17 +40,19 @@ jobs:
       - run: npm run ci:desktop
 
   # Windows runs the same formatting, lint, type, Clippy, and test gates as the
-  # macOS job. It omits the two stages of `ci:desktop` that cannot pass here
-  # yet: `package:check:built` downloads the locked Ghostty VT bundle, which has
-  # no published Windows asset, and `test:lifecycle:soak` declares support for
-  # darwin and linux only. The VT artifact is built from the pinned source
-  # instead, which is also how a Windows contributor works today.
+  # macOS job, plus the lifecycle soak. It omits `package:check:built`, which
+  # downloads the locked Ghostty VT bundle and has no published Windows asset
+  # yet; the artifact is built from the pinned source instead, which is also how
+  # a Windows contributor works today.
   windows:
     runs-on: windows-2022
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
+    env:
+      GHOSTTEA_SOAK_SESSIONS: ${{ github.event_name == 'schedule' && '1024' || '256' }}
+      GHOSTTEA_SOAK_ROUNDS: ${{ github.event_name == 'schedule' && '4' || '1' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -68,6 +70,7 @@ jobs:
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run check:desktop
       - run: npm run test:desktop
+      - run: npm run test:lifecycle:soak
 
   minimum-rust:
     runs-on: macos-15

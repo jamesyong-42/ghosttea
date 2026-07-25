@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
 
 import { TerminaldHarness } from "../../bench/lib/terminald-client.mjs";
+import { cleanEnvironment, printAndExitArgs, shellExecutable } from "../../bench/lib/shell-fixture.mjs";
 
 const sessionsPerRound = positiveInteger("GHOSTTEA_SOAK_SESSIONS", 256);
 const rounds = positiveInteger("GHOSTTEA_SOAK_ROUNDS", 1);
 const warmupSessions = positiveInteger("GHOSTTEA_SOAK_WARMUP_SESSIONS", 16);
 const maximumRssGrowthMiB = positiveNumber("GHOSTTEA_SOAK_MAX_RSS_GROWTH_MIB", 32);
 const maximumThreadGrowth = positiveInteger("GHOSTTEA_SOAK_MAX_THREAD_GROWTH", 4);
+// Windows only, where every connection creates a fresh named pipe instance.
+const maximumHandleGrowth = positiveInteger("GHOSTTEA_SOAK_MAX_HANDLE_GROWTH", 32);
 
 function positiveInteger(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
@@ -25,6 +28,27 @@ function delay(milliseconds) {
 }
 
 function processSample(pid) {
+  if (process.platform === "win32") {
+    // Handles are the Windows-specific leak signal that matters most here: the
+    // service creates a fresh named pipe instance for every connection, so a
+    // handle that outlives its connection would show up as steady growth.
+    const sampled = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$p = Get-Process -Id ${pid}; "$([math]::Round($p.WorkingSet64 / 1KB)) $($p.Threads.Count) $($p.HandleCount)"`,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    const [rssKiB, threads, handles] = sampled.split(/\s+/).map(Number);
+    if (![rssKiB, threads, handles].every(Number.isFinite)) {
+      throw new Error(`Unable to sample process ${pid}: ${sampled}`);
+    }
+    return { rssKiB, threads, handles };
+  }
+
   const rssOutput = execFileSync("ps", ["-o", "rss=", "-p", String(pid)], {
     encoding: "utf8",
   }).trim();
@@ -51,10 +75,14 @@ async function stableProcessSample(pid) {
     samples.push(processSample(pid));
     await delay(100);
   }
-  return {
-    rssKiB: Math.min(...samples.map((sample) => sample.rssKiB)),
-    threads: Math.min(...samples.map((sample) => sample.threads)),
+  const sample = {
+    rssKiB: Math.min(...samples.map((entry) => entry.rssKiB)),
+    threads: Math.min(...samples.map((entry) => entry.threads)),
   };
+  if (samples.every((entry) => entry.handles !== undefined)) {
+    sample.handles = Math.min(...samples.map((entry) => entry.handles));
+  }
+  return sample;
 }
 
 async function waitForSessionExit(harness, sessionId, timeoutMs = 5_000) {
@@ -73,12 +101,9 @@ async function churnSession(harness, label) {
   const ownerId = `ghosttea-lifecycle-owner-${label}`;
   const created = await harness.request("create-session", {
     options: {
-      executable: "/bin/sh",
-      args: ["-c", `printf '${marker}\\n'; sleep 0.08`],
-      environment: {
-        mode: "clean",
-        variables: { PATH: "/usr/bin:/bin", LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "xterm-256color" },
-      },
+      executable: shellExecutable,
+      args: printAndExitArgs(marker),
+      environment: cleanEnvironment(),
       cols: 80,
       rows: 24,
       persistence: "keep-until-exit",
@@ -106,7 +131,7 @@ async function churn(harness, count, prefix) {
   }
 }
 
-if (process.platform !== "darwin" && process.platform !== "linux") {
+if (!["darwin", "linux", "win32"].includes(process.platform)) {
   throw new Error(`terminald lifecycle soak does not support ${process.platform}`);
 }
 
@@ -143,6 +168,14 @@ try {
       throw new Error(
         `ghosttead RSS grew ${(rssGrowthKiB / 1024).toFixed(2)} MiB after lifecycle churn; allowed growth is ${maximumRssGrowthMiB} MiB`,
       );
+    }
+    if (current.handles !== undefined) {
+      const handleGrowth = current.handles - baseline.handles;
+      if (handleGrowth > maximumHandleGrowth) {
+        throw new Error(
+          `ghosttead retained ${handleGrowth} handles after lifecycle churn; allowed growth is ${maximumHandleGrowth}`,
+        );
+      }
     }
   }
 
