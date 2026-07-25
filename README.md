@@ -28,7 +28,7 @@ The current vertical slice includes:
   renderer view or layout authority;
 - explicit inherited or clean session environments, rich exit metadata, and
   process-group termination escalation;
-- terminal host discovery and logical-state mirroring over Truffle 0.7.2 QUIC.
+- terminal host discovery and logical-state mirroring over Truffle 0.7.6 QUIC.
 
 ## Run
 
@@ -122,7 +122,7 @@ For development, the demo can attach to an already-running service with
 
 ## Terminal mirroring
 
-The current dependency pins the registry release of Truffle 0.7.2 so clean
+The current dependency pins the registry release of Truffle 0.7.6 so clean
 checkouts and published consumers resolve the same transport implementation.
 Put `TRUFFLE_TEST_AUTHKEY` in an untracked `.env` to enable the Truffle node
 during development, or set
@@ -213,10 +213,22 @@ npm run test:integration
 npm run check
 npm run build
 
-# opt-in live Truffle 0.7.2 QUIC smoke test (reads .env)
+# opt-in live Truffle 0.7.6 QUIC smoke test (reads .env)
 cargo test --package ghosttea-truffle \
   latest_truffle_quic_round_trip -- --ignored
 ```
+
+The live test needs `TRUFFLE_SIDECAR_PATH` in `.env` as well as
+`TRUFFLE_TEST_AUTHKEY`. `ghosttea-truffle` depends on `truffle-core`, which
+does not carry the build-time sidecar downloader, so supply the binary
+explicitly. Download the `tsnet-sidecar-<platform>` asset from the matching
+`truffle-vX.Y.Z` release, verify it against the pinned checksum in that
+version's `crates/truffle-sidecar/sidecar-checksums.json`, then point
+`TRUFFLE_SIDECAR_PATH` at the executable. Release assets are built after the
+release commit, so a version's checksums appear in the commit that follows its
+tag rather than at the tag itself. The test enrolls two ephemeral, randomly
+named Tailscale devices under the `ghosttea-test` app ID and stops both on
+completion.
 
 ## Benchmark
 

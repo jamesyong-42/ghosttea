@@ -3,7 +3,7 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/jamesyong-42/truffle.git",
-    "revision": "797986b2a26be18a8e11ed6cea5917fb356b3ec1",
+    "revision": "bce9da871982139e54f04414f0ba876c171d4d86",
     "packagePath": "apple",
     "license": "MIT",
     "products": ["Truffle", "TruffleSwiftUI", "TruffleTailscale"]

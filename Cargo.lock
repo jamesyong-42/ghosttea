@@ -1967,9 +1967,9 @@ dependencies = [
 
 [[package]]
 name = "truffle-core"
-version = "0.7.2"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "784ff7fbd3101a9efcc8f2907807e3f509face0f81d007ae9721da1ce66aeb0f"
+checksum = "dac0f5822777057f1c9a9688b13e7f6b5479a06bdd4de4c88c0e2bb60b00873e"
 dependencies = [
  "base64",
  "blake3",

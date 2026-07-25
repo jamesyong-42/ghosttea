@@ -1,6 +1,6 @@
 # Terminal Mirroring and Truffle Networking Addendum
 
-Implementation target: Truffle 0.7.2 from the sibling `p008/truffle` checkout.
+Implementation target: Truffle 0.7.6 from the sibling `p008/truffle` checkout.
 The Rust dependency and live transport test intentionally use that checkout,
 not the older 0.4.6 API.
 

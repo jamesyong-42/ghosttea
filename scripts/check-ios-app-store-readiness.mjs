@@ -29,12 +29,12 @@ requireTextCount(
   "Debug and Release encryption declarations",
 );
 
-verifyLocalTruffleCheckout();
+const truffleBlockers = verifyLocalTruffleCheckout();
 
 const appBundleArgument = argument("--app-bundle");
 if (appBundleArgument) verifyAppBundle(resolve(appBundleArgument));
 
-const blockers = policyBlockers();
+const blockers = [...truffleBlockers, ...policyBlockers()];
 console.log(
   `Verified iOS App Store readiness inputs: ${basename(appManifest)}, ${basename(tailscaleManifest)}, ${blockers.length} release blocker(s).`,
 );
@@ -45,10 +45,18 @@ if (process.argv.includes("--release") && blockers.length > 0) {
 }
 
 function verifyLocalTruffleCheckout() {
-  if (!existsSync(join(siblingRoot, ".git"))) return;
+  if (!existsSync(join(siblingRoot, ".git"))) return [];
   const revision = execute("git", ["-C", siblingRoot, "rev-parse", "HEAD"]).stdout.trim();
   if (revision !== truffleLock.package.revision) {
-    throw new Error(`Truffle checkout revision ${revision} does not match lock ${truffleLock.package.revision}.`);
+    // The sibling is an active development checkout whose branch tip cannot
+    // durably equal a pinned release revision. `requireExactRevision` is a
+    // release requirement, so record drift as a blocker that fails closed
+    // under --release instead of aborting every later check. The sibling
+    // content checks below are meaningless at the wrong revision, so skip them.
+    return [
+      `Truffle checkout revision ${revision} does not match lock ${truffleLock.package.revision}; ` +
+        `check out ${truffleLock.package.revision} in ${siblingRoot} for release qualification.`,
+    ];
   }
   const siblingManifest = resolve(siblingRoot, truffleLock.tailscaleKit.privacyManifest.path);
   requireHash(
@@ -67,6 +75,7 @@ function verifyLocalTruffleCheckout() {
   ]) {
     if (!materializer.includes(contract)) throw new Error(`TailscaleKit materializer omitted ${contract}.`);
   }
+  return [];
 }
 
 function verifyAppBundle(appBundle) {
