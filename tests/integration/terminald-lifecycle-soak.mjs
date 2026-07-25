@@ -10,6 +10,9 @@ const maximumRssGrowthMiB = positiveNumber("GHOSTTEA_SOAK_MAX_RSS_GROWTH_MIB", 3
 const maximumThreadGrowth = positiveInteger("GHOSTTEA_SOAK_MAX_THREAD_GROWTH", 4);
 // Windows only, where every connection creates a fresh named pipe instance.
 const maximumHandleGrowth = positiveInteger("GHOSTTEA_SOAK_MAX_HANDLE_GROWTH", 32);
+// How long to let the service finish releasing what the churn used before
+// measuring it. A slower machine is still draining well past a fixed delay.
+const settleTimeoutMs = positiveInteger("GHOSTTEA_SOAK_SETTLE_TIMEOUT_MS", 30_000);
 
 function positiveInteger(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
@@ -69,7 +72,28 @@ function processSample(pid) {
   return { rssKiB, threads };
 }
 
+/**
+ * Sample a settled process.
+ *
+ * Teardown is asynchronous, so a machine still working through the churn
+ * reports resources that are about to be released. Wait until the readings stop
+ * falling before measuring, rather than assuming a fixed delay was enough.
+ */
 async function stableProcessSample(pid) {
+  const deadline = Date.now() + settleTimeoutMs;
+  let previous = processSample(pid);
+  let unchanged = 0;
+  while (Date.now() < deadline && unchanged < 3) {
+    await delay(250);
+    const next = processSample(pid);
+    const settled =
+      next.rssKiB >= previous.rssKiB &&
+      next.threads >= previous.threads &&
+      (next.handles ?? 0) >= (previous.handles ?? 0);
+    unchanged = settled ? unchanged + 1 : 0;
+    previous = next;
+  }
+
   const samples = [];
   for (let index = 0; index < 5; index += 1) {
     samples.push(processSample(pid));

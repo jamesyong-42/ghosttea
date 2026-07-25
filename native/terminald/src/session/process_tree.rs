@@ -282,6 +282,54 @@ mod tests {
         panic!("{what} ({pid}) survived");
     }
 
+    fn own_handle_count() -> u32 {
+        powershell(&format!(
+            "(Get-Process -Id {}).HandleCount",
+            std::process::id()
+        ))
+        .parse()
+        .expect("handle count")
+    }
+
+    /// A job holds a kernel handle for as long as it lives, so a session that
+    /// ends has to give it back. The Windows soak measures this across the
+    /// whole service; this isolates the job object itself.
+    #[test]
+    fn adopting_and_dropping_jobs_returns_their_handles() {
+        // Live long enough that adoption always finds a running process, which
+        // a command that exits immediately would not guarantee.
+        let spawn = || {
+            Command::new("cmd.exe")
+                .args(["/d", "/c", "ping", "-n", "30", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn")
+        };
+
+        // Warm up so first-use allocations are not counted as growth.
+        for _ in 0..5 {
+            let mut child = spawn();
+            drop(ProcessTree::adopt(child.id()).expect("adopt"));
+            let _ = child.wait();
+        }
+
+        let before = own_handle_count();
+        const ROUNDS: u32 = 100;
+        for _ in 0..ROUNDS {
+            let mut child = spawn();
+            let tree = ProcessTree::adopt(child.id()).expect("adopt");
+            drop(tree);
+            let _ = child.wait();
+        }
+        let after = own_handle_count();
+
+        assert!(
+            after.saturating_sub(before) < ROUNDS / 4,
+            "adopting {ROUNDS} jobs retained {} handles ({before} -> {after})",
+            after.saturating_sub(before)
+        );
+    }
+
     /// The case `Child::kill` misses: it ends the spawned shell but not what
     /// the shell started.
     #[test]
