@@ -28,6 +28,15 @@ test("evidence rejects identity-bearing unknown fields", () => {
   assert.throws(() => validateEvidence(evidence), /unexpected keys: name/);
 });
 
+test("evidence requires a signpost table hash for every trace", () => {
+  const missing = makeEvidence();
+  delete missing.traces[0].signpostsSha256;
+  assert.throws(() => validateEvidence(missing), /missing keys: signpostsSha256/);
+  const malformed = makeEvidence();
+  malformed.traces[0].signpostsSha256 = "not-a-hash";
+  assert.throws(() => validateEvidence(malformed), /signpostsSha256/);
+});
+
 test("evidence rejects arbitrary blocker text", () => {
   const evidence = makeEvidence();
   evidence.status = "blocked";
@@ -80,6 +89,7 @@ function makeEvidence() {
       durationSeconds,
       traceBundleSha256: "c".repeat(64),
       tocSha256: "d".repeat(64),
+      signpostsSha256: "e".repeat(64),
     })),
     blockers: [],
   };

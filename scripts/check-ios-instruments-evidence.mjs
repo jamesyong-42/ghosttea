@@ -139,7 +139,7 @@ export function validateEvidence(value) {
 
   const traceIDs = new Set();
   for (const trace of value.traces) {
-    requireExactKeys(trace, ["durationSeconds", "id", "tocSha256", "traceBundleSha256"], "trace");
+    requireExactKeys(trace, ["durationSeconds", "id", "signpostsSha256", "tocSha256", "traceBundleSha256"], "trace");
     if (!requiredScenarios.has(trace.id)) throw new Error(`unknown trace ${trace.id}`);
     if (traceIDs.has(trace.id)) throw new Error(`duplicate trace ${trace.id}`);
     traceIDs.add(trace.id);
@@ -148,6 +148,7 @@ export function validateEvidence(value) {
     }
     requireHash(trace.traceBundleSha256, `${trace.id} traceBundleSha256`);
     requireHash(trace.tocSha256, `${trace.id} tocSha256`);
+    requireHash(trace.signpostsSha256, `${trace.id} signpostsSha256`);
   }
   return value;
 }
