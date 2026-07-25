@@ -778,10 +778,8 @@ impl Session {
                     // `try_wait` rather than `wait`: holding the child lock
                     // across a blocking wait would stall termination, which
                     // needs the same lock to fall back to `Child::kill`.
-                    let exited = matches!(
-                        alive.process.child.lock().unwrap().try_wait(),
-                        Ok(Some(_))
-                    );
+                    let exited =
+                        matches!(alive.process.child.lock().unwrap().try_wait(), Ok(Some(_)));
                     // Do not hold the session across the drain.
                     drop(alive);
                     if !exited {

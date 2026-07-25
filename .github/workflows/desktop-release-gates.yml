@@ -39,11 +39,9 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
-  # Windows runs the same formatting, lint, type, Clippy, and test gates as the
-  # macOS job, plus the lifecycle soak. It omits `package:check:built`, which
-  # downloads the locked Ghostty VT bundle and has no published Windows asset
-  # yet; the artifact is built from the pinned source instead, which is also how
-  # a Windows contributor works today.
+  # Windows runs the same release gate as macOS. It bootstraps the Ghostty VT
+  # artifact from the pinned source rather than the Apple prebuild, which is
+  # also how a Windows contributor works today.
   windows:
     runs-on: windows-2022
     timeout-minutes: 60
@@ -68,9 +66,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
-      - run: npm run check:desktop
-      - run: npm run test:desktop
-      - run: npm run test:lifecycle:soak
+      - run: npm run ci:desktop
 
   minimum-rust:
     runs-on: macos-15

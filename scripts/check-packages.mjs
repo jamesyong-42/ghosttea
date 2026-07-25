@@ -1,11 +1,36 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { resolveTarget } from "./ghostty-vt-target.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const fixture = mkdtempSync(join(tmpdir(), "ghosttea-package-check-"));
 const cache = join(fixture, "npm-cache");
+/**
+ * Run npm without going through its Windows `.cmd` shim.
+ *
+ * Node refuses to `execFile` a `.cmd` (CVE-2024-27980) and running one through
+ * a shell would put every argument through cmd quoting. npm sets
+ * `npm_execpath` for the scripts it invokes, so its CLI runs directly under
+ * this Node instead; the shim is only a fallback for running this file by hand.
+ */
+function runNpm(args, options = {}) {
+  const cli = process.env.npm_execpath;
+  if (cli) return run(process.execPath, [cli, ...args], options);
+  return run(process.platform === "win32" ? "npm.cmd" : "npm", args, {
+    ...options,
+    shell: process.platform === "win32",
+  });
+}
+
+/**
+ * Git for Windows puts GNU tar ahead of the system bsdtar on PATH, and GNU tar
+ * reads the drive colon in an absolute Windows path as a remote host. Name the
+ * system archiver so extraction targets stay local paths.
+ */
+const bsdtar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+const tar = process.platform === "win32" && existsSync(bsdtar) ? bsdtar : "tar";
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -34,14 +59,16 @@ const rustPackages = [
   "ghosttea-truffle",
 ];
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+// The consumer fixture links the artifact for the target it is building, and
+// `fetch:ghostty-vt` resolves the same one, so the bundle is already present.
 const nativeArtifact = JSON.parse(
   readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
-).targets["aarch64-apple-darwin"];
+).targets[resolveTarget()];
 
 try {
   const tarballs = new Map();
   for (const workspace of npmPackages) {
-    const output = run("npm", [
+    const output = runNpm([
       "pack",
       "--json",
       "--cache",
@@ -122,8 +149,7 @@ try {
       "",
     ].join("\n"),
   );
-  run(
-    "npm",
+  runNpm(
     ["install", "--ignore-scripts", "--legacy-peer-deps", "--offline", "--no-audit", "--no-fund", "--cache", cache],
     { cwd: fixture },
   );
@@ -159,7 +185,7 @@ try {
     "--no-verify",
   ]);
   for (const crate of rustPackages) {
-    run("tar", ["-xzf", join(root, `target/package/${crate}-${version}.crate`), "-C", rustCrates]);
+    run(tar, ["-xzf", join(root, `target/package/${crate}-${version}.crate`), "-C", rustCrates]);
   }
 
   const embeddingConsumer = join(fixture, "rust-embedding-consumer");
@@ -196,16 +222,15 @@ try {
       "use std::sync::Arc;",
       "",
       "use anyhow::Result;",
-      "use ghosttea::{TerminalService, TerminalServiceConfig, TerminalServiceListeners};",
+      "use ghosttea::{ipc, TerminalService, TerminalServiceConfig, TerminalServiceListeners};",
       "use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};",
-      "use tokio::net::UnixListener;",
       "use truffle_core::{Node, network::tailscale::TailscaleProvider};",
       "",
       "#[allow(dead_code)]",
       "async fn serve_embedded(",
       "    node: Arc<Node<TailscaleProvider>> ,",
-      "    control: UnixListener,",
-      "    frames: UnixListener,",
+      "    control: ipc::Listener,",
+      "    frames: ipc::Listener,",
       "    token: String,",
       ") -> Result<()> {",
       "    let mesh = TruffleTerminalMesh::new(node, TruffleTerminalConfig::default())?;",
