@@ -2,7 +2,7 @@ GHOSTTEA iOS THIRD-PARTY NOTICES
 ================================
 
 This file is generated from the reviewed iOS release dependency graph.
-CycloneDX SHA-256: def345f06713ee457d6bbcf6af870abb9e9c144d4bc2896f24bc2bffd25ce653
+CycloneDX SHA-256: 4aaaf28fe3a61c187e63a01f6300cd17d377fc29bb93b1f1eca3711cf65da22a
 Components: 94
 Unique license documents: 93
 

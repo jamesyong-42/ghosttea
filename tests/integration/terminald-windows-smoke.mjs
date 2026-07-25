@@ -18,6 +18,12 @@ if (process.platform !== "win32") {
   process.exit(0);
 }
 
+// Nothing earlier in the gate guarantees a built daemon: `cargo test` compiles
+// test binaries rather than installing this one. Without it the harness falls
+// back to building a release profile from scratch inside its own startup
+// timeout, which passes locally on a warm tree and times out on a cold runner.
+execFileSync("cargo", ["build", "--package", "ghosttead", "--locked"], { stdio: "inherit" });
+
 function powershell(script) {
   return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8",
