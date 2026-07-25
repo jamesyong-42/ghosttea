@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/ghosttea-frame",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Binary frame decoder and shared rendering types for Ghosttea.",
   "license": "MIT",
   "author": "James Yong",

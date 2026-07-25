@@ -3,7 +3,7 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
-## Unreleased
+## 0.3.0 - 2026-07-24
 
 ### Changed
 
