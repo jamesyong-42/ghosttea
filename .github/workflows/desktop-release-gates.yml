@@ -67,9 +67,6 @@ jobs:
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run ci:desktop
-        # TEMPORARY DIAGNOSTIC, reverted before merge.
-        env:
-          GHOSTTEA_DISABLE_PROCESS_TREE: "1"
 
   minimum-rust:
     runs-on: macos-15

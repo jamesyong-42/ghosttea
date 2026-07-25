@@ -624,25 +624,14 @@ impl Session {
         // Adopt the tree before anything else so a shell that starts a
         // background job is already inside the job object. A failure here is
         // not fatal: termination falls back to the direct child.
-        // TEMPORARY DIAGNOSTIC, reverted before merge: the Windows soak reports
-        // one retained handle per session on a runner and none here. This
-        // isolates whether the job object is responsible or whether the growth
-        // predates it.
         #[cfg(windows)]
-        let adopt_process_tree = std::env::var("GHOSTTEA_DISABLE_PROCESS_TREE").is_err();
-        #[cfg(windows)]
-        let process_tree =
-            pid.filter(|_| adopt_process_tree).and_then(
-                |pid| match process_tree::ProcessTree::adopt(pid) {
-                    Ok(tree) => Some(tree),
-                    Err(error) => {
-                        eprintln!(
-                            "[ghosttea] failed to own the process tree for pid {pid}: {error}"
-                        );
-                        None
-                    }
-                },
-            );
+        let process_tree = pid.and_then(|pid| match process_tree::ProcessTree::adopt(pid) {
+            Ok(tree) => Some(tree),
+            Err(error) => {
+                eprintln!("[ghosttea] failed to own the process tree for pid {pid}: {error}");
+                None
+            }
+        });
         drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
