@@ -35,6 +35,8 @@ const expectedInstruments = ["Metal Application", "Points of Interest", "Power P
 const signpostXPath = '/trace-toc/run[@number="1"]/data/table[@schema="os-signpost"]';
 const signpostSubsystem = "com.vibecook.ghosttea.harness.performance";
 const signpostName = "GhostteaPerformanceTraceComplete";
+const recordingAttempts = 3;
+const settleSeconds = 15;
 const scenarios = [
   { id: "idle", workload: "idle", durationSeconds: quick ? 5 : 60 },
   { id: "rendered-output-1", workload: "output1", durationSeconds: quick ? 10 : 120 },
@@ -141,94 +143,21 @@ async function captureTraces(result, selectedDevice) {
   execute("xcrun", ["devicectl", "device", "install", "app", "--device", selectedDevice.identifier, app]);
   result.appBundleSha256 = hashTree(app);
 
-  for (const scenario of scenarios) {
-    const traceName = `${scenario.id}.trace`;
-    const tracePath = join(outputDirectory, traceName);
-    const tocPath = join(outputDirectory, `${scenario.id}.toc.xml`);
-    const signpostPath = join(outputDirectory, `${scenario.id}.signposts.xml`);
-    rmSync(tracePath, { recursive: true, force: true });
-    rmSync(tocPath, { force: true });
-    rmSync(signpostPath, { force: true });
-    requireUnlocked(selectedDevice);
-    let recording;
-    try {
-      recording = execute(
-        "xcrun",
-        [
-          "xctrace",
-          "record",
-          "--template",
-          expectedTemplates[0],
-          ...expectedInstruments.flatMap((instrument) => ["--instrument", instrument]),
-          "--device",
-          selectedDevice.hardwareProperties.udid,
-          "--time-limit",
-          `${scenario.durationSeconds + 30}s`,
-          "--output",
-          tracePath,
-          "--no-prompt",
-          "--target-stdout",
-          "-",
-          "--env",
-          `GHOSTTEA_PERFORMANCE_TRACE_SCENARIO=${scenario.workload}`,
-          "--env",
-          `GHOSTTEA_PERFORMANCE_TRACE_DURATION_SECONDS=${scenario.durationSeconds}`,
-          "--env",
-          "GHOSTTEA_PERFORMANCE_RECORDING=1",
-          "--launch",
-          "--",
-          bundleIdentifier,
-        ],
-        { capture: true, allowFailure: true, timeout: (scenario.durationSeconds + 90) * 1_000 },
-      );
-    } catch {
-      result.blockers.push(`${scenario.id} xctrace recording failed with status -1`);
-      continue;
-    } finally {
-      terminateHarness(selectedDevice);
+  for (const [index, scenario] of scenarios.entries()) {
+    // Instruments does not always release the previous recording session
+    // before the next one starts: back-to-back captures have produced a
+    // truncated trace and an immediate `status 2` failure while the same
+    // workload ran to completion on its own. Let the device settle between
+    // recordings, and retry a scenario whose recording failed at the tool
+    // level rather than discarding an otherwise healthy run.
+    if (index > 0) settleDevice();
+    let outcome = captureScenarioTrace(scenario, selectedDevice);
+    for (let attempt = 2; attempt <= recordingAttempts && outcome.retryable; attempt += 1) {
+      settleDevice();
+      outcome = captureScenarioTrace(scenario, selectedDevice);
     }
-    if (recording.status !== 0) {
-      result.blockers.push(`${scenario.id} xctrace recording failed with status ${recording.status ?? -1}`);
-      continue;
-    }
-    if (!existsSync(tracePath)) {
-      result.blockers.push(`${scenario.id} did not produce a trace bundle`);
-      continue;
-    }
-    const exported = execute("xcrun", ["xctrace", "export", "--input", tracePath, "--toc", "--output", tocPath], {
-      capture: true,
-      allowFailure: true,
-    });
-    if (exported.status !== 0 || !existsSync(tocPath)) {
-      result.blockers.push(`${scenario.id} trace table-of-contents export failed`);
-      continue;
-    }
-    const toc = readFileSync(tocPath, "utf8");
-    const traceDurationSeconds = Number(firstMatch(toc, /<duration>([0-9.]+)<\/duration>/));
-    if (!/<device\b[^>]*platform="iOS"/.test(toc)) {
-      result.blockers.push(`${scenario.id} trace did not target a physical iOS device`);
-      continue;
-    }
-    if (!Number.isFinite(traceDurationSeconds) || traceDurationSeconds < scenario.durationSeconds) {
-      result.blockers.push(`${scenario.id} trace duration is shorter than its workload`);
-      continue;
-    }
-    if (!exportSignpostTable(tracePath, signpostPath)) {
-      result.blockers.push(`${scenario.id} signpost table export failed`);
-      continue;
-    }
-    const signposts = readFileSync(signpostPath, "utf8");
-    if (!reportsWorkloadCompletion(signposts, scenario)) {
-      result.blockers.push(`${scenario.id} workload did not report completion`);
-      continue;
-    }
-    result.traces.push({
-      id: scenario.id,
-      durationSeconds: traceDurationSeconds,
-      traceBundleSha256: hashTree(tracePath),
-      tocSha256: sha256(readFileSync(tocPath)),
-      signpostsSha256: sha256(readFileSync(signpostPath)),
-    });
+    if (outcome.trace) result.traces.push(outcome.trace);
+    else result.blockers.push(outcome.blocker);
     writeEvidence(result);
   }
 
@@ -246,6 +175,108 @@ async function captureTraces(result, selectedDevice) {
     console.log(`Captured and validated ${result.traces.length} iOS Instruments traces in ${outputDirectory}.`);
     console.log("CPU/Energy baseline comparison remains a required review of the retained trace bundle.");
   }
+}
+
+function captureScenarioTrace(scenario, selectedDevice) {
+  const traceName = `${scenario.id}.trace`;
+  const tracePath = join(outputDirectory, traceName);
+  const tocPath = join(outputDirectory, `${scenario.id}.toc.xml`);
+  const signpostPath = join(outputDirectory, `${scenario.id}.signposts.xml`);
+  rmSync(tracePath, { recursive: true, force: true });
+  rmSync(tocPath, { force: true });
+  rmSync(signpostPath, { force: true });
+  requireUnlocked(selectedDevice);
+  let recording;
+  try {
+    recording = execute(
+      "xcrun",
+      [
+        "xctrace",
+        "record",
+        "--template",
+        expectedTemplates[0],
+        ...expectedInstruments.flatMap((instrument) => ["--instrument", instrument]),
+        "--device",
+        selectedDevice.hardwareProperties.udid,
+        "--time-limit",
+        `${scenario.durationSeconds + 30}s`,
+        "--output",
+        tracePath,
+        "--no-prompt",
+        "--target-stdout",
+        "-",
+        "--env",
+        `GHOSTTEA_PERFORMANCE_TRACE_SCENARIO=${scenario.workload}`,
+        "--env",
+        `GHOSTTEA_PERFORMANCE_TRACE_DURATION_SECONDS=${scenario.durationSeconds}`,
+        "--env",
+        "GHOSTTEA_PERFORMANCE_RECORDING=1",
+        "--launch",
+        "--",
+        bundleIdentifier,
+      ],
+      { capture: true, allowFailure: true, timeout: (scenario.durationSeconds + 90) * 1_000 },
+    );
+  } catch {
+    return retryableFailure(`${scenario.id} xctrace recording failed with status -1`);
+  } finally {
+    terminateHarness(selectedDevice);
+  }
+  if (recording.status !== 0) {
+    return retryableFailure(`${scenario.id} xctrace recording failed with status ${recording.status ?? -1}`);
+  }
+  if (!existsSync(tracePath)) {
+    return retryableFailure(`${scenario.id} did not produce a trace bundle`);
+  }
+  const exported = execute("xcrun", ["xctrace", "export", "--input", tracePath, "--toc", "--output", tocPath], {
+    capture: true,
+    allowFailure: true,
+  });
+  if (exported.status !== 0 || !existsSync(tocPath)) {
+    return retryableFailure(`${scenario.id} trace table-of-contents export failed`);
+  }
+  const toc = readFileSync(tocPath, "utf8");
+  const traceDurationSeconds = Number(firstMatch(toc, /<duration>([0-9.]+)<\/duration>/));
+  if (!/<device\b[^>]*platform="iOS"/.test(toc)) {
+    return terminalFailure(`${scenario.id} trace did not target a physical iOS device`);
+  }
+  if (!Number.isFinite(traceDurationSeconds) || traceDurationSeconds < scenario.durationSeconds) {
+    return retryableFailure(`${scenario.id} trace duration is shorter than its workload`);
+  }
+  if (!exportSignpostTable(tracePath, signpostPath)) {
+    return terminalFailure(`${scenario.id} signpost table export failed`);
+  }
+  const signposts = readFileSync(signpostPath, "utf8");
+  if (!reportsWorkloadCompletion(signposts, scenario)) {
+    // The recording covered the full workload, so a missing completion
+    // signpost is the workload's own result and must not be retried away.
+    return terminalFailure(`${scenario.id} workload did not report completion`);
+  }
+  return {
+    trace: {
+      id: scenario.id,
+      durationSeconds: traceDurationSeconds,
+      traceBundleSha256: hashTree(tracePath),
+      tocSha256: sha256(readFileSync(tocPath)),
+      signpostsSha256: sha256(readFileSync(signpostPath)),
+    },
+    retryable: false,
+  };
+}
+
+// A recording that never ran to completion is a tool failure rather than a
+// measurement, so it may be attempted again. Anything derived from a complete
+// recording is the run's actual result and is reported as it stands.
+function retryableFailure(blocker) {
+  return { blocker, retryable: true };
+}
+
+function terminalFailure(blocker) {
+  return { blocker, retryable: false };
+}
+
+function settleDevice() {
+  spawnSync("sleep", [String(settleSeconds)], { stdio: "ignore" });
 }
 
 function findDevice() {
