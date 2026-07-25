@@ -12,13 +12,20 @@ const windows = process.platform === "win32";
 export const shellExecutable = windows ? (process.env.COMSPEC ?? "cmd.exe") : "/bin/sh";
 
 /**
- * Arguments that print `text` on its own line and exit 0.
+ * Arguments that print `text` on its own line and exit 0, staying alive long
+ * enough for a client to attach first.
+ *
+ * A marker is only observable by a caller that attached a view before the
+ * session left the registry, and `printf` returns immediately, so the POSIX
+ * form waits briefly on the way out. Windows needs no equivalent: a session
+ * ends when its pseudoconsole closes, which `Session::start_exit_watcher`
+ * does a drain interval after the child exits.
  *
  * `/d` skips the AutoRun registry command so an unrelated profile cannot add
  * output the harness would then have to tolerate.
  */
 export function printAndExitArgs(text) {
-  return windows ? ["/d", "/c", `echo ${text}`] : ["-c", `printf '${text}\\n'`];
+  return windows ? ["/d", "/c", `echo ${text}`] : ["-c", `printf '${text}\\n'; sleep 0.08`];
 }
 
 /**
