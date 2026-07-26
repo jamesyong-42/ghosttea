@@ -3,6 +3,35 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.4.0 - 2026-07-25
+
+### Added
+
+- Support Windows as a desktop target. The pinned Ghostty VT core is now built
+  and published for `x86_64-pc-windows-msvc`, and the same release gate runs on
+  a Windows runner.
+
+### Changed
+
+- **Breaking.** `TerminalServiceListeners::new` takes `ipc::Listener` values
+  instead of `tokio::net::UnixListener`. Windows has no filesystem socket that
+  a client can dial, so the control and frame channels are named pipes there
+  and the listener type had to stop naming one platform's transport. On Unix
+  `ipc::Listener` converts from a `UnixListener` through `From`, so a host that
+  binds its own socket adds `.into()`.
+- A host supplying its own listeners now calls `ipc::remove_stale_endpoint`
+  before binding, which is what `TerminalService::bind` has always done on its
+  behalf. Only Unix has anything to remove; skipping it left a restarting
+  embedder binding onto its own stale socket.
+
+### Fixed
+
+- Windows sessions report their exit. ConPTY holds its output pipe open until
+  the pseudoconsole closes, so no session ever left the registry or delivered an
+  exit code.
+- Terminating a session reaches everything it started rather than only the
+  process the PTY spawned.
+
 ## 0.3.0 - 2026-07-24
 
 ### Changed

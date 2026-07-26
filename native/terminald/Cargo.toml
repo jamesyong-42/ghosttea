@@ -14,9 +14,9 @@ anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 portable-pty = "0.9"
-ghosttea-vt = { version = "0.3.0", path = "crates/ghostty-adapter" }
-ghosttea-core = { version = "0.3.0", path = "crates/ghosttea-core" }
-ghosttea-text = { version = "0.3.0", path = "crates/text-engine" }
+ghosttea-vt = { version = "0.4.0", path = "crates/ghostty-adapter" }
+ghosttea-core = { version = "0.4.0", path = "crates/ghosttea-core" }
+ghosttea-text = { version = "0.4.0", path = "crates/text-engine" }
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true

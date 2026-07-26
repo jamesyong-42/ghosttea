@@ -2,14 +2,14 @@ GHOSTTEA iOS THIRD-PARTY NOTICES
 ================================
 
 This file is generated from the reviewed iOS release dependency graph.
-CycloneDX SHA-256: 4aaaf28fe3a61c187e63a01f6300cd17d377fc29bb93b1f1eca3711cf65da22a
+CycloneDX SHA-256: e6625fe7a15c6680e31e1267de0d947b3950bfc09f1674704f8cd1929bfff0a8
 Components: 94
 Unique license documents: 93
 
 COMPONENT INDEX
 ===============
 
-ghosttea-ffi 0.3.0
+ghosttea-ffi 0.4.0
   License: MIT
   Documents: LICENSE-078
 
@@ -141,19 +141,19 @@ getrandom 0.2.17
   License: MIT OR Apache-2.0
   Documents: LICENSE-024, LICENSE-062
 
-ghosttea-core 0.3.0
+ghosttea-core 0.4.0
   License: MIT
   Documents: LICENSE-078
 
-ghosttea-text 0.3.0
+ghosttea-text 0.4.0
   License: MIT
   Documents: LICENSE-078
 
-ghosttea-vt-sys 0.3.0
+ghosttea-vt-sys 0.4.0
   License: MIT
   Documents: LICENSE-078
 
-ghosttea-vt 0.3.0
+ghosttea-vt 0.4.0
   License: MIT
   Documents: LICENSE-078
 
@@ -5292,7 +5292,7 @@ in this Software without prior written authorization of the copyright holder.
 ================================================================================
 LICENSE-078 · LICENSE
 SHA-256: d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0
-Used by: Truffle Swift bce9da871982139e54f04414f0ba876c171d4d86, ghosttea-core 0.3.0, ghosttea-ffi 0.3.0, ghosttea-text 0.3.0, ghosttea-vt 0.3.0, ghosttea-vt-sys 0.3.0
+Used by: Truffle Swift bce9da871982139e54f04414f0ba876c171d4d86, ghosttea-core 0.4.0, ghosttea-ffi 0.4.0, ghosttea-text 0.4.0, ghosttea-vt 0.4.0, ghosttea-vt-sys 0.4.0
 --------------------------------------------------------------------------------
 MIT License
 
