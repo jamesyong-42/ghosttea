@@ -9,6 +9,7 @@
  * ConPTY exit reporting, and process-tree termination — against a real daemon.
  */
 import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { GhostteaAutomationClient } from "@vibecook/ghosttea-client";
 import { TerminaldHarness } from "../../bench/lib/terminald-client.mjs";
 import { cleanEnvironment, printAndExitArgs, shellExecutable } from "../../bench/lib/shell-fixture.mjs";
@@ -47,6 +48,26 @@ async function until(predicate, what, timeoutMs = 20_000) {
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Wait for a marker, and say what the session was doing if it never arrives.
+ *
+ * A bare marker timeout cannot distinguish a child that never started, one that
+ * exited immediately, and one that ran but printed nothing — and none of those
+ * are visible from the machine that wrote the test.
+ */
+async function expectMarker(harness, session, marker) {
+  try {
+    await harness.waitForMarker(session.handle, marker);
+  } catch (cause) {
+    const listed = await harness.request("list-sessions");
+    const alive = listed.sessions?.some((entry) => entry.id === session.id);
+    throw new Error(
+      `never saw ${marker}; the session is ${alive ? "still running" : "gone from the registry, so its child exited"}`,
+      { cause },
+    );
+  }
 }
 
 const sessionInRegistry = async (harness, id) => {
@@ -117,16 +138,20 @@ try {
   await harness.waitForMarker(isolated.handle, "token=[%GHOSTTEA_AUTH_TOKEN%]");
   console.log("ok  a clean session did not inherit the service auth token");
 
-  // ConPTY resizes a pseudoconsole rather than issuing TIOCSWINSZ, so the
-  // child learns its new size through a different mechanism than on Unix.
-  // Asking the shell what width it sees proves the resize reached it, which a
-  // control-plane assertion on the session's own record would not.
-  // The child reports its own width on a loop rather than being asked, so the
-  // test never races the shell's startup: input typed before an interactive
-  // shell begins reading is simply lost, which is a property of the shell
-  // rather than of the resize being measured.
+  // ConPTY resizes a pseudoconsole rather than issuing TIOCSWINSZ, so the child
+  // learns its size through a different mechanism than on Unix. Reading it back
+  // from the child proves the resize arrived, which asserting on the session's
+  // own record would not.
+  //
+  // The child reports its width on a loop rather than being asked, because
+  // input typed before an interactive shell starts reading is lost, and that is
+  // a property of the shell rather than of the resize being measured.
   const resized = await harness.createAttachedSession({
-    executable: "powershell.exe",
+    // Named absolutely and given this platform's own search path rather than
+    // the one this process inherited: the Windows gate runs its steps under
+    // bash, whose PATH a Windows child cannot use.
+    executable: join(process.env.SystemRoot ?? "C:\\Windows", "System32/WindowsPowerShell/v1.0/powershell.exe"),
+    environment: cleanEnvironment(),
     args: [
       "-NoLogo",
       "-NoProfile",
@@ -138,12 +163,12 @@ try {
     persistence: "keep-until-exit",
   });
   // Starts at 80, so the resized width only appears if the resize propagated.
-  await harness.waitForMarker(resized.handle, "ghosttea-cols=80");
+  await expectMarker(harness, resized, "ghosttea-cols=80");
   // Resizing is refused without control authority, which a real view claims
   // when it takes focus.
   await harness.claimControl(resized.id, 80, 24);
   await harness.resize(resized.id, 132, 40);
-  await harness.waitForMarker(resized.handle, "ghosttea-cols=132");
+  await expectMarker(harness, resized, "ghosttea-cols=132");
   console.log("ok  a resize reached the child through the pseudoconsole");
   await harness.terminate(resized.id);
 
@@ -155,7 +180,7 @@ try {
     args: ["/d", "/c", "(for /l %i in (1,1,500) do @echo ghosttea-flood-%i) & echo ghosttea-flood-done"],
     persistence: "keep-until-exit",
   });
-  await harness.waitForMarker(flooded.handle, "ghosttea-flood-done");
+  await expectMarker(harness, flooded, "ghosttea-flood-done");
   console.log("ok  a 500-line burst drained without stalling");
 
   console.log("terminald windows smoke passed");
