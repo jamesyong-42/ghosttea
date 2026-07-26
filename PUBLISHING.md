@@ -58,10 +58,22 @@ cargo publish \
   --dry-run \
   --locked \
   --workspace \
+  --no-verify \
   --exclude ghosttead \
   --exclude ghosttea-ffi \
   --exclude ghosttea-font-fixture-ffi
 ```
+
+`--no-verify` is required on Cargo 1.94. Without it the dry-run verifies each
+crate against its temporary registry and fails on the first one that depends on
+a sibling, with `no hash listed for ghosttea-vt-sys` and Cargo's own note that
+this is an internal error. It reaches `ghosttea-text` and `ghosttea-vt-sys`,
+which have no workspace dependencies, and stops there.
+
+Publishing itself is unaffected: crates go one at a time and each waits to
+become resolvable on crates.io, so a dependent never resolves its siblings from
+the temporary registry. Dropping the flag once Cargo can verify this graph
+restores the build check the dry-run is otherwise doing.
 
 Dry-run each npm package with local provenance disabled explicitly. The command
 line flag is intentional: it takes precedence over the manifests'
