@@ -48,7 +48,7 @@ Only one value is still unknown — Truffle's artifact is already published.
 
 | Placeholder                                   | Where                                                                                  | Source                                                                           |
 | --------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `REPLACE_WITH_TRUFFLE_ROOT_MANIFEST_REVISION` | `Package.swift` (`truffleRevision`) and `truffle-swift.lock.json` (`package.revision`) | the Truffle commit that adds the root manifest — must be identical in both files |
+| `284cea0e037d1b2bff6053dda411acd9d6219298` | `Package.swift` (`truffleRevision`) and `truffle-swift.lock.json` (`package.revision`) | the Truffle commit that adds the root manifest — must be identical in both files |
 
 Then regenerate the derived files:
 
