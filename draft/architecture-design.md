@@ -36,7 +36,7 @@ Build the terminal system as five cooperating layers:
 └───────────────────────┬─────────────────────────────────────┘
                         │ UDS / named pipes
 ┌───────────────────────▼─────────────────────────────────────┐
-│ terminald native sidecar                                    │
+│ ghosttead native sidecar                                    │
 │ ├── persistent session manager                              │
 │ ├── direct Unix PTY / Windows ConPTY                        │
 │ ├── libghostty-vt terminal state                            │
@@ -169,7 +169,7 @@ Ghostty currently expects custom-renderer consumers to produce their own pixels 
 
 ## ADR-001: Terminal state belongs in the sidecar
 
-The authoritative terminal emulator lives in `terminald`.
+The authoritative terminal emulator lives in `ghosttead`.
 
 Reasons:
 
@@ -223,7 +223,7 @@ The terminal can therefore use:
 
 `libghostty-vt` identifies terminal graphemes and styles, but it does not perform complete font shaping or layout for the custom renderer. citeturn839826search2
 
-A native text engine in `terminald` will perform:
+A native text engine in `ghosttead` will perform:
 
 - system font discovery;
 - font fallback;
@@ -271,7 +271,7 @@ Electron provides utility processes and transferable MessagePorts suitable for d
 
 The main process only:
 
-- locates or starts `terminald`;
+- locates or starts `ghosttead`;
 - starts `terminal-bridge`;
 - creates MessagePorts;
 - transfers ports to the utility process and renderer;
@@ -280,7 +280,7 @@ The main process only:
 After bootstrap:
 
 ```text
-terminald ↔ terminal-bridge ↔ RenderWorker
+ghosttead ↔ terminal-bridge ↔ RenderWorker
 ```
 
 does not route each frame through Electron main.
@@ -406,7 +406,7 @@ renderWorker.postMessage(
 
 Responsibilities:
 
-- connect to `terminald`;
+- connect to `ghosttead`;
 - authenticate;
 - decode only transport envelope headers;
 - transfer control messages;
@@ -428,7 +428,7 @@ Rust byte buffer
 
 The bridge should pool buffers to limit allocation churn.
 
-## 4.5 `terminald` sidecar
+## 4.5 `ghosttead` sidecar
 
 Recommended implementation language: **Rust**.
 
@@ -469,10 +469,10 @@ Microsoft’s ConPTY host model requires the host application to create communic
 
 ---
 
-# 5. `terminald` internal design
+# 5. `ghosttead` internal design
 
 ```text
-terminald
+ghosttead
 ├── supervisor
 ├── connection manager
 ├── session registry
@@ -1209,7 +1209,7 @@ The render worker receives:
 
 The worker computes physical resolution and cell geometry.
 
-The terminal-size change is sent to `terminald` only when calculated `cols` or `rows` change.
+The terminal-size change is sent to `ghosttead` only when calculated `cols` or `rows` change.
 
 Resize sequence:
 
@@ -1285,7 +1285,7 @@ DOM KeyboardEvent
 → normalized TerminalKeyEvent
 → control MessagePort
 → terminal-bridge
-→ terminald
+→ ghosttead
 → libghostty input encoder
 → PTY
 ```
@@ -1596,7 +1596,7 @@ Reconnect flow:
 
 ## 14.2 Electron main crash
 
-If `terminald` is launched in persistent mode, it does not use Electron main as its process-lifetime parent.
+If `ghosttead` is launched in persistent mode, it does not use Electron main as its process-lifetime parent.
 
 It stores:
 
@@ -1936,7 +1936,7 @@ Exit criteria:
 
 Build:
 
-- `terminald`;
+- `ghosttead`;
 - Unix PTY backend;
 - Windows ConPTY backend;
 - session registry;

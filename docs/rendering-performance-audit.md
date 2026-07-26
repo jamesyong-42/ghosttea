@@ -18,7 +18,7 @@ latency, CPU, GPU backlog, and memory.
 
 ```text
 PTY output
-  -> terminald 8 ms batch
+  -> ghosttead 8 ms batch
   -> Ghostty VT dirty rows
   -> native snapshot and shaping
   -> TRF1 packet containing changed rows
@@ -90,7 +90,7 @@ transition should invalidate the pane.
 
 ### Two independent timers can add latency
 
-terminald batches PTY output for 8 ms and the worker waits another 8 ms before
+ghosttead batches PTY output for 8 ms and the worker waits another 8 ms before
 flushing dirty panes. Their delays can accumulate and the worker timer is not
 aligned to display refresh. Use worker `requestAnimationFrame`, with a timer
 fallback, and encode all dirty panes on that tick. Since the panes share a
@@ -172,7 +172,7 @@ duplicates row text for desktop renderers that do not consume the accessibility
 section. The JavaScript decoder creates an object per glyph/style and copies
 each glyph pixel payload.
 
-terminald now shares frame bytes through `Arc<[u8]>`, renderer windows subscribe
+ghosttead now shares frame bytes through `Arc<[u8]>`, renderer windows subscribe
 only to mounted or explicitly pinned session handles, and a grace-period
 unsubscribe drops worker session state before requesting a full refresh on
 remount. The bridge and render worker negotiate byte credits, while bounded

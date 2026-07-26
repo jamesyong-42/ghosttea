@@ -19,7 +19,7 @@ benchmark still needs.
 
 The native terminals ran the workload through
 `external-terminal-workload.mjs`. Ghosttea ran the equivalent built-in payload
-through its real PTY, terminald, TRF1 bridge, render worker, and WebGPU renderer.
+through its real PTY, ghosttead, TRF1 bridge, render worker, and WebGPU renderer.
 
 ## Result
 

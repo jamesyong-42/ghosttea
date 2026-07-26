@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const build = join(root, "native/build/ghosttea-ffi-check");
 const fonts = join(root, "native/build/ghosttea-fonts");
-const headerDirectory = join(root, "native/terminald/crates/ghosttea-ffi/include");
+const headerDirectory = join(root, "native/ghosttea/crates/ghosttea-ffi/include");
 
 function run(command, args, extraEnvironment = {}) {
   const result = spawnSync(command, args, {

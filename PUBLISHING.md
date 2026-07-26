@@ -101,7 +101,7 @@ unset npm_config_cache
 ```
 
 The Ghostty VT artifact referenced by
-`native/terminald/crates/ghostty-vt-sys/artifacts.json` must already exist in
+`native/ghosttea/crates/ghosttea-vt-sys/artifacts.json` must already exist in
 the matching GitHub release. The crate downloads it and verifies its archive,
 static library, and public headers before linking. Push a new `ghostty-vt-*`
 tag only when this pinned native input changes.

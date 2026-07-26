@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const artifact = join(root, "apple/GhostteaKit/Artifacts/GhostteaCoreFFI.xcframework");
-const headers = join(root, "native/terminald/crates/ghosttea-ffi/include");
+const headers = join(root, "native/ghosttea/crates/ghosttea-ffi/include");
 const ghosttyArtifact = join(root, "apple/GhostteaKit/Artifacts/ghostty-vt.xcframework");
 const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
 const environment = {

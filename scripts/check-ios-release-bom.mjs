@@ -19,7 +19,7 @@ const sha256 = (path) =>
     .digest("hex");
 
 const licenseHashes = {
-  mit: sha256("native/terminald/LICENSE"),
+  mit: sha256("native/ghosttea/LICENSE"),
   ofl: sha256("apple/GhostteaKit/Sources/GhostteaFontProof/Resources/OFL-1.1.txt"),
   fontNotices: sha256("apple/GhostteaKit/Sources/GhostteaFontProof/Resources/FONT-NOTICES.md"),
 };

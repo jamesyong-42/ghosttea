@@ -72,7 +72,7 @@ GHOSTTY=/Applications/Ghostty.app/Contents/MacOS/ghostty npm run extract:ghostty
 ```
 
 This rewrites `bench/ghostty-ux/ground-truth/*` and copies keybind fixtures into
-`packages/terminal-react/src/bindings/fixtures/` for the golden suite.
+`packages/ghosttea-react/src/bindings/fixtures/` for the golden suite.
 `extensions.json` (⌘⇧O remote sessions) is always re-emitted as intentional.
 
 ## UX surface map (full picture)
@@ -138,7 +138,7 @@ Keybinds are only one plane. Parity work should track all of these:
 
 | Layer                    | Location                                | Status                                                        |
 | ------------------------ | --------------------------------------- | ------------------------------------------------------------- |
-| Match + flags            | `packages/terminal-react/src/bindings/` | macOS + Linux tables, performable overlay                     |
+| Match + flags            | `packages/ghosttea-react/src/bindings/` | macOS + Linux tables, performable overlay                     |
 | Route                    | `bindings/action-route.ts`              | workspace / terminal / platform / unhandled                   |
 | Workspace execute        | `workspace/Workspace.tsx`               | tabs/splits/zoom + platform hooks; always consume after match |
 | Terminal execute         | `TerminalSurface.tsx`                   | paste/text/copy/select/clear/scroll/adjust_selection          |

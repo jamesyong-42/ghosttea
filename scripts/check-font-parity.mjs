@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const fontDirectory = join(root, "native/build/ghosttea-fonts");
-const expectedPath = join(root, "native/terminald/fixtures/phase2/font-parity.json");
+const expectedPath = join(root, "native/ghosttea/fixtures/phase2/font-parity.json");
 
 const result = spawnSync(
   "cargo",

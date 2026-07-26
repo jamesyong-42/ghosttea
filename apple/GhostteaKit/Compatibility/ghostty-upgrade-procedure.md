@@ -48,8 +48,8 @@ revision/toolchain.
 Diff the new installed headers against the old artifact before adapting code.
 Review all changes against:
 
-- `native/terminald/crates/ghostty-vt-sys/src/ghostty_shim.c`;
-- `native/terminald/crates/ghostty-vt-sys/build.rs`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.c`;
+- `native/ghosttea/crates/ghosttea-vt-sys/build.rs`;
 - the Rust ownership and panic boundary in `ghosttea-core` and `ghosttea-ffi`;
 - the Swift ownership wrappers in GhostteaKit; and
 - response ordering, resize, selection, accessibility, clipboard, mouse,
@@ -74,7 +74,7 @@ npm run package:ghostty-vt -- --allow-mismatch
 
 Review the candidate's `artifact.json`, SPDX document, headers, library hash,
 size, and ABI diff. Update
-`native/terminald/crates/ghostty-vt-sys/artifacts.json` with the reviewed
+`native/ghosttea/crates/ghosttea-vt-sys/artifacts.json` with the reviewed
 release, filename, URL, SHA-256, size, library SHA-256, and header-tree SHA-256.
 Then require a byte-identical rebuild and locked package result:
 
@@ -123,7 +123,7 @@ npm run test:font-parity:apple-runtime
 If shaping intentionally changes, generate the candidate from the
 `ghosttea-text` `shaping_fixture` example into a temporary file, review every
 metric/glyph/bitmap delta, and only then replace
-`native/terminald/fixtures/phase2/font-parity.json` and resync resources. Stop
+`native/ghosttea/fixtures/phase2/font-parity.json` and resync resources. Stop
 at **[STOP-FONTS]** for unlicensed bytes, a missing script/glyph, unexplained
 metrics drift, fallback-policy drift, or a golden change without rendered
 desktop and iOS evidence.
@@ -131,7 +131,7 @@ desktop and iOS evidence.
 ## 5. Hold terminal and TRF1 parity
 
 The immutable compatibility inputs are
-`native/terminald/fixtures/phase1/ansi-baseline.json` and
+`native/ghosttea/fixtures/phase1/ansi-baseline.json` and
 `apple/GhostteaKit/Sources/GhostteaTerminal/Resources/terminal-visual-golden.json`.
 Run the exact model fixture whole-buffer, byte-by-byte, and with irregular chunk
 patterns. Require ordered terminal replies and a byte-identical TRF1 frame for

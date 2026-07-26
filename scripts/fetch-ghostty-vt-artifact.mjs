@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { resolveTarget, root } from "./ghostty-vt-target.mjs";
 
 const target = resolveTarget();
-const manifest = JSON.parse(readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"));
+const manifest = JSON.parse(readFileSync(join(root, "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"), "utf8"));
 const artifact = manifest.targets[target];
 if (!artifact) throw new Error(`No locked Ghostty VT artifact exists for ${target}`);
 

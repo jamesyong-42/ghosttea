@@ -51,7 +51,7 @@ for (const [name, relativePath] of Object.entries({
   cpSync(source, join(appleResources, name));
 }
 
-cpSync(join(root, "native/terminald/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
+cpSync(join(root, "native/ghosttea/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
 
 writeFileSync(
   join(output, "manifest.json"),

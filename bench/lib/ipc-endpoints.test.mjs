@@ -31,7 +31,7 @@ test("keeps both Unix channels inside the private runtime directory", () => {
  * This pins the part that differed rather than the whole implementation.
  */
 test("retries match the published client", () => {
-  const published = readFileSync(join(root, "packages/terminal-node-client/src/endpoints.ts"), "utf8");
+  const published = readFileSync(join(root, "packages/ghosttea-client/src/endpoints.ts"), "utf8");
 
   const grace = published.match(/MISSING_GRACE_MS\s*=\s*(\d+)/);
   assert.ok(grace, "the published client no longer declares MISSING_GRACE_MS");

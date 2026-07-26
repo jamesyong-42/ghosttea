@@ -1,5 +1,5 @@
 /**
- * Synthetic VT payloads shared across terminald / xterm targets.
+ * Synthetic VT payloads shared across ghosttead / xterm targets.
  * Markers are ASCII so they survive both binary frames and xterm buffer dumps.
  */
 

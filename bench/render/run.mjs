@@ -140,8 +140,8 @@ function main() {
     run("npm", ["run", "build", "--workspace", "ghosttea-desktop-experiment"]);
   }
 
-  const terminald = resolve(root, `target/release/${platform() === "win32" ? "ghosttead.exe" : "ghosttead"}`);
-  if (!existsSync(terminald)) throw new Error(`Missing release terminal daemon: ${terminald}`);
+  const ghosttead = resolve(root, `target/release/${platform() === "win32" ? "ghosttead.exe" : "ghosttead"}`);
+  if (!existsSync(ghosttead)) throw new Error(`Missing release terminal daemon: ${ghosttead}`);
   const experimentMain = resolve(root, "apps/desktop-experiment/out/main/index.js");
   if (!existsSync(experimentMain)) throw new Error("Desktop experiment is not built; rerun without --no-build");
 
@@ -320,7 +320,7 @@ function main() {
       env: {
         ...process.env,
         GHOSTTEA_PROFILE: `render-bench-${process.pid}`,
-        GHOSTTEAD_BIN: terminald,
+        GHOSTTEAD_BIN: ghosttead,
         GHOSTTEA_RENDER_BENCH_CONFIG: JSON.stringify(config),
         GHOSTTEA_RENDER_BENCH_OUTPUT: options.output,
       },

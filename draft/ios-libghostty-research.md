@@ -58,7 +58,7 @@ Repository evidence:
 - `native/vendor/ghostty/include/ghostty.h`
 - `native/vendor/ghostty/src/apprt/embedded.zig`
 - `native/vendor/ghostty/src/build/GhosttyLibVt.zig`
-- `native/terminald/crates/ghostty-vt-sys/artifacts.json`
+- `native/ghosttea/crates/ghosttea-vt-sys/artifacts.json`
 
 ## 4. Existing Ghosttea reuse boundary
 

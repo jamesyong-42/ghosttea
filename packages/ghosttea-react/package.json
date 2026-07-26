@@ -1,0 +1,75 @@
+{
+  "name": "@vibecook/ghosttea-react",
+  "version": "0.4.0",
+  "description": "React terminal surface and worker renderer for Ghosttea.",
+  "license": "MIT",
+  "author": "James Yong",
+  "type": "module",
+  "sideEffects": [
+    "./dist/styles.css",
+    "./dist/workspace.css"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./workspace": {
+      "types": "./dist/workspace/index.d.ts",
+      "import": "./dist/workspace/index.js"
+    },
+    "./workspace.css": "./dist/workspace.css",
+    "./terminal-render.worker.js": "./dist/terminal-render.worker.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "directory": "packages/ghosttea-react"
+  },
+  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/jamesyong-42/ghosttea/issues"
+  },
+  "keywords": [
+    "electron",
+    "ghostty",
+    "react",
+    "terminal",
+    "webgpu"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/bundle-worker.mjs && node -e \"const fs=require('node:fs');fs.copyFileSync('src/styles.css','dist/styles.css');fs.copyFileSync('src/workspace.css','dist/workspace.css')\"",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@vibecook/ghosttea": "0.4.0",
+    "@vibecook/ghosttea-frame": "0.4.0",
+    "@vibecook/ghosttea-protocol": "0.4.0"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@webgpu/types": "^0.1.71",
+    "esbuild": "^0.25.12",
+    "react": "19.2.7",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

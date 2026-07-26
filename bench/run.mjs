@@ -3,7 +3,7 @@
  * Comparative terminal benchmark harness.
  *
  * Primary comparison:
- *   terminald (PTY→libghostty-vt→shape→TRF1)
+ *   ghosttead (PTY→libghostty-vt→shape→TRF1)
  *     vs
  *   node-pty → xterm.js (classic Electron embed path)
  *
@@ -16,12 +16,12 @@ import { writeFileSync } from "node:fs";
 import { hostname, platform, arch, cpus } from "node:os";
 import { resolve } from "node:path";
 import { controlRow, metricRow, printCase, printHeader, toJsonReport, formatMs } from "./lib/report.mjs";
-import { runTerminaldBench } from "./targets/terminald.mjs";
+import { runGhostteadBench } from "./targets/ghosttead.mjs";
 import { runXtermBench } from "./targets/xterm.mjs";
 
 function parseArgs(argv) {
   const options = {
-    targets: ["terminald", "xterm"],
+    targets: ["ghosttead", "xterm"],
     scale: 1,
     cols: 120,
     rows: 40,
@@ -55,10 +55,10 @@ function parseArgs(argv) {
 function help() {
   console.log(`Usage: node bench/run.mjs [options]
 
-Primary comparison is terminald vs full node-pty→xterm (not pure xterm.write).
+Primary comparison is ghosttead vs full node-pty→xterm (not pure xterm.write).
 
 Options:
-  --targets=terminald,xterm   Comma-separated targets (default: terminald,xterm)
+  --targets=ghosttead,xterm   Comma-separated targets (default: ghosttead,xterm)
   --scale=1                   Workload scale multiplier (0.25–4 recommended)
   --cols=120 --rows=40        Terminal grid size
   --json=path                 Write full JSON report
@@ -76,18 +76,18 @@ Manual native Ghostty:
 `);
 }
 
-function compareThroughput(name, terminaldCase, xtermCase) {
-  if (!terminaldCase || !xtermCase || xtermCase.skipped) return null;
-  if (!terminaldCase.ms || !xtermCase.ms) return null;
-  const ratio = xtermCase.ms / terminaldCase.ms;
+function compareThroughput(name, ghostteadCase, xtermCase) {
+  if (!ghostteadCase || !xtermCase || xtermCase.skipped) return null;
+  if (!ghostteadCase.ms || !xtermCase.ms) return null;
+  const ratio = xtermCase.ms / ghostteadCase.ms;
   return {
     case: name,
-    terminaldMs: terminaldCase.ms,
+    ghostteadMs: ghostteadCase.ms,
     xtermMs: xtermCase.ms,
     speedupVsXterm: ratio,
     note:
       ratio > 1
-        ? `terminald finished ~${ratio.toFixed(2)}× faster (wall)`
+        ? `ghosttead finished ~${ratio.toFixed(2)}× faster (wall)`
         : `node-pty+xterm finished ~${(1 / ratio).toFixed(2)}× faster (wall)`,
   };
 }
@@ -114,8 +114,8 @@ async function main() {
 
   const results = {};
 
-  if (options.targets.includes("terminald")) {
-    results.terminald = await runTerminaldBench({
+  if (options.targets.includes("ghosttead")) {
+    results.ghosttead = await runGhostteadBench({
       scale: options.scale,
       cols: options.cols,
       rows: options.rows,
@@ -139,13 +139,13 @@ async function main() {
     }
   }
 
-  const td = results.terminald?.cases;
+  const td = results.ghosttead?.cases;
   const xt = results.xterm?.cases;
 
   if (td || xt) {
-    console.log("## Primary: terminald vs node-pty → xterm.js (full embed path)");
+    console.log("## Primary: ghosttead vs node-pty → xterm.js (full embed path)");
     console.log("Both sides open a real PTY, cat the same payload, and process output to a terminal surface.");
-    console.log("terminald also shapes glyphs and encodes TRF1 frames; xterm parses into its JS buffer.");
+    console.log("ghosttead also shapes glyphs and encodes TRF1 frames; xterm parses into its JS buffer.");
     console.log("");
 
     printCase(
@@ -153,7 +153,7 @@ async function main() {
       [
         td?.dense &&
           metricRow({
-            target: "terminald",
+            target: "ghosttead",
             ms: td.dense.ms,
             bytes: td.dense.bytesIn,
             extra: `${td.dense.frames} frames`,
@@ -174,7 +174,7 @@ async function main() {
       [
         td?.scrolling &&
           metricRow({
-            target: "terminald",
+            target: "ghosttead",
             ms: td.scrolling.ms,
             bytes: td.scrolling.bytesIn,
             extra: `${td.scrolling.frames} frames / gaps ${td.scrolling.sequenceGaps}`,
@@ -195,7 +195,7 @@ async function main() {
       [
         td?.unicode &&
           metricRow({
-            target: "terminald",
+            target: "ghosttead",
             ms: td.unicode.ms,
             bytes: td.unicode.bytesIn,
             extra: `${td.unicode.frames} frames`,
@@ -216,7 +216,7 @@ async function main() {
       [
         td?.scrollRegion &&
           metricRow({
-            target: "terminald",
+            target: "ghosttead",
             ms: td.scrollRegion.ms,
             bytes: td.scrollRegion.bytesIn,
             extra: `${td.scrollRegion.frames} frames`,
@@ -237,13 +237,13 @@ async function main() {
       [
         td?.controlRttUnderFlood &&
           controlRow({
-            target: "terminald control RTT",
+            target: "ghosttead control RTT",
             summary: td.controlRttUnderFlood,
             extra: "get-session during flood",
           }),
         td?.interruptUnderFlood &&
           controlRow({
-            target: "terminald interrupt RPC",
+            target: "ghosttead interrupt RPC",
             summary: td.interruptUnderFlood,
             extra: "interrupt while flooding",
           }),
@@ -261,7 +261,7 @@ async function main() {
       [
         td?.multiSession &&
           metricRow({
-            target: `terminald ×${td.multiSession.sessions}`,
+            target: `ghosttead ×${td.multiSession.sessions}`,
             ms: td.multiSession.ms,
             bytes: td.multiSession.bytesIn,
             extra: "attached sessions",
@@ -319,7 +319,7 @@ async function main() {
     console.log("");
     for (const cmp of comparisons) {
       console.log(
-        `- ${cmp.case}: terminald ${formatMs(cmp.terminaldMs)} vs node-pty+xterm ${formatMs(cmp.xtermMs)} → ${cmp.note}`,
+        `- ${cmp.case}: ghosttead ${formatMs(cmp.ghostteadMs)} vs node-pty+xterm ${formatMs(cmp.xtermMs)} → ${cmp.note}`,
       );
     }
     console.log("");
@@ -332,7 +332,7 @@ async function main() {
   console.log("## Notes");
   console.log("- Primary rows are node-pty→xterm, the classic Electron embed stack.");
   console.log("- Pure xterm.write rows are decomposition only (parser cost without PTY).");
-  console.log("- terminald includes VT + native shaping + TRF1 frames (sidecar path before WebGPU).");
+  console.log("- ghosttead includes VT + native shaping + TRF1 frames (sidecar path before WebGPU).");
   console.log("- Full Electron UI + WebGPU is not timed here.");
   console.log("- If node-pty says posix_spawnp failed: node scripts/fix-node-pty.mjs");
 

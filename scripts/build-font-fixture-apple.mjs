@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const artifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-font-fixture.xcframework");
-const headers = join(root, "native/terminald/crates/font-fixture-ffi/include");
+const headers = join(root, "native/ghosttea/crates/ghosttea-font-fixture-ffi/include");
 const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
 const environment = {
   ...process.env,

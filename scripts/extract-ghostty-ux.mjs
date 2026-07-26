@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 const outDir = join(root, "bench/ghostty-ux/ground-truth");
-const fixtureDir = join(root, "packages/terminal-react/src/bindings/fixtures");
+const fixtureDir = join(root, "packages/ghosttea-react/src/bindings/fixtures");
 
 function findGhostty() {
   if (process.env.GHOSTTY) return process.env.GHOSTTY;
