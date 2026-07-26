@@ -12,7 +12,6 @@ const executable = join(app, "Ghosttea");
 const dSYM = join(archive, "dSYMs/Ghosttea.app.dSYM");
 const evidence = join(outputRoot, "Ghosttea.release-evidence.json");
 const exportRoot = join(outputRoot, "export");
-const tailscaleArtifact = resolve(root, "../p008/truffle/apple/Vendor/TailscaleKit.xcframework");
 const environment = { ...process.env, DEVELOPER_DIR: developerDirectory };
 
 function execute(program, args, options = {}) {
@@ -57,9 +56,11 @@ function requirePath(path, description) {
 }
 
 function main() {
-  if (!existsSync(tailscaleArtifact)) {
-    throw new Error(`Missing ${tailscaleArtifact}; run p008/truffle/apple/scripts/materialize-tailscalekit.sh first.`);
-  }
+  // TailscaleKit no longer needs a preflight existence check: it arrives as a
+  // checksum-verified SwiftPM binary target, so resolution fails before the
+  // archive starts if it is missing or tampered with. The reviewed privacy
+  // manifest is still proven on the built bundle by
+  // check-ios-app-store-readiness.mjs --app-bundle.
   let exportedIPA = process.env.GHOSTTEA_IOS_IPA ? resolve(process.env.GHOSTTEA_IOS_IPA) : undefined;
   const exportOptions = process.env.GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST
     ? resolve(process.env.GHOSTTEA_IOS_EXPORT_OPTIONS_PLIST)

@@ -3,9 +3,11 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/vibecook-dev/truffle.git",
-    "revision": "bce9da871982139e54f04414f0ba876c171d4d86",
-    "packagePath": "apple",
+    "revision": "REPLACE_WITH_TRUFFLE_ROOT_MANIFEST_REVISION",
+    "packagePath": "",
+    "packageIdentity": "truffle",
     "license": "MIT",
+    "licenseSha256": "d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0",
     "products": ["Truffle", "TruffleSwiftUI", "TruffleTailscale"]
   },
   "tailscaleKit": {
@@ -25,14 +27,20 @@
         "purpose": "Remap accepted SCM_RIGHTS descriptors before authenticated remote-address lookup."
       }
     ],
+    "distribution": {
+      "kind": "swiftpm-binary-target",
+      "url": "REPLACE_WITH_PUBLISHED_XCFRAMEWORK_ZIP_URL",
+      "swiftPMChecksum": "REPLACE_WITH_SWIFT_PACKAGE_COMPUTE_CHECKSUM_OUTPUT",
+      "note": "Truffle declares this artifact as .binaryTarget(url:checksum:). SwiftPM verifies swiftPMChecksum against the downloaded zip before unpacking, so it — not the sibling materializer — is the integrity root. The per-slice hashes below stay in the BOM as the executable-level record."
+    },
     "artifacts": {
       "iosArm64": {
-        "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64/TailscaleKit.framework/TailscaleKit",
-        "sha256": "94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e"
+        "path": "TailscaleKit.xcframework/ios-arm64/TailscaleKit.framework/TailscaleKit",
+        "sha256": "REPLACE_WITH_PUBLISHED_IOS_ARM64_SHA256"
       },
       "iosSimulatorUniversal": {
-        "path": "apple/Vendor/TailscaleKit.xcframework/ios-arm64_x86_64-simulator/TailscaleKit.framework/TailscaleKit",
-        "sha256": "d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41"
+        "path": "TailscaleKit.xcframework/ios-arm64_x86_64-simulator/TailscaleKit.framework/TailscaleKit",
+        "sha256": "REPLACE_WITH_PUBLISHED_IOS_SIMULATOR_SHA256"
       }
     }
   },

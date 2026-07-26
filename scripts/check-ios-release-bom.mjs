@@ -41,7 +41,9 @@ const runtimeRef = `pkg:cargo/ghosttea-ffi@${packageManifest.version}`;
 const ghosttyRef = `pkg:github/ghostty-org/ghostty@${ghostty.ghostty.commit}`;
 const opensslRef = `pkg:github/openssl/openssl@${ssh.openssl.commit}`;
 const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
-const truffleRef = `pkg:github/vibecook-dev/truffle@${truffle.package.revision}`;
+// Derived from the lock rather than hardcoded: Truffle's repository moved
+// orgs, and a stale owner in the purl silently misattributes the component.
+const truffleRef = `pkg:github/${githubSlug(truffle.package.repository)}@${truffle.package.revision}`;
 const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
 const xcodeRef = `ghosttea:toolchain/xcode@${toolchain.apple.xcodeVersion}+${toolchain.apple.xcodeBuild}`;
@@ -335,6 +337,13 @@ console.log(
 
 function readJSON(path) {
   return JSON.parse(readFileSync(resolve(root, path), "utf8"));
+}
+
+// "https://github.com/owner/repo.git" -> "owner/repo", for purl construction.
+function githubSlug(repository) {
+  const match = /github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(String(repository));
+  if (!match) throw new Error(`Cannot derive a GitHub slug from ${repository}.`);
+  return `${match[1]}/${match[2]}`;
 }
 
 function cycloneDXLicense(value) {

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -12,7 +12,6 @@ const app = join(derivedData, "Build/Products/Debug-iphoneos/Ghosttea.app");
 const appExecutable = join(app, "Ghosttea");
 const appLogicBinary = join(app, "Ghosttea.debug.dylib");
 const bundleIdentifier = "com.vibecook.Ghosttea";
-const tailscaleArtifact = resolve(root, "../p008/truffle/apple/Vendor/TailscaleKit.xcframework");
 const environment = { ...process.env, DEVELOPER_DIR: developerDirectory };
 
 function execute(program, args, options = {}) {
@@ -379,9 +378,8 @@ function formatMiB(bytes) {
 }
 
 async function main() {
-  if (!existsSync(tailscaleArtifact)) {
-    throw new Error(`Missing ${tailscaleArtifact}; run p008/truffle/apple/scripts/materialize-tailscalekit.sh first.`);
-  }
+  // TailscaleKit arrives as a checksum-verified SwiftPM binary target, so
+  // package resolution fails before this script runs if it is missing.
   const team = developmentTeam();
   const device = findDevice();
   await waitForUnlockedDevice(device);

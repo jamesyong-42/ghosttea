@@ -1,13 +1,26 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const lockPath = resolve(root, "apple/GhostteaKit/Compatibility/ios-app-store.lock.json");
 const truffleLockPath = resolve(root, "apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
 const projectPath = resolve(root, "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj");
-const siblingRoot = resolve(root, "../p008/truffle");
+// Truffle is a resolved SwiftPM dependency, so the pin that will actually be
+// built is recorded in Package.resolved — Xcode writes the workspace copy, the
+// SwiftPM CLI writes the package-local one.
+const resolvedCandidates = [
+  resolve(root, "apple/GhostteaApp/GhostteaApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"),
+  resolve(root, "apple/GhostteaKit/Package.resolved"),
+];
+// SwiftPM unpacks binary-target artifacts under the resolving root. The CLI
+// path is predictable; Xcode's lives in DerivedData, so allow an override
+// instead of guessing at a hashed directory name.
+const artifactCandidates = [
+  process.env.GHOSTTEA_TRUFFLE_ARTIFACTS_DIR,
+  resolve(root, "apple/GhostteaKit/.build/artifacts"),
+].filter(Boolean);
 const lock = readJSON(lockPath);
 const truffleLock = readJSON(truffleLockPath);
 const appManifest = resolve(root, lock.privacy.appManifest.path);
@@ -29,7 +42,7 @@ requireTextCount(
   "Debug and Release encryption declarations",
 );
 
-const truffleBlockers = verifyLocalTruffleCheckout();
+const truffleBlockers = verifyResolvedTruffleDependency();
 
 const appBundleArgument = argument("--app-bundle");
 if (appBundleArgument) verifyAppBundle(resolve(appBundleArgument));
@@ -44,38 +57,79 @@ if (process.argv.includes("--release") && blockers.length > 0) {
   process.exitCode = 1;
 }
 
-function verifyLocalTruffleCheckout() {
-  if (!existsSync(join(siblingRoot, ".git"))) return [];
-  const revision = execute("git", ["-C", siblingRoot, "rev-parse", "HEAD"]).stdout.trim();
-  if (revision !== truffleLock.package.revision) {
-    // The sibling is an active development checkout whose branch tip cannot
-    // durably equal a pinned release revision. `requireExactRevision` is a
-    // release requirement, so record drift as a blocker that fails closed
-    // under --release instead of aborting every later check. The sibling
-    // content checks below are meaningless at the wrong revision, so skip them.
+function verifyResolvedTruffleDependency() {
+  const resolvedPath = resolvedCandidates.find((candidate) => existsSync(candidate));
+  if (!resolvedPath) {
     return [
-      `Truffle checkout revision ${revision} does not match lock ${truffleLock.package.revision}; ` +
-        `check out ${truffleLock.package.revision} in ${siblingRoot} for release qualification.`,
+      "No Package.resolved found; resolve the Swift package once so the pinned Truffle " +
+        `revision can be verified (looked in ${resolvedCandidates.join(", ")}).`,
     ];
   }
-  const siblingManifest = resolve(siblingRoot, truffleLock.tailscaleKit.privacyManifest.path);
-  requireHash(
-    siblingManifest,
-    truffleLock.tailscaleKit.privacyManifest.sha256,
-    "sibling TailscaleKit privacy manifest",
-  );
-  if (!readFileSync(siblingManifest).equals(readFileSync(tailscaleManifest))) {
-    throw new Error("Sibling and compatibility-copy TailscaleKit privacy manifests differ.");
+  const identity = truffleLock.package.packageIdentity;
+  const pin = (readJSON(resolvedPath).pins ?? []).find((candidate) => candidate.identity === identity);
+  if (!pin) {
+    return [`${resolvedPath} has no "${identity}" pin; Truffle is not a resolved dependency.`];
   }
-  const materializer = readFileSync(resolve(siblingRoot, "apple/scripts/materialize-tailscalekit.sh"), "utf8");
-  for (const contract of [
-    "TailscaleKit-PrivacyInfo.xcprivacy",
-    'cp "$PRIVACY_MANIFEST" "$framework/PrivacyInfo.xcprivacy"',
-    '[[ "$framework_count" -ne 2 ]]',
-  ]) {
-    if (!materializer.includes(contract)) throw new Error(`TailscaleKit materializer omitted ${contract}.`);
+  // `requireExactRevision` used to mean "the sibling checkout is parked at the
+  // right commit". It now means "SwiftPM will build exactly this commit", which
+  // is the stronger claim: Package.resolved describes the build, a neighbouring
+  // working tree only described the machine.
+  if (normalizeRepository(pin.location) !== normalizeRepository(truffleLock.package.repository)) {
+    return [`Truffle is pinned to ${pin.location}, not the locked ${truffleLock.package.repository}.`];
   }
+  if (pin.state?.revision !== truffleLock.package.revision) {
+    return [
+      `Resolved Truffle revision ${pin.state?.revision ?? "<none>"} does not match lock ` +
+        `${truffleLock.package.revision}; update the pin in apple/GhostteaKit/Package.swift.`,
+    ];
+  }
+  verifyResolvedTailscaleKitArtifact();
   return [];
+}
+
+// Replaces the old source-text contracts on Truffle's materialize script. That
+// script asserted, indirectly, that both framework slices were stamped with the
+// reviewed privacy manifest. The published artifact lets us assert the property
+// itself. Skipped when SwiftPM has not unpacked the artifact yet — the archive
+// gate still proves it on the built bundle via verifyAppBundle.
+function verifyResolvedTailscaleKitArtifact() {
+  const xcframework = artifactCandidates.map((base) => findXcframework(base, "TailscaleKit.xcframework")).find(Boolean);
+  if (!xcframework) return;
+  const slices = readdirSync(xcframework, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(xcframework, entry.name, "TailscaleKit.framework/PrivacyInfo.xcprivacy"))
+    .filter((manifest) => existsSync(manifest));
+  if (slices.length !== 2) {
+    throw new Error(
+      `Expected 2 TailscaleKit slices carrying PrivacyInfo.xcprivacy in ${xcframework}, found ${slices.length}.`,
+    );
+  }
+  for (const slice of slices) {
+    requirePlistIdentity(
+      slice,
+      tailscaleManifest,
+      `TailscaleKit privacy manifest in ${basename(dirname(dirname(slice)))}`,
+    );
+  }
+}
+
+function findXcframework(base, name) {
+  if (!existsSync(base)) return undefined;
+  const direct = join(base, name);
+  if (existsSync(direct)) return direct;
+  for (const entry of readdirSync(base, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const found = findXcframework(join(base, entry.name), name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function normalizeRepository(value) {
+  return String(value)
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
 }
 
 function verifyAppBundle(appBundle) {

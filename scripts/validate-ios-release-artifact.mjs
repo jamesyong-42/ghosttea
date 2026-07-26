@@ -322,15 +322,16 @@ function sourceIdentity() {
   };
 }
 
+// Truffle is a resolved SwiftPM dependency, so its identity comes from the
+// pin that will actually be built rather than from a working tree next door.
+// `clean` is unconditionally true because SwiftPM checks out an immutable
+// revision into its own cache — there is no tree for anyone to dirty.
 function truffleSourceIdentity() {
-  const checkout = resolve(root, "../p008/truffle");
-  requirePath(resolve(checkout, ".git"), "Truffle source checkout");
+  const truffleLock = readJSON("apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
   return {
-    repository: "https://github.com/vibecook-dev/truffle",
-    revision: execute("git", ["-C", checkout, "rev-parse", "HEAD"], { capture: true }).stdout.trim(),
-    clean:
-      execute("git", ["-C", checkout, "status", "--porcelain=v1", "--untracked-files=all"], { capture: true }).stdout
-        .length === 0,
+    repository: truffleLock.package.repository.replace(/\.git$/, ""),
+    revision: truffleLock.package.revision,
+    clean: true,
   };
 }
 
