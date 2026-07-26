@@ -62,7 +62,7 @@ const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).ver
 // The consumer fixture links the artifact for the target it is building, and
 // `fetch:ghostty-vt` resolves the same one, so the bundle is already present.
 const nativeArtifact = JSON.parse(
-  readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
+  readFileSync(join(root, "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"), "utf8"),
 ).targets[resolveTarget()];
 
 try {

@@ -260,7 +260,7 @@ writeFileSync(join(outputDirectory, `${filename}.json`), stableJson(result));
 writeFileSync(join(outputDirectory, `${filename}.spdx.json`), stableJson(sbom));
 console.log(JSON.stringify(result, null, 2));
 const lockedManifest = JSON.parse(
-  readFileSync(join(root, "native/terminald/crates/ghostty-vt-sys/artifacts.json"), "utf8"),
+  readFileSync(join(root, "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"), "utf8"),
 );
 const lockedTarget = lockedManifest.targets[target];
 for (const field of [

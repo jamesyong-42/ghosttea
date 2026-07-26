@@ -67,7 +67,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          expected="$(node -p "require('./native/terminald/crates/ghostty-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].release")"
+          expected="$(node -p "require('./native/ghosttea/crates/ghosttea-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].release")"
           test "$RELEASE_TAG" = "$expected"
 
       - name: Resolve produced artifact paths
@@ -110,7 +110,7 @@ jobs:
   # builder image because Microsoft's CRT headers and import libraries are not
   # redistributable. The runner's bytes are therefore authoritative, and the
   # locked manifest is updated from this job's output rather than compared
-  # against it. See native/terminald/crates/ghostty-vt-sys/README.md.
+  # against it. See native/ghosttea/crates/ghosttea-vt-sys/README.md.
   windows:
     needs: package
     runs-on: windows-2022

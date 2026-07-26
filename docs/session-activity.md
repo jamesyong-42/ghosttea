@@ -47,7 +47,7 @@ the same state.
 
 ## Unix process-group inference
 
-While a session is alive, terminald samples the PTY foreground process group
+While a session is alive, ghosttead samples the PTY foreground process group
 every 200 ms using `tcgetpgrp` through `portable-pty`. It separately observes
 the root child's process group with `getpgid`.
 

@@ -101,7 +101,7 @@ Rust hosts can also supply pre-bound control and frame listeners, private
 environment prefixes, a text engine, and a terminal mesh directly to
 `TerminalService`. Listener ownership, cancellation behavior, stable external
 connection requirements, and shared-Truffle rules are documented in the
-[`ghosttea` crate embedding guide](native/terminald/README.md#embedded-service-mode).
+[`ghosttea` crate embedding guide](native/ghosttea/README.md#embedded-service-mode).
 
 Application automation uses the backend's control-only client. It does not
 open the frame socket, attach a renderer view, or participate in focus and

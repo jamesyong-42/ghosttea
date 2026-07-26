@@ -300,9 +300,9 @@ async function main() {
     capture("npm", ["run", "build:sdk"], { inherit: true });
     capture("npm", ["run", "build", "--workspace", "ghosttea-desktop-experiment"], { inherit: true });
   }
-  const terminald = resolve(root, `target/release/${platform() === "win32" ? "ghosttead.exe" : "ghosttead"}`);
+  const ghosttead = resolve(root, `target/release/${platform() === "win32" ? "ghosttead.exe" : "ghosttead"}`);
   const application = resolve(root, "apps/desktop-experiment");
-  if (!existsSync(terminald)) throw new Error(`Missing release terminal daemon: ${terminald}`);
+  if (!existsSync(ghosttead)) throw new Error(`Missing release terminal daemon: ${ghosttead}`);
   if (!existsSync(resolve(application, "out/main/index.js"))) {
     throw new Error("Desktop experiment is not built; rerun without --no-build");
   }
@@ -408,7 +408,7 @@ async function main() {
       ...process.env,
       ...(authKey && !options.hostStateDir ? { TRUFFLE_TEST_AUTHKEY: authKey } : {}),
       TRUFFLE_SIDECAR_PATH: sidecarPath,
-      GHOSTTEAD_BIN: terminald,
+      GHOSTTEAD_BIN: ghosttead,
       GHOSTTEA_TRUFFLE_ENABLED: "1",
       GHOSTTEA_TRUFFLE_ALLOW_WRITE: "1",
       GHOSTTEA_TRUFFLE_EPHEMERAL: options.hostStateDir ? "0" : "1",

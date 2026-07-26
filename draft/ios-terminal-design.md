@@ -52,7 +52,7 @@ native/ghosttea-ffi        stable, narrow C ABI for Apple clients
 apple/GhostteaKit          Swift Package with terminal, workspace, and transport products
 ```
 
-The existing `terminald` becomes a desktop PTY and service adapter around
+The existing `ghosttea` service becomes a desktop PTY and service adapter around
 `ghosttea-core`. The iOS package supplies SSH or remote-session transport,
 UIKit input, SwiftUI workspace presentation, and Metal rendering.
 
@@ -75,7 +75,7 @@ Ghosttea desktop currently has the following hot path:
 
 ```text
 PTY
-  -> ghosttead / terminald
+  -> ghosttead
   -> GhosttyTerminalCore
   -> native text shaping and glyph rasterization
   -> TRF1 frame socket
@@ -400,7 +400,7 @@ native/
     include/ghosttea.h
     src/lib.rs
 
-  terminald/
+  ghosttea/
     src/
       session.rs             desktop PTY adapter around ghosttea-core
       service.rs
@@ -485,9 +485,9 @@ It builds as a static library for:
 
 No Rust type, allocator object, trait object, string, or panic crosses the ABI.
 
-#### `terminald`
+#### `ghosttea`
 
-`terminald` retains:
+`ghosttea` retains:
 
 - PTY creation and process supervision;
 - environment policy;
@@ -1778,7 +1778,7 @@ and ordered replies.
 Run the same fixtures through:
 
 1. Rust host tests using `ghosttea-core`;
-2. desktop `terminald` integration tests;
+2. desktop `ghosttead` integration tests;
 3. iOS Simulator through the C ABI and Swift wrapper;
 4. Metal renderer snapshot tests;
 5. TypeScript WebGPU or deterministic renderer snapshot tests where
@@ -1992,7 +1992,7 @@ and a 0.122 ms control-RPC p99. No socket protocol or intentional TRF1 change wa
 introduced. Phase 2 may begin.
 
 The embedding refactor has landed and passed its package and integration checks.
-`native/terminald/fixtures/phase1/ansi-baseline.json` now freezes the
+`native/ghosttea/fixtures/phase1/ansi-baseline.json` now freezes the
 pre-extraction terminal reply, logical state, and exact TRF1 bytes across
 whole-buffer, byte-at-a-time, and irregular input chunking. Its glyph sections
 are intentionally empty until Phase 2 selects a bundled parity font. The Phase
@@ -3344,17 +3344,17 @@ The iOS terminal architecture is complete when:
 - `native/ghostty.lock.json`
 - `native/vendor/ghostty/src/build/GhosttyLibVt.zig`
 - `native/vendor/ghostty/include/ghostty.h`
-- `native/terminald/src/session.rs`
-- `native/terminald/src/authority.rs`
-- `native/terminald/src/frame.rs`
-- `native/terminald/crates/ghostty-adapter/src/lib.rs`
-- `native/terminald/crates/ghostty-vt-sys/artifacts.json`
-- `native/terminald/crates/text-engine/src/lib.rs`
-- `native/terminald/crates/truffle/src/lib.rs`
-- `native/terminald/src/tunnel_protocol.rs`
-- `packages/terminal-frame/src/index.ts`
-- `packages/terminal-react/src/TerminalSurface.tsx`
-- `packages/terminal-react/src/workspace/`
+- `native/ghosttea/src/session.rs`
+- `native/ghosttea/src/authority.rs`
+- `native/ghosttea/src/frame.rs`
+- `native/ghosttea/crates/ghosttea-vt/src/lib.rs`
+- `native/ghosttea/crates/ghosttea-vt-sys/artifacts.json`
+- `native/ghosttea/crates/ghosttea-text/src/lib.rs`
+- `native/ghosttea/crates/ghosttea-truffle/src/lib.rs`
+- `native/ghosttea/src/tunnel_protocol.rs`
+- `packages/ghosttea-frame/src/index.ts`
+- `packages/ghosttea-react/src/TerminalSurface.tsx`
+- `packages/ghosttea-react/src/workspace/`
 - `draft/architecture-design.md`
 - `draft/embedding-refactor.md`
 - `draft/terminal-tunneling.md`

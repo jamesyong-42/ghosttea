@@ -389,7 +389,7 @@ Do not run the terminal network protocol through:
 The terminal library must not construct a second Truffle node, select the
 application identity, open the host's state directory independently, resolve
 `sidecar-slim`, or stop the shared node. Those are composition-root concerns.
-The standalone `terminald` binary is only an example composition root for the
+The standalone `ghosttead` binary is only an example composition root for the
 demo desktop application.
 
 Truffle currently provides a Rust API in addition to its Node and Tauri integrations, with the Go sidecar responsible for Tailscale integration. citeturn415142view0
@@ -495,11 +495,11 @@ Truffle’s QUIC API exposes a connection carrying multiple bidirectional stream
 Use one Truffle QUIC connection per pair of terminal hosts:
 
 ```text
-Device A terminald
+Device A ghosttead
        │
        │ one Truffle QUIC connection
        ▼
-Device B terminald
+Device B ghosttead
 ```
 
 Multiple terminal sessions can share that connection.
@@ -731,15 +731,15 @@ enum SessionControlMessage {
 Local transport:
 
 ```text
-Electron → UDS/named pipe → terminald authority
+Electron → UDS/named pipe → ghosttead authority
 ```
 
 Remote transport:
 
 ```text
-Electron → local terminald replica
+Electron → local ghosttead replica
          → Truffle QUIC
-         → remote terminald authority
+         → remote ghosttead authority
 ```
 
 The session actor does not care which transport delivered the message.
@@ -803,14 +803,14 @@ Therefore, two windows on the same remote machine still compete under the same L
 The network does not carry WebGPU display lists or glyph bitmaps.
 
 ```text
-Authoritative terminald
+Authoritative ghosttead
 ├── PTY
 ├── libghostty-vt
 └── logical terminal rows
           │
           │ Truffle QUIC
           ▼
-Replicating terminald
+Replicating ghosttead
 ├── logical terminal replica
 ├── local font shaping
 ├── local glyph rasterization
@@ -986,7 +986,7 @@ The session authority remains the final authorization point.
 # 17. Code organization
 
 ```text
-native/terminald/crates/
+native/ghosttea/crates/
 ├── terminal-session/
 │   ├── session_actor.rs
 │   ├── resize_controller.rs
@@ -1105,7 +1105,7 @@ When view B receives focus:
 ```text
 View B
 → FocusAndResize(160 × 48)
-→ local terminald
+→ local ghosttead
 → Truffle QUIC control stream
 → Device A session authority
 → assigns new control_epoch

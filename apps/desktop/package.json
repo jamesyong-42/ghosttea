@@ -17,7 +17,7 @@
     "dev": "electron-vite dev",
     "prebuild": "node ../../scripts/build-desktop-native-tabs.mjs",
     "build": "electron-vite build",
-    "stage:ghosttead": "node ../../scripts/stage-terminald.mjs",
+    "stage:ghosttead": "node ../../scripts/stage-ghosttead.mjs",
     "dist": "npm run stage:ghosttead && npm run build && electron-builder",
     "check": "tsc --noEmit",
     "test": "vitest run"

@@ -112,8 +112,8 @@ const hostMatchesAppleAsanHang =
 const corpusPaths = [
   "native/ghostty.lock.json",
   "Cargo.lock",
-  "native/terminald/crates/ghosttea-ffi/include/ghosttea.h",
-  "native/terminald/crates/ghosttea-ffi/src/lib.rs",
+  "native/ghosttea/crates/ghosttea-ffi/include/ghosttea.h",
+  "native/ghosttea/crates/ghosttea-ffi/src/lib.rs",
   "apple/GhostteaKit/Sources/GhostteaFrame/TRF1Decoder.swift",
   "apple/GhostteaKit/Tests/GhostteaFrameTests/TRF1DecoderTests.swift",
   "apple/GhostteaKit/Tools/GhostteaTRF1FuzzProbe/main.swift",

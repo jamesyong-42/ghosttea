@@ -9,7 +9,7 @@ payload file -> real PTY -> Ghostty VT -> native shaping -> TRF1 frame
 ```
 
 It complements the existing `bench/run.mjs` comparison, which intentionally
-stops at terminald frame delivery and does not measure the Electron/WebGPU tax.
+stops at ghosttead frame delivery and does not measure the Electron/WebGPU tax.
 
 ## Baseline workflow
 
@@ -18,7 +18,7 @@ keep the display configuration fixed, and do not compare results captured at
 different DPR or refresh rates.
 
 ```sh
-# Build release terminald, SDK packages, and the experiment app, then run
+# Build release ghosttead, SDK packages, and the experiment app, then run
 # one warmup and five measured repetitions per workload.
 npm run bench:render -- --output=bench/render/results-baseline.json
 
@@ -57,7 +57,7 @@ machine is noisy. Store a machine-specific baseline outside the ignored
 Payload workloads are emitted by a small Node helper on a monotonic interval.
 Most use fixed-size chunks; `doom-fire-1` preserves generated frame boundaries.
 This prevents a fast `cat` from collapsing the whole input into a handful of
-terminald batches and makes scheduling/render pressure repeatable. The pacing
+ghosttead batches and makes scheduling/render pressure repeatable. The pacing
 configuration is embedded in each raw report.
 
 `doom-fire-1` is an independently implemented, finite, seeded adaptation of the
@@ -124,8 +124,8 @@ up, without adding timestamp queries to every measured frame. A separate
 timestamp-query diagnostic can be added later for pass attribution; it should
 not silently change the default workload's command stream.
 
-Electron's process sampler does not include the separately spawned terminald
-process. End-to-idle time still covers terminald work, and `bench/run.mjs`
+Electron's process sampler does not include the separately spawned ghosttead
+process. End-to-idle time still covers ghosttead work, and `bench/run.mjs`
 isolates the native sidecar path. Renderer changes should use this suite; native
 parser/shaping/encoding changes should run both suites so cost cannot disappear
 across the process boundary.

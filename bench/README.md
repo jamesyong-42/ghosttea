@@ -8,7 +8,7 @@ Reproducible comparison of:
 
 | Target               | What is measured                                                                                                                         |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **terminald**        | Real PTY → `libghostty-vt` → native text engine → TRF1 frames over UDS (the Electron sidecar hot path without UI/GPU)                    |
+| **ghosttead**        | Real PTY → `libghostty-vt` → native text engine → TRF1 frames over UDS (the Electron sidecar hot path without UI/GPU)                    |
 | **node-pty → xterm** | **Primary baseline**: real PTY via `node-pty`, shell `cat`s the same payload, bytes feed `@xterm/xterm` `write` (classic Electron embed) |
 | **xterm write-only** | Decomposition only (parser cost without PTY) — labeled as secondary                                                                      |
 | **Native Ghostty**   | Manual only — same byte payloads via `workloads/manual-cat.sh`                                                                           |
@@ -16,11 +16,11 @@ Reproducible comparison of:
 ### Fair comparison rule
 
 ```text
-terminald:   PTY → ghostty-vt → shape → TRF1 frames
+ghosttead:   PTY → ghostty-vt → shape → TRF1 frames
 node-pty+xterm: PTY → shell cat → onData → xterm.write(parse)
 ```
 
-Same grid size, same payload files, same markers. Do **not** compare terminald
+Same grid size, same payload files, same markers. Do **not** compare ghosttead
 to pure `xterm.write` when arguing product performance — that omits PTY cost
 and is only useful to split “who spent time where.”
 
@@ -33,7 +33,7 @@ This is **not** a claim that the Electron app is faster than Ghostty. It quantif
 ## Quick start
 
 ```sh
-# From repo root (release terminald binary recommended)
+# From repo root (release ghosttead binary recommended)
 cargo build --release --package ghosttead
 npm install
 npm run bench
@@ -42,8 +42,8 @@ npm run bench
 Options:
 
 ```sh
-node bench/run.mjs --targets=terminald,xterm --scale=1 --json=bench/results.json
-node bench/run.mjs --targets=terminald --scale=0.5
+node bench/run.mjs --targets=ghosttead,xterm --scale=1 --json=bench/results.json
+node bench/run.mjs --targets=ghosttead --scale=0.5
 GHOSTTEAD_BIN=./target/release/ghosttead npm run bench
 ```
 
@@ -55,8 +55,8 @@ GHOSTTEAD_BIN=./target/release/ghosttead npm run bench
 | scrolling                  | Large plain-text flood (`cat`-like)                            |
 | unicode                    | Wide chars / emoji / combining samples                         |
 | scroll-region              | Full viewport redraw loops                                     |
-| control RTT under flood    | `get-session` latency while output is flooding (**terminald**) |
-| interrupt under flood      | Ctrl+C → ACK while Python floods stdout (**terminald**)        |
+| control RTT under flood    | `get-session` latency while output is flooding (**ghosttead**) |
+| interrupt under flood      | Ctrl+C → ACK while Python floods stdout (**ghosttead**)        |
 | event-loop lag under write | `setImmediate` lag during xterm `write` (**xterm**)            |
 | multi-session              | N concurrent floods                                            |
 
@@ -64,9 +64,9 @@ GHOSTTEAD_BIN=./target/release/ghosttead npm run bench
 
 **Apples and oranges by design (and labeled as such):**
 
-- `terminald` does **more** work than pure `terminal.write`: PTY, VT, HarfBuzz shaping, glyph raster cache, binary frame encode, UDS.
+- `ghosttead` does **more** work than pure `terminal.write`: PTY, VT, HarfBuzz shaping, glyph raster cache, binary frame encode, UDS.
 - Pure xterm numbers are **parse/buffer only** — no GPU, no Electron, often no PTY.
-- If terminald **wins or ties** wall clock anyway, the native core is paying for itself.
+- If ghosttead **wins or ties** wall clock anyway, the native core is paying for itself.
 - If xterm pure-parse is faster but **event-loop lag / multi-session** is worse, that matches the architectural thesis.
 
 **Expected qualitative order (end-to-end pixels):**
@@ -78,9 +78,9 @@ native Ghostty  ≥  Ghosttea (ghosttead + WebGPU)  ≫  node-pty + xterm under 
 **Expected qualitative order (this harness):**
 
 ```text
-terminald control-under-flood  ≫  xterm event-loop under write
-terminald multi-session        often better wall/CPU than N × xterm
-pure xterm parse               may beat terminald wall time on single stream
+ghosttead control-under-flood  ≫  xterm event-loop under write
+ghosttead multi-session        often better wall/CPU than N × xterm
+pure xterm parse               may beat ghosttead wall time on single stream
 ```
 
 ## Native Ghostty manual protocol
@@ -120,17 +120,17 @@ To measure that later:
   "generatedAt": "...",
   "meta": { "host", "node", "platform", "scale", "cols", "rows", "targets" },
   "results": {
-    "terminald": { "cases": { ... } },
+    "ghosttead": { "cases": { ... } },
     "xterm": { "cases": { ... } },
-    "comparisons": [ { "case", "terminaldMs", "xtermMs", "speedupVsXterm", "note" } ]
+    "comparisons": [ { "case", "ghostteadMs", "xtermMs", "speedupVsXterm", "note" } ]
   }
 }
 ```
 
 ## Caveats
 
-- Numbers are **machine-local** and vary with thermal state, font discovery, and release vs debug `terminald`.
-- Prefer a **release** `terminald` binary (`cargo build --release`).
+- Numbers are **machine-local** and vary with thermal state, font discovery, and release vs debug `ghosttead`.
+- Prefer a **release** `ghosttead` binary (`cargo build --release`).
 - **`posix_spawnp failed`**: almost always means `node-pty`'s `spawn-helper` is not
   executable. `npm run bench` runs `scripts/fix-node-pty.mjs` automatically; you can
   also run it after any reinstall: `node scripts/fix-node-pty.mjs`.
@@ -139,7 +139,7 @@ To measure that later:
 ## Example commands
 
 ```sh
-# Full primary comparison (terminald vs node-pty→xterm)
+# Full primary comparison (ghosttead vs node-pty→xterm)
 cargo build --release --package ghosttead
 GHOSTTEAD_BIN=./target/release/ghosttead npm run bench:json
 

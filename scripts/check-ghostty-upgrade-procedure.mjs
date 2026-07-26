@@ -5,7 +5,7 @@ const root = resolve(import.meta.dirname, "..");
 const runbookPath = "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md";
 const lock = readJSON("native/ghostty.lock.json");
 const fonts = readJSON("native/fonts.lock.json");
-const artifacts = readJSON("native/terminald/crates/ghostty-vt-sys/artifacts.json");
+const artifacts = readJSON("native/ghosttea/crates/ghosttea-vt-sys/artifacts.json");
 const packageManifest = readJSON("package.json");
 const sourceBom = readJSON("apple/GhostteaKit/Compatibility/ios-release.cdx.json");
 const bundledBom = readJSON("apple/GhostteaApp/Resources/Ghosttea-iOS.cdx.json");
@@ -72,10 +72,10 @@ for (const name of requiredScripts) {
 const requiredInputs = [
   "native/ghostty.lock.json",
   "native/fonts.lock.json",
-  "native/terminald/crates/ghostty-vt-sys/artifacts.json",
-  "native/terminald/crates/ghostty-vt-sys/src/ghostty_shim.c",
-  "native/terminald/fixtures/phase1/ansi-baseline.json",
-  "native/terminald/fixtures/phase2/font-parity.json",
+  "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.c",
+  "native/ghosttea/fixtures/phase1/ansi-baseline.json",
+  "native/ghosttea/fixtures/phase2/font-parity.json",
   "apple/GhostteaKit/Sources/GhostteaTerminal/Resources/terminal-visual-golden.json",
   "apple/GhostteaKit/Compatibility/ios-release.cdx.json",
   "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json",

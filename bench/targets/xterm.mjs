@@ -80,7 +80,7 @@ function spawnShell(pty, { cols, rows, cwd = process.cwd() } = {}) {
 
 /**
  * Full embed path: node-pty shell → cat payload → xterm.write(onData).
- * This is the fair comparison against terminald's PTY session path.
+ * This is the fair comparison against ghosttead's PTY session path.
  */
 async function ptyPayloadToMarker({ cols, rows, payload, marker }, XTerm, pty) {
   const terminal = createTerminal({ cols, rows }, XTerm);

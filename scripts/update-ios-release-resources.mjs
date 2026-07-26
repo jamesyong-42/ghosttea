@@ -40,7 +40,7 @@ const metadata = JSON.parse(metadataResult.stdout);
 const componentNotices = [];
 const documentsByHash = new Map();
 
-addComponent("ghosttea-ffi", packageVersion, "MIT", ["native/terminald/LICENSE"]);
+addComponent("ghosttea-ffi", packageVersion, "MIT", ["native/ghosttea/LICENSE"]);
 addComponent("Ghostty VT", versionOf("Ghostty VT"), "MIT", ["native/vendor/ghostty/LICENSE"]);
 addComponent("OpenSSL", versionOf("OpenSSL"), "Apache-2.0", ["native/vendor/openssl/LICENSE.txt"]);
 addComponent(
@@ -56,7 +56,7 @@ addComponent("TailscaleKit", versionOf("TailscaleKit"), "BSD-3-Clause", [tailsca
 
 for (const entry of rustLock.components) {
   if (entry.source === "workspace") {
-    addComponent(entry.name, entry.version, entry.license, ["native/terminald/LICENSE"]);
+    addComponent(entry.name, entry.version, entry.license, ["native/ghosttea/LICENSE"]);
     continue;
   }
   const matches = metadata.packages.filter(

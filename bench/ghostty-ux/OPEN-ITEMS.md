@@ -18,7 +18,7 @@ See [README.md](./README.md) for architecture and refresh procedure.
 | **Today**                           | Matched; **unhandled + consumed** (no effect)                                                                                                                      |
 | **Why deferred**                    | Needs a **control-plane font/metrics protocol**, not just a keybind map                                                                                            |
 | **What “font-size protocol” means** | New daemon↔renderer messages to change live `font_size_px` / cell W×H, reshape glyphs, recompute cols×rows, PTY resize. **Not** VT OSC and **not** CSS zoom alone. |
-| **Touches**                         | `terminal-protocol`, `terminald` text-engine, session grid, React cell metrics (`CELL_WIDTH` / `LINE_HEIGHT` today fixed)                                          |
+| **Touches**                         | `terminal-protocol`, `ghosttead` text-engine, session grid, React cell metrics (`CELL_WIDTH` / `LINE_HEIGHT` today fixed)                                          |
 | **Interim policy**                  | Keep unhandled consume so shell doesn’t see `=` / `-` / `0` with super                                                                                             |
 
 Do **not** implement as canvas CSS zoom without grid/PTY update — that is not Ghostty parity.
@@ -50,7 +50,7 @@ Ghostty undo is limited (close/new tab/window/split) with timeout. Needs host st
 | `⌘↑` / `⌘↓`   | `jump_to_prompt:±1` | unhandled **consume** |
 | `⌘⇧↑` / `⌘⇧↓` | same                | consume               |
 
-Requires **shell integration** marks in terminald and a scroll-to-prompt API. No control message today.
+Requires **shell integration** marks in ghosttead and a scroll-to-prompt API. No control message today.
 
 ### Write screen / scrollback / selection to file
 
