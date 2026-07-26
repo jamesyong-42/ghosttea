@@ -8,9 +8,9 @@
     "timestamp": "2026-07-18T00:00:00Z",
     "component": {
       "type": "application",
-      "bom-ref": "pkg:npm/ghosttea@0.3.0",
+      "bom-ref": "pkg:npm/ghosttea@0.4.0",
       "name": "Ghosttea iOS",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -18,7 +18,7 @@
           }
         }
       ],
-      "purl": "pkg:npm/ghosttea@0.3.0",
+      "purl": "pkg:npm/ghosttea@0.4.0",
       "properties": [
         {
           "name": "ghosttea:scope",
@@ -129,7 +129,7 @@
       },
       {
         "name": "ghosttea:cargo-lock:sha256",
-        "value": "184d138a82bd3f3ba5bc7683af10b2b9f808bbe1a78ed070aef03433a66e7d16"
+        "value": "070dd861767df7cde0f6cd8fbb29a8287512968f5da2100ac5afd520a6e2728b"
       },
       {
         "name": "ghosttea:rust-target",
@@ -160,9 +160,9 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ghosttea-ffi@0.3.0",
+      "bom-ref": "pkg:cargo/ghosttea-ffi@0.4.0",
       "name": "ghosttea-ffi",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -170,7 +170,7 @@
           }
         }
       ],
-      "purl": "pkg:cargo/ghosttea-ffi@0.3.0"
+      "purl": "pkg:cargo/ghosttea-ffi@0.4.0"
     },
     {
       "type": "library",
@@ -1136,9 +1136,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ghosttea-core@0.3.0",
+      "bom-ref": "pkg:cargo/ghosttea-core@0.4.0",
       "name": "ghosttea-core",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -1146,7 +1146,7 @@
           }
         }
       ],
-      "purl": "pkg:cargo/ghosttea-core@0.3.0",
+      "purl": "pkg:cargo/ghosttea-core@0.4.0",
       "properties": [
         {
           "name": "ghosttea:cargo-source",
@@ -1160,9 +1160,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ghosttea-text@0.3.0",
+      "bom-ref": "pkg:cargo/ghosttea-text@0.4.0",
       "name": "ghosttea-text",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -1170,7 +1170,7 @@
           }
         }
       ],
-      "purl": "pkg:cargo/ghosttea-text@0.3.0",
+      "purl": "pkg:cargo/ghosttea-text@0.4.0",
       "properties": [
         {
           "name": "ghosttea:cargo-source",
@@ -1184,9 +1184,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ghosttea-vt-sys@0.3.0",
+      "bom-ref": "pkg:cargo/ghosttea-vt-sys@0.4.0",
       "name": "ghosttea-vt-sys",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -1194,7 +1194,7 @@
           }
         }
       ],
-      "purl": "pkg:cargo/ghosttea-vt-sys@0.3.0",
+      "purl": "pkg:cargo/ghosttea-vt-sys@0.4.0",
       "properties": [
         {
           "name": "ghosttea:cargo-source",
@@ -1208,9 +1208,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/ghosttea-vt@0.3.0",
+      "bom-ref": "pkg:cargo/ghosttea-vt@0.4.0",
       "name": "ghosttea-vt",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "licenses": [
         {
           "license": {
@@ -1218,7 +1218,7 @@
           }
         }
       ],
-      "purl": "pkg:cargo/ghosttea-vt@0.3.0",
+      "purl": "pkg:cargo/ghosttea-vt@0.4.0",
       "properties": [
         {
           "name": "ghosttea:cargo-source",
@@ -2882,9 +2882,9 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:npm/ghosttea@0.3.0",
+      "ref": "pkg:npm/ghosttea@0.4.0",
       "dependsOn": [
-        "pkg:cargo/ghosttea-ffi@0.3.0",
+        "pkg:cargo/ghosttea-ffi@0.4.0",
         "pkg:github/openssl/openssl@8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         "pkg:github/libssh2/libssh2@a312b43325e3383c865a87bb1d26cb52e3292641",
         "pkg:github/jamesyong-42/truffle@bce9da871982139e54f04414f0ba876c171d4d86",
@@ -2896,10 +2896,10 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-ffi@0.3.0",
+      "ref": "pkg:cargo/ghosttea-ffi@0.4.0",
       "dependsOn": [
-        "pkg:cargo/ghosttea-core@0.3.0",
-        "pkg:cargo/ghosttea-text@0.3.0",
+        "pkg:cargo/ghosttea-core@0.4.0",
+        "pkg:cargo/ghosttea-text@0.4.0",
         "pkg:cargo/serde_json@1.0.150",
         "pkg:github/ghostty-org/ghostty@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
       ]
@@ -3098,17 +3098,17 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-core@0.3.0",
+      "ref": "pkg:cargo/ghosttea-core@0.4.0",
       "dependsOn": [
         "pkg:cargo/anyhow@1.0.103",
-        "pkg:cargo/ghosttea-text@0.3.0",
-        "pkg:cargo/ghosttea-vt@0.3.0",
+        "pkg:cargo/ghosttea-text@0.4.0",
+        "pkg:cargo/ghosttea-vt@0.4.0",
         "pkg:cargo/serde@1.0.228",
         "pkg:cargo/smallvec@1.15.2"
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-text@0.3.0",
+      "ref": "pkg:cargo/ghosttea-text@0.4.0",
       "dependsOn": [
         "pkg:cargo/anyhow@1.0.103",
         "pkg:cargo/fontdb@0.23.0",
@@ -3122,7 +3122,7 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-vt-sys@0.3.0",
+      "ref": "pkg:cargo/ghosttea-vt-sys@0.4.0",
       "dependsOn": [
         "pkg:cargo/cc@1.2.67",
         "pkg:cargo/serde@1.0.228",
@@ -3133,9 +3133,9 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-vt@0.3.0",
+      "ref": "pkg:cargo/ghosttea-vt@0.4.0",
       "dependsOn": [
-        "pkg:cargo/ghosttea-vt-sys@0.3.0"
+        "pkg:cargo/ghosttea-vt-sys@0.4.0"
       ]
     },
     {

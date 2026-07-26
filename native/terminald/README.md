@@ -24,6 +24,12 @@ use ghosttea::{
     ipc, TerminalService, TerminalServiceConfig, TerminalServiceListeners,
 };
 
+// A Unix socket outlives the process that bound it, so a host that restarts
+// replaces its own endpoints. Windows has nothing to remove and this is a
+// no-op there.
+ipc::remove_stale_endpoint(&control_path)?;
+ipc::remove_stale_endpoint(&frame_path)?;
+
 let control = ipc::Listener::bind(&control_path)?;
 let frames = ipc::Listener::bind(&frame_path)?;
 set_private_socket_permissions(&control_path)?;

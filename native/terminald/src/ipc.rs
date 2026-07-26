@@ -77,6 +77,11 @@ pub struct Listener {
 #[cfg(unix)]
 impl Listener {
     /// Bind the channel's socket path.
+    ///
+    /// Replacing an endpoint a previous process left behind is the caller's:
+    /// this fails with `EADDRINUSE` on a socket that still exists, so a host
+    /// that restarts calls [`remove_stale_endpoint`] first.
+    /// [`TerminalService::bind`](crate::TerminalService::bind) does both.
     pub fn bind(endpoint: &str) -> Result<Self> {
         Ok(Self {
             inner: tokio::net::UnixListener::bind(endpoint)?,

@@ -64,6 +64,16 @@ function verifyBundleResource(bundle, entry, expectedBytes) {
 function requireHash(bytes, expected, description) {
   const actual = sha256(bytes);
   if (actual !== expected) {
+    // These files are hash-locked and checked out with LF everywhere, so an
+    // editor or script that rewrote one with platform line endings changes its
+    // bytes without changing a character. That reads as an unexplained drift
+    // otherwise, and only on the machine that did not write the file.
+    if (bytes.includes("\r\n")) {
+      throw new Error(
+        `${description} uses CRLF line endings, so its SHA-256 cannot match. ` +
+          `Rewrite it with LF; the repository checks these files out with LF on every platform.`,
+      );
+    }
     throw new Error(`${description} SHA-256 drifted: expected ${expected}, got ${actual}.`);
   }
 }
