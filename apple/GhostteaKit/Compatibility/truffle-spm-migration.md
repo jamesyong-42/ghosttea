@@ -42,14 +42,13 @@ the script that was supposed to produce it.
 door happens to be parked at the right commit"; it now means "SwiftPM will build
 exactly this commit".
 
-## Placeholders to fill when Truffle publishes
+## Remaining placeholder
 
-| Placeholder                                           | Where                                                                                  | Source                                                                           |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `REPLACE_WITH_TRUFFLE_ROOT_MANIFEST_REVISION`         | `Package.swift` (`truffleRevision`) and `truffle-swift.lock.json` (`package.revision`) | the Truffle commit that adds the root manifest — must be identical in both files |
-| `REPLACE_WITH_PUBLISHED_XCFRAMEWORK_ZIP_URL`          | `truffle-swift.lock.json` (`tailscaleKit.distribution.url`)                            | Truffle's release asset URL                                                      |
-| `REPLACE_WITH_SWIFT_PACKAGE_COMPUTE_CHECKSUM_OUTPUT`  | same, `distribution.swiftPMChecksum`                                                   | `swift package compute-checksum TailscaleKit.xcframework.zip`                    |
-| `REPLACE_WITH_PUBLISHED_IOS_{ARM64,SIMULATOR}_SHA256` | same, `artifacts.*.sha256`                                                             | `shasum -a 256` of each slice in the published artifact                          |
+Only one value is still unknown — Truffle's artifact is already published.
+
+| Placeholder                                   | Where                                                                                  | Source                                                                           |
+| --------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `REPLACE_WITH_TRUFFLE_ROOT_MANIFEST_REVISION` | `Package.swift` (`truffleRevision`) and `truffle-swift.lock.json` (`package.revision`) | the Truffle commit that adds the root manifest — must be identical in both files |
 
 Then regenerate the derived files:
 
@@ -59,19 +58,30 @@ npm run update:ios-release-resources             # rebuilds THIRD-PARTY-NOTICES.
 npm run check                                    # full gate
 ```
 
-## Expect the artifact hashes to change
+## The artifact hashes did NOT change
 
-`artifacts.iosArm64.sha256` and `artifacts.iosSimulatorUniversal.sha256`
-previously recorded a **locally built** XCFramework (Xcode 26.1 / Swift 6.2.1 /
-Go 1.25.6, Apple silicon). Truffle's own `Vendor/README.md` warns that build
-metadata changes the binary digest under a different toolchain, so a
-CI-published artifact will almost certainly hash differently even from the same
-libtailscale revision and patch.
+An earlier draft of this document warned that the pinned per-slice digests would
+have to be re-baselined, on the reasoning that Truffle's `Vendor/README.md`
+cautions that build metadata shifts the binary digest under a different
+toolchain. That turned out not to apply: Truffle published the **existing
+materialized artifact** rather than rebuilding it in CI, precisely so the bytes
+would not move.
 
-This is a one-time re-baseline of the App Store evidence chain, and it is an
-improvement: today the two repositories pin whatever each machine happened to
-build, and afterwards both pin one published artifact that SwiftPM verifies by
-checksum before unpacking.
+Verified identical to what this lock already pinned:
+
+| Slice     | SHA-256                                                            |
+| --------- | ------------------------------------------------------------------ |
+| device    | `94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e` |
+| simulator | `d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41` |
+
+So the App Store evidence chain carries over untouched — no re-baseline, no new
+BOM component digests. The migration is strictly an improvement in provenance:
+the same bytes, now fetched from a checksum-verified published artifact instead
+of whatever each machine happened to build locally.
+
+The artifact is keyed to the vendored dependency (`tailscalekit-5e89501d`),
+not to a Truffle version, so these digests stay stable across Truffle releases
+and move only when the libtailscale revision or its patch deliberately changes.
 
 ## Truffle-side prerequisites
 
