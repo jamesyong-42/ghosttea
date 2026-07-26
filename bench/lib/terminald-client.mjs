@@ -382,6 +382,40 @@ export class TerminaldHarness {
     await this.request("interrupt", { sessionId, ...this.#nextInput(sessionId) });
   }
 
+  /**
+   * Take resize authority for a view. Resizing is refused without it, so a
+   * caller that wants to drive the size claims control first.
+   */
+  async claimControl(sessionId, cols, rows) {
+    const view = this.#views.get(sessionId);
+    if (!view) throw new Error(`session ${sessionId} is not attached`);
+    const claimed = await this.request("focus-and-resize", {
+      sessionId,
+      viewId: view.viewId,
+      attachmentEpoch: view.attachmentEpoch,
+      cols,
+      rows,
+    });
+    if (claimed.type !== "control-claimed") throw new Error(`control claim failed: ${claimed.type}`);
+    view.controlEpoch = claimed.controlEpoch;
+    return claimed;
+  }
+
+  async resize(sessionId, cols, rows) {
+    const view = this.#views.get(sessionId);
+    if (!view) throw new Error(`session ${sessionId} is not attached`);
+    view.resizeSequence = (view.resizeSequence ?? 0) + 1;
+    return this.request("resize", {
+      sessionId,
+      viewId: view.viewId,
+      attachmentEpoch: view.attachmentEpoch,
+      controlEpoch: view.controlEpoch ?? 0,
+      resizeSequence: view.resizeSequence,
+      cols,
+      rows,
+    });
+  }
+
   #nextInput(sessionId) {
     const view = this.#views.get(sessionId);
     if (!view) throw new Error(`session ${sessionId} is not attached`);

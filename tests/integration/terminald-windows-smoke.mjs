@@ -117,6 +117,37 @@ try {
   await harness.waitForMarker(isolated.handle, "token=[%GHOSTTEA_AUTH_TOKEN%]");
   console.log("ok  a clean session did not inherit the service auth token");
 
+  // ConPTY resizes a pseudoconsole rather than issuing TIOCSWINSZ, so the
+  // child learns its new size through a different mechanism than on Unix.
+  // Asking the shell what width it sees proves the resize reached it, which a
+  // control-plane assertion on the session's own record would not.
+  const resized = await harness.createAttachedSession({
+    executable: "powershell.exe",
+    args: ["-NoLogo", "-NoProfile"],
+    cols: 80,
+    rows: 24,
+    persistence: "keep-until-exit",
+  });
+  // Resizing is refused without control authority, which a real view claims
+  // when it takes focus.
+  await harness.claimControl(resized.id, 80, 24);
+  await harness.resize(resized.id, 132, 40);
+  await harness.sendText(resized.id, 'Write-Output "ghosttea-cols=$($Host.UI.RawUI.WindowSize.Width)"\r');
+  await harness.waitForMarker(resized.handle, "ghosttea-cols=132");
+  console.log("ok  a resize reached the child through the pseudoconsole");
+  await harness.terminate(resized.id);
+
+  // ConPTY buffers on its own terms, so a burst large enough to fill it is a
+  // different path from the steady output above. The marker after the burst is
+  // the assertion: it only arrives if nothing stalled behind the flood.
+  const flooded = await harness.createAttachedSession({
+    executable: shellExecutable,
+    args: ["/d", "/c", "(for /l %i in (1,1,500) do @echo ghosttea-flood-%i) & echo ghosttea-flood-done"],
+    persistence: "keep-until-exit",
+  });
+  await harness.waitForMarker(flooded.handle, "ghosttea-flood-done");
+  console.log("ok  a 500-line burst drained without stalling");
+
   console.log("terminald windows smoke passed");
 } finally {
   automation.dispose();
