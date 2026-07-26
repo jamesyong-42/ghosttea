@@ -50,10 +50,42 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
+  # The published crates and packages support Windows, so a release gate that
+  # only runs on macOS can ship a target it never built. This runs the same
+  # release gate there, building the Ghostty VT artifact from the pinned source
+  # as the desktop workflow does.
+  validate-windows:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Require the package version to match the tag
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
+      - run: npm run ci:desktop
+
   publish:
     needs:
       - rust-audit
       - validate
+      - validate-windows
     if: >-
       github.ref_type == 'tag' &&
       startsWith(github.ref_name, 'v') &&
