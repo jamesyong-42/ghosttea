@@ -10,6 +10,13 @@ commit whose signed `vX.Y.Z` tag matches the root package version.
 
 ## Package graph and order
 
+Every crate and package directory is named after what it publishes: the crate
+name for Rust, the unscoped package name for npm. Renaming a published artifact
+therefore means renaming its directory in the same change.
+`npm run check:workspace-names` enforces this, because a directory that drifts
+from its published name is invisible to both the compiler and the registry.
+The private applications under `apps/` are exempt and are never published.
+
 Publish Rust crates in dependency order:
 
 1. `ghosttea-vt-sys`
