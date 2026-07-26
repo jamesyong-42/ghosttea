@@ -93,17 +93,19 @@ function processSample(pid) {
  * falling before measuring, rather than assuming a fixed delay was enough.
  */
 async function stableProcessSample(pid) {
+  // Sampling costs a process on Windows, so check twice a second rather than
+  // four times.
   const deadline = Date.now() + settleTimeoutMs;
   let previous = processSample(pid);
-  let unchanged = 0;
-  while (Date.now() < deadline && unchanged < 3) {
-    await delay(250);
+  let stoppedFalling = 0;
+  while (Date.now() < deadline && stoppedFalling < 3) {
+    await delay(500);
     const next = processSample(pid);
-    const settled =
-      next.rssKiB >= previous.rssKiB &&
-      next.threads >= previous.threads &&
-      (next.handles ?? 0) >= (previous.handles ?? 0);
-    unchanged = settled ? unchanged + 1 : 0;
+    // Only a falling reading means teardown is still in progress. Growth is not
+    // waited out: that is the regression these guardrails exist to report.
+    const falling =
+      next.rssKiB < previous.rssKiB || next.threads < previous.threads || (next.handles ?? 0) < (previous.handles ?? 0);
+    stoppedFalling = falling ? 0 : stoppedFalling + 1;
     previous = next;
   }
 

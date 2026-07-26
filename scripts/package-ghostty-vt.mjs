@@ -1,7 +1,17 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { release as osRelease } from "node:os";
 import { join, relative } from "node:path";
-import { installPrefix, libraryPath, lock, resolveTarget, root, targetConfig } from "./ghostty-vt-target.mjs";
+import {
+  artifactNames,
+  installPrefix,
+  libraryPath,
+  lock,
+  resolveTarget,
+  root,
+  targetConfig,
+} from "./ghostty-vt-target.mjs";
 
 const allowMismatch = process.argv.includes("--allow-mismatch");
 const target = resolveTarget();
@@ -11,10 +21,52 @@ const library = libraryPath(target);
 // gate repository builds. Native builds depend on the host toolchain, so their
 // checksums only gate downloaded bundles.
 const reproducible = config.build === "container";
-const revision = lock.ghostty.commit.slice(0, 12);
-const release = `ghostty-vt-${revision}`;
-const filename = `${release}-${target}.tar`;
+const { release, filename } = artifactNames(target);
 const outputDirectory = join(root, "artifacts/ghostty-vt");
+
+/**
+ * The newest entry of a versioned toolchain directory, or null when the
+ * directory is absent.
+ */
+function newestVersion(directory) {
+  try {
+    return (
+      readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .at(-1) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a native build linked against, recorded rather than enforced.
+ *
+ * Best effort by design: a build that cannot report its toolchain should still
+ * produce an artifact, and a null here says the record is unknown rather than
+ * claiming the build had nothing.
+ */
+function hostToolchain() {
+  if (process.platform !== "win32") return null;
+  const programFiles = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const vswhere = join(programFiles, "Microsoft Visual Studio/Installer/vswhere.exe");
+  const query = (property) => {
+    const result = spawnSync(vswhere, ["-latest", "-products", "*", "-property", property], {
+      encoding: "utf8",
+    });
+    return result.status === 0 ? result.stdout.trim() || null : null;
+  };
+  const installation = query("installationPath");
+  return {
+    visualStudio: query("installationVersion"),
+    msvcTools: installation ? newestVersion(join(installation, "VC/Tools/MSVC")) : null,
+    windowsSdk: newestVersion(join(programFiles, "Windows Kits/10/Include")),
+    osRelease: osRelease(),
+  };
+}
 
 function filesBelow(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -88,6 +140,11 @@ const artifact = {
         hostPlatform: config.hostPlatform,
         zigVersion: lock.zig.version,
         zigTarget: config.zigTarget,
+        // A container build is pinned by its image digest. A native build is
+        // pinned by whatever the host had installed, and these are the parts
+        // Zig links against, so they belong in the record even though they
+        // cannot be enforced from it.
+        hostToolchain: hostToolchain(),
         postprocessor: null,
       },
   files: Object.fromEntries(

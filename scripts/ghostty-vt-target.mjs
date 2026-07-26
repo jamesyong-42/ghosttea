@@ -76,6 +76,19 @@ export function libraryPath(target) {
 }
 
 /**
+ * What a build of `target` at the current pin produces.
+ *
+ * Derived from the pinned commit rather than read back from `artifacts.json`,
+ * because a build whose manifest entry is not locked yet is exactly when these
+ * names are needed: bumping the Ghostty pin changes them before the manifest
+ * catches up.
+ */
+export function artifactNames(target) {
+  const release = `ghostty-vt-${lock.ghostty.commit.slice(0, 12)}`;
+  return { release, filename: `${release}-${target}.tar` };
+}
+
+/**
  * A native target may only be built on a matching host.
  */
 export function assertBuildableHost(target) {
