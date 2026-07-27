@@ -4,7 +4,7 @@ set -euo pipefail
 crate="${1:?crate name is required}"
 version="$(node -p "require('./package.json').version")"
 registry_url="https://crates.io/api/v1/crates/${crate}/${version}"
-registry_user_agent="ghosttea-release/${version} (https://github.com/jamesyong-42/ghosttea)"
+registry_user_agent="ghosttea-release/${version} (https://github.com/vibecook-dev/ghosttea)"
 
 wait_until_resolvable() {
   for _ in {1..60}; do

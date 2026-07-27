@@ -28,7 +28,7 @@ requireEqual(artifact?.release, expectedRelease, "native artifact release");
 requireEqual(artifact?.filename, expectedFilename, "native artifact filename");
 requireEqual(
   artifact?.url,
-  `https://github.com/jamesyong-42/ghosttea/releases/download/${expectedRelease}/${expectedFilename}`,
+  `https://github.com/vibecook-dev/ghosttea/releases/download/${expectedRelease}/${expectedFilename}`,
   "native artifact URL",
 );
 for (const field of ["sha256", "librarySha256", "headersSha256"]) {

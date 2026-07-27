@@ -168,7 +168,7 @@ After the first manual release:
 
 1. Create a protected GitHub environment named `release`.
 2. Configure every npm package and crates.io crate to trust:
-   - GitHub owner: `jamesyong-42`
+   - GitHub owner: `vibecook-dev`
    - Repository: `ghosttea`
    - Workflow: `publish-release.yml`
    - Environment: `release`
@@ -188,7 +188,7 @@ After the first manual release:
        @vibecook/ghosttea-react
      do
        npm trust github "$release_package" \
-         --repository jamesyong-42/ghosttea \
+         --repository vibecook-dev/ghosttea \
          --file publish-release.yml \
          --environment release \
          --allow-publish \

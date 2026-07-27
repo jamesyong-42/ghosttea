@@ -18,7 +18,7 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["James Yong"]
 license = "MIT"
-repository = "https://github.com/jamesyong-42/ghosttea"
+repository = "https://github.com/vibecook-dev/ghosttea"
 
 [workspace.dependencies]
 anyhow = "1.0"

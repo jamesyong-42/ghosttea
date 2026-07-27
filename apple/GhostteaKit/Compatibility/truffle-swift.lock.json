@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "package": {
     "name": "Truffle",
-    "repository": "https://github.com/jamesyong-42/truffle.git",
+    "repository": "https://github.com/vibecook-dev/truffle.git",
     "revision": "bce9da871982139e54f04414f0ba876c171d4d86",
     "packagePath": "apple",
     "license": "MIT",

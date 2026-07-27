@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git",
     "directory": "apps/desktop"
   },
   "private": true,

@@ -8,7 +8,7 @@
     "aarch64-apple-darwin": {
       "release": "ghostty-vt-f8041e849b36",
       "filename": "ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
-      "url": "https://github.com/jamesyong-42/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
+      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
       "sha256": "7158859e1e97b18c341e3478972a227ea3c859e5387dc3d7b8e082d0508cde79",
       "size": 2411520,
       "libraryPath": "lib/libghostty-vt.a",
@@ -19,7 +19,7 @@
     "x86_64-pc-windows-msvc": {
       "release": "ghostty-vt-f8041e849b36",
       "filename": "ghostty-vt-f8041e849b36-x86_64-pc-windows-msvc.tar",
-      "url": "https://github.com/jamesyong-42/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-x86_64-pc-windows-msvc.tar",
+      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-x86_64-pc-windows-msvc.tar",
       "sha256": "b467bda9e91549bd89ab08e47636bb4afe7542bc02c8359f9c3172615c2273ac",
       "size": 9403392,
       "libraryPath": "lib/ghostty-vt-static.lib",
