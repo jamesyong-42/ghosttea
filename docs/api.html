@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ghosttea API — From install to first terminal</title>
+    <meta
+      name="description"
+      content="A practical API guide for embedding Ghosttea terminal surfaces, workspaces, Electron lifecycle, Node automation, and Rust terminal services."
+    />
+    <meta name="theme-color" content="#090a0b" />
+    <link rel="canonical" href="https://vibecook-dev.github.io/ghosttea/api.html" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Ghosttea" />
+    <meta property="og:title" content="Ghosttea API — From install to first terminal" />
+    <meta property="og:description" content="The shortest path to a Ghostty-powered terminal in your application." />
+    <meta property="og:url" content="https://vibecook-dev.github.io/ghosttea/api.html" />
+    <meta property="og:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Ghosttea API — From install to first terminal" />
+    <meta name="twitter:description" content="The shortest path to a Ghostty-powered terminal in your application." />
+    <meta name="twitter:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
+    <meta name="twitter:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <nav class="nav container" aria-label="Main navigation">
+        <a class="brand" href="index.html" aria-label="Ghosttea home">
+          <span class="brand-mark" aria-hidden="true">G/</span>
+          <span>ghost<span>tea</span></span>
+        </a>
+        <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle>
+          <span class="nav-toggle-lines" aria-hidden="true"></span>
+        </button>
+        <div class="nav-links" data-nav-links>
+          <a href="index.html">Overview</a>
+          <a href="api.html" aria-current="page">API</a>
+          <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
+          <a class="button button-compact" href="#quickstart"
+            >Quickstart <span class="arrow" aria-hidden="true">↓</span></a
+          >
+        </div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="docs-hero container">
+        <p class="eyebrow">API guide · v0.4.0</p>
+        <h1>From zero to first terminal.</h1>
+        <p>
+          Start with the complete Electron workspace, then drop down to surfaces, automation, or native composition only
+          when your product needs it.
+        </p>
+        <div class="install-line">
+          <code id="api-install"
+            ><span class="prompt">$</span> npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react</code
+          >
+          <button
+            class="copy-button"
+            type="button"
+            data-copy="#api-install"
+            data-copy-text="npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react"
+            aria-live="polite"
+          >
+            Copy
+          </button>
+        </div>
+      </section>
+
+      <div class="docs-layout container">
+        <aside class="docs-sidebar" aria-label="API sections">
+          <div class="docs-sidebar-group">
+            <span class="docs-sidebar-label">Start</span>
+            <a class="is-active" href="#overview">Overview</a>
+            <a href="#quickstart">Quickstart</a>
+          </div>
+          <div class="docs-sidebar-group">
+            <span class="docs-sidebar-label">JavaScript</span>
+            <a href="#electron">Electron</a>
+            <a href="#react">React</a>
+            <a href="#node-client">Node client</a>
+            <a href="#browser-client">Browser client</a>
+            <a href="#protocol">Protocol</a>
+          </div>
+          <div class="docs-sidebar-group">
+            <span class="docs-sidebar-label">Native</span>
+            <a href="#rust">Rust</a>
+            <a href="#apple">Apple</a>
+          </div>
+          <div class="docs-sidebar-group">
+            <span class="docs-sidebar-label">Concepts</span>
+            <a href="#sessions">Sessions</a>
+            <a href="#authority">Authority</a>
+            <a href="#security">Security</a>
+            <a href="#platforms">Platforms</a>
+          </div>
+        </aside>
+
+        <div class="docs-main">
+          <section class="docs-section anchor" id="overview">
+            <a class="anchor-link" href="#overview" aria-label="Link to Overview">#</a>
+            <h2>Choose the highest layer that fits.</h2>
+            <p class="lead">
+              Most Electron products should begin with
+              <code>@vibecook/ghosttea-electron</code> and <code>@vibecook/ghosttea-react/workspace</code>.
+            </p>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Goal</th>
+                    <th>Package</th>
+                    <th>Owns</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Complete terminal workspace</td>
+                    <td><code>ghosttea-react/workspace</code></td>
+                    <td>Panes, input, persistence, renderer</td>
+                  </tr>
+                  <tr>
+                    <td>Custom terminal UI</td>
+                    <td><code>ghosttea-react</code></td>
+                    <td>Surface and render worker</td>
+                  </tr>
+                  <tr>
+                    <td>Electron integration</td>
+                    <td><code>ghosttea-electron</code></td>
+                    <td>Service lifecycle and frame bridge</td>
+                  </tr>
+                  <tr>
+                    <td>Headless automation</td>
+                    <td><code>ghosttea-client</code></td>
+                    <td>Control socket only</td>
+                  </tr>
+                  <tr>
+                    <td>Native service host</td>
+                    <td><code>ghosttea</code></td>
+                    <td>PTY sessions and service endpoints</td>
+                  </tr>
+                  <tr>
+                    <td>Custom native model</td>
+                    <td><code>ghosttea-core</code></td>
+                    <td>Terminal state, effects, frames</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout callout-green">
+              <strong>One runtime per renderer window.</strong>
+              <p>
+                Share it through <code>GhostteaProvider</code>. Every mounted surface in that window then shares one
+                worker and one GPU device.
+              </p>
+            </div>
+          </section>
+
+          <section class="docs-section anchor" id="quickstart">
+            <a class="anchor-link" href="#quickstart" aria-label="Link to Quickstart">#</a>
+            <h2>Electron quickstart</h2>
+            <p>
+              Ghosttea crosses Electron's three security boundaries deliberately. The main process owns the backend,
+              preload forwards transferred ports, and the renderer owns the UI.
+            </p>
+
+            <div class="step-list">
+              <div class="step">
+                <div>
+                  <strong>Start one backend</strong>
+                  <p>Managed mode launches <code>ghosttead</code>; external mode attaches to yours.</p>
+                </div>
+              </div>
+              <div class="step">
+                <div>
+                  <strong>Transfer two ports</strong>
+                  <p>Control and frame traffic reach the renderer without exposing Node.</p>
+                </div>
+              </div>
+              <div class="step">
+                <div>
+                  <strong>Mount the workspace</strong>
+                  <p>The runtime creates sessions and shares one render worker across panes.</p>
+                </div>
+              </div>
+            </div>
+
+            <h3>1. Main process</h3>
+            <div class="code-block">
+              <div class="code-label">
+                <span>main.ts</span>
+                <button class="copy-button" type="button" data-copy="#code-main">Copy</button>
+              </div>
+              <pre
+                id="code-main"
+              ><code><span class="token-import">import</span> { app, BrowserWindow } <span class="token-import">from</span> <span class="token-string">"electron"</span>;
+<span class="token-import">import</span> { join } <span class="token-import">from</span> <span class="token-string">"node:path"</span>;
+<span class="token-import">import</span> { fileURLToPath } <span class="token-import">from</span> <span class="token-string">"node:url"</span>;
+<span class="token-import">import</span> { GhostteaElectronBackend } <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-electron/main"</span>;
+
+<span class="token-keyword">await</span> app.whenReady();
+
+<span class="token-keyword">const</span> daemonName = process.platform === <span class="token-string">"win32"</span> ? <span class="token-string">"ghosttead.exe"</span> : <span class="token-string">"ghosttead"</span>;
+<span class="token-keyword">const</span> preloadPath = fileURLToPath(<span class="token-keyword">new</span> URL(<span class="token-string">"./preload.cjs"</span>, import.meta.url));
+<span class="token-keyword">const</span> backend = <span class="token-keyword">new</span> GhostteaElectronBackend({
+  <span class="token-property">mode</span>: <span class="token-string">"managed"</span>,
+  <span class="token-property">daemon</span>: {
+    <span class="token-property">binary</span>: {
+      <span class="token-property">kind</span>: <span class="token-string">"executable"</span>,
+      <span class="token-property">path</span>: join(process.resourcesPath, <span class="token-string">"bin"</span>, daemonName),
+    },
+  },
+});
+
+<span class="token-keyword">await</span> backend.start();
+
+<span class="token-keyword">const</span> window = <span class="token-keyword">new</span> BrowserWindow({
+  <span class="token-property">webPreferences</span>: {
+    <span class="token-property">preload</span>: preloadPath,
+    <span class="token-property">contextIsolation</span>: <span class="token-keyword">true</span>,
+    <span class="token-property">nodeIntegration</span>: <span class="token-keyword">false</span>,
+    <span class="token-property">sandbox</span>: <span class="token-keyword">true</span>,
+  },
+});
+
+window.webContents.on(<span class="token-string">"did-finish-load"</span>, () =&gt; {
+  backend.attachRenderer(window.webContents);
+});
+
+app.on(<span class="token-string">"before-quit"</span>, () =&gt; backend.stop());</code></pre>
+            </div>
+            <p>
+              In development, the binary option may use
+              <code>{ kind: "cargo", manifestPath, release }</code>. Packaged applications should stage the release
+              executable in their resources.
+            </p>
+
+            <h3>2. Preload</h3>
+            <div class="code-block">
+              <div class="code-label">
+                <span>preload.ts</span>
+                <button class="copy-button" type="button" data-copy="#code-preload">Copy</button>
+              </div>
+              <pre
+                id="code-preload"
+              ><code><span class="token-import">import</span> { ipcRenderer } <span class="token-import">from</span> <span class="token-string">"electron"</span>;
+<span class="token-import">import</span> { forwardGhostteaRendererPorts } <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-electron/preload"</span>;
+
+forwardGhostteaRendererPorts(ipcRenderer);</code></pre>
+            </div>
+
+            <h3>3. Renderer runtime</h3>
+            <div class="code-block">
+              <div class="code-label">
+                <span>terminal.ts</span>
+                <button class="copy-button" type="button" data-copy="#code-runtime">Copy</button>
+              </div>
+              <pre id="code-runtime"><code><span class="token-import">import</span> {
+  createGhostteaTerminalRuntime,
+  waitForGhostteaRendererPorts,
+} <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-react"</span>;
+<span class="token-import">import</span> <span class="token-string">"@vibecook/ghosttea-react/styles.css"</span>;
+<span class="token-import">import</span> <span class="token-string">"@vibecook/ghosttea-react/workspace.css"</span>;
+
+<span class="token-keyword">export const</span> terminalRuntime = createGhostteaTerminalRuntime({
+  <span class="token-property">ports</span>: waitForGhostteaRendererPorts(),
+  <span class="token-property">clientBuild</span>: <span class="token-string">"my-app"</span>,
+  <span class="token-property">platform</span>: {
+    <span class="token-property">writeClipboard</span>: (text) =&gt; window.app.writeClipboard(text),
+    <span class="token-property">forceCanvasFallback</span>: () =&gt; <span class="token-keyword">false</span>,
+    <span class="token-property">setForceCanvasFallback</span>: () =&gt; {},
+    <span class="token-property">reload</span>: () =&gt; window.location.reload(),
+  },
+});
+
+window.addEventListener(
+  <span class="token-string">"beforeunload"</span>,
+  () =&gt; terminalRuntime.dispose(),
+  { <span class="token-property">once</span>: <span class="token-keyword">true</span> },
+);</code></pre>
+            </div>
+
+            <h3>4. React workspace</h3>
+            <div class="code-block">
+              <div class="code-label">
+                <span>App.tsx</span>
+                <button class="copy-button" type="button" data-copy="#code-react-start">Copy</button>
+              </div>
+              <pre
+                id="code-react-start"
+              ><code><span class="token-import">import</span> { GhostteaProvider } <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-react"</span>;
+<span class="token-import">import</span> { GhostteaWorkspace } <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-react/workspace"</span>;
+<span class="token-import">import</span> { terminalRuntime } <span class="token-import">from</span> <span class="token-string">"./terminal"</span>;
+
+<span class="token-keyword">export function</span> <span class="token-type">App</span>() {
+  <span class="token-keyword">return</span> (
+    &lt;GhostteaProvider runtime={terminalRuntime}&gt;
+      &lt;GhostteaWorkspace
+        platform={window.app.terminalPlatform}
+        storageKey=<span class="token-string">"my-app:terminal-workspace"</span>
+      /&gt;
+    &lt;/GhostteaProvider&gt;
+  );
+}</code></pre>
+            </div>
+            <div class="callout">
+              <strong>The platform adapter is intentionally yours.</strong>
+              <p>
+                It supplies the default shell, clipboard, context menu, window actions, and menu events. See the
+                <a href="https://github.com/vibecook-dev/ghosttea/blob/main/apps/desktop/src/renderer/src/App.tsx"
+                  >desktop adapter</a
+                >
+                for a complete reference.
+              </p>
+            </div>
+          </section>
+
+          <section class="docs-section anchor" id="electron">
+            <a class="anchor-link" href="#electron" aria-label="Link to Electron API">#</a>
+            <h2>Electron API</h2>
+            <p class="lead">
+              <code>@vibecook/ghosttea-electron</code> owns service lifecycle, the utility-process bridge, and a
+              control-only automation client.
+            </p>
+
+            <h3>GhostteaElectronBackend</h3>
+            <div class="api-signature">new GhostteaElectronBackend(options: GhostteaElectronBackendOptions)</div>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Member</th>
+                    <th>Purpose</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>start(): Promise&lt;void&gt;</code></td>
+                    <td>Starts or connects the daemon, automation client, and frame bridge.</td>
+                  </tr>
+                  <tr>
+                    <td><code>attachRenderer(webContents)</code></td>
+                    <td>Transfers fresh control and frame ports into one renderer.</td>
+                  </tr>
+                  <tr>
+                    <td><code>automation</code></td>
+                    <td>Returns the backend's control-only automation client.</td>
+                  </tr>
+                  <tr>
+                    <td><code>connection</code></td>
+                    <td>Authenticated endpoint information for this backend.</td>
+                  </tr>
+                  <tr>
+                    <td><code>running</code></td>
+                    <td>True when the service and bridge are ready.</td>
+                  </tr>
+                  <tr>
+                    <td><code>stop()</code></td>
+                    <td>Stops owned clients and, in managed mode, the service process.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>Managed vs. external</h3>
+            <div class="code-block">
+              <div class="code-label"><span>ownership modes</span></div>
+              <pre><code><span class="token-comment">// Ghosttea owns the process.</span>
+{ <span class="token-property">mode</span>: <span class="token-string">"managed"</span>, <span class="token-property">daemon</span>: { <span class="token-property">binary</span>: { <span class="token-property">kind</span>: <span class="token-string">"executable"</span>, <span class="token-property">path</span> } } }
+
+<span class="token-comment">// Your application owns the Rust service.</span>
+{ <span class="token-property">mode</span>: <span class="token-string">"external"</span>, <span class="token-property">connection</span>: { controlSocket, frameSocket, authToken } }</code></pre>
+            </div>
+            <p>
+              External mode is the right choice when one Rust process shares a Truffle node or other infrastructure
+              across several application services.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="react">
+            <a class="anchor-link" href="#react" aria-label="Link to React API">#</a>
+            <h2>React API</h2>
+            <p class="lead">
+              <code>@vibecook/ghosttea-react</code> owns the renderer runtime, terminal surfaces, input routing, and
+              worker-owned WebGPU renderer.
+            </p>
+
+            <h3>Runtime</h3>
+            <div class="api-signature">
+              createGhostteaTerminalRuntime(options: GhostteaTerminalRuntimeOptions): GhostteaTerminalRuntime
+            </div>
+            <p>
+              Use <code>waitForGhostteaRendererPorts()</code> for the ports transferred by the Electron preload. The
+              runtime connects lazily and can be shared by any number of surfaces in one window.
+            </p>
+
+            <h4>Common methods</h4>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Method</th>
+                    <th>What it does</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>connect()</code></td>
+                    <td>Authenticates both renderer channels and negotiates protocol support.</td>
+                  </tr>
+                  <tr>
+                    <td><code>createSession(options)</code></td>
+                    <td>Creates a PTY-backed local session.</td>
+                  </tr>
+                  <tr>
+                    <td><code>listSessions()</code></td>
+                    <td>Returns the sessions visible to this service.</td>
+                  </tr>
+                  <tr>
+                    <td><code>openRemoteSession(...)</code></td>
+                    <td>Creates a local replica of an advertised shared session.</td>
+                  </tr>
+                  <tr>
+                    <td><code>setTheme(handle, theme)</code></td>
+                    <td>Updates native terminal colors and redraws affected surfaces.</td>
+                  </tr>
+                  <tr>
+                    <td><code>terminate(id, source?)</code></td>
+                    <td>Requests classified session termination.</td>
+                  </tr>
+                  <tr>
+                    <td><code>dispose()</code></td>
+                    <td>Closes ports, timers, subscriptions, and the render worker.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>GhostteaProvider</h3>
+            <div class="api-signature">&lt;GhostteaProvider runtime={runtime}&gt;…&lt;/GhostteaProvider&gt;</div>
+            <p>
+              Makes the shared runtime available to <code>TerminalSurface</code> and <code>GhostteaWorkspace</code>.
+            </p>
+
+            <h3>TerminalSurface</h3>
+            <div class="api-signature">&lt;TerminalSurface session={session} theme={theme} active visible /&gt;</div>
+            <p>
+              Mounts one accessible canvas and invisible text input. The component handles keyboard, IME, pointer,
+              selection, scrollbar, focus, and grid resize behavior.
+            </p>
+
+            <h3>GhostteaWorkspace</h3>
+            <div class="api-signature">import { GhostteaWorkspace } from "@vibecook/ghosttea-react/workspace"</div>
+            <p>
+              Adds persisted split panes, zoom, themes, terminal focus, Ghostty-style shortcuts, remote-session
+              browsing, and an optional application sidebar.
+            </p>
+            <div class="callout callout-green">
+              <strong>Persist identity, not live state.</strong>
+              <p>
+                Workspace documents contain stable layout and session IDs. Resolve them against live sessions at
+                startup; never put credentials or transport state in the document.
+              </p>
+            </div>
+          </section>
+
+          <section class="docs-section anchor" id="node-client">
+            <a class="anchor-link" href="#node-client" aria-label="Link to Node client API">#</a>
+            <h2>Node automation client</h2>
+            <p class="lead">
+              <code>@vibecook/ghosttea-client</code> controls sessions without Electron or frame rendering.
+            </p>
+            <div class="code-block">
+              <div class="code-label">
+                <span>automation.mts</span>
+                <button class="copy-button" type="button" data-copy="#code-node">Copy</button>
+              </div>
+              <pre
+                id="code-node"
+              ><code><span class="token-import">import</span> { GhostteaAutomationClient } <span class="token-import">from</span> <span class="token-string">"@vibecook/ghosttea-client"</span>;
+
+<span class="token-keyword">const</span> client = <span class="token-keyword">new</span> GhostteaAutomationClient({
+  <span class="token-property">controlSocket</span>,
+  <span class="token-property">authToken</span>,
+});
+
+<span class="token-keyword">const</span> session = <span class="token-keyword">await</span> client.createSession({
+  <span class="token-property">executable</span>: <span class="token-string">"/bin/zsh"</span>,
+  <span class="token-property">args</span>: [],
+  <span class="token-property">environment</span>: {
+    <span class="token-property">mode</span>: <span class="token-string">"clean"</span>,
+    <span class="token-property">variables</span>: { <span class="token-property">PATH</span>: <span class="token-string">"/usr/bin:/bin"</span> },
+  },
+  <span class="token-property">cols</span>: 120,
+  <span class="token-property">rows</span>: 40,
+  <span class="token-property">persistence</span>: <span class="token-string">"terminate-with-app"</span>,
+});
+
+<span class="token-keyword">const</span> result = <span class="token-keyword">await</span> client.pasteAndSubmit(
+  session.id,
+  <span class="token-string">"printf 'hello from Ghosttea\\n'"</span>,
+);
+
+<span class="token-keyword">if</span> (!result.accepted) {
+  console.log(<span class="token-string">"A human typed first; automation yielded."</span>);
+}</code></pre>
+            </div>
+
+            <h3>High-level methods</h3>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Lifecycle</th>
+                    <th>Input</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>createSession</code>, <code>listSessions</code></td>
+                    <td><code>pasteAndSubmit</code>, <code>paste</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>getSession</code>, <code>waitForExit</code></td>
+                    <td><code>sendText</code>, <code>interrupt</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>terminateAndWait</code>, <code>closeSessionOwner</code></td>
+                    <td><code>humanInputEpoch</code>, <code>input</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>The client never opens the frame socket, attaches a view, or claims resize authority.</p>
+          </section>
+
+          <section class="docs-section anchor" id="browser-client">
+            <a class="anchor-link" href="#browser-client" aria-label="Link to Browser client API">#</a>
+            <h2>Browser control client</h2>
+            <p>
+              <code>@vibecook/ghosttea</code> exports <code>ControlClient</code>, a typed request, notification, and
+              event layer over a transferred <code>MessagePort</code>. It is used by the React runtime and is available
+              for custom renderers.
+            </p>
+            <div class="api-signature">new ControlClient(port: MessagePort)</div>
+            <p>
+              Call <code>request(command, timeoutMs?)</code> for a response, <code>notify(command)</code> for
+              fire-and-forget input, and <code>dispose()</code> when the renderer closes.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="protocol">
+            <a class="anchor-link" href="#protocol" aria-label="Link to Protocol API">#</a>
+            <h2>Protocol and frames</h2>
+            <p>Use these packages only when building a custom client or renderer:</p>
+            <ul>
+              <li>
+                <code>@vibecook/ghosttea-protocol</code> — control commands, events, session types, and strict runtime
+                guards.
+              </li>
+              <li>
+                <code>@vibecook/ghosttea-frame</code> — bounded decoder for binary TRF1 terminal frames and sections.
+              </li>
+            </ul>
+            <div class="callout callout-orange">
+              <strong>Current protocol versions</strong>
+              <p>
+                Control protocol <code>1.7</code>; TRF1 frame protocol <code>1</code>. Control packets are capped at 1
+                MiB and frame packets at 16 MiB.
+              </p>
+            </div>
+            <p>
+              Frame headers carry session, layout, sequence, and terminal revisions. Treat gaps as a request for an
+              authoritative full snapshot rather than trying to merge around them.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="rust">
+            <a class="anchor-link" href="#rust" aria-label="Link to Rust API">#</a>
+            <h2>Rust embedding</h2>
+            <p class="lead">
+              <code>ghosttea</code> is the transport-neutral service; <code>ghosttea-core</code> is the platform-neutral
+              terminal model.
+            </p>
+            <div class="code-block">
+              <div class="code-label">
+                <span>service.rs</span>
+                <button class="copy-button" type="button" data-copy="#code-rust">Copy</button>
+              </div>
+              <pre
+                id="code-rust"
+              ><code><span class="token-keyword">use</span> ghosttea::{TerminalService, TerminalServiceConfig};
+
+TerminalService::new(TerminalServiceConfig {
+    control_socket,
+    frame_socket,
+    auth_token,
+})
+.with_text_engine(text_engine)
+.run()
+.await?;</code></pre>
+            </div>
+            <p>
+              Applications that own endpoint permissions and startup order can bind listeners and call
+              <code>serve(TerminalServiceListeners)</code>. A host-owned <code>TerminalMesh</code> adds remote discovery
+              and sessions without coupling the service to Truffle.
+            </p>
+            <h3>Published crates</h3>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Crate</th>
+                    <th>Role</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>ghosttea</code></td>
+                    <td>PTY sessions, endpoints, frame fanout, mesh contract</td>
+                  </tr>
+                  <tr>
+                    <td><code>ghosttea-core</code></td>
+                    <td>Terminal model, effects, authority, logical replica, TRF1</td>
+                  </tr>
+                  <tr>
+                    <td><code>ghosttea-vt</code></td>
+                    <td>Safe wrapper over the pinned Ghostty VT shim</td>
+                  </tr>
+                  <tr>
+                    <td><code>ghosttea-text</code></td>
+                    <td>Font discovery, shaping, fallback, rasterization</td>
+                  </tr>
+                  <tr>
+                    <td><code>ghosttea-truffle</code></td>
+                    <td>Application-owned Truffle transport adapter</td>
+                  </tr>
+                  <tr>
+                    <td><code>ghosttea-vt-sys</code></td>
+                    <td>Verified native Ghostty artifact resolution</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="docs-section anchor" id="apple">
+            <a class="anchor-link" href="#apple" aria-label="Link to Apple API">#</a>
+            <h2>Native Apple stack</h2>
+            <p>
+              <code>GhostteaKit</code> targets iOS 18.1+ and macOS 14+. It composes the shared Rust core with Swift
+              actors, Metal rendering, direct SSH, Truffle shared sessions, and a platform-neutral workspace model.
+            </p>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Module</th>
+                    <th>Use</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>GhostteaCore</code></td>
+                    <td>Safe Swift ownership over the versioned Rust C ABI</td>
+                  </tr>
+                  <tr>
+                    <td><code>GhostteaSession</code></td>
+                    <td>Ordered transport, terminal, input, resize, and lifecycle actor</td>
+                  </tr>
+                  <tr>
+                    <td><code>GhostteaTerminal</code></td>
+                    <td>Retained TRF1 state, Metal renderer, UIKit terminal view</td>
+                  </tr>
+                  <tr>
+                    <td><code>GhostteaSSH</code></td>
+                    <td>Nonblocking libssh2 transport and security policy</td>
+                  </tr>
+                  <tr>
+                    <td><code>GhostteaTruffle</code></td>
+                    <td>Discovery, shared-session attachment, local replica rendering</td>
+                  </tr>
+                  <tr>
+                    <td><code>GhostteaWorkspace</code></td>
+                    <td>Secret-free tabs, pane reducers, restoration, and memory policy</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              Start with the
+              <a href="https://github.com/vibecook-dev/ghosttea/tree/main/apple/GhostteaKit"
+                >GhostteaKit package guide</a
+              >. The production app is implemented and device-tested; external distribution qualification remains in
+              progress.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="sessions">
+            <a class="anchor-link" href="#sessions" aria-label="Link to Sessions concept">#</a>
+            <h2>Sessions</h2>
+            <p>
+              A local session owns one PTY, one Ghostty terminal model, one ordered input actor, and zero or more
+              attached views. A remote session is a local logical replica of a terminal whose PTY remains authoritative
+              on another host.
+            </p>
+            <h3>Environment policy</h3>
+            <ul>
+              <li>
+                <code>{ mode: "inherit", overrides }</code> — normal shell behavior with private Ghosttea and transport
+                variables removed.
+              </li>
+              <li>
+                <code>{ mode: "clean", variables }</code> — an explicit environment for agents and isolated tools.
+              </li>
+            </ul>
+            <p>
+              Every session summary includes identity, grid, executable, metadata, activity, and classified exit
+              information.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="authority">
+            <a class="anchor-link" href="#authority" aria-label="Link to Authority concept">#</a>
+            <h2>Input and resize authority</h2>
+            <p>
+              Each attached view receives an attachment epoch. Input sequences deduplicate retries; control epochs
+              reject stale resize owners; layout epochs keep frames aligned with the canonical PTY size.
+            </p>
+            <div class="callout callout-green">
+              <strong>Simple control rule</strong>
+              <p>
+                The most recently processed focus claim from a writable view controls terminal size. Writable views may
+                still send input, which the session serializes in arrival order.
+              </p>
+            </div>
+            <p>
+              Automation does not attach a view or claim size. It commits only if no human input was accepted after the
+              automation client observed the human-input epoch.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="security">
+            <a class="anchor-link" href="#security" aria-label="Link to Security concept">#</a>
+            <h2>Security defaults</h2>
+            <ul>
+              <li>Renderer windows remain sandboxed with context isolation and no Node access.</li>
+              <li>Control and frame endpoints require the same random bearer token.</li>
+              <li>Unix sockets live under a private runtime directory.</li>
+              <li>Windows named pipes use a current-user-only protected DACL.</li>
+              <li>Private service and transport variables are removed from inherited PTYs.</li>
+              <li>Remote peers are read-only unless the host grants write access deliberately.</li>
+              <li>Apple credentials persist only as opaque, device-only Keychain references.</li>
+            </ul>
+            <p>
+              Local authentication is service-wide, not command-scoped. Applications that require per-client
+              authorization should place a policy boundary in front of the service.
+            </p>
+          </section>
+
+          <section class="docs-section anchor" id="platforms">
+            <a class="anchor-link" href="#platforms" aria-label="Link to Platforms">#</a>
+            <h2>Platform matrix</h2>
+            <div class="api-table-wrap">
+              <table class="api-table">
+                <thead>
+                  <tr>
+                    <th>Platform</th>
+                    <th>Status</th>
+                    <th>Renderer</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Apple Silicon macOS</td>
+                    <td>Release-gated desktop target</td>
+                    <td>WebGPU</td>
+                  </tr>
+                  <tr>
+                    <td>x64 Windows</td>
+                    <td>Release-gated desktop target</td>
+                    <td>WebGPU</td>
+                  </tr>
+                  <tr>
+                    <td>iOS 18.1+</td>
+                    <td>Production target; release hardening in progress</td>
+                    <td>Metal</td>
+                  </tr>
+                  <tr>
+                    <td>Linux</td>
+                    <td>Service support; no published Ghostty VT bundle</td>
+                    <td>Host-dependent</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              Electron 35+ and React 19+ are supported peer ranges. Node clients require Node 22+; Rust crates declare
+              Rust 1.88 as their minimum.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="https://github.com/vibecook-dev/ghosttea"
+                >Browse the source <span class="arrow" aria-hidden="true">↗</span></a
+              >
+              <a class="button" href="index.html">Back to overview</a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner container">
+        <p>© <span data-year>2026</span> Ghosttea · MIT licensed · Independent of Ghostty.</p>
+        <div class="footer-links">
+          <a href="index.html">Overview</a>
+          <a href="https://www.npmjs.com/org/vibecook">npm</a>
+          <a href="https://crates.io/search?q=ghosttea">crates.io</a>
+          <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
+        </div>
+      </div>
+    </footer>
+
+    <script src="site.js" defer></script>
+  </body>
+</html>

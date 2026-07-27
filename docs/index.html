@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ghosttea — The terminal runtime for ambitious developer tools</title>
+    <meta
+      name="description"
+      content="Ghosttea is a Ghostty-powered terminal runtime for Electron and native Apple apps. Embed local PTYs, GPU rendering, automation, and secure session sharing."
+    />
+    <meta name="theme-color" content="#090a0b" />
+    <link rel="canonical" href="https://vibecook-dev.github.io/ghosttea/" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Ghosttea" />
+    <meta property="og:title" content="Build terminal experiences, not terminal emulators." />
+    <meta property="og:description" content="A Ghostty-powered terminal runtime for Electron and native Apple apps." />
+    <meta property="og:url" content="https://vibecook-dev.github.io/ghosttea/" />
+    <meta property="og:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta property="og:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Ghosttea — Native terminal infrastructure for apps" />
+    <meta name="twitter:description" content="Build terminal experiences, not terminal emulators." />
+    <meta name="twitter:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
+    <meta name="twitter:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "Ghosttea",
+        "description": "Ghostty-powered terminal runtime for Electron and native Apple apps.",
+        "codeRepository": "https://github.com/vibecook-dev/ghosttea",
+        "license": "https://opensource.org/license/mit",
+        "programmingLanguage": ["Rust", "TypeScript", "Swift"],
+        "runtimePlatform": ["macOS", "Windows", "iOS"]
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <nav class="nav container" aria-label="Main navigation">
+        <a class="brand" href="index.html" aria-label="Ghosttea home">
+          <span class="brand-mark" aria-hidden="true">G/</span>
+          <span>ghost<span>tea</span></span>
+        </a>
+        <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle>
+          <span class="nav-toggle-lines" aria-hidden="true"></span>
+        </button>
+        <div class="nav-links" data-nav-links>
+          <a href="#why">Why Ghosttea</a>
+          <a href="#architecture">How it works</a>
+          <a href="api.html">API</a>
+          <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
+          <a class="button button-compact" href="api.html#quickstart"
+            >Get started <span class="arrow" aria-hidden="true">↗</span></a
+          >
+        </div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero container">
+        <div class="hero-content">
+          <p class="eyebrow">Ghostty-powered terminal SDK</p>
+          <h1>Build terminal experiences, <span class="soft">not emulators.</span></h1>
+          <p class="hero-copy">
+            Ghosttea gives ambitious developer tools a <strong>native terminal runtime</strong>: local PTYs, GPU
+            rendering, typed automation, and secure session sharing in one embeddable stack.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="api.html#quickstart"
+              >Start building <span class="arrow" aria-hidden="true">→</span></a
+            >
+            <a class="button" href="https://github.com/vibecook-dev/ghosttea"
+              >View on GitHub <span class="arrow" aria-hidden="true">↗</span></a
+            >
+          </div>
+          <div class="install-line">
+            <code id="hero-install"
+              ><span class="prompt">$</span> npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react</code
+            >
+            <button
+              class="copy-button"
+              type="button"
+              data-copy="#hero-install"
+              data-copy-text="npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react"
+              aria-live="polite"
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+
+        <div class="terminal-wrap" aria-label="Ghosttea startup preview">
+          <div class="terminal">
+            <div class="terminal-bar">
+              <span class="terminal-dot" aria-hidden="true"></span>
+              <span class="terminal-dot" aria-hidden="true"></span>
+              <span class="terminal-dot" aria-hidden="true"></span>
+              <span class="terminal-title">ghosttea / workspace</span>
+            </div>
+            <div class="terminal-body">
+              <span class="terminal-line"><span class="terminal-green">$</span> npm run dev</span>
+              <span class="terminal-line terminal-muted">starting native runtime…</span>
+              <span class="terminal-line"><span class="terminal-green">●</span> ghosttead ready</span>
+              <span class="terminal-line"
+                ><span class="terminal-green">●</span> PTY session attached
+                <span class="terminal-muted">120×40</span></span
+              >
+              <span class="terminal-line"><span class="terminal-purple">●</span> WebGPU + native text online</span>
+              <span class="terminal-line"><span class="terminal-orange">●</span> human-safe automation armed</span>
+              <span class="terminal-line">&nbsp;</span>
+              <span class="terminal-line"
+                ><span class="terminal-green">›</span> your product, now terminal-native<span
+                  class="terminal-cursor"
+                  aria-hidden="true"
+                ></span
+              ></span>
+            </div>
+          </div>
+          <div class="mini-note">
+            <strong>Direct frame path</strong>
+            Terminal frames skip Electron main and React state.
+          </div>
+        </div>
+      </section>
+
+      <div class="trust-row">
+        <div class="trust-inner container" aria-label="Technology highlights">
+          <div class="trust-item"><span class="trust-icon">◆</span> Rust core</div>
+          <div class="trust-item"><span class="trust-icon">◆</span> Ghostty VT</div>
+          <div class="trust-item"><span class="trust-icon">◆</span> WebGPU + Metal</div>
+          <div class="trust-item"><span class="trust-icon">◆</span> Electron + React</div>
+          <div class="trust-item"><span class="trust-icon">◆</span> MIT licensed</div>
+        </div>
+      </div>
+
+      <section class="section container" id="why">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">Why Ghosttea</p>
+            <h2>The shortcut to a terminal that feels right.</h2>
+          </div>
+          <p class="section-intro">
+            Terminal behavior is a product surface. Ghosttea packages the difficult parts so your team can focus on the
+            experience around it.
+          </p>
+        </div>
+
+        <div class="bento">
+          <article class="card card-large card-accent">
+            <span class="card-number">01 / FEEL</span>
+            <h3>Native where users notice.</h3>
+            <p>
+              Ghostty terminal semantics, native shaping, ligatures, Unicode, reflow, selection, scrollback, and GPU
+              rendering—without an iframe or a DOM grid.
+            </p>
+          </article>
+          <article class="card card-small card-purple">
+            <span class="card-number">02 / FIT</span>
+            <h3>Your UI stays yours.</h3>
+            <p>Use a complete workspace or mount one terminal surface inside your own product.</p>
+          </article>
+          <article class="card card-small card-orange">
+            <span class="card-number">03 / CONTROL</span>
+            <h3>Humans and agents, in order.</h3>
+            <p>Typed automation yields safely when a person starts typing.</p>
+          </article>
+          <article class="card card-large card-accent">
+            <span class="card-number">04 / CONTINUITY</span>
+            <h3>A session, not a screenshot.</h3>
+            <p>
+              Share logical terminal state across devices. Remote views render locally, stay sharp, and preserve input
+              and resize authority.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section container" id="architecture">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">One model, every surface</p>
+            <h2>Local speed. Remote continuity.</h2>
+          </div>
+          <p class="section-intro">
+            The same terminal model powers a local Electron pane, a native iOS SSH session, or a shared terminal on
+            another device.
+          </p>
+        </div>
+
+        <div class="architecture">
+          <div class="architecture-grid">
+            <article class="path">
+              <span class="path-label">Local path</span>
+              <h3>Your process. Native PTY. Zero detours.</h3>
+              <p>
+                Ghosttea owns the PTY, terminal state, shaping, and frame lifecycle. Your app owns the chrome and
+                product logic.
+              </p>
+              <div class="flow" aria-label="Local terminal data flow">
+                <span class="flow-node">app</span><span class="flow-arrow">→</span> <span class="flow-node">PTY</span
+                ><span class="flow-arrow">→</span> <span class="flow-node">Ghostty VT</span
+                ><span class="flow-arrow">→</span>
+                <span class="flow-node">GPU</span>
+              </div>
+            </article>
+            <article class="path">
+              <span class="path-label">Shared path</span>
+              <h3>Move the state. Render where you are.</h3>
+              <p>
+                Truffle carries compact logical updates. Each receiving device shapes and renders locally instead of
+                streaming pixels.
+              </p>
+              <div class="flow" aria-label="Shared terminal data flow">
+                <span class="flow-node">session</span><span class="flow-arrow">→</span>
+                <span class="flow-node">logical sync</span><span class="flow-arrow">→</span>
+                <span class="flow-node">replica</span><span class="flow-arrow">→</span>
+                <span class="flow-node">GPU</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section container">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">Production-minded</p>
+            <h2>Built for the edge cases users feel.</h2>
+          </div>
+          <p class="section-intro">
+            The runtime is opinionated about ordering, backpressure, recovery, and memory because terminal quality lives
+            in the details.
+          </p>
+        </div>
+
+        <div class="proof-list">
+          <article class="proof">
+            <span class="proof-index">01</span>
+            <h3>Fast frame path</h3>
+            <p>
+              Transferable binary frames travel from the utility process straight to a shared render worker—outside
+              Electron main and React state.
+            </p>
+          </article>
+          <article class="proof">
+            <span class="proof-index">02</span>
+            <h3>Ordered interaction</h3>
+            <p>
+              View epochs reject stale input and resize operations. Human input invalidates older automation instead of
+              waiting behind it.
+            </p>
+          </article>
+          <article class="proof">
+            <span class="proof-index">03</span>
+            <h3>Bounded by design</h3>
+            <p>
+              Frame credits, catalog budgets, targeted resynchronization, and hidden-session eviction prevent invisible
+              work from growing forever.
+            </p>
+          </article>
+          <article class="proof">
+            <span class="proof-index">04</span>
+            <h3>Measured, not guessed</h3>
+            <p>
+              Native, WebGPU, replication, and physical-device harnesses keep performance claims tied to repeatable
+              evidence.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section container" id="packages">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker">Pick your layer</p>
+            <h2>Start complete. Go low-level when you need to.</h2>
+          </div>
+          <p class="section-intro">Six npm packages and six Rust crates share one version and one protocol contract.</p>
+        </div>
+
+        <div class="packages">
+          <a class="package" href="api.html#react">
+            <span class="package-type">React · workspace</span>
+            <h3>@vibecook/ghosttea-react</h3>
+            <p>Terminal surfaces, split panes, worker renderer, input, and themes.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+          <a class="package" href="api.html#electron">
+            <span class="package-type">Electron · lifecycle</span>
+            <h3>@vibecook/ghosttea-electron</h3>
+            <p>Daemon supervision, direct frame transport, preload helpers, and automation.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+          <a class="package" href="api.html#node-client">
+            <span class="package-type">Node · headless</span>
+            <h3>@vibecook/ghosttea-client</h3>
+            <p>Typed session lifecycle and human-input-safe automation without Electron.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+          <a class="package" href="api.html#browser-client">
+            <span class="package-type">Browser · control</span>
+            <h3>@vibecook/ghosttea</h3>
+            <p>A small MessagePort client for the authenticated terminal control plane.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+          <a class="package" href="api.html#protocol">
+            <span class="package-type">Protocol · binary</span>
+            <h3>protocol + frame</h3>
+            <p>Stable TypeScript contracts and a strict decoder for binary TRF1 frames.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+          <a class="package" href="api.html#rust">
+            <span class="package-type">Rust · native</span>
+            <h3>ghosttea + ghosttea-core</h3>
+            <p>Embed the terminal service or compose the platform-neutral model directly.</p>
+            <span class="package-arrow" aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="section-tight container">
+        <div class="status-band">
+          <div class="status-title">
+            <p>Honest status</p>
+            <h3>Shipping desktop. Hardening Apple.</h3>
+          </div>
+          <div class="status-content">
+            <p>
+              Apple Silicon macOS and x64 Windows desktop paths are release-gated. The native iOS 18.1+ stack is
+              implemented and device-tested, with external release qualification still in progress.
+            </p>
+            <p>
+              Linux endpoint support exists in the service, but there is no published Ghostty VT bundle for Linux today.
+            </p>
+            <p>
+              <a
+                href="https://github.com/vibecook-dev/ghosttea/blob/main/apple/GhostteaKit/Compatibility/release-hardening.md"
+                >Read the qualification record →</a
+              >
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section container">
+        <div class="cta">
+          <p class="section-kicker">Make the terminal part of the product</p>
+          <h2>Own the experience.<br />Skip the emulator rewrite.</h2>
+          <p>
+            Start with the complete workspace, or take only the lifecycle, rendering, automation, or native layers your
+            app needs.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="api.html#quickstart"
+              >Read the quickstart <span class="arrow" aria-hidden="true">→</span></a
+            >
+            <a class="button" href="https://github.com/vibecook-dev/ghosttea"
+              >Star on GitHub <span class="arrow" aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner container">
+        <p>© <span data-year>2026</span> Ghosttea · MIT licensed · Independent of Ghostty.</p>
+        <div class="footer-links">
+          <a href="api.html">API</a>
+          <a href="https://www.npmjs.com/org/vibecook">npm</a>
+          <a href="https://crates.io/search?q=ghosttea">crates.io</a>
+          <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
+        </div>
+      </div>
+    </footer>
+
+    <script src="site.js" defer></script>
+  </body>
+</html>
