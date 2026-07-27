@@ -1802,7 +1802,7 @@ mod tests {
         let frames = FrameHub::new(8);
         let text_engine = Arc::new(Mutex::new(TextEngine::discover().unwrap()));
         let mut sessions = Vec::with_capacity(128);
-        for _ in 0..128 {
+        for index in 0..128 {
             let (exited_tx, exited_rx) = mpsc::channel();
             let session = Session::spawn(
                 SpawnOptions {
@@ -1825,7 +1825,20 @@ mod tests {
                     let _ = exited_tx.send(());
                 }),
             )
-            .unwrap();
+            .unwrap_or_else(|error| {
+                // A host that has run out of pseudo-terminals fails here with a
+                // bare `openpty` errno, which reads as a defect in this crate.
+                // It is not one: the pool is machine-wide and shared with every
+                // terminal, editor and test running, and the sessions above
+                // release theirs on drop. Say which of the two it is, because
+                // the message alone sends a reader looking in the wrong place.
+                panic!(
+                    "spawning churn session {index} of 128 failed: {error:#}\n\
+                     an `openpty` failure here means the host's pty pool is \
+                     exhausted rather than this crate retaining terminals; \
+                     `sysctl kern.tty.ptmx_max` is the ceiling it hit"
+                )
+            });
             sessions.push(Arc::downgrade(&session));
             exited_rx
                 .recv_timeout(Duration::from_secs(5))
