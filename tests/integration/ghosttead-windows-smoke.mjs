@@ -55,16 +55,18 @@ async function until(predicate, what, timeoutMs = 20_000) {
  *
  * A bare marker timeout cannot distinguish a child that never started, one that
  * exited immediately, and one that ran but printed nothing — and none of those
- * are visible from the machine that wrote the test.
+ * are visible from the machine that wrote the test. How long the wait ran is
+ * named too: against a budget, that is what separates slow from stuck.
  */
-async function expectMarker(harness, session, marker) {
+async function expectMarker(harness, session, marker, { timeoutMs } = {}) {
+  const startedAt = Date.now();
   try {
-    await harness.waitForMarker(session.handle, marker);
+    await harness.waitForMarker(session.handle, marker, { timeoutMs });
   } catch (cause) {
     const listed = await harness.request("list-sessions");
     const alive = listed.sessions?.some((entry) => entry.id === session.id);
     throw new Error(
-      `never saw ${marker}; the session is ${alive ? "still running" : "gone from the registry, so its child exited"}`,
+      `never saw ${marker} in ${Date.now() - startedAt}ms; the session is ${alive ? "still running" : "gone from the registry, so its child exited"}`,
       { cause },
     );
   }
@@ -146,6 +148,7 @@ try {
   // The child reports its width on a loop rather than being asked, because
   // input typed before an interactive shell starts reading is lost, and that is
   // a property of the shell rather than of the resize being measured.
+  const askedForPowerShell = Date.now();
   const resized = await harness.createAttachedSession({
     // Named absolutely and given this platform's own search path rather than
     // the one this process inherited: the Windows gate runs its steps under
@@ -158,11 +161,10 @@ try {
       "-Command",
       // The readiness line is printed before anything touches the console,
       // because those are separate failures that look identical from here.
-      // This case has failed twice by never producing a width, and a bare
-      // marker timeout cannot say whether PowerShell was still starting — it
-      // is the only session in this fixture that is not `cmd.exe`, and it is
-      // the slowest thing here to start — or whether it started and the
-      // console query never answered.
+      // It has since answered the question it was added for: two runs failed
+      // at this line rather than at a width, so the interpreter produced no
+      // output at all. The console query is not implicated, and the width
+      // assertions below were never reached.
       'Write-Output "ghosttea-ready"; while ($true) { Write-Output "ghosttea-cols=$($Host.UI.RawUI.WindowSize.Width)"; Start-Sleep -Milliseconds 250 }',
     ],
     cols: 80,
@@ -171,8 +173,22 @@ try {
   });
   // Reaching this proves the interpreter is running and its output arrives;
   // only the width below depends on the console.
-  await expectMarker(harness, resized, "ghosttea-ready");
+  //
+  // This session alone gets a budget past the 30s default, because it is the
+  // only one here that is not `cmd.exe` and the slowest thing in the fixture
+  // to start. At 30s a slow start and a hang are the same observation, and
+  // telling them apart is the open question: this wait is what has failed,
+  // twice, with the session still alive and silent. A start that needs 45s
+  // now completes and says so, where before it only said "timeout".
+  await expectMarker(harness, resized, "ghosttea-ready", { timeoutMs: 120_000 });
+  // Reported on success too, and deliberately: whether 30s was ever a sane
+  // budget is a question only the runs that pass can answer, and one number
+  // per green run is what builds that record.
+  console.log(`ok  PowerShell reached its first line in ${Date.now() - askedForPowerShell}ms`);
   // Starts at 80, so the resized width only appears if the resize propagated.
+  // Left on the default budget: once the readiness line lands, the loop above
+  // reprints the width every 250ms, so a wait that runs long here is the
+  // console query failing rather than anything still starting up.
   await expectMarker(harness, resized, "ghosttea-cols=80");
   // Resizing is refused without control authority, which a real view claims
   // when it takes focus.
