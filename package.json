@@ -127,11 +127,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jamesyong-42/ghosttea.git"
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git"
   },
-  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "homepage": "https://github.com/vibecook-dev/ghosttea#readme",
   "bugs": {
-    "url": "https://github.com/jamesyong-42/ghosttea/issues"
+    "url": "https://github.com/vibecook-dev/ghosttea/issues"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

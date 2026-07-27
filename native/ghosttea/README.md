@@ -138,4 +138,4 @@ boundary in front of this service or extend the protocol deliberately; socket
 permissions and constant-time token verification do not provide command-level
 scopes.
 
-See <https://github.com/jamesyong-42/ghosttea> for the complete repository.
+See <https://github.com/vibecook-dev/ghosttea> for the complete repository.

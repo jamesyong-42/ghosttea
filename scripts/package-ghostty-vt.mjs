@@ -175,7 +175,7 @@ const sbom = {
   dataLicense: "CC0-1.0",
   SPDXID: "SPDXRef-DOCUMENT",
   name: `${release}-${target}`,
-  documentNamespace: `https://github.com/jamesyong-42/ghosttea/sbom/${release}/${target}`,
+  documentNamespace: `https://github.com/vibecook-dev/ghosttea/sbom/${release}/${target}`,
   creationInfo: {
     created: "1970-01-01T00:00:00Z",
     creators: ["Tool: ghosttea-package-ghostty-vt"],
@@ -248,7 +248,7 @@ const result = {
   release,
   target,
   filename,
-  url: `https://github.com/jamesyong-42/ghosttea/releases/download/${release}/${filename}`,
+  url: `https://github.com/vibecook-dev/ghosttea/releases/download/${release}/${filename}`,
   sha256: digest("sha256", bundle),
   size: bundle.length,
   libraryPath: library,

@@ -13,4 +13,4 @@ const client = new ControlClient(controlPort);
 const response = await client.request({ type: "list-sessions" });
 ```
 
-Ghosttea is developed at <https://github.com/jamesyong-42/ghosttea>.
+Ghosttea is developed at <https://github.com/vibecook-dev/ghosttea>.

@@ -315,7 +315,7 @@ function sourceIdentity() {
   }).stdout.trim();
   const status = execute("git", ["status", "--porcelain=v1", "--untracked-files=all"], { capture: true }).stdout;
   return {
-    repository: "https://github.com/jamesyong-42/ghosttea",
+    repository: "https://github.com/vibecook-dev/ghosttea",
     revision,
     clean: status.length === 0,
     truffle: truffleSourceIdentity(),
@@ -326,7 +326,7 @@ function truffleSourceIdentity() {
   const checkout = resolve(root, "../p008/truffle");
   requirePath(resolve(checkout, ".git"), "Truffle source checkout");
   return {
-    repository: "https://github.com/jamesyong-42/truffle",
+    repository: "https://github.com/vibecook-dev/truffle",
     revision: execute("git", ["-C", checkout, "rev-parse", "HEAD"], { capture: true }).stdout.trim(),
     clean:
       execute("git", ["-C", checkout, "status", "--porcelain=v1", "--untracked-files=all"], { capture: true }).stdout

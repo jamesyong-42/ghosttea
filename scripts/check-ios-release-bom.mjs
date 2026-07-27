@@ -41,7 +41,7 @@ const runtimeRef = `pkg:cargo/ghosttea-ffi@${packageManifest.version}`;
 const ghosttyRef = `pkg:github/ghostty-org/ghostty@${ghostty.ghostty.commit}`;
 const opensslRef = `pkg:github/openssl/openssl@${ssh.openssl.commit}`;
 const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
-const truffleRef = `pkg:github/jamesyong-42/truffle@${truffle.package.revision}`;
+const truffleRef = `pkg:github/vibecook-dev/truffle@${truffle.package.revision}`;
 const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
 const xcodeRef = `ghosttea:toolchain/xcode@${toolchain.apple.xcodeVersion}+${toolchain.apple.xcodeBuild}`;

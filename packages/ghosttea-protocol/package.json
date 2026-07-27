@@ -21,12 +21,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jamesyong-42/ghosttea.git",
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git",
     "directory": "packages/ghosttea-protocol"
   },
-  "homepage": "https://github.com/jamesyong-42/ghosttea#readme",
+  "homepage": "https://github.com/vibecook-dev/ghosttea#readme",
   "bugs": {
-    "url": "https://github.com/jamesyong-42/ghosttea/issues"
+    "url": "https://github.com/vibecook-dev/ghosttea/issues"
   },
   "keywords": [
     "electron",
