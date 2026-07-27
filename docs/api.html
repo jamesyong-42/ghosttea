@@ -3,77 +3,93 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ghosttea API — From install to first terminal</title>
+    <title>ghosttea API — Use the highest layer that fits</title>
     <meta
       name="description"
-      content="A practical API guide for embedding Ghosttea terminal surfaces, workspaces, Electron lifecycle, Node automation, and Rust terminal services."
+      content="Embed the Ghostty-powered terminal experience in Electron on macOS and Windows or compose it natively on iOS."
     />
-    <meta name="theme-color" content="#090a0b" />
+    <meta name="theme-color" content="#fafaf7" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        const theme = window.localStorage.getItem("ghosttea-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
     <link rel="canonical" href="https://vibecook-dev.github.io/ghosttea/api.html" />
+    <link rel="icon" href="assets/logos/ghosttea-favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="styles.css" />
     <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="Ghosttea" />
-    <meta property="og:title" content="Ghosttea API — From install to first terminal" />
-    <meta property="og:description" content="The shortest path to a Ghostty-powered terminal in your application." />
+    <meta property="og:site_name" content="ghosttea by VibeCook" />
+    <meta property="og:title" content="ghosttea API — Use the highest layer that fits" />
+    <meta
+      property="og:description"
+      content="The shortest path to a Ghostty-powered terminal across macOS, Windows, and iOS."
+    />
     <meta property="og:url" content="https://vibecook-dev.github.io/ghosttea/api.html" />
     <meta property="og:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
-    <meta property="og:image:width" content="1280" />
-    <meta property="og:image:height" content="640" />
-    <meta property="og:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="ghosttea running one terminal experience across macOS, Windows, and iOS." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Ghosttea API — From install to first terminal" />
-    <meta name="twitter:description" content="The shortest path to a Ghostty-powered terminal in your application." />
+    <meta name="twitter:title" content="ghosttea API — Use the highest layer that fits" />
+    <meta
+      name="twitter:description"
+      content="The shortest path to a Ghostty-powered terminal across macOS, Windows, and iOS."
+    />
     <meta name="twitter:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
-    <meta name="twitter:image:alt" content="Ghosttea — Build terminal experiences, not terminal emulators." />
+    <meta name="twitter:image:alt" content="ghosttea running one terminal experience across macOS, Windows, and iOS." />
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
 
     <header class="site-header">
-      <nav class="nav container" aria-label="Main navigation">
-        <a class="brand" href="index.html" aria-label="Ghosttea home">
-          <span class="brand-mark" aria-hidden="true">G/</span>
-          <span>ghost<span>tea</span></span>
+      <nav class="nav shell" aria-label="Main navigation">
+        <a class="brand-lockup" href="index.html" aria-label="ghosttea by VibeCook home">
+          <span class="ghosttea-mark product-brand-mark" aria-hidden="true"></span>
+          <span class="brand-type">
+            <strong>ghosttea</strong>
+            <span>by VibeCook</span>
+          </span>
         </a>
-        <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle>
-          <span class="nav-toggle-lines" aria-hidden="true"></span>
-        </button>
+
+        <div class="nav-actions">
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode">
+            <span class="theme-swatch" aria-hidden="true"></span>
+            <span data-theme-label>Dark</span>
+          </button>
+          <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" data-nav-toggle>
+            <span aria-hidden="true"></span>
+          </button>
+        </div>
+
         <div class="nav-links" data-nav-links>
           <a href="index.html">Overview</a>
           <a href="api.html" aria-current="page">API</a>
           <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
-          <a class="button button-compact" href="#quickstart"
-            >Quickstart <span class="arrow" aria-hidden="true">↓</span></a
-          >
+          <a class="button button-small button-solid" href="#quickstart">Quickstart</a>
         </div>
       </nav>
     </header>
 
     <main id="main">
-      <section class="docs-hero container">
-        <p class="eyebrow">API guide · v0.4.0</p>
-        <h1>From zero to first terminal.</h1>
+      <section class="docs-hero shell">
+        <p class="meta-label">macOS · Windows · iOS · v0.4.0 · Electron 35+ · Node 22+ · Rust 1.88+</p>
+        <h1>Use the highest layer that fits.</h1>
         <p>
-          Start with the complete Electron workspace, then drop down to surfaces, automation, or native composition only
-          when your product needs it.
+          Start with the complete Electron workspace on macOS or Windows. Drop down to terminal surfaces, automation,
+          protocol, or native iOS composition only when your product needs it.
         </p>
-        <div class="install-line">
-          <code id="api-install"
-            ><span class="prompt">$</span> npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react</code
-          >
-          <button
-            class="copy-button"
-            type="button"
-            data-copy="#api-install"
-            data-copy-text="npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react"
-            aria-live="polite"
-          >
-            Copy
-          </button>
+        <div class="install-command">
+          <span class="command-prefix" aria-hidden="true">$</span>
+          <code id="api-install">npm i @vibecook/ghosttea-electron @vibecook/ghosttea-react</code>
+          <button class="copy-button" type="button" data-copy="#api-install" aria-live="polite">Copy</button>
         </div>
       </section>
 
-      <div class="docs-layout container">
+      <div class="docs-layout shell">
         <aside class="docs-sidebar" aria-label="API sections">
           <div class="docs-sidebar-group">
             <span class="docs-sidebar-label">Start</span>
@@ -166,7 +182,7 @@
             <a class="anchor-link" href="#quickstart" aria-label="Link to Quickstart">#</a>
             <h2>Electron quickstart</h2>
             <p>
-              Ghosttea crosses Electron's three security boundaries deliberately. The main process owns the backend,
+              ghosttea crosses Electron's three security boundaries deliberately. The main process owns the backend,
               preload forwards transferred ports, and the renderer owns the UI.
             </p>
 
@@ -371,7 +387,7 @@ window.addEventListener(
             <h3>Managed vs. external</h3>
             <div class="code-block">
               <div class="code-label"><span>ownership modes</span></div>
-              <pre><code><span class="token-comment">// Ghosttea owns the process.</span>
+              <pre><code><span class="token-comment">// ghosttea owns the process.</span>
 { <span class="token-property">mode</span>: <span class="token-string">"managed"</span>, <span class="token-property">daemon</span>: { <span class="token-property">binary</span>: { <span class="token-property">kind</span>: <span class="token-string">"executable"</span>, <span class="token-property">path</span> } } }
 
 <span class="token-comment">// Your application owns the Rust service.</span>
@@ -504,7 +520,7 @@ window.addEventListener(
 
 <span class="token-keyword">const</span> result = <span class="token-keyword">await</span> client.pasteAndSubmit(
   session.id,
-  <span class="token-string">"printf 'hello from Ghosttea\\n'"</span>,
+  <span class="token-string">"printf 'hello from ghosttea\\n'"</span>,
 );
 
 <span class="token-keyword">if</span> (!result.accepted) {
@@ -713,7 +729,7 @@ TerminalService::new(TerminalServiceConfig {
             <h3>Environment policy</h3>
             <ul>
               <li>
-                <code>{ mode: "inherit", overrides }</code> — normal shell behavior with private Ghosttea and transport
+                <code>{ mode: "inherit", overrides }</code> — normal shell behavior with private ghosttea and transport
                 variables removed.
               </li>
               <li>
@@ -816,8 +832,8 @@ TerminalService::new(TerminalServiceConfig {
     </main>
 
     <footer class="site-footer">
-      <div class="footer-inner container">
-        <p>© <span data-year>2026</span> Ghosttea · MIT licensed · Independent of Ghostty.</p>
+      <div class="footer-inner shell">
+        <p>© <span data-year>2026</span> VibeCook / ghosttea · MIT licensed · Independent of Ghostty.</p>
         <div class="footer-links">
           <a href="index.html">Overview</a>
           <a href="https://www.npmjs.com/org/vibecook">npm</a>

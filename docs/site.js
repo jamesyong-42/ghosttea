@@ -1,7 +1,60 @@
 /* global document, Element, HTMLElement, IntersectionObserver, navigator, window */
 
+const root = document.documentElement;
+const themeToggle = document.querySelector("[data-theme-toggle]");
+const themeLabel = document.querySelector("[data-theme-label]");
+const themeColor = document.querySelector('meta[name="theme-color"]');
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+function storedTheme() {
+  try {
+    return window.localStorage.getItem("ghosttea-theme");
+  } catch {
+    return null;
+  }
+}
+
+function resolvedTheme() {
+  return root.dataset.theme ?? (systemTheme.matches ? "dark" : "light");
+}
+
+function syncThemeControl() {
+  const dark = resolvedTheme() === "dark";
+  if (themeToggle) {
+    themeToggle.setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} mode`);
+    themeToggle.setAttribute("aria-pressed", String(dark));
+  }
+  if (themeLabel) themeLabel.textContent = dark ? "Light" : "Dark";
+  if (themeColor) themeColor.setAttribute("content", dark ? "#0a0a0a" : "#fafaf7");
+}
+
+const savedTheme = storedTheme();
+if (savedTheme === "light" || savedTheme === "dark") root.dataset.theme = savedTheme;
+syncThemeControl();
+
+themeToggle?.addEventListener("click", () => {
+  const next = resolvedTheme() === "dark" ? "light" : "dark";
+  root.dataset.theme = next;
+  try {
+    window.localStorage.setItem("ghosttea-theme", next);
+  } catch {
+    // The selected theme still applies for this page view.
+  }
+  syncThemeControl();
+});
+
+systemTheme.addEventListener("change", () => {
+  if (!storedTheme()) syncThemeControl();
+});
+
 const navToggle = document.querySelector("[data-nav-toggle]");
 const navLinks = document.querySelector("[data-nav-links]");
+
+function closeNavigation() {
+  document.body.classList.remove("nav-open");
+  navToggle?.setAttribute("aria-expanded", "false");
+  navToggle?.setAttribute("aria-label", "Open navigation");
+}
 
 if (navToggle && navLinks) {
   navToggle.addEventListener("click", () => {
@@ -12,16 +65,11 @@ if (navToggle && navLinks) {
 
   navLinks.addEventListener("click", (event) => {
     if (!(event.target instanceof Element) || !event.target.closest("a")) return;
-    document.body.classList.remove("nav-open");
-    navToggle.setAttribute("aria-expanded", "false");
-    navToggle.setAttribute("aria-label", "Open navigation");
+    closeNavigation();
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    document.body.classList.remove("nav-open");
-    navToggle.setAttribute("aria-expanded", "false");
-    navToggle.setAttribute("aria-label", "Open navigation");
+    if (event.key === "Escape") closeNavigation();
   });
 }
 
@@ -46,6 +94,7 @@ for (const button of document.querySelectorAll("[data-copy]")) {
         selection?.addRange(range);
       }
     }
+
     window.setTimeout(() => {
       button.textContent = previous;
     }, 1400);
@@ -75,7 +124,7 @@ if (trackedSections.length > 0 && "IntersectionObserver" in window) {
         item.link.classList.toggle("is-active", item.target === visible.target);
       }
     },
-    { rootMargin: "-18% 0px -70% 0px", threshold: [0, 0.25] },
+    { rootMargin: "-18% 0px -72% 0px", threshold: [0, 0.25] },
   );
   for (const item of trackedSections) observer.observe(item.target);
 }

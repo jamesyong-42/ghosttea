@@ -1,13 +1,14 @@
-![Ghosttea — Build terminal experiences, not terminal emulators.](docs/og.png)
+![ghosttea — Ship the Ghostty experience across macOS, Windows, and iOS.](docs/og.png)
 
 <div align="center">
 
-# Ghosttea
+<sub>VIBECOOK / GHOSTTY-POWERED TERMINAL RUNTIME</sub>
 
-### Build terminal experiences, not terminal emulators.
+# ghosttea
 
-A Ghostty-powered terminal runtime for Electron and native Apple apps.
-Local PTYs, GPU rendering, typed automation, and secure session sharing—one embeddable stack.
+### Ship the Ghostty experience across platforms.
+
+Put the terminal experience developers already love inside your product—on macOS, Windows, and iOS.
 
 [Website](https://vibecook-dev.github.io/ghosttea/) ·
 [API guide](https://vibecook-dev.github.io/ghosttea/api.html) ·
@@ -15,20 +16,24 @@ Local PTYs, GPU rendering, typed automation, and secure session sharing—one em
 [crates.io](https://crates.io/search?q=ghosttea)
 
 [![Desktop release gates](https://github.com/vibecook-dev/ghosttea/actions/workflows/desktop-release-gates.yml/badge.svg)](https://github.com/vibecook-dev/ghosttea/actions/workflows/desktop-release-gates.yml)
-[![npm](https://img.shields.io/npm/v/%40vibecook%2Fghosttea?label=npm&color=b6f36b)](https://www.npmjs.com/package/@vibecook/ghosttea)
-[![MIT](https://img.shields.io/github/license/vibecook-dev/ghosttea?color=ff9e64)](LICENSE)
+[![npm](https://img.shields.io/npm/v/%40vibecook%2Fghosttea?label=npm&color=0a0a0a&style=flat-square)](https://www.npmjs.com/package/@vibecook/ghosttea)
+[![MIT](https://img.shields.io/github/license/vibecook-dev/ghosttea?color=0a0a0a&style=flat-square)](LICENSE)
 
 </div>
 
-## Why Ghosttea?
+## Why
 
-- **Feels native.** Ghostty terminal semantics, native text shaping, and WebGPU or Metal rendering.
-- **Built for apps.** Typed lifecycle APIs, sandboxed Electron transport, and human-safe automation.
-- **Goes where your work goes.** Run local PTYs, connect over SSH, or share live sessions across devices.
+CLI agents have made the terminal the center of modern development. Ghostty set the bar for how fast, native, and calm that surface can feel.
 
-Ghosttea is infrastructure for IDEs, AI coding tools, workbenches, and terminal-first products. You own the interface; Ghosttea owns the hard terminal machinery.
+`libghostty-vt` provides the terminal core. **ghosttea provides the product layer:** PTYs, GPU surfaces, Electron lifecycle, React workspaces, typed automation, SSH, and shared sessions.
 
-## Try the desktop demo
+| Ship on             | Integration              | Renderer |
+| ------------------- | ------------------------ | -------- |
+| Apple Silicon macOS | Electron + React         | WebGPU   |
+| x64 Windows         | Electron + React         | WebGPU   |
+| iOS 18.1+           | Native Swift composition | Metal    |
+
+## Run it
 
 ```bash
 git clone https://github.com/vibecook-dev/ghosttea.git
@@ -46,53 +51,37 @@ Requires Node 22+ and Rust 1.88+. Locked native artifacts are available for Appl
 npm install @vibecook/ghosttea-electron @vibecook/ghosttea-react
 ```
 
-Choose the layer that fits your product:
+Start high-level and drop down only when you need control:
 
-| You need                         | Start with                           |
-| -------------------------------- | ------------------------------------ |
-| A complete terminal workspace    | `@vibecook/ghosttea-react/workspace` |
-| Terminal surfaces in your own UI | `@vibecook/ghosttea-react`           |
-| Electron lifecycle and transport | `@vibecook/ghosttea-electron`        |
-| Headless Node automation         | `@vibecook/ghosttea-client`          |
-| A native Rust host               | `ghosttea` + `ghosttea-core`         |
+| Need                           | Use                                  |
+| ------------------------------ | ------------------------------------ |
+| Complete terminal workspace    | `@vibecook/ghosttea-react/workspace` |
+| Terminal surfaces in custom UI | `@vibecook/ghosttea-react`           |
+| Electron lifecycle + transport | `@vibecook/ghosttea-electron`        |
+| Headless automation            | `@vibecook/ghosttea-client`          |
+| Native composition             | `ghosttea` + `ghosttea-core`         |
 
-See the [API guide](https://vibecook-dev.github.io/ghosttea/api.html) for the shortest path from install to first terminal.
+The [API guide](https://vibecook-dev.github.io/ghosttea/api.html) is the shortest path from install to first terminal.
 
-## One runtime, two paths
+## What you get
 
-```text
-Local   app → Ghosttea → PTY → Ghostty VT → WebGPU / Metal
-Remote  app → Ghosttea → logical session sync → local GPU renderer
-```
+- Ghostty VT semantics, text shaping, reflow, selection, and scrollback
+- Local PTYs and direct SSH
+- WebGPU desktop and Metal iOS rendering
+- Sandboxed Electron transport and a complete React workspace
+- Human-safe automation and logical session sharing
 
-Frames skip Electron main and React state. Remote sessions send logical terminal state—not screenshots—so every device renders locally and stays sharp.
+Local frames skip Electron main and React state. Shared sessions move terminal state—not screenshots—so each device renders sharp pixels locally.
 
-## What ships today
+## Status
 
-- Release-gated Electron desktop support on Apple Silicon macOS and x64 Windows.
-- Published npm packages and Rust crates with one synchronized version.
-- React workspace, split panes, native tabs, themes, selection, clipboard, and Ghostty-style input.
-- Ordered automation that yields safely when a human starts typing.
-- Read-only-by-default session sharing through Truffle and Tailscale.
-- A native iOS 18.1+ app stack with SSH, Metal rendering, workspaces, and shared sessions.
-
-> **iOS status:** the production app target is implemented and device-tested, but external release qualification is still in progress. See the [release-hardening record](apple/GhostteaKit/Compatibility/release-hardening.md).
-
-## Develop
-
-```bash
-npm test
-npm run check:desktop
-```
-
-Performance work is evidence-driven. The repository includes repeatable native, Electron/WebGPU, Truffle, and physical-device benchmark harnesses.
+macOS and Windows desktop targets are release-gated. The native iOS app is implemented and device-tested; external release qualification remains in progress. See the [qualification record](apple/GhostteaKit/Compatibility/release-hardening.md).
 
 ## Project
 
 - [Documentation](https://vibecook-dev.github.io/ghosttea/)
 - [Questions and bug reports](https://github.com/vibecook-dev/ghosttea/issues)
-- [Publishing and package graph](PUBLISHING.md)
-- [Ghostty UX coverage](bench/ghostty-ux/README.md)
 - [Changelog](CHANGELOG.md)
+- [Publishing](PUBLISHING.md)
 
-MIT © 2026 James Yong. Ghosttea is an independent project built on Ghostty's terminal core.
+MIT © 2026 James Yong. ghosttea is a VibeCook project built independently on `libghostty-vt` and is not affiliated with Ghostty.
