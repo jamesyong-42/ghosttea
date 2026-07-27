@@ -156,12 +156,22 @@ try {
       "-NoLogo",
       "-NoProfile",
       "-Command",
-      'while ($true) { Write-Output "ghosttea-cols=$($Host.UI.RawUI.WindowSize.Width)"; Start-Sleep -Milliseconds 250 }',
+      // The readiness line is printed before anything touches the console,
+      // because those are separate failures that look identical from here.
+      // This case has failed twice by never producing a width, and a bare
+      // marker timeout cannot say whether PowerShell was still starting — it
+      // is the only session in this fixture that is not `cmd.exe`, and it is
+      // the slowest thing here to start — or whether it started and the
+      // console query never answered.
+      'Write-Output "ghosttea-ready"; while ($true) { Write-Output "ghosttea-cols=$($Host.UI.RawUI.WindowSize.Width)"; Start-Sleep -Milliseconds 250 }',
     ],
     cols: 80,
     rows: 24,
     persistence: "keep-until-exit",
   });
+  // Reaching this proves the interpreter is running and its output arrives;
+  // only the width below depends on the console.
+  await expectMarker(harness, resized, "ghosttea-ready");
   // Starts at 80, so the resized width only appears if the resize propagated.
   await expectMarker(harness, resized, "ghosttea-cols=80");
   // Resizing is refused without control authority, which a real view claims
