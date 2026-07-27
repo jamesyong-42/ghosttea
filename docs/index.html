@@ -6,7 +6,7 @@
     <title>ghosttea — Ship the Ghostty experience across platforms</title>
     <meta
       name="description"
-      content="Put the Ghostty terminal experience inside your product. ghosttea is an embeddable runtime for Electron on macOS and Windows, plus native iOS."
+      content="Put the Ghostty terminal experience inside your product. ghosttea is a WebGPU runtime for Electron on macOS and Windows, plus a native Metal runtime for iOS."
     />
     <meta name="theme-color" content="#fafaf7" />
     <meta name="color-scheme" content="light dark" />
@@ -26,7 +26,7 @@
     <meta property="og:title" content="Ship the Ghostty experience across platforms." />
     <meta
       property="og:description"
-      content="An embeddable terminal runtime for Electron on macOS and Windows, plus native iOS."
+      content="A WebGPU terminal runtime for Electron on macOS and Windows, plus a native Metal runtime for iOS."
     />
     <meta property="og:url" content="https://vibecook-dev.github.io/ghosttea/" />
     <meta property="og:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
@@ -37,7 +37,7 @@
     <meta name="twitter:title" content="ghosttea — Ship the Ghostty experience across platforms" />
     <meta
       name="twitter:description"
-      content="An embeddable terminal runtime for Electron on macOS and Windows, plus native iOS."
+      content="A WebGPU terminal runtime for Electron on macOS and Windows, plus a native Metal runtime for iOS."
     />
     <meta name="twitter:image" content="https://vibecook-dev.github.io/ghosttea/og.png" />
     <meta name="twitter:image:alt" content="ghosttea running one terminal experience across macOS, Windows, and iOS." />
@@ -46,7 +46,7 @@
         "@context": "https://schema.org",
         "@type": "SoftwareSourceCode",
         "name": "ghosttea",
-        "description": "Embeddable Ghostty-powered terminal runtime for Electron on macOS and Windows, plus native iOS.",
+        "description": "Embeddable Ghostty-powered WebGPU terminal runtime for Electron on macOS and Windows, plus a native Metal runtime for iOS.",
         "codeRepository": "https://github.com/vibecook-dev/ghosttea",
         "license": "https://opensource.org/license/mit",
         "programmingLanguage": ["Rust", "TypeScript", "Swift"],
@@ -91,14 +91,15 @@
     <main id="main">
       <section class="hero shell">
         <div class="hero-copy">
-          <p class="meta-label">Ghostty-powered · Electron + native iOS · runtime v0.4.0</p>
+          <p class="meta-label">VibeCook / Ghostty-powered · WebGPU desktop + Metal iOS · v0.4.0</p>
           <h1>
             Ship the Ghostty experience.
             <span>Across every screen.</span>
           </h1>
           <p class="hero-lede">
-            <strong>ghosttea</strong> turns <code>libghostty-vt</code> into an embeddable runtime for Electron and
-            native iOS—so your IDE, agent, or productivity app can feel like the terminal developers already love.
+            <strong>ghosttea</strong> turns <code>libghostty-vt</code> into an embeddable WebGPU runtime for Electron
+            and a native Metal runtime for iOS—so your IDE, agent, or productivity app can feel like the terminal
+            developers already love.
           </p>
           <div class="hero-actions">
             <a class="button button-solid" href="api.html#quickstart">Embed ghosttea</a>
@@ -207,13 +208,57 @@
 
       <div class="signal-strip">
         <div class="shell signal-grid" aria-label="Technology highlights">
-          <span>macOS / release-gated</span>
-          <span>Windows / release-gated</span>
-          <span>iOS / device-tested</span>
+          <span>macOS / WebGPU</span>
+          <span>Windows / WebGPU</span>
+          <span>iOS / Metal</span>
           <span>libghostty-vt</span>
           <span>Open source / MIT</span>
         </div>
       </div>
+
+      <section class="brand-bridge shell" aria-labelledby="vibecook-system">
+        <div class="brand-bridge-copy">
+          <p class="section-index">VibeCook / identity system</p>
+          <h2 id="vibecook-system">Exact ingredients.<br />Distinct products.</h2>
+          <p>
+            Every VibeCook package begins with the circle, triangle, and square. ghosttea cooks them through
+            <strong>drift</strong> into its own three-leaf mark.
+          </p>
+        </div>
+
+        <div
+          class="brand-bridge-diagram"
+          role="img"
+          aria-label="The exact VibeCook circle, triangle, and square drift into the ghosttea three-leaf mark"
+        >
+          <div class="brand-ingredients">
+            <div>
+              <span class="brand-shape brand-circle" aria-hidden="true"></span>
+              <code>circle</code>
+            </div>
+            <div>
+              <span class="brand-shape brand-triangle" aria-hidden="true"></span>
+              <code>triangle</code>
+            </div>
+            <div>
+              <span class="brand-shape brand-square" aria-hidden="true"></span>
+              <code>square</code>
+            </div>
+          </div>
+          <div class="brand-operation">
+            <span>operation</span>
+            <strong>drift</strong>
+            <i aria-hidden="true">→</i>
+          </div>
+          <div class="brand-result">
+            <span class="ghosttea-mark brand-result-mark" aria-hidden="true"></span>
+            <span>
+              <strong>ghosttea</strong>
+              <small>terminal ingredient</small>
+            </span>
+          </div>
+        </div>
+      </section>
 
       <section class="statement-section shell" id="why">
         <p class="section-index">01 / purpose</p>

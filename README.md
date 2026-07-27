@@ -8,7 +8,7 @@
 
 ### Ship the Ghostty experience across platforms.
 
-Put the terminal experience developers already love inside your product—on macOS, Windows, and iOS.
+Put the terminal experience developers already love inside your product—WebGPU on macOS and Windows, native Metal on iOS.
 
 [Website](https://vibecook-dev.github.io/ghosttea/) ·
 [API guide](https://vibecook-dev.github.io/ghosttea/api.html) ·
@@ -25,7 +25,7 @@ Put the terminal experience developers already love inside your product—on mac
 
 CLI agents have made the terminal the center of modern development. Ghostty set the bar for how fast, native, and calm that surface can feel.
 
-`libghostty-vt` provides the terminal core. **ghosttea provides the product layer:** PTYs, GPU surfaces, Electron lifecycle, React workspaces, typed automation, SSH, and shared sessions.
+`libghostty-vt` provides the terminal core. **ghosttea provides the product layer:** PTYs, WebGPU and Metal surfaces, Electron lifecycle, React workspaces, typed automation, SSH, and shared sessions.
 
 | Ship on             | Integration              | Renderer |
 | ------------------- | ------------------------ | -------- |

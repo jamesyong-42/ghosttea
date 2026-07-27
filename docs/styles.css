@@ -875,6 +875,138 @@ pre {
   border-left: 1px solid var(--line);
 }
 
+/* VibeCook master identity */
+
+.brand-bridge {
+  display: grid;
+  align-items: center;
+  gap: clamp(48px, 8vw, 110px);
+  grid-template-columns: minmax(300px, 0.72fr) minmax(560px, 1.28fr);
+  padding-block: clamp(72px, 8vw, 105px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand-bridge-copy h2 {
+  margin: 20px 0 20px;
+  font-size: clamp(38px, 4.3vw, 58px);
+  font-weight: 560;
+  letter-spacing: -0.06em;
+  line-height: 0.98;
+}
+
+.brand-bridge-copy > p:last-child {
+  max-width: 440px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.brand-bridge-copy strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.brand-bridge-diagram {
+  display: grid;
+  min-height: 208px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  grid-template-columns: minmax(300px, 1fr) 108px minmax(180px, 0.72fr);
+}
+
+.brand-ingredients {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.brand-ingredients > div {
+  display: grid;
+  place-items: center;
+  padding: 28px 12px 22px;
+  border-right: 1px solid var(--line);
+}
+
+.brand-ingredients code {
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+}
+
+.brand-shape {
+  display: block;
+  width: 46px;
+  height: 46px;
+  background: var(--ink);
+}
+
+.brand-circle {
+  border-radius: 50%;
+}
+
+.brand-triangle {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.brand-operation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 10px;
+  border-right: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.brand-operation strong {
+  margin-top: 5px;
+  font-size: 11px;
+}
+
+.brand-operation i {
+  margin-top: 25px;
+  font-size: 18px;
+  font-style: normal;
+}
+
+.brand-result {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px 20px;
+  flex-direction: column;
+  text-align: center;
+}
+
+.brand-result-mark {
+  width: 118px;
+  aspect-ratio: 152 / 104;
+}
+
+.brand-result > span:last-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-result strong {
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.brand-result small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .statement-section,
 .capability-section,
 .proof-section,
@@ -1667,6 +1799,14 @@ pre {
     margin-inline: auto;
   }
 
+  .brand-bridge {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-bridge-diagram {
+    width: min(760px, 100%);
+  }
+
   .capability-card {
     min-height: 390px;
   }
@@ -1741,8 +1881,13 @@ pre {
 
   .statement-grid,
   .section-heading,
-  .status-copy {
+  .status-copy,
+  .brand-bridge {
     grid-template-columns: 1fr;
+  }
+
+  .brand-bridge-diagram {
+    width: min(680px, 100%);
   }
 
   .section-heading {
@@ -1942,6 +2087,56 @@ pre {
   .signal-grid span {
     padding-inline: 8px;
     font-size: 8px;
+  }
+
+  .brand-bridge {
+    padding-block: 72px;
+  }
+
+  .brand-bridge-diagram {
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .brand-ingredients {
+    min-height: 138px;
+  }
+
+  .brand-ingredients > div:last-child {
+    border-right: 0;
+  }
+
+  .brand-shape {
+    width: 34px;
+    height: 34px;
+  }
+
+  .brand-ingredients code {
+    margin-top: 16px;
+  }
+
+  .brand-operation {
+    min-height: 66px;
+    border-right: 0;
+    flex-direction: row;
+    gap: 10px;
+  }
+
+  .brand-operation strong,
+  .brand-operation i {
+    margin-top: 0;
+  }
+
+  .brand-operation i {
+    transform: rotate(90deg);
+  }
+
+  .brand-result {
+    min-height: 176px;
+  }
+
+  .brand-result-mark {
+    width: 105px;
   }
 
   .statement-section,
