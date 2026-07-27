@@ -2,7 +2,7 @@ GHOSTTEA iOS THIRD-PARTY NOTICES
 ================================
 
 This file is generated from the reviewed iOS release dependency graph.
-CycloneDX SHA-256: af8c82c3aa1ad94e0a42b8ad1a741cabf35f68bc05bb37f1413ff30c3b930276
+CycloneDX SHA-256: a90c43bb0e3b0594517eb9e4aaf02528a26c014ddcce6dd1ca8c70df49e8a5b9
 Components: 94
 Unique license documents: 93
 
@@ -25,7 +25,7 @@ libssh2 libssh2-1.11.1
   License: BSD-3-Clause and bundled notices
   Documents: LICENSE-001, LICENSE-021, LICENSE-023, LICENSE-029, LICENSE-077, LICENSE-093
 
-Truffle Swift bce9da871982139e54f04414f0ba876c171d4d86
+Truffle Swift 284cea0e037d1b2bff6053dda411acd9d6219298
   License: MIT
   Documents: LICENSE-078
 
@@ -5290,9 +5290,9 @@ be used in advertising or otherwise to promote the sale, use or other dealings
 in this Software without prior written authorization of the copyright holder.
 
 ================================================================================
-LICENSE-078 · LICENSE
+LICENSE-078 · LICENSE, TRUFFLE-LICENSE
 SHA-256: d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0
-Used by: Truffle Swift bce9da871982139e54f04414f0ba876c171d4d86, ghosttea-core 0.4.0, ghosttea-ffi 0.4.0, ghosttea-text 0.4.0, ghosttea-vt 0.4.0, ghosttea-vt-sys 0.4.0
+Used by: Truffle Swift 284cea0e037d1b2bff6053dda411acd9d6219298, ghosttea-core 0.4.0, ghosttea-ffi 0.4.0, ghosttea-text 0.4.0, ghosttea-vt 0.4.0, ghosttea-vt-sys 0.4.0
 --------------------------------------------------------------------------------
 MIT License
 
@@ -5348,7 +5348,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-080 · LICENSE
+LICENSE-080 · TAILSCALE-LICENSE
 SHA-256: d6e14a92f27cd6c82f8914041c1bb43819fcf3167b827b9198c2c803d4dff5d3
 Used by: TailscaleKit 5e89501def80a6579ca5d0f9a02f336be62b8f2e
 --------------------------------------------------------------------------------
