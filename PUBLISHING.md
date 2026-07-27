@@ -154,9 +154,28 @@ unset NPM_CONFIG_PROVENANCE npm_config_cache
 ```
 
 Verify every exact version from clean external npm and Rust consumers before
-creating the GitHub release. Revoke the temporary crates.io token after the
-manual release. If an uploaded artifact is defective, deprecate or yank it and
-release the next patch version; never try to replace a registry version.
+creating the GitHub release. A first manual publish has no workflow run to
+create that release, so run `scripts/create-release-if-missing.sh vX.Y.Z`
+yourself. Revoke the temporary crates.io token after the manual release. If an
+uploaded artifact is defective, deprecate or yank it and release the next patch
+version; never try to replace a registry version.
+
+## The GitHub release
+
+The workflow's `github-release` job creates it, after publishing, from the
+matching `CHANGELOG.md` section. Nothing about it is hand-maintained: the
+package and crate lists come from the manifests that declare whether they
+publish, and the requirements from the versions the workspace already pins, so
+release notes cannot advertise something that stopped shipping.
+
+The job is the only one granted `contents: write`, and it fails closed when
+`CHANGELOG.md` has no section for the version being tagged. Rerunning it leaves
+an existing release untouched, so a rerun after a partial failure never
+overwrites notes that were edited afterwards.
+
+What a release says about upgrading, and what evidence qualified it, is
+editorial and is not generated. Add it to the release afterwards — unlike a
+registry version, a release stays editable.
 
 ## Trusted publishing
 

@@ -163,3 +163,35 @@ jobs:
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-client
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-electron
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-react
+
+  # Creating the release used to be a manual step after this workflow finished,
+  # and 0.4.0 shipped to both registries while the release page kept showing
+  # 0.3.0. It runs after `publish` so the release never describes artifacts that
+  # were not uploaded, and it is the only job granted `contents: write`.
+  #
+  # It deliberately does not request the `release` environment: `publish`
+  # already cleared that gate, and asking again would stop a completed release
+  # behind a second approval.
+  github-release:
+    needs: publish
+    if: >-
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v') &&
+      vars.OIDC_RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # No `npm ci`: the generator reads repository files and the Node standard
+      # library, so a release cannot be blocked by dependency installation.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/create-release-if-missing.sh "$GITHUB_REF_NAME"
