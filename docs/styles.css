@@ -875,136 +875,343 @@ pre {
   border-left: 1px solid var(--line);
 }
 
-/* VibeCook master identity */
+/* Architecture */
 
-.brand-bridge {
-  display: grid;
-  align-items: center;
-  gap: clamp(48px, 8vw, 110px);
-  grid-template-columns: minmax(300px, 0.72fr) minmax(560px, 1.28fr);
-  padding-block: clamp(72px, 8vw, 105px);
+.architecture-section {
+  padding-block: clamp(96px, 11vw, 148px);
   border-bottom: 1px solid var(--line);
 }
 
-.brand-bridge-copy h2 {
-  margin: 20px 0 20px;
-  font-size: clamp(38px, 4.3vw, 58px);
+.architecture-heading {
+  display: grid;
+  align-items: end;
+  gap: clamp(50px, 9vw, 140px);
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  margin-bottom: 54px;
+}
+
+.architecture-heading .section-index {
+  margin-bottom: 24px;
+}
+
+.architecture-heading h2 {
+  margin: 0;
+  font-size: clamp(48px, 6.3vw, 82px);
   font-weight: 560;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.065em;
   line-height: 0.98;
 }
 
-.brand-bridge-copy > p:last-child {
-  max-width: 440px;
+.architecture-heading > p {
+  max-width: 470px;
   margin: 0;
   color: var(--muted);
+  font-size: 17px;
 }
 
-.brand-bridge-copy strong {
-  color: var(--ink);
-  font-weight: 650;
-}
-
-.brand-bridge-diagram {
-  display: grid;
-  min-height: 208px;
+.architecture-map {
   border: 1px solid var(--ink);
-  background: var(--surface);
-  grid-template-columns: minmax(300px, 1fr) 108px minmax(180px, 0.72fr);
+  background: #0a0a0a;
+  color: #fafaf7;
 }
 
-.brand-ingredients {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.brand-ingredients > div {
-  display: grid;
-  place-items: center;
-  padding: 28px 12px 22px;
-  border-right: 1px solid var(--line);
-}
-
-.brand-ingredients code {
-  margin-top: 24px;
-  color: var(--muted);
-  font-size: 8px;
-  letter-spacing: 0.04em;
-}
-
-.brand-shape {
-  display: block;
-  width: 46px;
-  height: 46px;
-  background: var(--ink);
-}
-
-.brand-circle {
-  border-radius: 50%;
-}
-
-.brand-triangle {
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
-
-.brand-operation {
+.architecture-map-header,
+.architecture-map-footer {
   display: flex;
+  min-height: 44px;
   align-items: center;
-  justify-content: center;
-  padding: 18px 10px;
-  border-right: 1px solid var(--ink);
-  background: var(--ink);
-  color: var(--paper);
+  justify-content: space-between;
+  gap: 24px;
+  padding: 10px 14px;
+  color: #a8a8a1;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.architecture-map-header {
+  border-bottom: 1px solid #343430;
+}
+
+.architecture-legend {
+  display: flex;
+  gap: 20px;
+}
+
+.architecture-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.architecture-legend i {
+  display: block;
+  width: 20px;
+  height: 2px;
+}
+
+.legend-control {
+  border-top: 1px dashed #a8a8a1;
+}
+
+.legend-data {
+  background: #fafaf7;
+}
+
+.architecture-flow {
+  display: grid;
+  min-height: 430px;
+  align-items: stretch;
+  padding: 26px;
+  background-image:
+    linear-gradient(rgba(250, 250, 247, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(250, 250, 247, 0.04) 1px, transparent 1px);
+  background-size: 30px 30px;
+  grid-template-columns: minmax(180px, 0.78fr) 96px minmax(300px, 1.25fr) 126px minmax(220px, 0.9fr);
+}
+
+.architecture-node {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid #5b5b55;
+  background: #111110;
   flex-direction: column;
+}
+
+.architecture-node-index {
+  color: #8f8f88;
   font-family: var(--mono);
   font-size: 8px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 
-.brand-operation strong {
-  margin-top: 5px;
-  font-size: 11px;
+.architecture-node h3 {
+  margin: auto 0 26px;
+  font-size: clamp(25px, 2.7vw, 36px);
+  font-weight: 540;
+  letter-spacing: -0.05em;
+  line-height: 1.02;
 }
 
-.brand-operation i {
-  margin-top: 25px;
-  font-size: 18px;
+.architecture-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.architecture-tags span {
+  padding: 5px 7px;
+  border: 1px solid #343430;
+  color: #a8a8a1;
+  font-family: var(--mono);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.architecture-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  color: #8f8f88;
+  flex-direction: column;
+  font-family: var(--mono);
+  text-align: center;
+}
+
+.architecture-link span {
+  font-size: 7px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.architecture-link i {
+  margin-block: 13px;
+  color: #fafaf7;
+  font-size: 22px;
   font-style: normal;
 }
 
-.brand-result {
+.architecture-link small {
+  max-width: 110px;
+  color: #74746e;
+  font-size: 6px;
+  line-height: 1.45;
+  text-transform: uppercase;
+}
+
+.control-link::after {
+  width: 70%;
+  border-top: 1px dashed #74746e;
+  content: "";
+}
+
+.frame-link::after {
+  width: 74%;
+  border-top: 2px solid #fafaf7;
+  content: "";
+}
+
+.runtime-node {
+  border-color: #fafaf7;
+}
+
+.runtime-node h3 {
+  margin: 26px 0 22px;
+}
+
+.runtime-stack {
+  display: grid;
+  margin-top: auto;
+  border: 1px solid #343430;
+}
+
+.runtime-stack > div {
+  display: flex;
+  min-height: 64px;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px 14px;
+  flex-direction: column;
+}
+
+.runtime-stack > div + div {
+  border-top: 1px solid #343430;
+}
+
+.runtime-stack span {
+  color: #8f8f88;
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.runtime-stack strong {
+  color: #c4c4bd;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 550;
+}
+
+.runtime-stack .runtime-core {
+  background: #fafaf7;
+}
+
+.runtime-stack .runtime-core span {
+  color: #64645e;
+}
+
+.runtime-stack .runtime-core strong {
+  color: #0a0a0a;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.renderer-node {
+  gap: 10px;
+}
+
+.renderer-option {
+  display: grid;
+  min-height: 108px;
+  align-content: center;
+  padding: 14px;
+  border: 1px solid #343430;
+  grid-template-columns: 1fr auto;
+}
+
+.renderer-option:first-of-type {
+  margin-top: auto;
+}
+
+.renderer-option strong {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+}
+
+.renderer-option span {
+  align-self: center;
+  color: #c4c4bd;
+  font-family: var(--mono);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.renderer-option small {
+  margin-top: 6px;
+  color: #74746e;
+  font-family: var(--mono);
+  font-size: 6px;
+  grid-column: 1 / -1;
+  text-transform: uppercase;
+}
+
+.renderer-node > p {
+  margin: 8px 0 0;
+  color: #8f8f88;
+  font-size: 11px;
+}
+
+.shared-session-rail {
+  display: grid;
+  align-items: stretch;
+  margin: 0 26px 26px;
+  border: 1px solid #5b5b55;
+  grid-template-columns: minmax(220px, 1fr) minmax(210px, 0.75fr) minmax(220px, 1fr);
+}
+
+.shared-session-rail > div:not(.shared-session-link) {
+  display: flex;
+  min-height: 84px;
+  justify-content: center;
+  padding: 15px 18px;
+  flex-direction: column;
+}
+
+.shared-session-rail span {
+  color: #8f8f88;
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shared-session-rail strong {
+  margin-top: 5px;
+  font-size: 16px;
+  font-weight: 580;
+}
+
+.shared-session-link {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: 24px 20px;
-  flex-direction: column;
-  text-align: center;
+  border-inline: 1px solid #343430;
+  background: #181817;
 }
 
-.brand-result-mark {
-  width: 118px;
-  aspect-ratio: 152 / 104;
+.shared-session-link i {
+  color: #fafaf7;
+  font-size: 18px;
+  font-style: normal;
 }
 
-.brand-result > span:last-child {
-  display: flex;
-  flex-direction: column;
+.architecture-map-footer {
+  border-top: 1px solid #343430;
 }
 
-.brand-result strong {
-  font-size: 15px;
-  font-weight: 680;
-}
-
-.brand-result small {
-  margin-top: 3px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 7px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+.architecture-map-footer strong {
+  color: #fafaf7;
+  font-weight: 650;
 }
 
 .statement-section,
@@ -1799,12 +2006,19 @@ pre {
     margin-inline: auto;
   }
 
-  .brand-bridge {
-    grid-template-columns: 1fr;
+  .architecture-flow {
+    padding: 18px;
+    grid-template-columns:
+      minmax(140px, 0.75fr) 70px minmax(250px, 1.2fr) 88px
+      minmax(190px, 0.9fr);
   }
 
-  .brand-bridge-diagram {
-    width: min(760px, 100%);
+  .architecture-node {
+    padding: 17px;
+  }
+
+  .architecture-link small {
+    max-width: 82px;
   }
 
   .capability-card {
@@ -1882,12 +2096,45 @@ pre {
   .statement-grid,
   .section-heading,
   .status-copy,
-  .brand-bridge {
+  .architecture-heading {
     grid-template-columns: 1fr;
   }
 
-  .brand-bridge-diagram {
-    width: min(680px, 100%);
+  .architecture-heading {
+    align-items: start;
+    gap: 32px;
+  }
+
+  .architecture-flow {
+    gap: 0;
+    padding: 20px;
+    grid-template-columns: 1fr;
+  }
+
+  .architecture-node {
+    min-height: 280px;
+  }
+
+  .architecture-link {
+    min-height: 104px;
+  }
+
+  .architecture-link i {
+    transform: rotate(90deg);
+  }
+
+  .control-link::after {
+    width: 1px;
+    height: 28px;
+    border-top: 0;
+    border-left: 1px dashed #74746e;
+  }
+
+  .frame-link::after {
+    width: 2px;
+    height: 28px;
+    border-top: 0;
+    border-left: 2px solid #fafaf7;
   }
 
   .section-heading {
@@ -2089,54 +2336,54 @@ pre {
     font-size: 8px;
   }
 
-  .brand-bridge {
-    padding-block: 72px;
+  .architecture-section {
+    padding-block: 92px;
   }
 
-  .brand-bridge-diagram {
-    min-height: 0;
+  .architecture-heading h2 {
+    font-size: 44px;
+  }
+
+  .architecture-map-header,
+  .architecture-map-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .architecture-legend {
+    flex-wrap: wrap;
+  }
+
+  .architecture-flow {
+    padding: 12px;
+  }
+
+  .architecture-node {
+    min-height: 250px;
+    padding: 18px;
+  }
+
+  .architecture-node h3 {
+    font-size: 29px;
+  }
+
+  .architecture-link {
+    min-height: 92px;
+  }
+
+  .shared-session-rail {
+    margin: 0 12px 12px;
     grid-template-columns: 1fr;
   }
 
-  .brand-ingredients {
-    min-height: 138px;
+  .shared-session-link {
+    min-height: 68px;
+    border-block: 1px solid #343430;
+    border-inline: 0;
   }
 
-  .brand-ingredients > div:last-child {
-    border-right: 0;
-  }
-
-  .brand-shape {
-    width: 34px;
-    height: 34px;
-  }
-
-  .brand-ingredients code {
-    margin-top: 16px;
-  }
-
-  .brand-operation {
-    min-height: 66px;
-    border-right: 0;
-    flex-direction: row;
-    gap: 10px;
-  }
-
-  .brand-operation strong,
-  .brand-operation i {
-    margin-top: 0;
-  }
-
-  .brand-operation i {
+  .shared-session-link i {
     transform: rotate(90deg);
-  }
-
-  .brand-result {
-    min-height: 176px;
-  }
-
-  .brand-result-mark {
-    width: 105px;
   }
 
   .statement-section,

@@ -78,7 +78,7 @@
         </div>
 
         <div class="nav-links" data-nav-links>
-          <a href="#why">Why</a>
+          <a href="#architecture">Architecture</a>
           <a href="#model">Model</a>
           <a href="#packages">Packages</a>
           <a href="api.html">API</a>
@@ -216,52 +216,112 @@
         </div>
       </div>
 
-      <section class="brand-bridge shell" aria-labelledby="vibecook-system">
-        <div class="brand-bridge-copy">
-          <p class="section-index">VibeCook / identity system</p>
-          <h2 id="vibecook-system">Exact ingredients.<br />Distinct products.</h2>
+      <section class="architecture-section shell" id="architecture" aria-labelledby="architecture-title">
+        <div class="architecture-heading">
+          <div>
+            <p class="section-index">01 / architecture</p>
+            <h2 id="architecture-title">One terminal core.<br />Native pixels everywhere.</h2>
+          </div>
           <p>
-            Every VibeCook package begins with the circle, triangle, and square. ghosttea cooks them through
-            <strong>drift</strong> into its own three-leaf mark.
+            Your product owns the interface. ghosttea owns terminal state, process lifecycle, ordered input, and the
+            shortest path to the local GPU.
           </p>
         </div>
 
         <div
-          class="brand-bridge-diagram"
+          class="architecture-map"
           role="img"
-          aria-label="The exact VibeCook circle, triangle, and square drift into the ghosttea three-leaf mark"
+          aria-label="Ghosttea architecture: Electron, React, or Swift sends typed control and input to the Ghosttea runtime. PTY, SSH, or shared replica sessions feed libghostty-vt, which produces TRF1 frames for local WebGPU rendering on macOS and Windows or Metal rendering on iOS. Shared sessions send logical state through Truffle, never screenshots."
         >
-          <div class="brand-ingredients">
-            <div>
-              <span class="brand-shape brand-circle" aria-hidden="true"></span>
-              <code>circle</code>
-            </div>
-            <div>
-              <span class="brand-shape brand-triangle" aria-hidden="true"></span>
-              <code>triangle</code>
-            </div>
-            <div>
-              <span class="brand-shape brand-square" aria-hidden="true"></span>
-              <code>square</code>
+          <div class="architecture-map-header">
+            <span>ghosttea / system map</span>
+            <div class="architecture-legend" aria-hidden="true">
+              <span><i class="legend-control"></i>control + input</span>
+              <span><i class="legend-data"></i>terminal data</span>
             </div>
           </div>
-          <div class="brand-operation">
-            <span>operation</span>
-            <strong>drift</strong>
-            <i aria-hidden="true">→</i>
+
+          <div class="architecture-flow">
+            <article class="architecture-node product-node">
+              <span class="architecture-node-index">01 / your product</span>
+              <h3>Electron + React<br />or native Swift</h3>
+              <div class="architecture-tags">
+                <span>workspace UI</span>
+                <span>human input</span>
+                <span>agent automation</span>
+              </div>
+            </article>
+
+            <div class="architecture-link control-link" aria-hidden="true">
+              <span>typed control + input</span>
+              <i>↔</i>
+            </div>
+
+            <article class="architecture-node runtime-node">
+              <span class="architecture-node-index">02 / ghosttea runtime</span>
+              <h3>One ordered terminal core.</h3>
+              <div class="runtime-stack">
+                <div>
+                  <span>session sources</span>
+                  <strong>local PTY · direct SSH · shared replica</strong>
+                </div>
+                <div class="runtime-core">
+                  <span>terminal engine</span>
+                  <strong>libghostty-vt</strong>
+                </div>
+                <div>
+                  <span>product layer</span>
+                  <strong>lifecycle · authority · automation</strong>
+                </div>
+              </div>
+            </article>
+
+            <div class="architecture-link frame-link" aria-hidden="true">
+              <span>TRF1 binary frames</span>
+              <i>→</i>
+              <small>direct MessagePort on Electron</small>
+            </div>
+
+            <article class="architecture-node renderer-node">
+              <span class="architecture-node-index">03 / local GPU</span>
+              <div class="renderer-option">
+                <strong>WebGPU</strong>
+                <span>macOS + Windows</span>
+                <small>worker-owned renderer</small>
+              </div>
+              <div class="renderer-option">
+                <strong>Metal</strong>
+                <span>iOS</span>
+                <small>native terminal view</small>
+              </div>
+              <p>Sharp terminal pixels inside your interface.</p>
+            </article>
           </div>
-          <div class="brand-result">
-            <span class="ghosttea-mark brand-result-mark" aria-hidden="true"></span>
-            <span>
-              <strong>ghosttea</strong>
-              <small>terminal ingredient</small>
-            </span>
+
+          <div class="shared-session-rail">
+            <div>
+              <span>authoritative desktop session</span>
+              <strong>PTY + Ghostty VT</strong>
+            </div>
+            <div class="shared-session-link">
+              <span>logical state / Truffle</span>
+              <i aria-hidden="true">→</i>
+            </div>
+            <div>
+              <span>local iOS replica</span>
+              <strong>TRF1 + Metal</strong>
+            </div>
+          </div>
+
+          <div class="architecture-map-footer">
+            <span>Frames skip Electron main and React state.</span>
+            <strong>State moves. Pixels stay local.</strong>
           </div>
         </div>
       </section>
 
       <section class="statement-section shell" id="why">
-        <p class="section-index">01 / purpose</p>
+        <p class="section-index">02 / purpose</p>
         <div class="statement-grid">
           <h2>The terminal developers love. Now inside the products they build.</h2>
           <div class="statement-copy">
@@ -280,7 +340,7 @@
       <section class="capability-section shell">
         <div class="section-heading">
           <div>
-            <p class="section-index">02 / what it changes</p>
+            <p class="section-index">03 / what it changes</p>
             <h2>One terminal core.<br />Three native surfaces.<br />Your product on top.</h2>
           </div>
           <p>Start with a complete workspace or compose only the runtime layers your product needs.</p>
@@ -325,7 +385,7 @@
         <div class="shell">
           <div class="section-heading section-heading-inverse">
             <div>
-              <p class="section-index">03 / runtime model</p>
+              <p class="section-index">04 / runtime model</p>
               <h2>Local when possible.<br />Logical when remote.</h2>
             </div>
             <p>The PTY stays authoritative. Every visible surface renders on the GPU where the user is.</p>
@@ -367,7 +427,7 @@
       <section class="proof-section shell">
         <div class="section-heading">
           <div>
-            <p class="section-index">04 / production posture</p>
+            <p class="section-index">05 / production posture</p>
             <h2>The details users feel are part of the design.</h2>
           </div>
           <p>Ordering, pressure, recovery, and memory are product behavior—not invisible implementation trivia.</p>
@@ -400,7 +460,7 @@
       <section class="package-section shell" id="packages">
         <div class="section-heading">
           <div>
-            <p class="section-index">05 / choose a layer</p>
+            <p class="section-index">06 / choose a layer</p>
             <h2>Start high-level.<br />Drop down deliberately.</h2>
           </div>
           <p>Six npm packages and six published Rust crates share one version contract.</p>
