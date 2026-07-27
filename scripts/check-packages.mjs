@@ -205,7 +205,7 @@ try {
       `ghosttea = { path = ${JSON.stringify(cratePath("ghosttea"))} }`,
       `ghosttea-truffle = { path = ${JSON.stringify(cratePath("ghosttea-truffle"))} }`,
       'tokio = { version = "1.45", features = ["full"] }',
-      'truffle-core = "=0.7.6"',
+      'truffle-core = "=0.7.8"',
       "",
       "[patch.crates-io]",
       `ghosttea-vt-sys = { path = ${JSON.stringify(cratePath("ghosttea-vt-sys"))} }`,

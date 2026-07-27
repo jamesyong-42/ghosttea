@@ -29,7 +29,7 @@ The current vertical slice includes:
   renderer view or layout authority;
 - explicit inherited or clean session environments, rich exit metadata, and
   process-group termination escalation;
-- terminal host discovery and logical-state mirroring over Truffle 0.7.6 QUIC.
+- terminal host discovery and logical-state mirroring over Truffle 0.7.8 QUIC.
 
 ## Run
 
@@ -123,7 +123,7 @@ For development, the demo can attach to an already-running service with
 
 ## Terminal mirroring
 
-The current dependency pins the registry release of Truffle 0.7.6 so clean
+The current dependency pins the registry release of Truffle 0.7.8 so clean
 checkouts and published consumers resolve the same transport implementation.
 Put `TRUFFLE_TEST_AUTHKEY` in an untracked `.env` to enable the Truffle node
 during development, or set
@@ -214,7 +214,7 @@ npm run test:integration
 npm run check
 npm run build
 
-# opt-in live Truffle 0.7.6 QUIC smoke test (reads .env)
+# opt-in live Truffle 0.7.8 QUIC smoke test (reads .env)
 cargo test --package ghosttea-truffle \
   latest_truffle_quic_round_trip -- --ignored
 ```
