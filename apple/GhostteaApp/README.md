@@ -30,14 +30,11 @@ The app requires iOS 18.1 or newer, matching the minimum deployment target of
 the pinned TailscaleKit binary. Simulator builds are arm64-only because the
 Ghosttea native core is intentionally distributed without an x86_64 slice.
 
-The local Truffle package must have its pinned TailscaleKit artifact
-materialized before resolving the project:
+Truffle resolves from its published repository, and its pinned TailscaleKit
+artifact arrives as a checksum-verified SwiftPM binary target. No sibling
+checkout and no local materialization step are required:
 
 ```bash
-cd ../../../p008/truffle/apple
-./scripts/materialize-tailscalekit.sh
-
-cd ../../../electron-ghostty/apple/GhostteaApp
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project GhostteaApp.xcodeproj -scheme Ghosttea \
   -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build

@@ -2,6 +2,18 @@
 
 import PackageDescription
 
+// Truffle is consumed from its published repository rather than the sibling
+// development checkout. The pin is a Git revision, not a version range: it is
+// the same exactness `truffle-swift.lock.json` already required
+// (`requireExactRevision`), and it does not depend on Truffle having tagged a
+// SemVer release, which its `truffle-vX.Y.Z` tag scheme does not provide.
+//
+// Keep this equal to `package.revision` in
+// `Compatibility/truffle-swift.lock.json`; the App Store readiness check
+// compares them and fails closed on drift.
+let truffleRepository = "https://github.com/vibecook-dev/truffle.git"
+let truffleRevision = "284cea0e037d1b2bff6053dda411acd9d6219298"
+
 let package = Package(
   name: "GhostteaKit",
   platforms: [
@@ -29,9 +41,7 @@ let package = Package(
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
   ],
   dependencies: [
-    // Development intentionally mirrors the Rust workspace's sibling Truffle
-    // checkout. Release automation records and verifies its exact Git revision.
-    .package(path: "../../../p008/truffle/apple")
+    .package(url: truffleRepository, revision: truffleRevision)
   ],
   targets: [
     .binaryTarget(
@@ -130,8 +140,8 @@ let package = Package(
       dependencies: [
         "GhostteaCore",
         "GhostteaPerformance",
-        .product(name: "Truffle", package: "apple"),
-        .product(name: "TruffleTailscale", package: "apple"),
+        .product(name: "Truffle", package: "truffle"),
+        .product(name: "TruffleTailscale", package: "truffle"),
       ]
     ),
     .target(name: "GhostteaWorkspace"),
@@ -234,7 +244,7 @@ let package = Package(
       dependencies: [
         "GhostteaCore",
         "GhostteaTruffle",
-        .product(name: "Truffle", package: "apple"),
+        .product(name: "Truffle", package: "truffle"),
       ],
       resources: [.copy("Fixtures")]
     ),

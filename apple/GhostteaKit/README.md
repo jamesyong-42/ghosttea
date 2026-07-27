@@ -72,7 +72,8 @@ over-soft recovery proof are complete; compact-device and real
 system-pressure/jetsam evidence remain release gates.
 
 `GhostteaTruffle` is the first Phase 8 cross-device product boundary. It imports
-the Apple-native Swift package from the sibling `p008/truffle/apple` checkout,
+the Apple-native Swift package from Truffle's published repository, pinned to an
+exact revision in [`Compatibility/truffle-swift.lock.json`](Compatibility/truffle-swift.lock.json),
 uses the same `ghosttea-terminal` app ID as the desktop daemon, persists only
 Truffle's durable device ID, and resolves a fresh generation-checked `Peer`
 before every connection. Its typed clients implement the desktop `TSP1`

@@ -14,12 +14,21 @@ const rustLock = readJSON("apple/GhostteaKit/Compatibility/ios-rust-components.l
 const truffleLock = readJSON("apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
 const bomBytes = readFileSync(sourceBomPath);
 const bom = JSON.parse(bomBytes);
-const tailscaleLicensePath = "../p008/truffle/apple/.vendor/libtailscale/LICENSE";
-const tailscaleLicenseHash = sha256(readFileSync(resolve(root, tailscaleLicensePath)));
-if (tailscaleLicenseHash !== truffleLock.tailscaleKit.licenseSha256) {
-  throw new Error(
-    `TailscaleKit license drifted: expected ${truffleLock.tailscaleKit.licenseSha256}, got ${tailscaleLicenseHash}.`,
-  );
+// Vendored copies, not a sibling checkout: every other notice document in this
+// file already comes from inside this repository, and the previous TailscaleKit
+// path pointed into Truffle's gitignored `.vendor/libtailscale` clone, which
+// only exists on a machine that has run the materializer. Both copies are
+// byte-identical to Truffle's and stay drift-checked against the lock.
+const tailscaleLicensePath = "apple/GhostteaKit/Compatibility/TAILSCALE-LICENSE";
+const truffleLicensePath = "apple/GhostteaKit/Compatibility/TRUFFLE-LICENSE";
+requireLicenseHash(tailscaleLicensePath, truffleLock.tailscaleKit.licenseSha256, "TailscaleKit");
+requireLicenseHash(truffleLicensePath, truffleLock.package.licenseSha256, "Truffle");
+
+function requireLicenseHash(path, expected, name) {
+  const actual = sha256(readFileSync(resolve(root, path)));
+  if (actual !== expected) {
+    throw new Error(`${name} license drifted: expected ${expected}, got ${actual}.`);
+  }
 }
 
 const metadataResult = spawnSync(
@@ -51,7 +60,7 @@ addComponent(
     .sort()
     .map((name) => `native/vendor/libssh2/LICENSES/${name}`),
 );
-addComponent("Truffle Swift", versionOf("Truffle Swift"), "MIT", ["../p008/truffle/LICENSE"]);
+addComponent("Truffle Swift", versionOf("Truffle Swift"), "MIT", [truffleLicensePath]);
 addComponent("TailscaleKit", versionOf("TailscaleKit"), "BSD-3-Clause", [tailscaleLicensePath]);
 
 for (const entry of rustLock.components) {
