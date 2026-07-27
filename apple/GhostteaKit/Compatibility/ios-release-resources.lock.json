@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "sourceBom": {
     "path": "apple/GhostteaKit/Compatibility/ios-release.cdx.json",
-    "sha256": "a90c43bb0e3b0594517eb9e4aaf02528a26c014ddcce6dd1ca8c70df49e8a5b9"
+    "sha256": "1f26812bd65a65b188fb146d71212654ce74f07fb8f10330cd0a6d29205f3198"
   },
   "bundledBom": {
     "path": "apple/GhostteaApp/Resources/Ghosttea-iOS.cdx.json",
-    "sha256": "a90c43bb0e3b0594517eb9e4aaf02528a26c014ddcce6dd1ca8c70df49e8a5b9"
+    "sha256": "1f26812bd65a65b188fb146d71212654ce74f07fb8f10330cd0a6d29205f3198"
   },
   "notices": {
     "path": "apple/GhostteaApp/Resources/THIRD-PARTY-NOTICES.txt",
-    "sha256": "768e975d1d7f6a6e6f18358527d7ea5999d73bb139b35f7c72a1fd4c1392248b",
+    "sha256": "08cbe8b2039f90c6b7285093e53215009417251ba915d24b378b4a025c4efe68",
     "componentCount": 94,
     "licenseDocumentCount": 93
   }
