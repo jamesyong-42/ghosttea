@@ -31,7 +31,7 @@ jobs:
   # happened to serve while the matrix ran.
   resolve:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.pick.outputs.version }}
@@ -51,7 +51,7 @@ jobs:
         # ubuntu is the deliberate negative: no daemon ships for it, and the
         # resolver failing closed there with a useful message is part of the
         # published contract.
-        runner: [macos-15, blacksmith-4vcpu-windows-2025, ubuntu-24.04]
+        runner: [macos-15, windows-2022, ubuntu-24.04]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:

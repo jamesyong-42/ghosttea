@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -36,7 +36,7 @@ jobs:
 
   package:
     needs: build
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
@@ -113,7 +113,7 @@ jobs:
   # against it. See native/ghosttea/crates/ghosttea-vt-sys/README.md.
   windows:
     needs: package
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-2022
     defaults:
       run:
         shell: bash

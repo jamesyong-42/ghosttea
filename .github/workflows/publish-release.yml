@@ -32,7 +32,7 @@ jobs:
     if: >-
       (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -48,7 +48,7 @@ jobs:
     if: >-
       (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -126,7 +126,7 @@ jobs:
     if: >-
       (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-2022
     timeout-minutes: 60
     defaults:
       run:
@@ -144,15 +144,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
-      # Same reason as the desktop gate's Windows job: this image ships LLVM 20
-      # off PATH and without the `clang` entry point, and `npm run ci:desktop`
-      # compiles a C11 header probe with clang.
-      - name: Put clang on PATH
-        run: |
-          llvm='/c/Program Files/LLVM/bin'
-          [ -x "$llvm/clang.exe" ] || cp "$llvm/clang++.exe" "$llvm/clang.exe"
-          echo "$llvm" >> "$GITHUB_PATH"
 
       - name: Require the package version to match the tag
         run: test "v$(node -p "require('./package.json').version")" = "$RELEASE_TAG"
@@ -184,10 +175,7 @@ jobs:
       ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
       vars.OIDC_RELEASE_ENABLED == 'true'
-    # npm refuses provenance attestations minted anywhere but GitHub-hosted
-    # runners, and Blacksmith registers as self-hosted — v0.5.2's first
-    # publish attempt died on exactly that. This job spends its time on
-    # registry round-trips, so a faster runner buys nothing here anyway.
+    # npm provenance requires a GitHub-hosted runner.
     runs-on: macos-15
     timeout-minutes: 45
     environment: release
@@ -295,7 +283,7 @@ jobs:
       ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
       vars.OIDC_RELEASE_ENABLED == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
