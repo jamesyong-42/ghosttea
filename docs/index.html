@@ -84,7 +84,7 @@
 
         <div class="nav-links" data-nav-links>
           <a href="#architecture">Architecture</a>
-          <a href="#model">Model</a>
+          <a href="#truffle">Truffle</a>
           <a href="#packages">Packages</a>
           <a href="api.html">API</a>
           <a href="https://github.com/vibecook-dev/ghosttea">GitHub</a>
@@ -386,86 +386,73 @@
         </div>
       </section>
 
-      <section class="model-section" id="model">
+      <section class="truffle-section" id="truffle">
         <div class="shell">
-          <div class="section-heading section-heading-inverse">
+          <div class="truffle-heading">
             <div>
-              <p class="section-index">04 / runtime model</p>
-              <h2>Local when possible.<br />Logical when remote.</h2>
+              <p class="section-index">Truffle / remote sessions</p>
+              <h2>A live terminal.<br />Replicated, not streamed.</h2>
             </div>
-            <p>The PTY stays authoritative. Every visible surface renders on the GPU where the user is.</p>
+            <p>
+              <strong>Truffle</strong> carries ordered terminal state to another device. ghosttea rebuilds the view
+              there and renders every pixel locally with WebGPU or Metal.
+            </p>
           </div>
 
-          <div class="path-grid">
-            <article class="runtime-path">
-              <div class="path-heading">
-                <span>local path</span>
-                <strong>01</strong>
+          <div
+            class="truffle-map"
+            role="img"
+            aria-label="A terminal process remains authoritative on its host while Truffle sends ordered logical state—not screenshots—to a remote ghosttea replica that renders locally with WebGPU or Metal."
+          >
+            <article class="truffle-endpoint">
+              <div class="truffle-endpoint-label">
+                <span>authoritative host</span>
+                <i>keeps running</i>
               </div>
-              <h3>Your process.<br />Native PTY.<br />Direct frames.</h3>
-              <div class="flow-line" aria-label="Local data flow">
-                <span>app</span><i>→</i><span>PTY</span><i>→</i><span>Ghostty VT</span><i>→</i><span>GPU</span>
+              <h3>The process<br />stays put.</h3>
+              <div class="truffle-terminal" aria-hidden="true">
+                <div><span>agent-workspace</span><span>live</span></div>
+                <p><b>❯</b> codex --resume</p>
+                <p class="truffle-terminal-muted">agent session restored</p>
+                <p><em>✓</em> 148 tests passed</p>
               </div>
-              <p>
-                Transferable binary frames skip Electron main and React state on their way to one shared render worker.
-              </p>
+              <small>PTY · Ghostty VT · source of truth</small>
             </article>
-            <article class="runtime-path">
-              <div class="path-heading">
-                <span>shared path</span>
-                <strong>02</strong>
+
+            <div class="truffle-transport">
+              <span>Truffle</span>
+              <strong>ordered<br />terminal state</strong>
+              <i aria-hidden="true">→</i>
+              <small>no screenshots<br />no video stream</small>
+            </div>
+
+            <article class="truffle-endpoint">
+              <div class="truffle-endpoint-label">
+                <span>remote replica</span>
+                <i>follows live</i>
               </div>
-              <h3>Move the state.<br />Keep the pixels<br />local.</h3>
-              <div class="flow-line" aria-label="Shared session data flow">
-                <span>session</span><i>→</i><span>logical sync</span><i>→</i><span>replica</span><i>→</i
-                ><span>GPU</span>
+              <h3>The view<br />comes with you.</h3>
+              <div class="truffle-terminal" aria-hidden="true">
+                <div><span>agent-workspace</span><span>replica</span></div>
+                <p><b>❯</b> codex --resume</p>
+                <p class="truffle-terminal-muted">agent session restored</p>
+                <p><em>✓</em> 148 tests passed</p>
               </div>
-              <p>
-                Truffle carries compact logical updates. Remote views stay sharp and preserve explicit input and resize
-                authority.
-              </p>
+              <small>WebGPU desktop · Metal iOS · local pixels</small>
             </article>
           </div>
-        </div>
-      </section>
 
-      <section class="proof-section shell">
-        <div class="section-heading">
-          <div>
-            <p class="section-index">05 / production posture</p>
-            <h2>The details users feel are part of the design.</h2>
+          <div class="truffle-caption">
+            <p><strong>Same live session.</strong> Native resolution on every screen.</p>
+            <p><strong>Host stays authoritative.</strong> Input and resize control remain explicit.</p>
           </div>
-          <p>Ordering, pressure, recovery, and memory are product behavior—not invisible implementation trivia.</p>
-        </div>
-
-        <div class="proof-list">
-          <article>
-            <span>01 / order</span>
-            <h3>Humans stay in front.</h3>
-            <p>Human input advances an epoch, invalidating automation that observed older state.</p>
-          </article>
-          <article>
-            <span>02 / pressure</span>
-            <h3>Invisible work stays bounded.</h3>
-            <p>Frame credits, catalog budgets, resynchronization, and hidden-session eviction cap background work.</p>
-          </article>
-          <article>
-            <span>03 / recovery</span>
-            <h3>Stale work cannot win.</h3>
-            <p>View, control, and layout epochs reject old input, resize claims, and frame state.</p>
-          </article>
-          <article>
-            <span>04 / evidence</span>
-            <h3>Performance is measured.</h3>
-            <p>Native, WebGPU, replication, and physical-device harnesses keep claims tied to repeatable evidence.</p>
-          </article>
         </div>
       </section>
 
       <section class="package-section shell" id="packages">
         <div class="section-heading">
           <div>
-            <p class="section-index">06 / choose a layer</p>
+            <p class="section-index">Packages / choose a layer</p>
             <h2>Start high-level.<br />Drop down deliberately.</h2>
           </div>
           <p>Six npm packages and six published Rust crates share one version contract.</p>
@@ -508,30 +495,6 @@
             <span class="package-role">native service · terminal model</span>
             <span aria-hidden="true">↗</span>
           </a>
-        </div>
-      </section>
-
-      <section class="status-section shell">
-        <div class="status-label">
-          <span class="status-dot" aria-hidden="true"></span>
-          <p>Honest status</p>
-        </div>
-        <div class="status-copy">
-          <h2>Desktop is release-gated.<br />Apple is still hardening.</h2>
-          <div>
-            <p>
-              Apple Silicon macOS and x64 Windows desktop paths are release-gated. The native iOS 18.1+ stack is
-              implemented and device-tested, with external release qualification still in progress.
-            </p>
-            <p>
-              Linux endpoint support exists in the service, but there is no published Ghostty VT bundle for Linux today.
-            </p>
-            <a
-              class="text-link"
-              href="https://github.com/vibecook-dev/ghosttea/blob/main/apple/GhostteaKit/Compatibility/release-hardening.md"
-              >Read the qualification record ↗</a
-            >
-          </div>
         </div>
       </section>
 
