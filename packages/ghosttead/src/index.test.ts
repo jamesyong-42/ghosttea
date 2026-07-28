@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { SUPPORTED_TARGETS, ghostteadPath } from "./index.js";
 
@@ -59,4 +60,61 @@ test("the Windows binary carries its executable suffix", () => {
 test("a platform package without a staged binary says where staging happens", () => {
   const resolvePackage = packageFixture(null);
   expect(() => ghostteadPath({ platform: "win32", arch: "x64", env: {}, resolvePackage })).toThrow(/release workflow/);
+});
+
+/**
+ * A pnpm-shaped install as a bundled consumer sees it: the app's
+ * `node_modules` holds only a link to this package's real directory inside a
+ * store, the platform package exists only as that directory's sibling, and
+ * the resolution base is the bundler's output directory — where a direct
+ * walk finds no platform package at all (vibecook-dev/ghosttea#22).
+ */
+function bundledPnpmFixture({ platformInstalled }: { platformInstalled: boolean }): URL {
+  const root = mkdtempSync(join(tmpdir(), "ghosttead-bundled-"));
+  const store = join(root, ".pnpm", "ghosttead@0.0.0", "node_modules", "@vibecook");
+  mkdirSync(join(store, "ghosttead"), { recursive: true });
+  writeFileSync(join(store, "ghosttead", "package.json"), "{}\n");
+  if (platformInstalled) {
+    const platform = join(store, "ghosttead-darwin-arm64");
+    mkdirSync(join(platform, "bin"), { recursive: true });
+    writeFileSync(join(platform, "package.json"), "{}\n");
+    writeFileSync(join(platform, "bin", "ghosttead"), "not a real daemon");
+  }
+  const applicationModules = join(root, "app", "node_modules", "@vibecook");
+  mkdirSync(applicationModules, { recursive: true });
+  // Junctions keep this runnable on Windows CI, where plain directory
+  // symlinks require elevation.
+  symlinkSync(
+    join(store, "ghosttead"),
+    join(applicationModules, "ghosttead"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const bundleDirectory = join(root, "app", "dist");
+  mkdirSync(bundleDirectory, { recursive: true });
+  return pathToFileURL(join(bundleDirectory, "main.cjs"));
+}
+
+test("an inlined resolver still finds the daemon through the installed package", () => {
+  const resolutionBase = bundledPnpmFixture({ platformInstalled: true });
+  const path = ghostteadPath({ platform: "darwin", arch: "arm64", env: {}, resolutionBase });
+  expect(path).toMatch(/bin[\\/]ghosttead$/);
+  // Through the store's real directory, not the app's node_modules.
+  expect(path).toContain(".pnpm");
+});
+
+test("an inlined resolver with a pruned platform package still diagnoses the pruning", () => {
+  const resolutionBase = bundledPnpmFixture({ platformInstalled: false });
+  expect(() => ghostteadPath({ platform: "darwin", arch: "arm64", env: {}, resolutionBase })).toThrow(
+    /optional dependency/,
+  );
+});
+
+test("a base that cannot reach the package at all names bundling, not a missing install", () => {
+  // No node_modules anywhere above the temp directory: the walk a bundle
+  // without `external` performs.
+  const resolutionBase = pathToFileURL(join(mkdtempSync(join(tmpdir(), "ghosttead-severed-")), "main.cjs"));
+  const resolve = () => ghostteadPath({ platform: "darwin", arch: "arm64", env: {}, resolutionBase });
+  expect(resolve).toThrow(/inlined into a bundle/);
+  expect(resolve).toThrow(/external/);
+  expect(resolve).toThrow(/GHOSTTEAD_BIN/);
 });

@@ -5,12 +5,13 @@
  * carry it everywhere: each supported target ships in its own npm package,
  * gated by `os`/`cpu`, and installing this package pulls exactly the one
  * that matches. This module names the installed binary — or says precisely
- * which of the three possible reasons it cannot: the platform has no
- * prebuild, the optional dependency was pruned, or the platform package is
- * present with nothing staged into it, a state that exists only inside the
- * Ghosttea repository where these packages are workspace links.
+ * which of the four possible reasons it cannot: the platform has no
+ * prebuild, a bundler inlined this resolver and severed its view of
+ * `node_modules`, the optional dependency was pruned, or the platform
+ * package is present with nothing staged into it, a state that exists only
+ * inside the Ghosttea repository where these packages are workspace links.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
@@ -32,9 +33,77 @@ export interface ResolveGhostteadOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** Defaults to resolving from this package; injectable so tests reach every failure without a registry. */
   resolvePackage?: (specifier: string) => string;
+  /** Defaults to `import.meta.url`; injectable so tests can stand where a bundler would put this code. */
+  resolutionBase?: string | URL;
 }
 
-const defaultResolvePackage = (specifier: string): string => createRequire(import.meta.url).resolve(specifier);
+function notInstalled(packageName: string, cause: unknown): Error {
+  return new Error(
+    `${packageName} is not installed. It arrives as an optional dependency of @vibecook/ghosttead, so an ` +
+      "install that skips optional dependencies loses the daemon; reinstall with them enabled or set GHOSTTEAD_BIN.",
+    { cause },
+  );
+}
+
+function inlinedByBundler(packageName: string, cause: unknown): Error {
+  return new Error(
+    `${packageName} cannot be resolved, and no reachable node_modules contains @vibecook/ghosttead either — ` +
+      "the signature of this resolver having been inlined into a bundle, which severs the node_modules walk " +
+      "it depends on. Mark @vibecook/ghosttead external in the bundler (see its README) or set GHOSTTEAD_BIN.",
+    { cause },
+  );
+}
+
+/**
+ * The platform package's manifest path, resolved the way installs actually
+ * lay packages out.
+ *
+ * The platform packages are dependencies of this package, not of the
+ * consumer, and pnpm's strict layout makes them visible only from beside
+ * this package's real directory. From the unbundled module that is one
+ * resolution — but a bundler that inlines this code moves it into the
+ * consumer's output, where the direct walk finds nothing. The consumer does
+ * depend on `@vibecook/ghosttead`, so its installed directory is usually
+ * still reachable from the bundle; resolving the platform package from that
+ * directory's real path restores exactly the walk the unbundled module
+ * would have done. The lookup scans `require.resolve.paths()` by hand
+ * because this package's `exports` map would otherwise stand between a
+ * `require`-based probe and its own `package.json`.
+ *
+ * A base that cannot see even `@vibecook/ghosttead` is not a layout problem
+ * at all, and is reported as what it is: bundling without `external`.
+ */
+function resolveInstalledManifest(packageName: string, base: string | URL): string {
+  let requireFromBase: ReturnType<typeof createRequire>;
+  try {
+    requireFromBase = createRequire(base);
+  } catch (cause) {
+    // A bundler that erased `import.meta.url` outright lands here.
+    throw inlinedByBundler(packageName, cause);
+  }
+  let directFailure: unknown;
+  try {
+    return requireFromBase.resolve(`${packageName}/package.json`);
+  } catch (error) {
+    directFailure = error;
+  }
+  let selfManifest: string | undefined;
+  for (const directory of requireFromBase.resolve.paths("@vibecook/ghosttead") ?? []) {
+    const candidate = join(directory, "@vibecook", "ghosttead", "package.json");
+    if (existsSync(candidate)) {
+      // Follow the package manager's link so the sibling walk starts from
+      // the store directory that actually holds the platform packages.
+      selfManifest = realpathSync(candidate);
+      break;
+    }
+  }
+  if (!selfManifest) throw inlinedByBundler(packageName, directFailure);
+  try {
+    return createRequire(selfManifest).resolve(`${packageName}/package.json`);
+  } catch (cause) {
+    throw notInstalled(packageName, cause);
+  }
+}
 
 /**
  * Absolute path of the daemon for the current platform.
@@ -48,7 +117,6 @@ export function ghostteadPath(options: ResolveGhostteadOptions = {}): string {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const env = options.env ?? process.env;
-  const resolvePackage = options.resolvePackage ?? defaultResolvePackage;
 
   const override = env.GHOSTTEAD_BIN;
   if (override) return override;
@@ -63,14 +131,14 @@ export function ghostteadPath(options: ResolveGhostteadOptions = {}): string {
   }
 
   let manifest: string;
-  try {
-    manifest = resolvePackage(`${packageName}/package.json`);
-  } catch (cause) {
-    throw new Error(
-      `${packageName} is not installed. It arrives as an optional dependency of @vibecook/ghosttead, so an ` +
-        "install that skips optional dependencies loses the daemon; reinstall with them enabled or set GHOSTTEAD_BIN.",
-      { cause },
-    );
+  if (options.resolvePackage) {
+    try {
+      manifest = options.resolvePackage(`${packageName}/package.json`);
+    } catch (cause) {
+      throw notInstalled(packageName, cause);
+    }
+  } else {
+    manifest = resolveInstalledManifest(packageName, options.resolutionBase ?? import.meta.url);
   }
 
   const binary = join(dirname(manifest), "bin", platform === "win32" ? "ghosttead.exe" : "ghosttead");
