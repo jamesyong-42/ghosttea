@@ -224,6 +224,24 @@ yourself. Revoke the temporary crates.io token after the manual release. If an
 uploaded artifact is defective, deprecate or yank it and release the next patch
 version; never try to replace a registry version.
 
+## Resuming a partial release
+
+A tag never moves once any registry holds its artifacts, so a release that
+failed between registries is finished rather than repeated: dispatch the
+`Publish release` workflow with the tag as its input.
+
+```sh
+gh workflow run publish-release.yml -f tag=vX.Y.Z
+```
+
+The dispatch runs the current workflow file — including whatever fix the
+failure needed — against the tag's tree, revalidates it on both platforms,
+and pauses at the `release` environment as usual. Every publish step skips
+artifacts a registry already holds, so only the missing remainder ships.
+v0.5.2 published its crates and then failed npm publishing on a workflow
+defect (npm rejects provenance minted on self-hosted-class runners, and the
+publish job had moved to one); this resume path is how it finished.
+
 ## The GitHub release
 
 The workflow's `github-release` job creates it, after publishing, from the
