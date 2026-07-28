@@ -1,0 +1,58 @@
+{
+  "name": "@vibecook/ghosttead",
+  "version": "0.4.0",
+  "description": "Prebuilt Ghosttea terminal daemon, resolved to the binary for the current platform.",
+  "license": "MIT",
+  "author": "James Yong",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git",
+    "directory": "packages/ghosttead"
+  },
+  "homepage": "https://github.com/vibecook-dev/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/vibecook-dev/ghosttea/issues"
+  },
+  "keywords": [
+    "electron",
+    "ghostty",
+    "terminal",
+    "daemon",
+    "pty"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "optionalDependencies": {
+    "@vibecook/ghosttead-darwin-arm64": "0.4.0",
+    "@vibecook/ghosttead-win32-x64": "0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

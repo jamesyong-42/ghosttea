@@ -17,6 +17,9 @@ apps/desktop/build/
 apps/desktop/native/build/
 apps/desktop-experiment/build/
 apps/desktop-experiment/native/build/
+packages/ghosttead-darwin-arm64/bin/
+packages/ghosttead-win32-x64/bin/
+packages/ghosttea-native-tabs/prebuilds/
 native/vendor/ghostty/
 native/vendor/libssh2/
 native/vendor/openssl/

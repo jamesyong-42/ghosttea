@@ -50,6 +50,25 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
+      # The publish job runs on one platform, so every binary it publishes is
+      # handed over as an artifact from the job that could build and gate it.
+      # This job contributes the macOS daemon and the universal native tabs
+      # prebuild; `validate-windows` contributes the Windows daemon.
+      - run: cargo build --release --locked --package ghosttead
+      - run: npm run build:ghosttea-native-tabs
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghosttead-darwin-arm64
+          path: target/release/ghosttead
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghosttea-native-tabs
+          path: packages/ghosttea-native-tabs/prebuilds/ghosttea_native_tabs.node
+          if-no-files-found: error
+
   # The published crates and packages support Windows, so a release gate that
   # only runs on macOS can ship a target it never built. This runs the same
   # release gate there, building the Ghostty VT artifact from the pinned source
@@ -80,6 +99,14 @@ jobs:
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run ci:desktop
+
+      - run: cargo build --release --locked --package ghosttead
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghosttead-win32-x64
+          path: target/release/ghosttead.exe
+          if-no-files-found: error
 
   publish:
     needs:
@@ -112,6 +139,15 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: npm run build:sdk
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: staging
+
+      # Fails closed when any validate build is missing: a release with a
+      # hole in it stops here, before the first registry mutation.
+      - name: Stage the validate builds into the packages that publish them
+        run: node scripts/stage-published-binaries.mjs staging
 
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth-vt-sys
@@ -155,14 +191,22 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth-truffle.outputs.token }}
         run: scripts/publish-crate-if-missing.sh ghosttea-truffle
 
+      # The daemon platform packages publish before everything else and the
+      # resolver publishes last: each publish waits until the registry can
+      # resolve it, so `@vibecook/ghosttead` can never exist at a version
+      # whose optional dependencies do not.
       - name: Publish npm packages
         run: |
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead-darwin-arm64
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead-win32-x64
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-native-tabs
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-protocol
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-frame
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-client
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-electron
           scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-react
+          scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead
 
   # Creating the release used to be a manual step after this workflow finished,
   # and 0.4.0 shipped to both registries while the release page kept showing

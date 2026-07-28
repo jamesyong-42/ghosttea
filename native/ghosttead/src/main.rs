@@ -12,6 +12,14 @@ const DEFAULT_APP_ID: &str = "ghosttea-terminal";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // The daemon is configured entirely through its environment, so this is
+    // deliberately the only argument it understands: a binary distributed
+    // through a registry has to be able to say which release it came from,
+    // and the post-publish smoke test asks it.
+    if env::args().nth(1).as_deref() == Some("--version") {
+        println!("ghosttead {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let _ = dotenvy::dotenv();
     let mut service = TerminalService::new(TerminalServiceConfig {
         control_socket: required_env("GHOSTTEA_CONTROL_SOCKET", "TERMINALD_CONTROL_SOCKET")?,

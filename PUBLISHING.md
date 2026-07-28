@@ -1,9 +1,17 @@
 # Publishing Ghosttea
 
-Ghosttea publishes one shared version across six npm packages and six Rust
+Ghosttea publishes one shared version across ten npm packages and six Rust
 crates. The `ghosttead`, `ghosttea-ffi`, and `ghosttea-font-fixture-ffi` Rust
 packages and both desktop applications are private integration targets and
-must never be published.
+must never be published to crates.io.
+
+The `ghosttead` crate staying off crates.io does not keep the daemon out of
+consumers' hands: its release-built binary ships to npm through the
+`os`/`cpu`-gated `@vibecook/ghosttead-darwin-arm64` and
+`@vibecook/ghosttead-win32-x64`, which install through the
+`@vibecook/ghosttead` resolver. The macOS native tabs addon ships prebuilt the
+same way as `@vibecook/ghosttea-native-tabs`. Prebuilds exist for exactly the
+targets the release gate validates.
 
 Registry versions are immutable. Every release starts from a clean, pushed
 commit whose signed `vX.Y.Z` tag matches the root package version.
@@ -26,14 +34,59 @@ Publish Rust crates in dependency order:
 5. `ghosttea`
 6. `ghosttea-truffle`
 
-Publish npm packages in dependency order:
+Publish npm packages in dependency order. The binary packages go first and
+the resolver goes last: every publish waits until the registry can resolve
+it, so `@vibecook/ghosttead` never exists at a version whose optional
+dependencies do not.
 
-1. `@vibecook/ghosttea-protocol`
-2. `@vibecook/ghosttea-frame`
-3. `@vibecook/ghosttea`
-4. `@vibecook/ghosttea-client`
-5. `@vibecook/ghosttea-electron`
-6. `@vibecook/ghosttea-react`
+1. `@vibecook/ghosttead-darwin-arm64`
+2. `@vibecook/ghosttead-win32-x64`
+3. `@vibecook/ghosttea-native-tabs`
+4. `@vibecook/ghosttea-protocol`
+5. `@vibecook/ghosttea-frame`
+6. `@vibecook/ghosttea`
+7. `@vibecook/ghosttea-client`
+8. `@vibecook/ghosttea-electron`
+9. `@vibecook/ghosttea-react`
+10. `@vibecook/ghosttead`
+
+## Binary staging
+
+The three binary-carrying packages hold no binaries in the repository:
+`bin/` and `prebuilds/` are gitignored, and each package's `prepublishOnly`
+runs `scripts/require-staged-binary.mjs`, so publishing an unstaged package
+fails closed instead of shipping a package that resolves to nothing.
+
+The release workflow stages them from the same jobs that gate the release:
+the macOS validate job builds the release daemon and the universal native
+tabs prebuild (`npm run build:ghosttea-native-tabs`), the Windows validate
+job builds `ghosttead.exe`, both upload artifacts, and the publish job runs
+`scripts/stage-published-binaries.mjs` to place them — restoring the
+executable bit that artifact transport drops — before the first
+`npm publish`.
+
+Staging also injects the daemon packages' `os`/`cpu` gates. The committed
+manifests deliberately omit them: npm refuses to install a workspace whose
+gate does not match the development machine, so a committed `os: ["win32"]`
+would break `npm ci` everywhere but Windows. The fields exist only in the
+published manifests — the only place they mean anything — and the
+`prepublishOnly` guard fails any publish where they are missing. The
+post-release smoke proves the gates behave: the right package installs on
+macOS and Windows, and a Linux install skips both and fails closed in the
+resolver.
+
+To stage by hand (for a first manual publish, or a local dry-run), download
+the artifacts from the tag's validate run and stage them the same way:
+
+```sh
+gh run download <run-id> --dir /tmp/ghosttea-staging
+node scripts/stage-published-binaries.mjs /tmp/ghosttea-staging
+```
+
+After every release, the `Published packages smoke` workflow installs the
+published version from the registry on macOS, Windows, and Linux, runs the
+daemon, and loads the addon — the registry serves objects the gate never
+executed, and this keeps "published" and "verified" the same claim.
 
 Development and published Rust builds pin the registry release of
 `truffle-core` 0.7.8. Every crate sharing an application-owned Truffle node
@@ -84,18 +137,25 @@ restores the build check the dry-run is otherwise doing.
 
 Dry-run each npm package with local provenance disabled explicitly. The command
 line flag is intentional: it takes precedence over the manifests'
-`publishConfig.provenance=true` on every supported npm CLI:
+`publishConfig.provenance=true` on every supported npm CLI. The binary
+packages run their `prepublishOnly` staging guard even on a dry run, so stage
+binaries first (see “Binary staging”) or their dry-run fails — which is the
+guard working:
 
 ```sh
 export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
 
 for release_package in \
+  @vibecook/ghosttead-darwin-arm64 \
+  @vibecook/ghosttead-win32-x64 \
+  @vibecook/ghosttea-native-tabs \
   @vibecook/ghosttea-protocol \
   @vibecook/ghosttea-frame \
   @vibecook/ghosttea \
   @vibecook/ghosttea-client \
   @vibecook/ghosttea-electron \
-  @vibecook/ghosttea-react
+  @vibecook/ghosttea-react \
+  @vibecook/ghosttead
 do
   npm publish \
     --dry-run \
@@ -143,12 +203,16 @@ for the first local publish, which has no CI identity:
 export NPM_CONFIG_PROVENANCE=false
 export npm_config_cache=/private/tmp/ghosttea-npm-release-cache
 
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead-darwin-arm64
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead-win32-x64
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-native-tabs
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-protocol
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-frame
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-client
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-electron
 scripts/publish-npm-package-if-missing.sh @vibecook/ghosttea-react
+scripts/publish-npm-package-if-missing.sh @vibecook/ghosttead
 
 unset NPM_CONFIG_PROVENANCE npm_config_cache
 ```
@@ -192,19 +256,23 @@ After the first manual release:
    - Workflow: `publish-release.yml`
    - Environment: `release`
 3. Allow `npm publish` for each npm trusted publisher. With an authenticated
-   npm 12 session, the six npm trust relationships can be created with the
+   npm 12 session, the ten npm trust relationships can be created with the
    following subshell:
 
    ```sh
    (
      set -e
      for release_package in \
+       @vibecook/ghosttead-darwin-arm64 \
+       @vibecook/ghosttead-win32-x64 \
+       @vibecook/ghosttea-native-tabs \
        @vibecook/ghosttea-protocol \
        @vibecook/ghosttea-frame \
        @vibecook/ghosttea \
        @vibecook/ghosttea-client \
        @vibecook/ghosttea-electron \
-       @vibecook/ghosttea-react
+       @vibecook/ghosttea-react \
+       @vibecook/ghosttead
      do
        npm trust github "$release_package" \
          --repository vibecook-dev/ghosttea \
