@@ -3,6 +3,25 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.5.1 - 2026-07-28
+
+### Fixed
+
+- The prebuilt `ghosttead` daemon links harfbuzz statically. 0.5.0's macOS
+  binary linked `/opt/homebrew/opt/harfbuzz/lib/libharfbuzz.0.dylib` and
+  aborted in dyld on any machine without that formula, which is every machine
+  0.5.0 promised would need neither this repository nor a toolchain. The cause
+  was `harfbuzz-sys` probing pkg-config unless `HARFBUZZ_SYS_NO_PKG_CONFIG` is
+  set: the release runner carries harfbuzz, so it linked against a prefix only
+  the builder has, while a developer machine without the formula falls through
+  and links the vendored source. The release now sets that variable on both
+  platforms, so what ships no longer depends on what the runner happens to
+  have installed.
+- The release asserts that the daemon links nothing outside `/System` and
+  `/usr/lib` before publishing it. Running the daemon on the runner that built
+  it cannot catch a missing library that the runner itself supplies, so this
+  gate checks the linkage instead — for every dependency, not only harfbuzz.
+
 ## 0.5.0 - 2026-07-27
 
 ### Added
