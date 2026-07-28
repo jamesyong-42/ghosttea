@@ -4,40 +4,33 @@ on:
   push:
     tags:
       - "v*"
-  # The tag input resumes a release whose tag already exists: v0.5.2 pushed
-  # its crates and then failed publishing npm from a workflow defect, and a
-  # tag cannot move once any registry holds its artifacts. Dispatching with
-  # the tag runs THIS workflow file against that tag's tree; every publish
-  # step skips artifacts a registry already has, so a resume finishes a
-  # partial release rather than repeating it.
-  workflow_dispatch:
+      - "!v*-retry.*"
+  workflow_call:
     inputs:
       tag:
         description: Existing vX.Y.Z release tag to resume
-        required: false
+        required: true
         type: string
 
 permissions:
   contents: read
 
 env:
-  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 concurrency:
-  group: publish-release-${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.ref }}
+  group: publish-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   rust-audit:
-    if: >-
-      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
+    if: startsWith(inputs.tag || github.ref_name, 'v')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -45,15 +38,13 @@ jobs:
       - run: cargo audit
 
   validate:
-    if: >-
-      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
+    if: startsWith(inputs.tag || github.ref_name, 'v')
     runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v6
         with:
@@ -123,9 +114,7 @@ jobs:
   # release gate there, building the Ghostty VT artifact from the pinned source
   # as the desktop workflow does.
   validate-windows:
-    if: >-
-      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
+    if: startsWith(inputs.tag || github.ref_name, 'v')
     runs-on: windows-2022
     timeout-minutes: 60
     defaults:
@@ -134,7 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v6
         with:
@@ -172,8 +161,7 @@ jobs:
       - validate
       - validate-windows
     if: >-
-      ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
+      startsWith(inputs.tag || github.ref_name, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
     # npm provenance requires a GitHub-hosted runner.
     runs-on: macos-15
@@ -185,7 +173,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v6
         with:
@@ -280,8 +268,7 @@ jobs:
   github-release:
     needs: publish
     if: >-
-      ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
+      startsWith(inputs.tag || github.ref_name, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -290,7 +277,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v6
         with:

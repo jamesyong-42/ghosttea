@@ -1,0 +1,36 @@
+name: Resume release
+
+on:
+  push:
+    tags:
+      - "v*-retry.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.target.outputs.release_tag }}
+    steps:
+      - name: Resolve the immutable release tag
+        id: target
+        env:
+          RETRY_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RETRY_TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-retry\.([1-9][0-9]*)$ ]]; then
+            echo "retry tag must be vX.Y.Z-retry.N" >&2
+            exit 1
+          fi
+          echo "release_tag=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: resolve
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      tag: ${{ needs.resolve.outputs.release_tag }}

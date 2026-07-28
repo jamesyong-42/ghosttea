@@ -227,20 +227,24 @@ version; never try to replace a registry version.
 ## Resuming a partial release
 
 A tag never moves once any registry holds its artifacts, so a release that
-failed between registries is finished rather than repeated: dispatch the
-`Publish release` workflow with the tag as its input.
+failed between registries is finished rather than repeated. Create a numbered
+retry tag from the current `main`, after merging the workflow fix:
 
 ```sh
-gh workflow run publish-release.yml -f tag=vX.Y.Z
+git tag -a vX.Y.Z-retry.1 -m "Retry vX.Y.Z release"
+git push origin vX.Y.Z-retry.1
 ```
 
-The dispatch runs the current workflow file — including whatever fix the
-failure needed — against the tag's tree, revalidates it on both platforms,
-and pauses at the `release` environment as usual. Every publish step skips
-artifacts a registry already holds, so only the missing remainder ships.
-v0.5.2 published its crates and then failed npm publishing on a workflow
-defect (npm rejects provenance minted on self-hosted-class runners, and the
-publish job had moved to one); this resume path is how it finished.
+The `Resume release` workflow resolves `vX.Y.Z-retry.N` back to the immutable
+`vX.Y.Z` target and calls the current `Publish release` workflow. The retry
+therefore carries the workflow fix while every checkout, version assertion,
+registry upload, and GitHub release still uses the original release tag's
+tree. The retry itself is a `v*` tag, so it preserves the release environment's
+tag-only deployment rule instead of allowing `main` to publish.
+
+Every publish step skips artifacts a registry already holds, so only the
+missing remainder ships. If the retry itself exposes another workflow defect,
+fix it and increment the retry number; never move either tag.
 
 ## The GitHub release
 
