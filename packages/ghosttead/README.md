@@ -32,8 +32,10 @@ supported targets and the `GHOSTTEAD_BIN` way out.
 ## Bundlers
 
 Resolution walks `node_modules` at runtime. An Electron main process that
-bundles its dependencies should keep this package external, or resolve the
-path at build time and carry it into the bundle.
+bundles its dependencies should keep this package external — the exports map
+carries a `require` condition, so a CommonJS bundle can `require()` it on
+Node 22.12+ — or call `ghostteadPath()` at build time and stage the binary
+beside the bundle, which a packaged application needs to do anyway.
 
 The resolver also tolerates being inlined: when the direct walk finds
 nothing — the platform packages are dependencies of this package, and
