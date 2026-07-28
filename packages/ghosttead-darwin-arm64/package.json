@@ -1,0 +1,29 @@
+{
+  "name": "@vibecook/ghosttead-darwin-arm64",
+  "version": "0.4.0",
+  "description": "Ghosttea terminal daemon binary for macOS on Apple silicon.",
+  "license": "MIT",
+  "author": "James Yong",
+  "preferUnplugged": true,
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git",
+    "directory": "packages/ghosttead-darwin-arm64"
+  },
+  "homepage": "https://github.com/vibecook-dev/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/vibecook-dev/ghosttea/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../scripts/require-staged-binary.mjs bin/ghosttead"
+  }
+}

@@ -48,7 +48,17 @@ const npmPackages = [
   "@vibecook/ghosttea-client",
   "@vibecook/ghosttea-electron",
   "@vibecook/ghosttea-react",
+  "@vibecook/ghosttea-native-tabs",
+  "@vibecook/ghosttead",
 ];
+
+// The daemon platform packages carry only a binary the release workflow
+// stages, so at gate time their tarballs are almost empty — and that is the
+// point of packing them anyway: a manifest mistake in a nearly empty package
+// is caught where every other manifest mistake is. They are never installed
+// into the fixture; the fixture install omits optional dependencies so the
+// resolver's graph resolves offline without them.
+const daemonPlatformPackages = ["@vibecook/ghosttead-darwin-arm64", "@vibecook/ghosttead-win32-x64"];
 
 const rustPackages = [
   "ghosttea-vt-sys",
@@ -114,6 +124,26 @@ try {
     tarballs.set(workspace, join(fixture, packed.filename));
   }
 
+  for (const workspace of daemonPlatformPackages) {
+    const output = runNpm([
+      "pack",
+      "--json",
+      "--cache",
+      cache,
+      "--pack-destination",
+      fixture,
+      "--workspace",
+      workspace,
+    ]);
+    const packResult = JSON.parse(output);
+    const packed = Array.isArray(packResult) ? packResult[0] : packResult.name ? packResult : packResult[workspace];
+    if (!packed || packed.name !== workspace) throw new Error(`npm packed the wrong workspace for ${workspace}`);
+    const paths = new Set(packed.files.map((file) => file.path));
+    for (const required of ["LICENSE", "README.md", "package.json"]) {
+      if (!paths.has(required)) throw new Error(`${workspace} tarball is missing ${required}`);
+    }
+  }
+
   writeFileSync(
     join(fixture, "package.json"),
     JSON.stringify(
@@ -135,6 +165,8 @@ try {
       'import { PROTOCOL_MAJOR } from "@vibecook/ghosttea-protocol";',
       'import { GhostteaAutomationClient as NodeAutomationClient } from "@vibecook/ghosttea-client";',
       'import { GhostteaAutomationClient as ElectronAutomationClient } from "@vibecook/ghosttea-electron/automation";',
+      'import { SUPPORTED_TARGETS, ghostteadPath } from "@vibecook/ghosttead";',
+      'import { addonPath as nativeTabsAddonPath } from "@vibecook/ghosttea-native-tabs";',
       'import { existsSync, readFileSync } from "node:fs";',
       'import { join } from "node:path";',
       'if (typeof ControlClient !== "function" || typeof NodeAutomationClient !== "function" || ElectronAutomationClient !== NodeAutomationClient || FRAME_MAGIC !== 0x31465254 || PROTOCOL_MAJOR !== 1) {',
@@ -145,12 +177,52 @@ try {
       "}",
       'const worker = readFileSync(join("node_modules", "@vibecook/ghosttea-react/dist/terminal-render.worker.js"), "utf8");',
       'if (/^\\s*import\\s/m.test(worker)) throw new Error("Ghosttea render worker is not a self-contained browser artifact");',
+      'if (!SUPPORTED_TARGETS.includes("darwin-arm64") || !SUPPORTED_TARGETS.includes("win32-x64")) {',
+      '  throw new Error("ghosttead lost a supported target");',
+      "}",
+      "// Installed without optional dependencies and without staged binaries,",
+      "// so daemon resolution must fail closed with the diagnosis for this",
+      "// exact state — never a bare module error, never a path to nothing.",
+      "try {",
+      "  ghostteadPath({ env: {} });",
+      '  throw new Error("ghosttead resolved with no platform package installed");',
+      "} catch (error) {",
+      "  const target = `${process.platform}-${process.arch}`;",
+      '  const expected = SUPPORTED_TARGETS.includes(target) ? "optional dependency" : "no prebuilt binary";',
+      "  if (!String(error).includes(expected)) throw error;",
+      "}",
+      'if (process.platform === "darwin") {',
+      "  try {",
+      "    const tabs = nativeTabsAddonPath();",
+      '    if (typeof tabs !== "string" || !existsSync(tabs)) throw new Error(`native tabs addon path is broken: ${tabs}`);',
+      "  } catch (error) {",
+      "    // Legitimate inside the repository: nothing staged a prebuild. The",
+      "    // error must say what produces one.",
+      '    if (!String(error).includes("build:ghosttea-native-tabs")) throw error;',
+      "  }",
+      "} else if (nativeTabsAddonPath() !== null) {",
+      '  throw new Error("native tabs addon path must be null off macOS");',
+      "}",
       'console.log("external npm consumer fixture passed");',
       "",
     ].join("\n"),
   );
+  // `--omit=optional` keeps `@vibecook/ghosttead`'s platform packages out of
+  // the resolution: at gate time this version exists nowhere but these
+  // tarballs, so an offline install that tried to resolve them would fail.
+  // The smoke below asserts the resolver diagnoses exactly that state.
   runNpm(
-    ["install", "--ignore-scripts", "--legacy-peer-deps", "--offline", "--no-audit", "--no-fund", "--cache", cache],
+    [
+      "install",
+      "--ignore-scripts",
+      "--legacy-peer-deps",
+      "--offline",
+      "--omit=optional",
+      "--no-audit",
+      "--no-fund",
+      "--cache",
+      cache,
+    ],
     { cwd: fixture },
   );
   process.stdout.write(run(process.execPath, ["smoke.mjs"], { cwd: fixture }) + "\n");

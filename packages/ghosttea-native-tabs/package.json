@@ -1,0 +1,55 @@
+{
+  "name": "@vibecook/ghosttea-native-tabs",
+  "version": "0.4.0",
+  "description": "Prebuilt macOS native window-tab ordering addon for Electron applications.",
+  "license": "MIT",
+  "author": "James Yong",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "prebuilds",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vibecook-dev/ghosttea.git",
+    "directory": "packages/ghosttea-native-tabs"
+  },
+  "homepage": "https://github.com/vibecook-dev/ghosttea#readme",
+  "bugs": {
+    "url": "https://github.com/vibecook-dev/ghosttea/issues"
+  },
+  "keywords": [
+    "electron",
+    "macos",
+    "appkit",
+    "tabs",
+    "native"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && node ../../scripts/require-staged-binary.mjs prebuilds/ghosttea_native_tabs.node"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

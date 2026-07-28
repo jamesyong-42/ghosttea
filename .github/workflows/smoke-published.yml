@@ -1,0 +1,64 @@
+name: Published packages smoke
+
+# The release gate validates the artifacts it builds. The registry serves
+# different objects: they went through binary staging, `npm pack`, an
+# optionalDependencies split, and a tarball round-trip, and nothing in the
+# gate installs or executes those. This does — on every platform the daemon
+# ships for and one it deliberately does not — so "published" and "verified"
+# stay the same claim.
+
+on:
+  workflow_run:
+    workflows: [Publish release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published version to verify (dist-tag or exact version)
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-published-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Pin the dist-tag to one concrete version so every platform asserts the
+  # same number; asserting "latest" directly would pass whatever the registry
+  # happened to serve while the matrix ran.
+  resolve:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        run: |
+          version="$(npm view "@vibecook/ghosttead@${{ inputs.version || 'latest' }}" version | tail -n 1)"
+          test -n "$version"
+          echo "resolved @vibecook/ghosttead@${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  install:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu is the deliberate negative: no daemon ships for it, and the
+        # resolver failing closed there with a useful message is part of the
+        # published contract.
+        runner: [macos-15, windows-2022, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - run: node scripts/smoke-published.mjs "${{ needs.resolve.outputs.version }}"
