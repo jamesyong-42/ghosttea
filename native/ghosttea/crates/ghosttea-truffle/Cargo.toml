@@ -12,8 +12,8 @@ readme = "README.md"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-ghosttea = { version = "0.5.1", path = "../.." }
-ghosttea-text = { version = "0.5.1", path = "../ghosttea-text" }
+ghosttea = { version = "0.5.2", path = "../.." }
+ghosttea-text = { version = "0.5.2", path = "../ghosttea-text" }
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true
