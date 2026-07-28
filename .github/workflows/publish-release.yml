@@ -54,7 +54,34 @@ jobs:
       # handed over as an artifact from the job that could build and gate it.
       # This job contributes the macOS daemon and the universal native tabs
       # prebuild; `validate-windows` contributes the Windows daemon.
+      #
+      # harfbuzz-sys probes pkg-config unless this is set, and a runner that
+      # happens to carry the Homebrew formula then links the daemon against a
+      # prefix that exists only on the builder. Forcing the vendored source
+      # makes the published binary the same one a developer machine without
+      # that formula already produces.
       - run: cargo build --release --locked --package ghosttead
+        env:
+          HARFBUZZ_SYS_NO_PKG_CONFIG: "1"
+
+      # The variable above is a fix that regresses silently, so assert the
+      # property it buys: a released daemon depends on nothing a consumer has
+      # to install. This gates every -sys crate that could do the same thing,
+      # not only harfbuzz, and it fails on the builder rather than on a user's
+      # machine — which running the daemon here cannot, because the library it
+      # would be missing is the one this runner provides.
+      - name: Require the daemon to link only system libraries
+        run: |
+          set -euo pipefail
+          foreign=$(otool -L target/release/ghosttead \
+            | grep -E '^[[:space:]]' \
+            | grep -vE '^[[:space:]]+(/System/|/usr/lib/)' || true)
+          if [ -n "$foreign" ]; then
+            echo "ghosttead links libraries a consumer would have to install:"
+            echo "$foreign"
+            exit 1
+          fi
+
       - run: npm run build:ghosttea-native-tabs
 
       - uses: actions/upload-artifact@v7
@@ -100,7 +127,12 @@ jobs:
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run ci:desktop
 
+      # Set for the same reason as the macOS build. Nothing on this runner
+      # answers a pkg-config probe today, so the vendored source is already
+      # what gets linked — this keeps that a decision rather than an accident.
       - run: cargo build --release --locked --package ghosttead
+        env:
+          HARFBUZZ_SYS_NO_PKG_CONFIG: "1"
 
       - uses: actions/upload-artifact@v7
         with:
