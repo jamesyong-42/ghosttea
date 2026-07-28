@@ -3,6 +3,26 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.5.0 - 2026-07-27
+
+### Added
+
+- The `ghosttead` daemon ships prebuilt on npm. `@vibecook/ghosttead` resolves
+  the binary for the current platform from `@vibecook/ghosttead-darwin-arm64`
+  or `@vibecook/ghosttead-win32-x64`, honors the `GHOSTTEAD_BIN` override, and
+  fails closed with the reason when it cannot resolve. Desktop consumers no
+  longer need this repository checked out beside them, or a Rust toolchain.
+- The macOS native window-tab ordering addon ships prebuilt as
+  `@vibecook/ghosttea-native-tabs`, one universal (arm64 + x86_64) N-API
+  binary that loads in every Node and Electron. Off macOS its exports return
+  null, which is the contract consumers already code to.
+- `ghosttead --version` prints the release the binary came from — its first
+  and only argument; configuration stays entirely in the environment.
+- A post-publish smoke workflow installs the published version from the
+  registry on macOS, Windows, and Linux, runs the daemon, and loads the
+  addon, so a release is verified as consumers receive it, not only as CI
+  built it.
+
 ## 0.4.0 - 2026-07-25
 
 ### Added
