@@ -4,33 +4,42 @@ on:
   push:
     tags:
       - "v*"
-      - "!v*-retry.*"
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing vX.Y.Z release tag to resume
-        required: true
-        type: string
 
 permissions:
   contents: read
 
-env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-
 concurrency:
-  group: publish-release-${{ inputs.tag || github.ref_name }}
+  group: publish-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.target.outputs.release_tag }}
+    steps:
+      - name: Resolve the immutable release tag
+        id: target
+        env:
+          TRIGGER_TAG: ${{ github.ref_name }}
+        run: |
+          release_tag="$TRIGGER_TAG"
+          if [[ "$TRIGGER_TAG" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-retry\.([1-9][0-9]*)$ ]]; then
+            release_tag="${BASH_REMATCH[1]}"
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
   rust-audit:
-    if: startsWith(inputs.tag || github.ref_name, 'v')
+    needs: resolve
+    if: startsWith(needs.resolve.outputs.release_tag, 'v')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -38,13 +47,16 @@ jobs:
       - run: cargo audit
 
   validate:
-    if: startsWith(inputs.tag || github.ref_name, 'v')
+    needs: resolve
+    if: startsWith(needs.resolve.outputs.release_tag, 'v')
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -114,16 +126,19 @@ jobs:
   # release gate there, building the Ghostty VT artifact from the pinned source
   # as the desktop workflow does.
   validate-windows:
-    if: startsWith(inputs.tag || github.ref_name, 'v')
+    needs: resolve
+    if: startsWith(needs.resolve.outputs.release_tag, 'v')
     runs-on: windows-2022
     timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -157,23 +172,26 @@ jobs:
 
   publish:
     needs:
+      - resolve
       - rust-audit
       - validate
       - validate-windows
     if: >-
-      startsWith(inputs.tag || github.ref_name, 'v') &&
+      startsWith(needs.resolve.outputs.release_tag, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
     # npm provenance requires a GitHub-hosted runner.
     runs-on: macos-15
     timeout-minutes: 45
     environment: release
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -266,18 +284,22 @@ jobs:
   # already cleared that gate, and asking again would stop a completed release
   # behind a second approval.
   github-release:
-    needs: publish
+    needs:
+      - resolve
+      - publish
     if: >-
-      startsWith(inputs.tag || github.ref_name, 'v') &&
+      startsWith(needs.resolve.outputs.release_tag, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.release_tag }}
 
       - uses: actions/setup-node@v6
         with:

@@ -235,12 +235,13 @@ git tag -a vX.Y.Z-retry.1 -m "Retry vX.Y.Z release"
 git push origin vX.Y.Z-retry.1
 ```
 
-The `Resume release` workflow resolves `vX.Y.Z-retry.N` back to the immutable
-`vX.Y.Z` target and calls the current `Publish release` workflow. The retry
-therefore carries the workflow fix while every checkout, version assertion,
-registry upload, and GitHub release still uses the original release tag's
-tree. The retry itself is a `v*` tag, so it preserves the release environment's
-tag-only deployment rule instead of allowing `main` to publish.
+The current `Publish release` workflow resolves `vX.Y.Z-retry.N` back to the
+immutable `vX.Y.Z` target. The retry therefore carries the workflow fix while
+every checkout, version assertion, registry upload, and GitHub release still
+uses the original release tag's tree. Keeping the retry inside the publishing
+workflow also preserves the exact workflow identity trusted by npm and
+crates.io. The retry itself is a `v*` tag, so it preserves the release
+environment's tag-only deployment rule instead of allowing `main` to publish.
 
 Every publish step skips artifacts a registry already holds, so only the
 missing remainder ships. If the retry itself exposes another workflow defect,
