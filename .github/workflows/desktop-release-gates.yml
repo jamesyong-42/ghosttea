@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 45
     env:
       GHOSTTEA_SOAK_SESSIONS: ${{ github.event_name == 'schedule' && '1024' || '256' }}
@@ -43,7 +43,7 @@ jobs:
   # artifact from the pinned source rather than the Apple prebuild, which is
   # also how a Windows contributor works today.
   windows:
-    runs-on: windows-2022
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 60
     defaults:
       run:
@@ -69,7 +69,7 @@ jobs:
       - run: npm run ci:desktop
 
   minimum-rust:
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -79,7 +79,7 @@ jobs:
       - run: cargo check --workspace --all-targets --all-features --locked
 
   dependency-audit:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7

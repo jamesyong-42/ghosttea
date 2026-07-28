@@ -16,7 +16,7 @@ concurrency:
 jobs:
   rust-audit:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -28,7 +28,7 @@ jobs:
 
   validate:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -102,7 +102,7 @@ jobs:
   # as the desktop workflow does.
   validate-windows:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-    runs-on: windows-2022
+    runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 60
     defaults:
       run:
@@ -149,7 +149,7 @@ jobs:
       github.ref_type == 'tag' &&
       startsWith(github.ref_name, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 45
     environment: release
     permissions:
@@ -254,7 +254,7 @@ jobs:
       github.ref_type == 'tag' &&
       startsWith(github.ref_name, 'v') &&
       vars.OIDC_RELEASE_ENABLED == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: write
