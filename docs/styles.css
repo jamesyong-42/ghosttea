@@ -195,7 +195,51 @@ pre {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+}
+
+.vibecook-lockup,
+.ghosttea-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  white-space: nowrap;
+}
+
+.vibecook-lockup strong,
+.ghosttea-lockup strong {
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: -0.035em;
+}
+
+.vibecook-mark {
+  display: inline-flex;
+  height: 16px;
+  align-items: center;
+  gap: 4px;
+}
+
+.vibecook-primitive {
+  display: block;
+  width: 12px;
+  height: 12px;
+  background: currentColor;
+}
+
+.vibecook-circle {
+  border-radius: 50%;
+}
+
+.vibecook-triangle {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.brand-divider {
+  width: 1px;
+  height: 30px;
+  flex: 0 0 1px;
+  background: var(--line-strong);
 }
 
 .ghosttea-mark {
@@ -2031,6 +2075,12 @@ pre {
   }
 }
 
+@media (max-width: 940px) {
+  .vibecook-lockup strong {
+    display: none;
+  }
+}
+
 @media (max-width: 820px) {
   .nav-toggle {
     display: grid;
@@ -2229,6 +2279,27 @@ pre {
 
   .nav {
     gap: 12px;
+  }
+
+  .vibecook-mark {
+    gap: 3px;
+  }
+
+  .vibecook-primitive {
+    width: 10px;
+    height: 10px;
+  }
+
+  .brand-divider {
+    height: 26px;
+  }
+
+  .ghosttea-lockup {
+    gap: 7px;
+  }
+
+  .ghosttea-lockup strong {
+    font-size: 14px;
   }
 
   .brand-type strong {
