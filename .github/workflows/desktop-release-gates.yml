@@ -63,6 +63,17 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # The FFI gate compiles its C11 header probe with clang, which the
+      # GitHub-hosted image exposed on PATH. This image ships LLVM 20 under
+      # C:\Program Files\LLVM but leaves it off PATH and without the `clang`
+      # entry point on disk. clang++.exe is the same driver binary selecting
+      # its mode from argv[0], so a copy named clang.exe is the C driver.
+      - name: Put clang on PATH
+        run: |
+          llvm='/c/Program Files/LLVM/bin'
+          [ -x "$llvm/clang.exe" ] || cp "$llvm/clang++.exe" "$llvm/clang.exe"
+          echo "$llvm" >> "$GITHUB_PATH"
+
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
