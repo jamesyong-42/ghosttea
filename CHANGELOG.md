@@ -3,6 +3,24 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.5.2 - 2026-07-28
+
+### Fixed
+
+- `@vibecook/ghosttead` works when a bundler inlines it. The resolver's
+  direct `node_modules` walk runs from wherever the code actually sits, so a
+  bundle under pnpm's layout found no platform package — and the failure was
+  misreported as a pruned optional dependency. Resolution now recovers by
+  locating the installed `@vibecook/ghosttead` from the bundle's own
+  position and resolving the platform package from that directory's real
+  path; only when the package itself is unreachable does it fail, naming
+  bundling as the cause and `external` and `GHOSTTEAD_BIN` as the ways out.
+- `@vibecook/ghosttead` and `@vibecook/ghosttea-native-tabs` can be
+  `require()`d. Both packages exported only an `import` condition, so a
+  CommonJS Electron main bundle could not consume them even when marked
+  external. Their exports now carry a `require` condition for the same ESM
+  module, which Node 22.12+ loads natively.
+
 ## 0.5.1 - 2026-07-28
 
 ### Fixed
