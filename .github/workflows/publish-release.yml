@@ -4,22 +4,40 @@ on:
   push:
     tags:
       - "v*"
+  # The tag input resumes a release whose tag already exists: v0.5.2 pushed
+  # its crates and then failed publishing npm from a workflow defect, and a
+  # tag cannot move once any registry holds its artifacts. Dispatching with
+  # the tag runs THIS workflow file against that tag's tree; every publish
+  # step skips artifacts a registry already has, so a resume finishes a
+  # partial release rather than repeating it.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z release tag to resume
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+
 concurrency:
-  group: publish-release-${{ github.ref }}
+  group: publish-release-${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   rust-audit:
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: >-
+      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -27,11 +45,15 @@ jobs:
       - run: cargo audit
 
   validate:
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: >-
+      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -43,7 +65,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Require the package version to match the tag
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+        run: test "v$(node -p "require('./package.json').version")" = "$RELEASE_TAG"
 
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
@@ -101,7 +123,9 @@ jobs:
   # release gate there, building the Ghostty VT artifact from the pinned source
   # as the desktop workflow does.
   validate-windows:
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    if: >-
+      (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))
     runs-on: blacksmith-4vcpu-windows-2025
     timeout-minutes: 60
     defaults:
@@ -109,6 +133,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -129,7 +155,7 @@ jobs:
           echo "$llvm" >> "$GITHUB_PATH"
 
       - name: Require the package version to match the tag
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+        run: test "v$(node -p "require('./package.json').version")" = "$RELEASE_TAG"
 
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
@@ -155,10 +181,14 @@ jobs:
       - validate
       - validate-windows
     if: >-
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v') &&
+      ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
       vars.OIDC_RELEASE_ENABLED == 'true'
-    runs-on: blacksmith-6vcpu-macos-15
+    # npm refuses provenance attestations minted anywhere but GitHub-hosted
+    # runners, and Blacksmith registers as self-hosted — v0.5.2's first
+    # publish attempt died on exactly that. This job spends its time on
+    # registry round-trips, so a faster runner buys nothing here anyway.
+    runs-on: macos-15
     timeout-minutes: 45
     environment: release
     permissions:
@@ -166,6 +196,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -176,7 +208,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Require the package version to match the tag
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+        run: test "v$(node -p "require('./package.json').version")" = "$RELEASE_TAG"
 
       - run: npm ci --ignore-scripts
       - run: npm run build:sdk
@@ -260,8 +292,8 @@ jobs:
   github-release:
     needs: publish
     if: >-
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v') &&
+      ((github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag, 'v'))) &&
       vars.OIDC_RELEASE_ENABLED == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
@@ -269,6 +301,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -279,4 +313,4 @@ jobs:
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/create-release-if-missing.sh "$GITHUB_REF_NAME"
+        run: scripts/create-release-if-missing.sh "$RELEASE_TAG"
