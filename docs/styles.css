@@ -198,7 +198,6 @@ pre {
   gap: 14px;
 }
 
-.vibecook-lockup,
 .ghosttea-lockup {
   display: inline-flex;
   align-items: center;
@@ -206,7 +205,6 @@ pre {
   white-space: nowrap;
 }
 
-.vibecook-lockup strong,
 .ghosttea-lockup strong {
   font-size: 15px;
   font-weight: 680;
@@ -248,6 +246,11 @@ pre {
   color: var(--ink);
   -webkit-mask: url("assets/logos/ghosttea-mark.svg") center / contain no-repeat;
   mask: url("assets/logos/ghosttea-mark.svg") center / contain no-repeat;
+}
+
+.ghosttea-mark-outline {
+  -webkit-mask-image: url("assets/logos/ghosttea-mark-outline.svg");
+  mask-image: url("assets/logos/ghosttea-mark-outline.svg");
 }
 
 .product-brand-mark {
@@ -2072,12 +2075,6 @@ pre {
   .docs-layout {
     gap: 55px;
     grid-template-columns: 165px minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 940px) {
-  .vibecook-lockup strong {
-    display: none;
   }
 }
 
