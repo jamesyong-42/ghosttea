@@ -14,6 +14,22 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
   --paper: #fafaf7;
@@ -540,6 +556,20 @@ pre {
 /* Cross-platform product visualization */
 
 .platform-showcase {
+  --ghostty-bg: #282c34;
+  --ghostty-fg: #ffffff;
+  --ghostty-black: #1d1f21;
+  --ghostty-red: #cc6666;
+  --ghostty-green: #b5bd68;
+  --ghostty-yellow: #f0c674;
+  --ghostty-blue: #81a2be;
+  --ghostty-magenta: #b294bb;
+  --ghostty-cyan: #8abeb7;
+  --ghostty-white: #c5c8c6;
+  --ghostty-bright-black: #666666;
+  --ghostty-bright-green: #b9ca4a;
+  --ghostty-bright-blue: #7aa6da;
+  --ghostty-bright-cyan: #70c0b1;
   position: relative;
   margin: 0;
   border: 1px solid var(--ink);
@@ -598,9 +628,11 @@ pre {
   position: absolute;
   z-index: 2;
   overflow: hidden;
-  border: 1px solid #4b4b46;
-  background: #111110;
-  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+  border: 1px solid #4b515d;
+  background: var(--ghostty-bg);
+  box-shadow:
+    0 24px 50px rgba(0, 0, 0, 0.48),
+    inset 0 1px rgba(255, 255, 255, 0.05);
   animation: device-arrival 700ms cubic-bezier(0.16, 0.85, 0.26, 1) both;
 }
 
@@ -609,6 +641,7 @@ pre {
   left: 24px;
   width: 88%;
   height: 336px;
+  border-radius: 10px;
 }
 
 .windows-window {
@@ -616,6 +649,7 @@ pre {
   bottom: 48px;
   width: 72%;
   height: 292px;
+  border-radius: 8px;
   animation-delay: 110ms;
 }
 
@@ -624,10 +658,10 @@ pre {
   display: flex;
   height: 34px;
   align-items: center;
-  border-bottom: 1px solid #343430;
-  background: #181817;
-  color: #8f8f88;
-  font-family: var(--mono);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--ghostty-bg);
+  color: var(--ghostty-white);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 8px;
 }
 
@@ -646,8 +680,22 @@ pre {
   display: block;
   width: 8px;
   height: 8px;
-  border: 1px solid #6c6c66;
   border-radius: 50%;
+}
+
+.traffic-lights i:nth-child(1) {
+  background: #ff5f57;
+  box-shadow: inset 0 0 0 0.5px #e0443e;
+}
+
+.traffic-lights i:nth-child(2) {
+  background: #febc2e;
+  box-shadow: inset 0 0 0 0.5px #d89e24;
+}
+
+.traffic-lights i:nth-child(3) {
+  background: #28c840;
+  box-shadow: inset 0 0 0 0.5px #1aab29;
 }
 
 .window-spacer {
@@ -656,6 +704,7 @@ pre {
 
 .windows-titlebar {
   padding-left: 8px;
+  background: #21252b;
 }
 
 .windows-tab {
@@ -664,10 +713,10 @@ pre {
   align-items: center;
   gap: 8px;
   padding-inline: 10px;
-  border: 1px solid #343430;
+  border: 1px solid #3e4451;
   border-bottom: 0;
-  background: #111110;
-  color: #c4c4bd;
+  background: var(--ghostty-bg);
+  color: var(--ghostty-white);
 }
 
 .windows-tab b {
@@ -676,24 +725,28 @@ pre {
 
 .windows-add {
   padding-left: 9px;
-  color: #8f8f88;
+  color: #abb2bf;
 }
 
 .windows-controls {
   margin-left: auto;
   padding-right: 9px;
-  color: #8f8f88;
+  color: #abb2bf;
   letter-spacing: 0.04em;
 }
 
 .terminal-screen {
   height: calc(100% - 34px);
-  padding: 16px 18px 42px;
-  background: #111110;
-  color: #b8b8b1;
-  font-family: var(--mono);
+  padding: 12px 13px 42px;
+  background: var(--ghostty-bg);
+  color: var(--ghostty-fg);
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
-  line-height: 1.7;
+  font-feature-settings: "calt" 1;
+  font-variant-ligatures: contextual common-ligatures;
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
 .terminal-screen p {
@@ -704,46 +757,50 @@ pre {
 .terminal-heading {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 16px;
-  padding-bottom: 9px;
-  border-bottom: 1px solid #343430;
-  color: #74746e;
-  font-size: 7px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  margin-bottom: 13px;
+  color: var(--ghostty-bright-black);
+  font-size: 7.5px;
 }
 
 .terminal-gap {
   margin-top: 12px !important;
 }
 
-.terminal-prompt,
-.terminal-user,
+.terminal-prompt {
+  color: var(--ghostty-bright-green);
+  font-weight: 700;
+}
+
+.terminal-user {
+  color: var(--ghostty-bright-blue);
+  font-weight: 700;
+}
+
 .terminal-bright {
-  color: #fafaf7;
+  color: var(--ghostty-fg);
 }
 
 .terminal-muted {
-  color: #74746e;
+  color: var(--ghostty-bright-black);
 }
 
 .terminal-step {
-  color: #8f8f88;
+  color: var(--ghostty-cyan);
 }
 
 .terminal-ok {
-  color: #fafaf7;
-  font-weight: 750;
+  color: var(--ghostty-green);
+  font-weight: 700;
 }
 
 .terminal-cursor {
   display: inline-block;
   width: 6px;
-  height: 12px;
+  height: 11px;
   margin-left: 5px;
   transform: translateY(2px);
-  background: #fafaf7;
-  animation: cursor-blink 1.1s steps(2, start) infinite;
+  background: var(--ghostty-fg);
+  animation: cursor-blink 1.15s steps(2, start) infinite;
 }
 
 .terminal-screen-compact {
@@ -793,7 +850,7 @@ pre {
   overflow: hidden;
   border: 1px solid #272724;
   border-radius: 20px;
-  background: #111110;
+  background: var(--ghostty-bg);
 }
 
 .phone-status {
@@ -802,8 +859,8 @@ pre {
   align-items: center;
   justify-content: space-between;
   padding-inline: 10px;
-  color: #fafaf7;
-  font-family: var(--mono);
+  color: var(--ghostty-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   font-size: 5px;
 }
 
@@ -819,8 +876,9 @@ pre {
   height: 34px;
   align-items: center;
   padding-inline: 10px;
-  border-bottom: 1px solid #343430;
-  color: #fafaf7;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--ghostty-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   font-size: 7px;
   grid-template-columns: 23px 1fr 23px;
   text-align: center;
@@ -841,7 +899,7 @@ pre {
   height: calc(100% - 59px);
   padding: 13px 9px 45px;
   font-size: 5.7px;
-  line-height: 1.8;
+  line-height: 1.55;
 }
 
 .phone-terminal .terminal-heading {
