@@ -3,13 +3,16 @@ use std::{
     io::{Read, Write},
     path::Path,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Condvar, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 #[cfg(windows)]
 mod process_tree;
@@ -303,10 +306,42 @@ pub struct SessionSummary {
     pub activity: SessionActivity,
 }
 
+/// Wakes the termination escalator the moment the session concludes, so each
+/// grace period lasts only as long as the child actually needs.
+struct ExitLatch {
+    exited: Mutex<bool>,
+    condvar: Condvar,
+}
+
+impl ExitLatch {
+    fn new() -> Self {
+        Self {
+            exited: Mutex::new(false),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn notify(&self) {
+        *self.exited.lock().unwrap() = true;
+        self.condvar.notify_all();
+    }
+
+    /// Wait until the session concludes or the timeout lapses. Returns whether
+    /// the session has concluded.
+    fn wait_timeout(&self, timeout: Duration) -> bool {
+        let (exited, _) = self
+            .condvar
+            .wait_timeout_while(self.exited.lock().unwrap(), timeout, |exited| !*exited)
+            .unwrap();
+        *exited
+    }
+}
+
 pub struct Session {
     summary: Mutex<SessionSummary>,
     created_at_ms: u64,
     process: PtyProcess,
+    exit_latch: ExitLatch,
     model: Mutex<TerminalModel>,
     model_operation: Mutex<()>,
     exited: AtomicBool,
@@ -348,6 +383,12 @@ struct PtyProcess {
     /// keeps no copy.
     #[cfg(unix)]
     pid: Option<u32>,
+    /// Write end of the reader's shutdown pipe. Termination's last resort:
+    /// a surviving process that still holds the slave (an orphaned background
+    /// job, a daemon that kept its stdio) would otherwise keep the reader from
+    /// ever seeing end of file, and the session from ever concluding.
+    #[cfg(unix)]
+    reader_shutdown: Option<OwnedFd>,
     /// Owns the session's whole process tree. `None` when the job could not be
     /// created, which leaves termination on the direct child alone.
     #[cfg(windows)]
@@ -373,6 +414,12 @@ const EXIT_DRAIN: Duration = Duration::from_millis(150);
 /// interrupt to `Child::kill`, so it has no intermediate step to wait out.
 #[cfg(unix)]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
+/// Final grace between the SIGKILL sweep and forcing the reader shut. The
+/// signals cover the root and foreground process groups, but a process outside
+/// both that keeps the slave open would otherwise hold the reader — and with
+/// it the session's exit accounting — forever.
+#[cfg(unix)]
+const FORCE_EOF_GRACE: Duration = Duration::from_secs(1);
 
 impl PtyProcess {
     fn write(&self, bytes: &[u8]) -> Result<()> {
@@ -457,14 +504,37 @@ impl PtyProcess {
     ) -> SessionActivity {
         SessionActivity::unsupported(observed_at_ms)
     }
+
+    /// The process group currently reading the terminal, when it differs from
+    /// the root group termination already signals.
+    #[cfg(unix)]
+    fn foreground_pgid(&self) -> Option<i32> {
+        self.master
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|master| master.process_group_leader())
+    }
+
+    /// Force the poll-based reader to end as though the PTY reached end of
+    /// file. A no-op when the master fd could not be duplicated at spawn and
+    /// the session fell back to a blocking reader.
+    #[cfg(unix)]
+    fn force_reader_shutdown(&self) {
+        if let Some(fd) = &self.reader_shutdown {
+            let byte = [1_u8];
+            let _ = unsafe { libc::write(fd.as_raw_fd(), byte.as_ptr().cast(), 1) };
+        }
+    }
 }
 
 #[cfg(unix)]
-fn signal_process_group(pid: Option<u32>, signal: libc::c_int) -> Result<()> {
-    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+fn signal_pgid(pgid: Option<i32>, signal: libc::c_int) -> Result<()> {
+    // pgid 1 or below would address init or every process the user owns.
+    let Some(pgid) = pgid.filter(|pgid| *pgid > 1) else {
         return Ok(());
     };
-    let result = unsafe { libc::kill(-pid, signal) };
+    let result = unsafe { libc::kill(-pgid, signal) };
     if result == 0 {
         return Ok(());
     }
@@ -473,6 +543,107 @@ fn signal_process_group(pid: Option<u32>, signal: libc::c_int) -> Result<()> {
         Ok(())
     } else {
         Err(error.into())
+    }
+}
+
+/// Where the reader thread takes PTY output from.
+///
+/// Unix sessions poll a duplicate of the master alongside a shutdown pipe so
+/// termination can force end of file; everywhere else (and on the rare Unix
+/// host where the master exposes no fd) the reader blocks on the
+/// `portable-pty` reader and ends when the platform closes the pipe.
+enum ReaderSource {
+    Blocking(Box<dyn Read + Send>),
+    #[cfg(unix)]
+    Polled {
+        master: OwnedFd,
+        shutdown: OwnedFd,
+    },
+}
+
+#[cfg(unix)]
+fn unix_reader_source(master: &(dyn MasterPty + Send)) -> Result<(ReaderSource, Option<OwnedFd>)> {
+    let Some(fd) = master.as_raw_fd() else {
+        return Ok((ReaderSource::Blocking(master.try_clone_reader()?), None));
+    };
+    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return Ok((ReaderSource::Blocking(master.try_clone_reader()?), None));
+    }
+    let master = unsafe { OwnedFd::from_raw_fd(duplicated) };
+    let mut pipe_fds = [0_i32; 2];
+    if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("create reader shutdown pipe");
+    }
+    let (shutdown_rx, shutdown_tx) = unsafe {
+        (
+            OwnedFd::from_raw_fd(pipe_fds[0]),
+            OwnedFd::from_raw_fd(pipe_fds[1]),
+        )
+    };
+    for fd in [&shutdown_rx, &shutdown_tx] {
+        unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    Ok((
+        ReaderSource::Polled {
+            master,
+            shutdown: shutdown_rx,
+        },
+        Some(shutdown_tx),
+    ))
+}
+
+/// Read PTY output until end of file, an unrecoverable error, or a byte on the
+/// shutdown pipe. The master fd stays blocking; poll gates every read, so a
+/// read never blocks without data.
+#[cfg(unix)]
+fn polled_read_loop(master: &OwnedFd, shutdown: &OwnedFd, output_tx: &mpsc::SyncSender<Vec<u8>>) {
+    let mut bytes = [0_u8; 16 * 1024];
+    loop {
+        let mut fds = [
+            libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: shutdown.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if ready < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return;
+        }
+        // Shutdown wins over pending output: it only fires seconds after a
+        // termination the client already observed, and a survivor that keeps
+        // writing must not be able to hold the reader open by doing so.
+        if fds[1].revents != 0 {
+            return;
+        }
+        if fds[0].revents != 0 {
+            let count =
+                unsafe { libc::read(master.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // Linux reports EIO once every slave has gone.
+                return;
+            }
+            if count == 0 {
+                // BSD and macOS report end of file instead.
+                return;
+            }
+            if output_tx.send(bytes[..count as usize].to_vec()).is_err() {
+                return;
+            }
+        }
     }
 }
 
@@ -652,7 +823,10 @@ impl Session {
             }
         });
         drop(pair.slave);
-        let reader = pair.master.try_clone_reader()?;
+        #[cfg(unix)]
+        let (reader_source, reader_shutdown) = unix_reader_source(pair.master.as_ref())?;
+        #[cfg(not(unix))]
+        let reader_source = ReaderSource::Blocking(pair.master.try_clone_reader()?);
         let writer = pair.master.take_writer()?;
         let (input_tx, input_rx) = mpsc::sync_channel(1024);
         let id = Uuid::new_v4().to_string();
@@ -703,9 +877,12 @@ impl Session {
                 child: Mutex::new(child),
                 #[cfg(unix)]
                 pid,
+                #[cfg(unix)]
+                reader_shutdown,
                 #[cfg(windows)]
                 tree: process_tree,
             },
+            exit_latch: ExitLatch::new(),
             model: Mutex::new(model),
             model_operation: Mutex::new(()),
             exited: AtomicBool::new(false),
@@ -726,7 +903,7 @@ impl Session {
         Self::start_input_actor(&session, input_rx);
         #[cfg(windows)]
         Self::start_exit_watcher(&session, exit_handle);
-        Self::start_reader(&session, reader);
+        Self::start_reader(&session, reader_source);
         Ok(session)
     }
 
@@ -827,22 +1004,28 @@ impl Session {
             .expect("PTY exit watcher");
     }
 
-    fn start_reader(session: &Arc<Self>, mut reader: Box<dyn Read + Send>) {
+    fn start_reader(session: &Arc<Self>, source: ReaderSource) {
         const FRAME_INTERVAL: Duration = Duration::from_millis(8);
         const MAX_BATCH_BYTES: usize = 256 * 1024;
         let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(32);
         let reader_id = session.id();
         std::thread::Builder::new()
             .name(format!("pty-read-{reader_id}"))
-            .spawn(move || {
-                let mut bytes = [0_u8; 16 * 1024];
-                while let Ok(count) = reader.read(&mut bytes) {
-                    if count == 0 {
-                        break;
+            .spawn(move || match source {
+                ReaderSource::Blocking(mut reader) => {
+                    let mut bytes = [0_u8; 16 * 1024];
+                    while let Ok(count) = reader.read(&mut bytes) {
+                        if count == 0 {
+                            break;
+                        }
+                        if output_tx.send(bytes[..count].to_vec()).is_err() {
+                            break;
+                        }
                     }
-                    if output_tx.send(bytes[..count].to_vec()).is_err() {
-                        break;
-                    }
+                }
+                #[cfg(unix)]
+                ReaderSource::Polled { master, shutdown } => {
+                    polled_read_loop(&master, &shutdown, &output_tx);
                 }
             })
             .expect("PTY read thread");
@@ -880,6 +1063,7 @@ impl Session {
                     }
                 }
                 session.exited.store(true, Ordering::Release);
+                session.exit_latch.notify();
                 // Wake the input actor even when no more user input will arrive.
                 // The actor only holds a Weak reference while blocked, so this
                 // message is lifecycle coordination rather than an ownership
@@ -960,6 +1144,9 @@ impl Session {
 
     pub fn id(&self) -> String {
         self.summary.lock().unwrap().id.clone()
+    }
+    pub fn owner_id(&self) -> Option<String> {
+        self.summary.lock().unwrap().owner_id.clone()
     }
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
@@ -1559,56 +1746,67 @@ impl Session {
         if let Err(error) = thread::Builder::new()
             .name(format!("pty-terminate-{}", session.id()))
             .spawn(move || {
-                thread::sleep(INTERRUPT_GRACE);
+                // Each wait returns the moment the session concludes, so the
+                // escalator never outlives the child by more than one grace.
+                if session.exit_latch.wait_timeout(INTERRUPT_GRACE) {
+                    return;
+                }
                 #[cfg(unix)]
                 {
-                    if !session.has_exited()
-                        && let Err(error) = signal_process_group(session.process.pid, libc::SIGTERM)
-                    {
-                        eprintln!(
-                            "[ghosttea] failed to terminate process group {}: {error:#}",
-                            session.id()
-                        );
+                    // Signal the foreground group alongside the root group:
+                    // a full-screen program that swallowed the interrupt sits
+                    // in its own group, which signalling the root would miss.
+                    let root = session.process.pid.and_then(|pid| i32::try_from(pid).ok());
+                    let sweep = |signal: libc::c_int, step: &str| {
+                        let foreground = session
+                            .process
+                            .foreground_pgid()
+                            .filter(|foreground| Some(*foreground) != root);
+                        for pgid in [root, foreground].into_iter().flatten() {
+                            if let Err(error) = signal_pgid(Some(pgid), signal) {
+                                eprintln!(
+                                    "[ghosttea] failed to {step} process group {pgid} for {}: {error:#}",
+                                    session.id()
+                                );
+                            }
+                        }
+                    };
+                    sweep(libc::SIGTERM, "terminate");
+                    if session.exit_latch.wait_timeout(TERMINATE_GRACE) {
+                        return;
                     }
-                    if !session.has_exited() {
-                        thread::sleep(TERMINATE_GRACE);
+                    sweep(libc::SIGKILL, "sweep");
+                    if session.exit_latch.wait_timeout(FORCE_EOF_GRACE) {
+                        return;
                     }
-                    if !session.has_exited()
-                        && let Err(error) = signal_process_group(session.process.pid, libc::SIGKILL)
-                    {
-                        eprintln!(
-                            "[ghosttea] failed to sweep process group {}: {error:#}",
-                            session.id()
-                        );
-                    }
+                    // Something outside both signalled groups still holds the
+                    // slave. It survives — exactly as it would survive its
+                    // terminal closing — but the session must still conclude.
+                    session.process.force_reader_shutdown();
                 }
                 #[cfg(windows)]
                 {
                     // The interrupt above is this platform's graceful step, so
                     // there is no second signal to wait out before sweeping.
-                    if !session.has_exited() {
-                        match &session.process.tree {
-                            // Reaches whatever the session started, which
-                            // `Child::kill` on its own would leave running.
-                            Some(tree) => {
-                                if let Err(error) = tree.terminate() {
-                                    eprintln!(
-                                        "[ghosttea] failed to sweep process tree {}: {error:#}",
-                                        session.id()
-                                    );
-                                }
+                    match &session.process.tree {
+                        // Reaches whatever the session started, which
+                        // `Child::kill` on its own would leave running.
+                        Some(tree) => {
+                            if let Err(error) = tree.terminate() {
+                                eprintln!(
+                                    "[ghosttea] failed to sweep process tree {}: {error:#}",
+                                    session.id()
+                                );
                             }
-                            None => {
-                                let _ = session.process.child.lock().unwrap().kill();
-                            }
+                        }
+                        None => {
+                            let _ = session.process.child.lock().unwrap().kill();
                         }
                     }
                 }
                 #[cfg(not(any(unix, windows)))]
                 {
-                    if !session.has_exited() {
-                        let _ = session.process.child.lock().unwrap().kill();
-                    }
+                    let _ = session.process.child.lock().unwrap().kill();
                 }
             })
         {
@@ -1794,6 +1992,62 @@ mod tests {
             classify_process_group_activity(ResolvedProgramKind::Unknown, Some(10), Some(20)),
             SessionActivityKind::ForegroundJob
         );
+    }
+
+    /// An interactive bash ignores SIGTERM, and a `sleep 30 &` it starts sits
+    /// in its own process group — outside both groups the sweep signals — while
+    /// keeping the slave side of the PTY open. Without the forced reader
+    /// shutdown the reader never reaches end of file and this session never
+    /// concludes; the test then times out instead of observing an exit.
+    #[cfg(unix)]
+    #[test]
+    fn terminate_concludes_even_when_background_children_hold_the_pty() {
+        if !Path::new("/bin/bash").exists() {
+            eprintln!("skipping: /bin/bash unavailable");
+            return;
+        }
+        let frames = FrameHub::new(8);
+        let (exited_tx, exited_rx) = mpsc::channel();
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/bash".into(),
+                args: vec!["--norc".into(), "--noprofile".into(), "-i".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::TerminateWithApp,
+                program_kind: SessionProgramKind::InteractiveShell,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _, _| {
+                let _ = exited_tx.send(());
+            }),
+        )
+        .unwrap();
+        let view_id = "background-holder-view";
+        let client_id = "background-holder-client";
+        let attachment_epoch = session.attach_view(view_id, client_id).unwrap();
+        session
+            .send_text(
+                view_id,
+                client_id,
+                attachment_epoch,
+                1,
+                "sleep 30 &\n".into(),
+            )
+            .unwrap();
+        // Give the shell time to fork the job into its own process group.
+        thread::sleep(Duration::from_millis(500));
+        session.terminate(TerminationSource::User).unwrap();
+        exited_rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("session did not conclude while a background child held the pty");
     }
 
     #[cfg(unix)]

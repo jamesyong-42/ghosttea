@@ -35,9 +35,14 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 7;
+const CONTROL_PROTOCOL_MINOR: u16 = 8;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
+const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
+/// How long an accepted connection may take to present its token before the
+/// daemon reclaims the task and socket.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn client_accepts_event(event: &Value, protocol_minor: u16) -> bool {
     event.get("type").and_then(Value::as_str) != Some("session-activity-changed")
@@ -467,7 +472,7 @@ impl TerminalService {
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
         let frame_hub = FrameHub::new(32);
-        let (event_tx, _) = broadcast::channel::<Value>(64);
+        let (event_tx, _) = broadcast::channel::<Value>(EVENT_CHANNEL_CAPACITY);
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
         let activity_registry = Arc::clone(&registry);
         let _activity_sampler_task = TaskGuard(tokio::spawn(async move {
@@ -608,6 +613,19 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
     write_packet(stream, b"ok").await
 }
 
+/// Commands that dial the mesh and may block on the network for as long as a
+/// peer takes to answer. They run off the connection loop so input queued
+/// behind them on the same socket stays latency-clean. None of them touch the
+/// connection's view-attachment bookkeeping.
+fn runs_off_connection_loop(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ListRemoteHosts
+            | Command::ListRemoteSessions { .. }
+            | Command::OpenRemoteSession { .. }
+    )
+}
+
 async fn serve_control(
     mut listener: ipc::Listener,
     token: String,
@@ -618,14 +636,26 @@ async fn serve_control(
         let token = token.clone();
         let context = context.clone();
         tokio::spawn(async move {
-            if authenticate(&mut socket, &token).await.is_err() {
-                return;
+            match tokio::time::timeout(AUTH_TIMEOUT, authenticate(&mut socket, &token)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => return,
             }
             let mut events = context.event_tx.subscribe();
             let (mut reader, mut writer) = tokio::io::split(socket);
             let client_id = uuid::Uuid::new_v4().to_string();
             let mut attached = HashMap::<(String, String), u64>::new();
             let mut client_protocol_minor = 0_u16;
+            // One writer task serializes packets from the connection loop and
+            // from any commands running off it; clients pair responses to
+            // requests by identifier, not by arrival order.
+            let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+            let _writer_task = TaskGuard(tokio::spawn(async move {
+                while let Some(bytes) = outbound_rx.recv().await {
+                    if write_packet(&mut writer, &bytes).await.is_err() {
+                        break;
+                    }
+                }
+            }));
             loop {
                 tokio::select! {
                     packet = read_packet(&mut reader, MAX_CONTROL_BYTES) => {
@@ -637,17 +667,45 @@ async fn serve_control(
                             client_protocol_minor = (*protocol_minor).min(CONTROL_PROTOCOL_MINOR);
                         }
                         let notification = command.request_id == 0;
+                        if runs_off_connection_loop(&command.command) {
+                            let context = context.clone();
+                            let client_id = client_id.clone();
+                            let outbound = outbound_tx.clone();
+                            tokio::spawn(async move {
+                                let mut detached_bookkeeping = HashMap::new();
+                                let response = handle_command(command, &client_id, &mut detached_bookkeeping, &context).await;
+                                if !notification {
+                                    let _ = outbound.send(serde_json::to_vec(&response).unwrap()).await;
+                                }
+                            });
+                            continue;
+                        }
                         let response = handle_command(command, &client_id, &mut attached, &context).await;
-                        if !notification && write_packet(&mut writer, &serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
+                        if !notification && outbound_tx.send(serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
                     }
                     event = events.recv() => match event {
                         Ok(event) => {
                             if !client_accepts_event(&event, client_protocol_minor) {
                                 continue;
                             }
-                            if write_packet(&mut writer, &serde_json::to_vec(&event).unwrap()).await.is_err() { break; }
+                            if outbound_tx.send(serde_json::to_vec(&event).unwrap()).await.is_err() { break; }
                         }
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            // Never drop events silently: a missed
+                            // session-exited would leave a client showing a
+                            // ghost session forever. Clients that understand
+                            // the notice re-list sessions to resynchronize.
+                            if client_protocol_minor < EVENTS_LOST_PROTOCOL_MINOR {
+                                continue;
+                            }
+                            let notice = serde_json::to_vec(&json!({
+                                "requestId": 0,
+                                "type": "events-lost",
+                                "skipped": skipped,
+                            }))
+                            .unwrap();
+                            if outbound_tx.send(notice).await.is_err() { break; }
+                        }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
@@ -692,11 +750,8 @@ async fn handle_command(
             Command::CreateSession { options } => {
                 validate_grid(options.cols, options.rows)?;
                 validate_owner(options.owner_id.as_deref())?;
-                let owner_lifecycle = context.closed_owners.lock().await;
-                if options
-                    .owner_id
-                    .as_ref()
-                    .is_some_and(|owner| owner_lifecycle.contains(owner))
+                if let Some(owner) = options.owner_id.as_deref()
+                    && context.closed_owners.lock().await.contains(owner)
                 {
                     bail!("session owner is already closed");
                 }
@@ -719,13 +774,24 @@ async fn handle_command(
                         "exitOutcome": exit.exit_outcome,
                     }));
                 });
-                let session = Session::spawn_with_private_env_prefixes(
-                    options,
-                    context.frames.clone(),
-                    Arc::clone(&context.text_engine),
-                    &context.private_env_prefixes,
-                    on_exit,
-                )?;
+                // openpty plus fork/exec is blocking work; keep it off the
+                // async workers so concurrent creates don't stall the runtime.
+                let session = {
+                    let frames = context.frames.clone();
+                    let text_engine = Arc::clone(&context.text_engine);
+                    let private_env_prefixes = Arc::clone(&context.private_env_prefixes);
+                    tokio::task::spawn_blocking(move || {
+                        Session::spawn_with_private_env_prefixes(
+                            options,
+                            frames,
+                            text_engine,
+                            &private_env_prefixes,
+                            on_exit,
+                        )
+                    })
+                    .await
+                    .context("session spawn task stopped")??
+                };
                 let summary = session.summary();
                 let mut controls = session.subscribe_control();
                 let mut activities = session.subscribe_activity();
@@ -733,6 +799,7 @@ async fn handle_command(
                 let activity_session_id = summary.id.clone();
                 let control_events = event_tx.clone();
                 let activity_events = event_tx.clone();
+                let control_session = Arc::downgrade(&session);
                 let activity_session = Arc::downgrade(&session);
                 tokio::spawn(async move {
                     loop {
@@ -755,7 +822,29 @@ async fn handle_command(
                                         "layoutEpoch": changed.layout_epoch,
                                     }));
                                 }
-                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    // Skipped intermediates don't matter as
+                                    // long as the client ends on the current
+                                    // controller and size.
+                                    let Some(session) = control_session.upgrade() else {
+                                        break;
+                                    };
+                                    let (controller, cols, rows, layout_epoch) =
+                                        session.control_state();
+                                    let Some(controller) = controller else {
+                                        continue;
+                                    };
+                                    let _ = control_events.send(json!({
+                                        "requestId": 0,
+                                        "type": "control-changed",
+                                        "sessionId": control_session_id,
+                                        "controllerViewId": controller.view_id,
+                                        "controlEpoch": controller.control_epoch,
+                                        "cols": cols,
+                                        "rows": rows,
+                                        "layoutEpoch": layout_epoch,
+                                    }));
+                                }
                                 Err(broadcast::error::RecvError::Closed) => break,
                             },
                         }
@@ -789,16 +878,31 @@ async fn handle_command(
                         }));
                     }
                 });
-                registry
-                    .write()
-                    .unwrap()
-                    .insert(summary.id.clone(), Arc::clone(&session));
+                // Re-check the tombstone while holding the lock across the
+                // insert: a concurrent close-session-owner either finds this
+                // session in the registry and sweeps it, or its tombstone is
+                // already visible here and the create fails.
+                {
+                    let owner_lifecycle = context.closed_owners.lock().await;
+                    if summary
+                        .owner_id
+                        .as_deref()
+                        .is_some_and(|owner| owner_lifecycle.contains(owner))
+                    {
+                        drop(owner_lifecycle);
+                        let _ = session.terminate(TerminationSource::User);
+                        bail!("session owner is already closed");
+                    }
+                    registry
+                        .write()
+                        .unwrap()
+                        .insert(summary.id.clone(), Arc::clone(&session));
+                }
                 if session.has_exited()
                     && session.persistence() != Persistence::KeepUntilExplicitClose
                 {
                     registry.write().unwrap().remove(&summary.id);
                 }
-                drop(owner_lifecycle);
                 Ok(ResponseBody::SessionCreated { session: summary })
             }
             Command::ListSessions => {
@@ -833,13 +937,14 @@ async fn handle_command(
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
                 validate_owner(owner_id.as_deref())?;
-                let owner_lifecycle = context.closed_owners.lock().await;
-                if owner_id
-                    .as_ref()
-                    .is_some_and(|owner| owner_lifecycle.contains(owner))
+                if let Some(owner) = owner_id.as_deref()
+                    && context.closed_owners.lock().await.contains(owner)
                 {
                     bail!("session owner is already closed");
                 }
+                // The network dial happens without the owner lock so a slow
+                // peer can never stall unrelated session creation; the
+                // tombstone is re-checked once the session exists.
                 let session = context
                     .mesh_runtime
                     .open_session(mesh::RemoteSessionOpen {
@@ -852,7 +957,14 @@ async fn handle_command(
                         text_engine: Arc::clone(&context.text_engine),
                     })
                     .await?;
-                drop(owner_lifecycle);
+                let closed_after_open = match session.owner_id.as_deref() {
+                    Some(owner) => context.closed_owners.lock().await.contains(owner),
+                    None => false,
+                };
+                if closed_after_open {
+                    context.mesh_runtime.close_session(&session.id).await;
+                    bail!("session owner is already closed");
+                }
                 Ok(ResponseBody::SessionCreated { session })
             }
             Command::GetSession { session_id } => {
@@ -1340,22 +1452,29 @@ async fn handle_command(
             }
             Command::CloseSessionOwner { owner_id } => {
                 validate_owner(Some(&owner_id))?;
-                let mut owner_lifecycle = context.closed_owners.lock().await;
-                owner_lifecycle.insert(owner_id.clone());
+                // The tombstone alone closes the owner; the sweeps below run
+                // without the lock so a slow mesh peer can never stall
+                // unrelated session creation behind an owner closure.
+                context.closed_owners.lock().await.insert(owner_id.clone());
                 let local_sessions = registry
                     .read()
                     .unwrap()
                     .values()
-                    .filter(|session| {
-                        session.summary().owner_id.as_deref() == Some(owner_id.as_str())
-                    })
+                    .filter(|session| session.owner_id().as_deref() == Some(owner_id.as_str()))
                     .cloned()
                     .collect::<Vec<_>>();
                 for session in local_sessions {
                     for (view_id, _) in remove_session_attachments(attached, &session.id()) {
                         session.detach_view(&view_id, client_id);
                     }
-                    session.terminate(TerminationSource::User)?;
+                    // One failed termination must not strand the owner's
+                    // remaining sessions in the registry.
+                    if let Err(error) = session.terminate(TerminationSource::User) {
+                        eprintln!(
+                            "[ghosttea] failed to terminate session {} while closing owner {owner_id}: {error:#}",
+                            session.id()
+                        );
+                    }
                     registry.write().unwrap().remove(&session.id());
                 }
                 let remote_sessions = context.mesh_runtime.summaries().await;
@@ -1365,7 +1484,6 @@ async fn handle_command(
                         remove_session_attachments(attached, &session.id);
                     }
                 }
-                drop(owner_lifecycle);
                 Ok(ResponseBody::Ok)
             }
             Command::Unknown => bail!("unknown command"),
@@ -1443,8 +1561,9 @@ async fn serve_frames(mut listener: ipc::Listener, token: String, frames: FrameH
         let frames = frames.clone();
         let (mut rx, mut last_seen_ordinal) = frames.subscribe();
         tokio::spawn(async move {
-            if authenticate(&mut socket, &token).await.is_err() {
-                return;
+            match tokio::time::timeout(AUTH_TIMEOUT, authenticate(&mut socket, &token)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => return,
             }
             let (mut reader, mut writer) = tokio::io::split(socket);
             let mut subscription_starts = HashMap::<u64, u64>::new();
