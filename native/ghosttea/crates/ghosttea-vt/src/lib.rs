@@ -818,6 +818,78 @@ mod tests {
         assert_eq!(release, b"\x1b[119;1:3u");
     }
 
+    const MODS_SHIFT: u16 = 1 << 0;
+    const MODS_CTRL: u16 = 1 << 1;
+
+    /// A shifted key sends the text the layout produced, not the unshifted key
+    /// plus a shift modifier.
+    ///
+    /// Ghostty emits text verbatim only when the modifiers left after removing
+    /// the ones the layout consumed are empty, so a shifted keypress that
+    /// reports nothing consumed looks like a modified keypress instead. Under
+    /// the Kitty protocol that made `shift+/` encode as `CSI 47;2u` — keycode
+    /// `/` plus shift — so clients that enable progressive enhancement and
+    /// cannot map a keycode back through the layout inserted `/` for `?`.
+    /// Clients that never enable it were unaffected, which is why this survived
+    /// in a plain shell.
+    #[test]
+    fn shifted_keys_encode_their_translated_text() {
+        for flags in ["", "\x1b[>1u", "\x1b[>5u", "\x1b[>7u"] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(flags.as_bytes());
+            let encoded = terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT, 1)
+                .unwrap();
+            assert_eq!(
+                encoded,
+                b"?",
+                "shift+slash under kitty flags {flags:?}: {:?}",
+                String::from_utf8_lossy(&encoded)
+            );
+            assert_eq!(
+                terminal
+                    .encode_key("KeyW", "W", 'w'.into(), MODS_SHIFT, 1)
+                    .unwrap(),
+                b"W"
+            );
+            assert_eq!(
+                terminal.encode_key("Slash", "/", '/'.into(), 0, 1).unwrap(),
+                b"/"
+            );
+        }
+    }
+
+    /// `report_all` requires every key to be an escape sequence, so the shifted
+    /// text cannot be sent verbatim. The shifted codepoint has to survive as the
+    /// alternate key (`47:63`) and, once associated text is negotiated, as the
+    /// trailing text field — otherwise the client is back to guessing.
+    #[test]
+    fn reporting_all_keys_still_carries_the_shifted_codepoint() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        terminal.feed(b"\x1b[>31u");
+        assert_eq!(
+            terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT, 1)
+                .unwrap(),
+            b"\x1b[47:63;2;63u"
+        );
+    }
+
+    /// Consuming shift must not hide modifiers the application still needs: the
+    /// text fast path is gated on *unconsumed* mods, and the reported bitmask
+    /// keeps every mod that was actually held.
+    #[test]
+    fn consuming_shift_preserves_other_modifiers() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        terminal.feed(b"\x1b[>1u");
+        assert_eq!(
+            terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT | MODS_CTRL, 1)
+                .unwrap(),
+            b"\x1b[47;6u"
+        );
+    }
+
     #[test]
     fn encodes_mouse_only_when_application_tracking_is_active() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
