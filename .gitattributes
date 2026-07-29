@@ -5,3 +5,10 @@
 # this, `core.autocrlf=true` — the default from Git for Windows' installer —
 # produces exactly that checkout.
 * text=auto eol=lf
+
+# The bundled parity fonts ship in the tree so a clean checkout — and therefore
+# a SwiftPM URL dependency — can build GhostteaFonts without running
+# `npm run sync:fonts` first. `text=auto` already classifies them as binary by
+# content, but say so explicitly: an EOL rewrite here would corrupt a font whose
+# bytes are pinned by SHA-256 in native/fonts.lock.json.
+*.ttf binary

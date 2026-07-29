@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "binaryTarget": "GhostteaAppleNative",
+  "bundleName": "GhostteaAppleNative.xcframework",
+  "repository": "https://github.com/vibecook-dev/ghosttea",
+  "tag": "ghosttea-apple-native-3883818b918d",
+  "filename": "GhostteaAppleNative.xcframework.zip",
+  "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghosttea-apple-native-3883818b918d/GhostteaAppleNative.xcframework.zip",
+  "checksum": "a8bcdb1ebe5af7c7cab54ed10c59526736ac56e0932057184a6598cc89b72c80",
+  "size": 78596557,
+  "contentDigest": "3883818b918d9b8c1975145ffc9fe842777da1434d29cf4eff1102e9b7af3c4f",
+  "entries": 137,
+  "published": true,
+  "notes": {
+    "checksum": "The SHA-256 of the archive file, which is exactly what `swift package compute-checksum` reports and what SwiftPM enforces before unpacking a URL binary target. Verified equal on 2026-07-29.",
+    "contentDigest": "A digest of paths, modes, and file bytes, independent of how the tree is archived. The archive's own checksum also depends on zlib, so this is the value a rebuild can honestly re-derive on another machine.",
+    "tag": "Content-addressed rather than keyed to a ghosttea release. `.binaryTarget(url:checksum:)` needs a checksum already valid at the commit SwiftPM resolves, but release assets are built after their release commit — so a per-release artifact could never carry a valid checksum at its own tag.",
+    "published": "The archive is attached to its release and resolves: verified on 2026-07-29 by a clean `swift package resolve` against this URL, which SwiftPM checksum-verified and unpacked, followed by a successful `swift build --target GhostteaCore`. The release gate fails closed while this is false. These bytes are never replaced in place — the Apple build is not byte-reproducible across toolchains, and every consumer's SwiftPM checksum is pinned to them, so a changed artifact takes a new content digest and a new tag."
+  },
+  "producedBy": {
+    "composer": "scripts/compose-ghosttea-apple-native.mjs",
+    "packager": "scripts/package-ghosttea-apple-native.mjs",
+    "sourceLocks": ["native/ghostty.lock.json", "native/ssh.lock.json", "native/fonts.lock.json"]
+  },
+  "slices": {
+    "ios-arm64/libghosttea-apple-native.a": "241894fa819c32d45bf8e9033d0e481ebc0b1b5ea0f845604f306158e9a204b0",
+    "ios-arm64-simulator/libghosttea-apple-native.a": "351deeb5bff6f26370d98fd33021948854dde88751d43ab053470e725edffc52",
+    "macos-arm64/libghosttea-apple-native.a": "80b323bbf9dfd038ff3d822b50b5a04cd5a3dc143d9319c8546030a1043208ca"
+  }
+}

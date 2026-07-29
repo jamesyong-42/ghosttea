@@ -5,6 +5,16 @@ node_modules/
 dist/
 out/
 target/
+# The root Package.swift makes SwiftPM resolve here as well as in apple/GhostteaKit.
+.build/
+.swiftpm/
+# Resolving the root package downloads the published native artifact, so this
+# file cannot be regenerated from a checkout that has not published one yet.
+# Consumers ignore a dependency's Package.resolved anyway; the Truffle pin that
+# gates a release lives in apple/GhostteaKit/Package.resolved and
+# truffle-swift.lock.json, and check-apple-native-artifact.mjs compares the two
+# manifests' dependency pins directly.
+/Package.resolved
 .DS_Store
 *.log
 .idea/

@@ -14,10 +14,13 @@ on:
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
+      - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
       - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaApp/App/**"
       - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
       - "apple/GhostteaKit/Package.swift"
+      - "Package.swift"
+      - "apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/**"
       - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
       - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
       - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
@@ -31,6 +34,10 @@ on:
       - "scripts/bootstrap-ghostty-vt.mjs"
       - "scripts/build-ghostty-vt-apple.mjs"
       - "scripts/build-ghostty-vt.mjs"
+      - "scripts/check-apple-native-artifact.mjs"
+      - "scripts/check-bundled-fonts.mjs"
+      - "scripts/ghosttea-apple-native-artifact.mjs"
+      - "scripts/package-ghosttea-apple-native.mjs"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
@@ -52,10 +59,13 @@ on:
       - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
       - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
+      - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
       - "apple/GhostteaApp/Resources/**"
       - "apple/GhostteaApp/App/**"
       - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
       - "apple/GhostteaKit/Package.swift"
+      - "Package.swift"
+      - "apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/**"
       - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
       - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
       - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
@@ -69,6 +79,10 @@ on:
       - "scripts/bootstrap-ghostty-vt.mjs"
       - "scripts/build-ghostty-vt-apple.mjs"
       - "scripts/build-ghostty-vt.mjs"
+      - "scripts/check-apple-native-artifact.mjs"
+      - "scripts/check-bundled-fonts.mjs"
+      - "scripts/ghosttea-apple-native-artifact.mjs"
+      - "scripts/package-ghosttea-apple-native.mjs"
       - "scripts/check-ios-release-bom.mjs"
       - "scripts/check-ios-release-resources.mjs"
       - "scripts/check-ios-app-store-readiness.mjs"
@@ -93,6 +107,7 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: npm run check:ghostty-upgrade
+      - run: npm run check:bundled-fonts
       - run: npm run check:ios-release-bom
       - run: npm run check:ios-release-resources
       - run: npm run check:ios-app-store
@@ -122,3 +137,20 @@ jobs:
             apple/GhostteaKit/Compatibility/app-store-review-notes.md
             apple/GhostteaApp/Resources/PrivacyInfo.xcprivacy
           if-no-files-found: error
+
+  # The root manifest publishes GhostteaKit and the local one builds it; they are
+  # mirrors apart from how the native artifact is sourced. Comparing the two
+  # package graphs needs a Swift toolchain to evaluate them, so it runs here
+  # rather than on the Linux BOM job, where the check would silently skip.
+  validate-package-manifests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run check:apple-native-artifact
