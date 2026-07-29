@@ -84,6 +84,21 @@ not `GhostteaKit`:
 .product(name: "GhostteaTerminal", package: "ghosttea"),
 ```
 
+### Running `swift` against the root manifest needs full Xcode
+
+`swift test` builds every test target, so `GhostteaTerminal`'s Metal build-tool
+plugin runs even when the filter selects something else entirely. Under
+Command Line Tools that fails with `xcrun: error: unable to find utility
+"metal"`, which reads like a package fault and is not one:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+The repository's own Apple scripts already export `DEVELOPER_DIR` for this
+reason. Only direct invocation against the new root manifest is exposed to it —
+set it in the environment, or point `xcode-select` at Xcode.
+
 ## The archive
 
 `npm run package:ghosttea-apple-native` writes the zip by hand — sorted entries,
