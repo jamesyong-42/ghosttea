@@ -3,6 +3,33 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.6.1 - 2026-07-29
+
+### Fixed
+
+- GhostteaKit can be consumed by version. 0.6.0 pinned Truffle by bare Git
+  revision, and SwiftPM forbids a version-resolved package from depending on a
+  revision-pinned one, so every `from:`/`exact:` consumer — including the usage
+  example 0.6.0 shipped — failed to resolve:
+
+  ```
+  package 'ghosttea' is required using a stable-version but 'ghosttea'
+  depends on an unstable-version package 'truffle'
+  ```
+
+  Only `revision:` consumers worked. The pin is now
+  `.package(url:exact:"0.7.11")`, which resolves the same commit through
+  Truffle's plain `v0.7.11` tag, so the build is byte-for-byte what 0.6.0
+  resolved — the artifact digests and release BOM are unchanged. `exact:` rather
+  than `from:` keeps Truffle's lockstep discipline.
+
+  Nothing caught this before release because both surfaces that were exercised
+  are exempt from the rule: `apple/GhostteaApp` consumes the package by relative
+  path, and resolving the repository _as the root package_ is not a
+  consumed-by-version resolution. The App Store readiness gate now asserts the
+  resolved pin carries a version, so reverting to a revision pin fails the
+  release instead of silently breaking semver consumption again.
+
 ## 0.6.0 - 2026-07-29
 
 ### Changed

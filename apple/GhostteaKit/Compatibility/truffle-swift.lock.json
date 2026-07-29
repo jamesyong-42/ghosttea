@@ -3,6 +3,8 @@
   "package": {
     "name": "Truffle",
     "repository": "https://github.com/vibecook-dev/truffle.git",
+    "pinStyle": "exact-version",
+    "version": "0.7.11",
     "revision": "8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7",
     "packagePath": "",
     "packageIdentity": "truffle",

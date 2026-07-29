@@ -46,8 +46,8 @@ exactly this commit".
 
 Only one value is still unknown — Truffle's artifact is already published.
 
-| Placeholder                                   | Where                                                                                  | Source                                                                           |
-| --------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Placeholder                                | Where                                                                                  | Source                                                                           |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `284cea0e037d1b2bff6053dda411acd9d6219298` | `Package.swift` (`truffleRevision`) and `truffle-swift.lock.json` (`package.revision`) | the Truffle commit that adds the root manifest — must be identical in both files |
 
 Then regenerate the derived files:
@@ -100,6 +100,21 @@ A revision pin is used rather than a version range deliberately: it matches the
 exactness this lock already required, and it does not wait on Truffle adopting
 SemVer tags, which its `truffle-vX.Y.Z` scheme does not currently provide.
 Move to `exact:`/`from:` once it does.
+
+> **Superseded in 0.6.1.** Moving was not optional in the end. SwiftPM forbids a
+> version-resolved package from depending on a revision-pinned one, so the
+> revision pin made GhostteaKit unconsumable by version — every `from:`/`exact:`
+> consumer failed with _"package 'ghosttea' is required using a stable-version
+> but 'ghosttea' depends on an unstable-version package 'truffle'"_. Only
+> `revision:` consumers resolved. Path dependencies are exempt, which is why
+> `apple/GhostteaApp` never surfaced it, and neither did resolving this
+> repository as the root package.
+>
+> Truffle does carry plain `vX.Y.Z` tags alongside its `truffle-vX.Y.Z` ones
+> (`v0.7.7`, `v0.7.8`, `v0.7.9`, `v0.7.11` at time of writing — note `0.7.10` has
+> only the prefixed form, which SwiftPM will not match), so the pin became
+> `.package(url:exact:)` on the same commit `v0.7.11` names. `exact:` rather than
+> `from:` preserves the lockstep discipline the revision pin had.
 
 ## Keeping both paths working during the transition
 
