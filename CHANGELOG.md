@@ -3,6 +3,47 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.6.0 - 2026-07-29
+
+### Changed
+
+- **Breaking for Rust consumers.** `ghosttea-truffle` now pins
+  `truffle-core = "=0.7.11"`, up from `=0.7.8`. The pin is exact by design —
+  every crate sharing an application-owned Truffle node must resolve the same
+  version and source so its `Node` type is identical — so a consumer still
+  pinned to `=0.7.8` cannot resolve alongside this release and must move too.
+  That is a loud resolver error rather than a silent type mismatch, which is
+  what the exact pin is for. The Swift package follows the same revision.
+
+  0.7.9 adds transport-derived caller identity (`whois(addr)`, node serve
+  headers, QUIC accept identity). 0.7.10 replaces value-correlated sidecar RPC
+  waiters with a reply broker keyed on request id, fixing an event burst that
+  could surface a misleading timeout, two concurrent port-0 listens stealing
+  each other's confirmations, and a synchronous failure burning a full 10s
+  timeout. The QUIC peer handshake is unchanged between these releases, so this
+  does not move the wire between an already-attached phone and desktop.
+
+### Added
+
+- GhostteaKit resolves as a SwiftPM URL dependency. It could previously only be
+  consumed by relative path, because its manifest lived in a subdirectory and
+  both the native XCFramework and the parity fonts were gitignored — and since
+  `GhostteaCore` depends on both, a clean checkout failed at package-graph load
+  for every product, including the pure-Swift ones. A root `Package.swift` now
+  sources the XCFramework from a checksum-verified release asset, and the fonts
+  ship in the tree.
+
+  ```swift
+  .package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.6.0"),
+  .product(name: "GhostteaTerminal", package: "ghosttea"),
+  ```
+
+  The dependency identity is `ghosttea`, which SwiftPM derives from the URL.
+  The artifact is published under a content-addressed tag rather than a release
+  version, because `.binaryTarget(url:checksum:)` needs a checksum already valid
+  at the commit SwiftPM resolves and release assets are built after their
+  release commit; only a change to the native sources moves it.
+
 ## 0.5.2 - 2026-07-28
 
 ### Fixed

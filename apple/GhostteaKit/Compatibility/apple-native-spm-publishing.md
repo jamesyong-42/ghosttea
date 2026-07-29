@@ -80,7 +80,7 @@ Note that the dependency identity is `ghosttea` (SwiftPM derives it from the URL
 not `GhostteaKit`:
 
 ```swift
-.package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.5.2"),
+.package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.6.0"),
 .product(name: "GhostteaTerminal", package: "ghosttea"),
 ```
 

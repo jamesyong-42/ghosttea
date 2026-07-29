@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "target": "aarch64-apple-ios",
   "root": {
-    "ref": "pkg:cargo/ghosttea-ffi@0.5.2",
+    "ref": "pkg:cargo/ghosttea-ffi@0.6.0",
     "name": "ghosttea-ffi",
-    "version": "0.5.2",
+    "version": "0.6.0",
     "dependencies": [
-      "pkg:cargo/ghosttea-core@0.5.2",
-      "pkg:cargo/ghosttea-text@0.5.2",
+      "pkg:cargo/ghosttea-core@0.6.0",
+      "pkg:cargo/ghosttea-text@0.6.0",
       "pkg:cargo/serde_json@1.0.150"
     ]
   },
-  "cargoLockSha256": "fe78e070ee1306a3a2f1863a747bac7f705068536d1d245d17b04d1d7073fb89",
+  "cargoLockSha256": "9465b942e31cafbb97f039f696dfb945e0c667a8e482df5eb9c575124643b4f1",
   "components": [
     {
       "ref": "pkg:cargo/anyhow@1.0.103",
@@ -318,23 +318,23 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-core@0.5.2",
+      "ref": "pkg:cargo/ghosttea-core@0.6.0",
       "name": "ghosttea-core",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "source": "workspace",
       "license": "MIT",
       "dependencies": [
         "pkg:cargo/anyhow@1.0.103",
-        "pkg:cargo/ghosttea-text@0.5.2",
-        "pkg:cargo/ghosttea-vt@0.5.2",
+        "pkg:cargo/ghosttea-text@0.6.0",
+        "pkg:cargo/ghosttea-vt@0.6.0",
         "pkg:cargo/serde@1.0.228",
         "pkg:cargo/smallvec@1.15.2"
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-text@0.5.2",
+      "ref": "pkg:cargo/ghosttea-text@0.6.0",
       "name": "ghosttea-text",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "source": "workspace",
       "license": "MIT",
       "dependencies": [
@@ -350,9 +350,9 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-vt-sys@0.5.2",
+      "ref": "pkg:cargo/ghosttea-vt-sys@0.6.0",
       "name": "ghosttea-vt-sys",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "source": "workspace",
       "license": "MIT",
       "dependencies": [
@@ -365,13 +365,13 @@
       ]
     },
     {
-      "ref": "pkg:cargo/ghosttea-vt@0.5.2",
+      "ref": "pkg:cargo/ghosttea-vt@0.6.0",
       "name": "ghosttea-vt",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "source": "workspace",
       "license": "MIT",
       "dependencies": [
-        "pkg:cargo/ghosttea-vt-sys@0.5.2"
+        "pkg:cargo/ghosttea-vt-sys@0.6.0"
       ]
     },
     {
