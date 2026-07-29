@@ -5,10 +5,12 @@ Until now it could only be consumed by relative path, which is why the sibling-p
 class this repository retired in `truffle-spm-migration.md` kept threatening to
 come back for anyone who wanted to embed it.
 
-Everything here is applied **except the upload itself**. The lock carries real,
-locally verified values and `published: false`; `check-apple-native-artifact.mjs
---release` exits 1 until the asset exists, so nothing can ship against a URL that
-does not resolve yet.
+This is done and verified end to end. The artifact is published as
+[`ghosttea-apple-native-3883818b918d`][release], and a clean `swift package
+resolve` at the repository root downloads it, checksum-verifies it, unpacks it,
+and builds against it.
+
+[release]: https://github.com/vibecook-dev/ghosttea/releases/tag/ghosttea-apple-native-3883818b918d
 
 ## Why a URL dependency could not work
 
@@ -109,27 +111,55 @@ bytes are authoritative — the same stance
 `.github/workflows/ghostty-vt-artifact.yml` already takes for the native Windows
 build, and the reason its upload step carries no `--clobber`.
 
-## Remaining step
+## What was published, and how it was verified
 
-The artifact is packaged and locked but not yet uploaded.
-
-```sh
-npm run package:ghosttea-apple-native      # rebuild the asset from the composed artifact
-npm run check:apple-native-artifact        # confirm it still matches the lock
-
-git tag ghosttea-apple-native-3883818b918d
-git push origin ghosttea-apple-native-3883818b918d   # the workflow builds, attests, and publishes
-```
-
-Then set `published: true` in `apple-native-artifact.lock.json` and re-run
-`npm run check:apple-native-artifact:release`, which gates on it.
-
-To publish the already-packaged local bytes instead of rebuilding them in CI —
-the same call Truffle made, so the digests do not move:
+The first artifact was published from the already-composed local bytes rather
+than rebuilt in CI — the same call Truffle made, so the digests did not move:
 
 ```sh
 gh release create ghosttea-apple-native-3883818b918d \
   artifacts/apple-native/GhostteaAppleNative.xcframework.zip \
   artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json \
-  --repo vibecook-dev/ghosttea --title ghosttea-apple-native-3883818b918d
+  --repo vibecook-dev/ghosttea --title ghosttea-apple-native-3883818b918d \
+  --latest=false
 ```
+
+`--latest=false` matters: an artifact release created after the newest product
+release would otherwise take the "Latest" badge from it on the repository page.
+
+Verified after publishing, on 2026-07-29:
+
+- The asset downloads from the URL the lock names, and its SHA-256 equals the
+  locked checksum.
+- `swift package resolve` at the repository root fetches Truffle at its pinned
+  revision, downloads this artifact, checksum-verifies it, and unpacks it to
+  `.build/artifacts/…/GhostteaAppleNative.xcframework` — which also confirms the
+  in-archive rename was required.
+- `swift build --target GhostteaCore` compiles against the resolved artifact and
+  copies the committed parity fonts into the resource bundle, so both halves of
+  this change hold together.
+
+## Publishing a new artifact
+
+Only a change to the native sources moves the digest. When it does:
+
+```sh
+npm run package:ghosttea-apple-native   # writes the asset and its .json result
+npm run check:apple-native-artifact     # fails: the composed artifact no longer matches the lock
+```
+
+Copy `tag`, `url`, `checksum`, `size`, and `contentDigest` from the result into
+`apple-native-artifact.lock.json`, update `appleNativeURL` and
+`appleNativeChecksum` in the root `Package.swift`, then publish **before**
+committing — the digest comes from the working tree, so the ordering always
+works out:
+
+```sh
+git tag ghosttea-apple-native-<digest12>
+git push origin ghosttea-apple-native-<digest12>   # the workflow builds, attests, and publishes
+```
+
+The workflow refuses to publish if the tag does not match the packaged content
+digest, or if the packaged asset does not match the lock. It carries no
+`--clobber`: these bytes are what every consumer's SwiftPM checksum is pinned
+to, so a changed artifact takes a new tag rather than replacing an old asset.

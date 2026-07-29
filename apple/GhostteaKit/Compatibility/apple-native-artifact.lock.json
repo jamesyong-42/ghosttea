@@ -10,12 +10,12 @@
   "size": 78596557,
   "contentDigest": "3883818b918d9b8c1975145ffc9fe842777da1434d29cf4eff1102e9b7af3c4f",
   "entries": 137,
-  "published": false,
+  "published": true,
   "notes": {
     "checksum": "The SHA-256 of the archive file, which is exactly what `swift package compute-checksum` reports and what SwiftPM enforces before unpacking a URL binary target. Verified equal on 2026-07-29.",
     "contentDigest": "A digest of paths, modes, and file bytes, independent of how the tree is archived. The archive's own checksum also depends on zlib, so this is the value a rebuild can honestly re-derive on another machine.",
     "tag": "Content-addressed rather than keyed to a ghosttea release. `.binaryTarget(url:checksum:)` needs a checksum already valid at the commit SwiftPM resolves, but release assets are built after their release commit — so a per-release artifact could never carry a valid checksum at its own tag.",
-    "published": "Flips to true once the archive is attached to its release. The release gate fails closed while it is false: the checksum below is real and verified locally, but the URL does not resolve until the asset is uploaded."
+    "published": "The archive is attached to its release and resolves: verified on 2026-07-29 by a clean `swift package resolve` against this URL, which SwiftPM checksum-verified and unpacked, followed by a successful `swift build --target GhostteaCore`. The release gate fails closed while this is false. These bytes are never replaced in place — the Apple build is not byte-reproducible across toolchains, and every consumer's SwiftPM checksum is pinned to them, so a changed artifact takes a new content digest and a new tag."
   },
   "producedBy": {
     "composer": "scripts/compose-ghosttea-apple-native.mjs",
