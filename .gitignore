@@ -5,6 +5,9 @@ node_modules/
 dist/
 out/
 target/
+# The root Package.swift makes SwiftPM resolve here as well as in apple/GhostteaKit.
+.build/
+.swiftpm/
 .DS_Store
 *.log
 .idea/

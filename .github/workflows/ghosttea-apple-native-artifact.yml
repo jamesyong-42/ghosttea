@@ -1,0 +1,120 @@
+name: Ghosttea Apple native artifact
+
+# Publishes the XCFramework that GhostteaKit's URL binary target resolves.
+#
+# The tag is content-addressed (`ghosttea-apple-native-<digest12>`), not keyed to
+# a ghosttea release: `.binaryTarget(url:checksum:)` needs a checksum that is
+# already valid at the commit SwiftPM resolves, and release assets are built
+# after their release commit. Publishing once per distinct artifact means every
+# later ghosttea tag points at bytes that already exist.
+#
+# So this runs rarely — only when the native sources actually move the artifact.
+# Cut the tag from a checkout whose composed artifact matches the lock; the job
+# refuses to publish under any other name.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "ghosttea-apple-native-*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      # compose-ghosttea-apple-native.mjs folds four XCFrameworks into one, so
+      # each has to exist first: ghostty-vt, the libssh2 candidate, the font
+      # fixture, and the core FFI.
+      - name: Bootstrap the pinned sources
+        run: |
+          npm run bootstrap:ghostty-vt:apple
+          npm run bootstrap:ssh:apple
+
+      - name: Build the component XCFrameworks
+        run: |
+          npm run build:ghostty-vt:apple
+          npm run build:ssh:apple
+          npm run build:font-parity:apple
+          npm run build:ghosttea-core:apple
+
+      - name: Compose the Apple native artifact
+        run: node scripts/compose-ghosttea-apple-native.mjs
+
+      - name: Package the release asset
+        run: npm run package:ghosttea-apple-native
+
+      # The packager derives the tag from the artifact's content digest. If the
+      # ref does not match, this checkout did not produce the artifact the tag
+      # names, and publishing would put the wrong bytes behind a locked URL.
+      - name: Require the tag to match the packaged content
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          produced="$(node -p "require('./artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json').tag")"
+          if [ "$RELEASE_TAG" != "$produced" ]; then
+            echo "Tag $RELEASE_TAG does not match the packaged artifact's tag $produced." >&2
+            exit 1
+          fi
+
+      - name: Require the lock to match the packaged asset
+        run: |
+          node - <<'NODE'
+          const produced = require("./artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json");
+          const lock = require("./apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json");
+          const problems = ["tag", "url", "checksum", "size", "contentDigest"].filter(
+            (field) => produced[field] !== lock[field],
+          );
+          if (problems.length > 0) {
+            for (const field of problems) {
+              console.error(`${field}: packaged ${produced[field]}, locked ${lock[field]}`);
+            }
+            process.exit(1);
+          }
+          console.log("packaged asset matches apple-native-artifact.lock.json");
+          NODE
+
+      - name: Attest artifact provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghosttea-apple-native
+          path: artifacts/apple-native/
+          if-no-files-found: error
+
+      # Deliberately no --clobber. The Apple build is not byte-reproducible
+      # across toolchains, so the published bytes are the ones the lock and every
+      # consumer's SwiftPM checksum are pinned to; replacing them would break
+      # resolution for anyone who already resolved this tag. A re-run for a tag
+      # that already carries this asset should fail here and be resolved by
+      # publishing a new content digest, not by overwriting one.
+      - name: Create the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip \
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "GhostteaKit native XCFramework. Consumed by the GhostteaAppleNative binary target in the root Package.swift; pinned by apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json." \
+            --verify-tag
