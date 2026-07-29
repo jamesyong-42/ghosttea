@@ -1,8 +1,10 @@
 # Terminal Mirroring and Truffle Networking Addendum
 
-Implementation target: Truffle 0.7.8 from the sibling `p008/truffle` checkout.
-The Rust dependency and live transport test intentionally use that checkout,
-not the older 0.4.6 API.
+Implementation target: Truffle 0.7.11, pinned exactly to the registry release
+(`truffle-core = "=0.7.11"` in the workspace `Cargo.toml`), not the older 0.4.6
+API. The Rust dependency and live transport test resolve from crates.io; the
+sibling `p008/truffle` checkout this addendum was first written against is no
+longer used, and the Swift side consumes Truffle's published repository.
 
 ## 1. Simplified model
 

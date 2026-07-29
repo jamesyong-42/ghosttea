@@ -12,7 +12,7 @@ import PackageDescription
 // `Compatibility/truffle-swift.lock.json`; the App Store readiness check
 // compares them and fails closed on drift.
 let truffleRepository = "https://github.com/vibecook-dev/truffle.git"
-let truffleRevision = "9997ee01143d2760257fd4f54dcc98cdfdf8b1ca"
+let truffleRevision = "8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7"
 
 let package = Package(
   name: "GhostteaKit",
