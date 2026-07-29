@@ -25,7 +25,7 @@
 // SwiftPM derives identity from the last path component of the URL, so consumers
 // write the repository name, not this manifest's `name:`
 //
-//     .package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.5.2")
+//     .package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.6.0")
 //     .product(name: "GhostteaTerminal", package: "ghosttea")
 //
 // ## The native artifact is content-addressed
