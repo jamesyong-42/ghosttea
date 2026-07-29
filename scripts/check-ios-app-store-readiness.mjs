@@ -83,6 +83,26 @@ function verifyResolvedTruffleDependency() {
         `${truffleLock.package.revision}; update the pin in apple/GhostteaKit/Package.swift.`,
     ];
   }
+  // The pin is an exact version, not a bare revision, because SwiftPM refuses to
+  // let a version-resolved package depend on a revision-pinned one — a
+  // `revision:` here makes every `from:`/`exact:` consumer of this package fail
+  // to resolve. Assert the resolved pin still carries a version, so reverting to
+  // a revision pin fails the release gate instead of silently breaking semver
+  // consumption again.
+  if (!pin.state?.version) {
+    return [
+      "Truffle resolved without a version, so the dependency is revision-pinned. " +
+        "SwiftPM then refuses to resolve this package for any `from:`/`exact:` consumer " +
+        '("required using a stable-version but ... depends on an unstable-version package"). ' +
+        "Restore `.package(url:exact:)` in both Package.swift manifests.",
+    ];
+  }
+  if (pin.state.version !== truffleLock.package.version) {
+    return [
+      `Resolved Truffle version ${pin.state.version} does not match lock ` +
+        `${truffleLock.package.version}; update the pin in both Package.swift manifests.`,
+    ];
+  }
   verifyResolvedTailscaleKitArtifact();
   return [];
 }

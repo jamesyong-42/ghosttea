@@ -3,16 +3,30 @@
 import PackageDescription
 
 // Truffle is consumed from its published repository rather than the sibling
-// development checkout. The pin is a Git revision, not a version range: it is
-// the same exactness `truffle-swift.lock.json` already required
-// (`requireExactRevision`), and it does not depend on Truffle having tagged a
-// SemVer release, which its `truffle-vX.Y.Z` tag scheme does not provide.
+// development checkout, pinned to an exact version rather than a bare revision.
 //
-// Keep this equal to `package.revision` in
-// `Compatibility/truffle-swift.lock.json`; the App Store readiness check
-// compares them and fails closed on drift.
+// That is not a style preference. SwiftPM forbids a version-resolved package
+// from depending on a revision-pinned one, so a `revision:` pin here made
+// GhostteaKit itself unconsumable by version:
+//
+//     package 'ghosttea' is required using a stable-version but 'ghosttea'
+//     depends on an unstable-version package 'truffle'
+//
+// Only `revision:` consumers could resolve, and path dependencies are exempt
+// from the rule — which is why `apple/GhostteaApp`, which references this
+// package by relative path, never surfaced it.
+//
+// `exact:` rather than `from:` keeps the lockstep discipline the revision pin
+// had: exactly one Truffle across both planes, moved deliberately. Truffle's
+// remote carries a plain `v0.7.11` tag on the very commit the revision pin
+// named, so this resolves the identical build through a stable requirement.
+//
+// Keep this equal to `package.version` in
+// `Compatibility/truffle-swift.lock.json`, whose `package.revision` records the
+// commit that version resolves to; the App Store readiness check compares the
+// resolved pin against both and fails closed on drift.
 let truffleRepository = "https://github.com/vibecook-dev/truffle.git"
-let truffleRevision = "8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7"
+let truffleVersion: Version = "0.7.11"
 
 let package = Package(
   name: "GhostteaKit",
@@ -41,7 +55,7 @@ let package = Package(
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
   ],
   dependencies: [
-    .package(url: truffleRepository, revision: truffleRevision)
+    .package(url: truffleRepository, exact: truffleVersion)
   ],
   targets: [
     .binaryTarget(

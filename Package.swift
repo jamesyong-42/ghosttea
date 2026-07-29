@@ -25,7 +25,7 @@
 // SwiftPM derives identity from the last path component of the URL, so consumers
 // write the repository name, not this manifest's `name:`
 //
-//     .package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.6.0")
+//     .package(url: "https://github.com/vibecook-dev/ghosttea.git", from: "0.6.1")
 //     .product(name: "GhostteaTerminal", package: "ghosttea")
 //
 // ## The native artifact is content-addressed
@@ -47,16 +47,33 @@ let appleNativeURL =
     "https://github.com/vibecook-dev/ghosttea/releases/download/ghosttea-apple-native-3883818b918d/GhostteaAppleNative.xcframework.zip"
 let appleNativeChecksum = "a8bcdb1ebe5af7c7cab54ed10c59526736ac56e0932057184a6598cc89b72c80"
 
-// Truffle is consumed from its published repository. The pin is a Git revision,
-// not a version range: it is the same exactness `truffle-swift.lock.json`
-// already required (`requireExactRevision`), and it does not depend on Truffle
-// having tagged a SemVer release for every commit.
+// Truffle is consumed from its published repository, pinned to an exact version
+// rather than a bare revision.
 //
-// Keep this equal to `package.revision` in
-// `Compatibility/truffle-swift.lock.json`; the App Store readiness check
-// compares them and fails closed on drift.
+// That is load-bearing for this manifest's whole purpose. SwiftPM forbids a
+// version-resolved package from depending on a revision-pinned one, so while
+// this pin was a `revision:`, every `from:`/`exact:` consumer of ghosttea —
+// including the usage example above — failed to resolve with:
+//
+//     package 'ghosttea' is required using a stable-version but 'ghosttea'
+//     depends on an unstable-version package 'truffle'
+//
+// Only `revision:` consumers worked. Path dependencies are exempt from the
+// rule, which is why `apple/GhostteaApp` never surfaced it, and resolving this
+// repository *as the root package* does not surface it either — the rule
+// applies to a package being consumed by version, not to the root.
+//
+// `exact:` rather than `from:` keeps the lockstep discipline the revision pin
+// had: exactly one Truffle across both planes, moved deliberately. Truffle's
+// remote carries a plain `v0.7.11` tag on the very commit the revision pin
+// named, so this resolves the identical build through a stable requirement.
+//
+// Keep this equal to `package.version` in
+// `apple/GhostteaKit/Compatibility/truffle-swift.lock.json`, whose
+// `package.revision` records the commit that version resolves to; the App Store
+// readiness check compares the resolved pin against both and fails closed.
 let truffleRepository = "https://github.com/vibecook-dev/truffle.git"
-let truffleRevision = "8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7"
+let truffleVersion: Version = "0.7.11"
 
 let sources = "apple/GhostteaKit/Sources"
 let tests = "apple/GhostteaKit/Tests"
@@ -89,7 +106,7 @@ let package = Package(
     .executable(name: "GhosttyVtMemoryProbe", targets: ["GhosttyVtMemoryProbe"]),
   ],
   dependencies: [
-    .package(url: truffleRepository, revision: truffleRevision)
+    .package(url: truffleRepository, exact: truffleVersion)
   ],
   targets: [
     .binaryTarget(
