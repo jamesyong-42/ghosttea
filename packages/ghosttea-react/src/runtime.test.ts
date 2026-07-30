@@ -142,6 +142,7 @@ const session = {
   requestedTermination: null,
   exitOutcome: null,
   ownerId: null,
+  persistence: null,
   activity: unknownSessionActivity(),
 } as const;
 

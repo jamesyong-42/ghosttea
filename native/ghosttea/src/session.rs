@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use crate::FrameHub;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Persistence {
     TerminateWithApp,
@@ -212,7 +212,12 @@ pub struct AutomationInputResult {
     pub input_sequence: Option<u64>,
 }
 
-pub type ExitCallback = Arc<dyn Fn(String, SessionExit, Persistence) + Send + Sync>;
+/// Notified once a session has concluded.
+///
+/// Deliberately carries no persistence value: retention is decided by reading
+/// the session's current class under the registry lock, so a `set-persistence`
+/// that returned success cannot be overtaken by a class sampled earlier.
+pub type ExitCallback = Arc<dyn Fn(String, SessionExit) + Send + Sync>;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,6 +308,12 @@ pub struct SessionSummary {
     pub requested_termination: Option<TerminationSource>,
     pub exit_outcome: Option<ExitOutcome>,
     pub owner_id: Option<String>,
+    /// The retention class this host governs the session by, and the single
+    /// source of truth for it — `set-persistence` rewrites it here.
+    ///
+    /// `None` for a replica of a session another host governs: reporting a
+    /// class would assert a governance this host does not hold.
+    pub persistence: Option<Persistence>,
     pub activity: SessionActivity,
 }
 
@@ -346,7 +357,6 @@ pub struct Session {
     model_operation: Mutex<()>,
     exited: AtomicBool,
     frames: FrameHub,
-    persistence: Persistence,
     on_exit: ExitCallback,
     authority: Mutex<ViewAuthority>,
     input_tx: mpsc::SyncSender<InputOperation>,
@@ -868,6 +878,7 @@ impl Session {
                 requested_termination: None,
                 exit_outcome: None,
                 owner_id,
+                persistence: Some(persistence),
                 activity: SessionActivity::unsupported(created_at_ms),
             }),
             created_at_ms,
@@ -887,7 +898,6 @@ impl Session {
             model_operation: Mutex::new(()),
             exited: AtomicBool::new(false),
             frames,
-            persistence,
             on_exit,
             authority: Mutex::new(ViewAuthority::new(cols, rows)),
             input_tx,
@@ -1100,7 +1110,7 @@ impl Session {
                         ),
                     }
                 }
-                (session.on_exit)(session.id(), exit, session.persistence);
+                (session.on_exit)(session.id(), exit);
             })
             .expect("PTY reader thread");
     }
@@ -1215,8 +1225,19 @@ impl Session {
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Acquire)
     }
-    pub fn persistence(&self) -> Persistence {
-        self.persistence
+    /// The session's retention class. `None` only for a session this host
+    /// does not govern, which never reaches the local registry.
+    pub fn persistence(&self) -> Option<Persistence> {
+        self.summary.lock().unwrap().persistence
+    }
+
+    /// Re-class a live session.
+    ///
+    /// Callers must hold the registry lock across this and the retention
+    /// decision that reads it back, so a set that returned success is the
+    /// value that decides retention.
+    pub fn set_persistence(&self, persistence: Persistence) {
+        self.summary.lock().unwrap().persistence = Some(persistence);
     }
     pub fn attach_view(&self, view_id: &str, client_id: &str) -> Result<u64> {
         self.attach_view_with_access(view_id, client_id, ViewAccess::ReadWrite)
@@ -2025,7 +2046,7 @@ mod tests {
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
-            Arc::new(move |_, _, _| {
+            Arc::new(move |_, _| {
                 let _ = exited_tx.send(());
             }),
         )
@@ -2048,6 +2069,57 @@ mod tests {
         exited_rx
             .recv_timeout(Duration::from_secs(15))
             .expect("session did not conclude while a background child held the pty");
+    }
+
+    /// The class a session was created with is visible from the outside and
+    /// can be rewritten while it runs — the two halves re-policy needs.
+    #[cfg(unix)]
+    #[test]
+    fn persistence_is_reported_and_can_be_reclassified_while_running() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+
+        assert_eq!(session.persistence(), Some(Persistence::KeepUntilExit));
+        assert_eq!(
+            session.summary().persistence,
+            Some(Persistence::KeepUntilExit),
+            "the summary is the surface an observer reads the class from"
+        );
+
+        session.set_persistence(Persistence::KeepUntilExplicitClose);
+
+        assert_eq!(
+            session.persistence(),
+            Some(Persistence::KeepUntilExplicitClose)
+        );
+        assert_eq!(
+            session.summary().persistence,
+            Some(Persistence::KeepUntilExplicitClose),
+            "a reclassification must be visible to observers, not only internally"
+        );
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
     }
 
     #[cfg(unix)]
@@ -2075,7 +2147,7 @@ mod tests {
                 },
                 frames.clone(),
                 Arc::clone(&text_engine),
-                Arc::new(move |_, _, _| {
+                Arc::new(move |_, _| {
                     let _ = exited_tx.send(());
                 }),
             )
@@ -2139,7 +2211,7 @@ mod tests {
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
-            Arc::new(move |_, _, _| {
+            Arc::new(move |_, _| {
                 let _ = exited_tx.send(());
             }),
         )

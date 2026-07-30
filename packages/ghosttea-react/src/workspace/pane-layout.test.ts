@@ -21,6 +21,7 @@ function session(id: string): SessionSummary {
     requestedTermination: null,
     exitOutcome: null,
     ownerId: null,
+    persistence: null,
     activity: unknownSessionActivity(),
   };
 }
