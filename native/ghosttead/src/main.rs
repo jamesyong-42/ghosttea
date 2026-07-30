@@ -29,6 +29,16 @@ async fn main() -> Result<()> {
     if let Some(text_engine) = configured_text_engine()? {
         service = service.with_text_engine(text_engine);
     }
+    // The readiness handshake belongs to the binary: three supervisors parse
+    // this line off our stdout, and the library must stay silent so an
+    // embedding host can own that stream. `--version` above already writes
+    // here, so both of this process's stdout contracts now live together.
+    service = service.with_ready(|ready| {
+        println!(
+            "ghosttead ready ({}; {:?})",
+            ready.primary_family, ready.font_mode
+        );
+    });
     let Some(config) = TruffleHostConfig::from_env()? else {
         return service.run().await;
     };
