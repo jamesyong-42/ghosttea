@@ -26,7 +26,7 @@ use ghosttea_core::{
 use ghosttea_text::TextEngine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use crate::FrameHub;
@@ -319,32 +319,100 @@ pub struct SessionSummary {
 
 /// Wakes the termination escalator the moment the session concludes, so each
 /// grace period lasts only as long as the child actually needs.
+/// Why a ladder rung stopped waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhaseWait {
+    /// The child is gone and the reader ended. Deliberately NOT "concluded":
+    /// the reap, the exit broadcast and the retention decision all still
+    /// follow, and the drain waits on that later signal, not this one.
+    Exited,
+    /// This rung's grace elapsed; escalate to the next one.
+    GraceElapsed,
+    /// A deadline arrived — skip the remaining rungs and force the end.
+    DeadlineReached,
+}
+
+/// Wakes the termination escalator the moment the session concludes, so each
+/// grace period lasts only as long as the child actually needs.
+///
+/// It also carries the deadline, because a deadline that arrives *mid-wait*
+/// would otherwise be invisible until the current grace elapsed. Setting one
+/// wakes the escalator immediately, which is what lets a shutdown compress a
+/// ladder that is already running.
 struct ExitLatch {
-    exited: Mutex<bool>,
+    state: Mutex<LatchState>,
     condvar: Condvar,
+}
+
+struct LatchState {
+    exited: bool,
+    deadline: Option<Instant>,
 }
 
 impl ExitLatch {
     fn new() -> Self {
         Self {
-            exited: Mutex::new(false),
+            state: Mutex::new(LatchState {
+                exited: false,
+                deadline: None,
+            }),
             condvar: Condvar::new(),
         }
     }
 
     fn notify(&self) {
-        *self.exited.lock().unwrap() = true;
+        self.state.lock().unwrap().exited = true;
         self.condvar.notify_all();
     }
 
-    /// Wait until the session concludes or the timeout lapses. Returns whether
-    /// the session has concluded.
-    fn wait_timeout(&self, timeout: Duration) -> bool {
-        let (exited, _) = self
-            .condvar
-            .wait_timeout_while(self.exited.lock().unwrap(), timeout, |exited| !*exited)
-            .unwrap();
-        *exited
+    /// Bound the remaining ladder. Min-combines, so the tightest deadline any
+    /// caller asked for wins and a later, looser one cannot relax it.
+    fn set_deadline(&self, deadline: Instant) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.deadline = Some(match state.deadline {
+                Some(existing) => existing.min(deadline),
+                None => deadline,
+            });
+        }
+        self.condvar.notify_all();
+    }
+
+    /// Only the Unix ladder scales its graces to the remaining budget; the
+    /// Windows path has a single grace and relies on the deadline jump alone,
+    /// so it never reads this.
+    #[cfg(unix)]
+    fn deadline(&self) -> Option<Instant> {
+        self.state.lock().unwrap().deadline
+    }
+
+    /// Wait out one ladder rung, ending early on conclusion or on the deadline.
+    fn wait_phase(&self, grace: Duration) -> PhaseWait {
+        let grace_ends = Instant::now() + grace;
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.exited {
+                return PhaseWait::Exited;
+            }
+            let now = Instant::now();
+            if state.deadline.is_some_and(|deadline| deadline <= now) {
+                return PhaseWait::DeadlineReached;
+            }
+            if now >= grace_ends {
+                return PhaseWait::GraceElapsed;
+            }
+            // Wake for whichever comes first; a `set_deadline` in between
+            // notifies and re-runs this loop with the tighter bound.
+            let wake_at = match state.deadline {
+                Some(deadline) => deadline.min(grace_ends),
+                None => grace_ends,
+            };
+            let (next, _) = self
+                .condvar
+                .wait_timeout(state, wake_at.saturating_duration_since(now))
+                .unwrap();
+            state = next;
+        }
     }
 }
 
@@ -353,6 +421,11 @@ pub struct Session {
     created_at_ms: u64,
     process: PtyProcess,
     exit_latch: ExitLatch,
+    /// Flipped once the session has genuinely concluded: reaped, stamped, exit
+    /// broadcast, retention decided. Strictly later than `exit_latch`, which
+    /// fires at *exited* — before the reap — so a drain that must know the
+    /// session is finished cannot use the latch for it.
+    concluded: watch::Sender<bool>,
     model: Mutex<TerminalModel>,
     model_operation: Mutex<()>,
     exited: AtomicBool,
@@ -536,6 +609,35 @@ impl PtyProcess {
             let _ = unsafe { libc::write(fd.as_raw_fd(), byte.as_ptr().cast(), 1) };
         }
     }
+}
+
+/// The floor a rung is worth waiting at all; below it, waiting only delays the
+/// sweep without giving a child a real chance to finish.
+#[cfg(unix)]
+const MINIMUM_GRACE: Duration = Duration::from_millis(50);
+
+/// Fit the ladder to the time actually available.
+///
+/// With no deadline every rung gets its full default. With one, the remaining
+/// time is split in the defaults' proportions (2:2:1) so a small budget still
+/// buys a real SIGTERM grace instead of collapsing straight to SIGKILL — and
+/// a budget too small to matter degrades to the floor, with the deadline jump
+/// as the backstop.
+#[cfg(unix)]
+fn scaled_graces(deadline: Option<Instant>) -> [Duration; 3] {
+    const DEFAULTS: [Duration; 3] = [INTERRUPT_GRACE, TERMINATE_GRACE, FORCE_EOF_GRACE];
+    let Some(deadline) = deadline else {
+        return DEFAULTS;
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let full: Duration = DEFAULTS.iter().sum();
+    if remaining >= full {
+        return DEFAULTS;
+    }
+    DEFAULTS.map(|default| {
+        let share = remaining.mul_f64(default.as_secs_f64() / full.as_secs_f64());
+        share.clamp(MINIMUM_GRACE, default)
+    })
 }
 
 #[cfg(unix)]
@@ -894,6 +996,7 @@ impl Session {
                 tree: process_tree,
             },
             exit_latch: ExitLatch::new(),
+            concluded: watch::channel(false).0,
             model: Mutex::new(model),
             model_operation: Mutex::new(()),
             exited: AtomicBool::new(false),
@@ -1111,6 +1214,15 @@ impl Session {
                     }
                 }
                 (session.on_exit)(session.id(), exit);
+                // Last act, deliberately after `on_exit` returns: an observer
+                // that sees this knows the exit was broadcast and retention was
+                // already decided, not merely that the child died.
+                // `send_replace`, not `send`: `send` fails when no receiver
+                // exists yet and then *discards the update*, so a session that
+                // concludes before anyone subscribes would stay `false`
+                // forever and every later subscriber would wait on a
+                // transition that already happened.
+                session.concluded.send_replace(true);
             })
             .expect("PTY reader thread");
     }
@@ -1224,6 +1336,17 @@ impl Session {
     }
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Acquire)
+    }
+
+    /// Whether the session has finished concluding — not merely exited.
+    pub fn has_concluded(&self) -> bool {
+        *self.concluded.borrow()
+    }
+
+    /// Await conclusion. Resolves immediately for a session that already has,
+    /// so a subscriber cannot miss the transition by arriving late.
+    pub fn subscribe_conclusion(&self) -> watch::Receiver<bool> {
+        self.concluded.subscribe()
     }
     /// The session's retention class. `None` only for a session this host
     /// does not govern, which never reaches the local registry.
@@ -1745,6 +1868,24 @@ impl Session {
         Ok(())
     }
 
+    /// Terminate, bounded by `deadline`.
+    ///
+    /// The deadline lands in the latch before the ladder is asked to start, so
+    /// it applies whether this call begins the ladder or finds one already
+    /// running: `terminate` is idempotent and no-ops in the latter case, but
+    /// the deadline still compresses the ladder in place. A session already
+    /// terminating therefore keeps its original `TerminationSource` — the
+    /// first requester's stamp is the honest one — while still concluding
+    /// inside the new bound.
+    pub fn terminate_within(
+        self: &Arc<Self>,
+        source: TerminationSource,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.exit_latch.set_deadline(deadline);
+        self.terminate(source)
+    }
+
     pub fn terminate(self: &Arc<Self>, source: TerminationSource) -> Result<()> {
         if self.has_exited() {
             return Ok(());
@@ -1767,10 +1908,21 @@ impl Session {
         if let Err(error) = thread::Builder::new()
             .name(format!("pty-terminate-{}", session.id()))
             .spawn(move || {
-                // Each wait returns the moment the session concludes, so the
-                // escalator never outlives the child by more than one grace.
-                if session.exit_latch.wait_timeout(INTERRUPT_GRACE) {
-                    return;
+                // Each rung returns the moment the session concludes, so the
+                // escalator never outlives the child by more than one grace —
+                // and returns early on a deadline, so a shutdown can compress a
+                // ladder that is already running.
+                #[cfg(unix)]
+                let graces = scaled_graces(session.exit_latch.deadline());
+                #[cfg(unix)]
+                let [interrupt_grace, terminate_grace, force_eof_grace] = graces;
+                #[cfg(not(unix))]
+                let interrupt_grace = INTERRUPT_GRACE;
+                match session.exit_latch.wait_phase(interrupt_grace) {
+                    PhaseWait::Exited => return,
+                    PhaseWait::GraceElapsed => {}
+                    // Nothing gentler is affordable; fall through to the sweep.
+                    PhaseWait::DeadlineReached => {}
                 }
                 #[cfg(unix)]
                 {
@@ -1792,13 +1944,21 @@ impl Session {
                             }
                         }
                     };
+                    // A deadline at any rung skips straight to the end: the
+                    // remaining graces are courtesies the budget cannot afford.
+                    let mut jump = false;
                     sweep(libc::SIGTERM, "terminate");
-                    if session.exit_latch.wait_timeout(TERMINATE_GRACE) {
-                        return;
+                    match session.exit_latch.wait_phase(terminate_grace) {
+                        PhaseWait::Exited => return,
+                        PhaseWait::GraceElapsed => {}
+                        PhaseWait::DeadlineReached => jump = true,
                     }
                     sweep(libc::SIGKILL, "sweep");
-                    if session.exit_latch.wait_timeout(FORCE_EOF_GRACE) {
-                        return;
+                    if !jump {
+                        match session.exit_latch.wait_phase(force_eof_grace) {
+                            PhaseWait::Exited => return,
+                            PhaseWait::GraceElapsed | PhaseWait::DeadlineReached => {}
+                        }
                     }
                     // Something outside both signalled groups still holds the
                     // slave. It survives — exactly as it would survive its
