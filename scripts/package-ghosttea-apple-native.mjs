@@ -20,6 +20,7 @@ import {
   bundleName,
   collectEntries,
   contentDigest,
+  nativeSourceDigest,
   downloadUrl,
   outputDirectory,
   releaseTag,
@@ -157,6 +158,11 @@ const result = {
   checksum: sha256(archive),
   size: archive.length,
   contentDigest: digest,
+  // What the artifact was built *from*. The digests above cannot establish this:
+  // computed from a stale build they agree with a lock written from that same
+  // stale build. Recording it lets the check ask whether the published artifact
+  // predates the sources being shipped.
+  sourceDigest: nativeSourceDigest(),
   entries: entryCount,
   slices: sliceDigests(entries),
 };

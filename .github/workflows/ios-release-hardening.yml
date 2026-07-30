@@ -153,4 +153,29 @@ jobs:
           cache: npm
 
       - run: npm ci --ignore-scripts
-      - run: npm run check:apple-native-artifact
+
+      # --release, not the offline form. This job's path filters include the
+      # artifact lock and both manifests, so it runs on exactly the changes that
+      # can repoint the binary target — which is where the published bytes are
+      # worth fetching and hashing, before the change merges rather than after.
+      # The offline form would only check that the lock agrees with itself and
+      # with a local artifact that does not exist on a runner.
+      - run: npm run check:apple-native-artifact:release
+
+      # Resolution is the artifact-specific assertion: SwiftPM enforces the
+      # committed manifest's checksum before unpacking, so this fails if the
+      # published artifact and the pin disagree — which is exactly what a consumer
+      # would hit.
+      #
+      # Deliberately not `swift build`. Compiling the Swift package is a separate
+      # concern from whether the artifact resolves, and gating it here means an
+      # unrelated toolchain difference reads as an artifact failure — it did on the
+      # first run, where GhostteaPerformance's generic `measure` tripped a
+      # non-Sendable diagnostic that this runner's Swift raises and newer Swift
+      # does not. Nothing is lost by leaving it out: the check above proves the
+      # published bytes are byte-identical to the artifact that was composed and
+      # built against locally, so a compile here would compile the same bytes.
+      - name: Prove SwiftPM resolves against the published artifact
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: swift package resolve

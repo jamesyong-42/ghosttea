@@ -173,6 +173,22 @@ the matching GitHub release. The crate downloads it and verifies its archive,
 static library, and public headers before linking. Push a new `ghostty-vt-*`
 tag only when this pinned native input changes.
 
+The GhostteaKit native artifact is separate, and shipping it correctly means
+verifying two properties rather than one. Its digests establish which bytes are
+published; they cannot establish that those bytes contain the source being
+shipped, because a digest taken from a stale build agrees with a lock written
+from that same stale build. So the lock records a `sourceDigest` over the crates
+compiled into it, and `npm run check:apple-native-artifact` recomputes that from
+the working tree on every run. `--release` additionally fetches the locked URL,
+hashes the archive, unpacks it, and re-derives the content and slice digests
+from the bytes actually served.
+
+That is not theoretical: 0.6.2's key-encoder and cursor fixes compile into every
+slice of that artifact, and before these checks existed the whole gate passed
+against an artifact built before them. `apple-native-spm-publishing.md` has the
+publishing order, which is forced by the content-addressed tag, and explains why
+CI does not build these bytes.
+
 Machine-local WebGPU comparisons and the authenticated live Truffle QUIC test
 remain manual pre-release evidence because hosted GPU timing and tailnet
 credentials are not stable CI inputs.
