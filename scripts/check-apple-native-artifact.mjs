@@ -1,22 +1,36 @@
-// Guards the three ways the published GhostteaKit package can silently stop
-// resolving:
+// Guards the ways the published GhostteaKit package can silently stop resolving,
+// or keep resolving to the wrong bytes:
 //
 //   1. The root manifest's URL/checksum drift from the artifact lock.
 //   2. The root and local manifests drift into different package graphs — they
 //      are mirrors except for how the native artifact is sourced.
 //   3. The locked artifact stops describing the artifact actually on disk.
+//   4. The published artifact predates the native sources being shipped.
+//   5. `--release`: the bytes at the locked URL are not the bytes locked.
 //
-// `--release` additionally requires the asset to be published, so a release
-// cannot ship a manifest pointing at a URL that does not resolve yet.
-import { existsSync, readFileSync } from "node:fs";
+// 4 and 5 are separate properties, and reading them as one is what let 0.6.2
+// nearly ship an Apple artifact built before its own fixes. Hashing establishes
+// *which* bytes are published (5); it cannot establish that those bytes contain
+// the current source (4), because a digest taken from a stale build agrees with a
+// lock written from that same stale build.
+//
+// 5 replaces a hand-maintained `published: true` in the lock — the one claim here
+// that nothing verified, and which stayed true across a change to the artifact's
+// contents.
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   collectEntries,
   contentDigest,
   lockPath,
+  nativeSourceDigest,
   readLock,
+  releaseTag,
   root,
+  sha256,
+  sliceDigests,
   sourceArtifact,
 } from "./ghosttea-apple-native-artifact.mjs";
 
@@ -146,12 +160,90 @@ if (existsSync(sourceArtifact)) {
   console.warn("The composed artifact is absent; skipping the content-digest comparison.");
 }
 
-// ── Release gate ────────────────────────────────────────────────────────────
-if (releaseMode && lock.published !== true) {
+// ── 4. The artifact was built from the sources being shipped ────────────────
+// The digests above establish which bytes are published, not whether those bytes
+// contain the source in this checkout. Computed from a stale build they agree
+// with a lock written from that same stale build, so the comparison is circular
+// and passes exactly when it should not. 0.6.2 is the worked example: the key
+// encoder and cursor fixes live in `ghostty_shim.c`, which compiles into every
+// slice, and every gate here stayed green against the previous artifact.
+const expectedSourceDigest = nativeSourceDigest();
+if (!lock.sourceDigest) {
   problems.push(
-    `The Apple native artifact is not published yet (published: false in ${lockPath}). ` +
-      `Publish ${lock.filename} under tag ${lock.tag}, then set published to true.`,
+    `${lockPath} records no sourceDigest, so nothing establishes that the published artifact was built ` +
+      `from these sources. Re-run \`npm run package:ghosttea-apple-native\` and copy the field it emits.`,
   );
+} else if (lock.sourceDigest !== expectedSourceDigest) {
+  problems.push(
+    `The native sources hash to ${expectedSourceDigest}, but the artifact was built from ${lock.sourceDigest}. ` +
+      `The published artifact predates this checkout, so GhostteaKit consumers would get the older native code. ` +
+      `Rebuild and republish: \`npm run build:ghosttea-core:apple\`, ` +
+      `\`node scripts/compose-ghosttea-apple-native.mjs\`, \`npm run package:ghosttea-apple-native\`, then publish ` +
+      `the tag it names and copy its fields here. The Apple build is not byte-reproducible, so this always ` +
+      `produces a new content digest and a new tag — there is no path that updates sourceDigest alone.`,
+  );
+}
+
+// ── 5. The published bytes are the bytes the lock claims ────────────────────
+// Only reachable over the network, so it is release-gated rather than part of an
+// offline `npm run check`. This replaces a hand-set `published: true`, which was
+// the one unverified human claim among these locks — and which stayed true across
+// a release that changed the artifact's contents.
+if (releaseMode) {
+  const response = await fetch(lock.url, { redirect: "follow" });
+  if (!response.ok) {
+    problems.push(`${lock.url} is not resolvable: HTTP ${response.status} ${response.statusText}.`);
+  } else {
+    const archive = Buffer.from(await response.arrayBuffer());
+    if (archive.length !== lock.size) {
+      problems.push(`The published archive is ${archive.length} bytes; the lock records ${lock.size}.`);
+    }
+    const checksum = sha256(archive);
+    if (checksum !== lock.checksum) {
+      problems.push(
+        `The published archive hashes to ${checksum}, but the lock — and therefore Package.swift — pins ` +
+          `${lock.checksum}. SwiftPM will refuse this artifact.`,
+      );
+    } else {
+      // Unpack and re-derive the content and slice digests, so the check covers
+      // what the archive contains and not merely how many bytes it is.
+      const scratch = mkdtempSync(join(tmpdir(), "ghosttea-apple-native-"));
+      try {
+        const archivePath = join(scratch, lock.filename);
+        writeFileSync(archivePath, archive);
+        const unzip = spawnSync("unzip", ["-q", archivePath, "-d", scratch], { encoding: "utf8" });
+        if (unzip.status !== 0) {
+          problems.push(`Could not unpack the published archive: ${unzip.stderr?.trim() || unzip.error}`);
+        } else {
+          const entries = collectEntries(join(scratch, lock.bundleName), lock.bundleName);
+          const publishedDigest = contentDigest(entries);
+          if (publishedDigest !== lock.contentDigest) {
+            problems.push(
+              `The published archive has content digest ${publishedDigest}, but the lock records ` +
+                `${lock.contentDigest}.`,
+            );
+          }
+          const publishedSlices = sliceDigests(entries);
+          for (const [slice, expected] of Object.entries(lock.slices ?? {})) {
+            if (publishedSlices[slice] !== expected) {
+              problems.push(
+                `Published slice ${slice} hashes to ${publishedSlices[slice] ?? "<absent>"}, ` +
+                  `but the lock records ${expected}.`,
+              );
+            }
+          }
+          if (!lock.url.includes(`/download/${releaseTag(publishedDigest)}/`)) {
+            problems.push(
+              `The published content digest derives tag ${releaseTag(publishedDigest)}, which is not the tag ` +
+                `in the locked URL. The artifact is published under a name that does not address its content.`,
+            );
+          }
+        }
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    }
+  }
 }
 
 if (problems.length > 0) {
@@ -160,6 +252,6 @@ if (problems.length > 0) {
 }
 
 console.log(
-  `Apple native artifact lock is consistent (tag ${lock.tag}, published: ${lock.published})` +
-    `${releaseMode ? " and release-ready" : ""}.`,
+  `Apple native artifact lock is consistent (tag ${lock.tag}, source ${expectedSourceDigest.slice(0, 12)})` +
+    `${releaseMode ? ", and the published archive matches it byte for byte" : ""}.`,
 );

@@ -153,4 +153,21 @@ jobs:
           cache: npm
 
       - run: npm ci --ignore-scripts
-      - run: npm run check:apple-native-artifact
+
+      # --release, not the offline form. This job's path filters include the
+      # artifact lock and both manifests, so it runs on exactly the changes that
+      # can repoint the binary target — which is where the published bytes are
+      # worth fetching and hashing, before the change merges rather than after.
+      # The offline form would only check that the lock agrees with itself and
+      # with a local artifact that does not exist on a runner.
+      - run: npm run check:apple-native-artifact:release
+
+      # Resolution enforces the manifest's checksum before unpacking, so this
+      # fails if the published artifact and the committed pin disagree. The build
+      # then proves the slices link rather than merely download.
+      - name: Prove SwiftPM resolves and builds against the published artifact
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          swift package resolve
+          swift build --target GhostteaCore

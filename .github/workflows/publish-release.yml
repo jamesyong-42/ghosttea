@@ -75,6 +75,28 @@ jobs:
       - run: npm run bootstrap:ghostty-vt:apple
       - run: npm run ci:desktop
 
+      # `ci:desktop` covers the registry artifacts. It does not reach the
+      # GhostteaKit native artifact, which ships to SwiftPM consumers through a
+      # URL binary target rather than a registry — so before these two steps, a
+      # release could publish a manifest whose artifact was missing, altered, or
+      # built before the sources being tagged, and nothing here would object.
+      #
+      # This fetches the locked URL, hashes the archive, unpacks it, re-derives
+      # the content and slice digests, and asserts the artifact was built from
+      # this tree's native sources.
+      - name: Verify the published Apple native artifact
+        run: npm run check:apple-native-artifact:release
+
+      # And that SwiftPM itself accepts it: resolution enforces the committed
+      # manifest's checksum before unpacking, and the build proves the slices
+      # link rather than merely download.
+      - name: Prove SwiftPM resolves and builds against it
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          swift package resolve
+          swift build --target GhostteaCore
+
       # The publish job runs on one platform, so every binary it publishes is
       # handed over as an artifact from the job that could build and gate it.
       # This job contributes the macOS daemon and the universal native tabs

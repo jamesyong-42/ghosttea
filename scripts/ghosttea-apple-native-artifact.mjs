@@ -5,7 +5,7 @@
 // called, and which release tag carries it. They live here so neither can drift
 // from the other.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const root = resolve(import.meta.dirname, "..");
@@ -133,4 +133,99 @@ export function sliceDigests(entries) {
 
 export function stableJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/**
+ * The inputs that determine what the artifact contains.
+ *
+ * The archive's own digests answer "are these the bytes we published". They
+ * cannot answer "were these bytes built from the source we ship", because a
+ * digest computed from a stale build agrees with a lock written from that same
+ * stale build — the comparison is circular. That is not hypothetical: 0.6.2's
+ * key-encoder and cursor fixes live in `ghostty_shim.c`, which compiles into
+ * every slice, and every gate stayed green against the previous artifact.
+ *
+ * So the lock records a digest of these paths too, and the check recomputes it
+ * from the working tree.
+ *
+ * The set covers only inputs whose staleness is *undetectable* by hashing the
+ * archive: the Rust crates compiled into the core and font-fixture libraries, the
+ * pins fixing the vendored Ghostty and libssh2 inputs, and the scripts that
+ * compile and compose them.
+ *
+ * It deliberately omits the packaging and identity scripts, even though they
+ * decide how the artifact is archived and digested. A change there is already
+ * caught, and caught better: the checks re-derive the content digest and the
+ * archive checksum from the published bytes, so altered archiving or digesting
+ * makes the re-derived values disagree with the lock. Freshness only has to cover
+ * what re-derivation cannot see. Keeping them out also keeps an edit to a comment
+ * in this file from demanding a republish.
+ *
+ * A mismatch here means a republish, not merely a new field. The Apple build is
+ * not byte-reproducible — measured, not assumed: recomposing identical sources on
+ * one machine with one toolchain moved the archive by two bytes and changed its
+ * content digest. So every rebuild is a new artifact under a new tag.
+ *
+ * Still conservative within that set: whole source trees are hashed, so a comment
+ * or an inline `#[cfg(test)]` change in a compiled crate asks for a republish that
+ * ships identical behaviour. That is the safe direction to err, and no textual
+ * rule can separate a comment from code that matters.
+ */
+export const nativeSourceInputs = [
+  "native/ghosttea/crates/ghosttea-ffi",
+  "native/ghosttea/crates/ghosttea-vt-sys",
+  "native/ghosttea/crates/ghosttea-vt",
+  "native/ghosttea/crates/ghosttea-core",
+  "native/ghosttea/crates/ghosttea-text",
+  "native/ghosttea/crates/ghosttea-font-fixture-ffi",
+  "native/ghostty.lock.json",
+  "native/ssh.lock.json",
+  "native/fonts.lock.json",
+  "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json",
+  "Cargo.lock",
+  "Cargo.toml",
+  "native/ghosttea/Cargo.toml",
+  "scripts/build-ghosttea-core-apple.mjs",
+  "scripts/build-font-fixture-apple.mjs",
+  "scripts/build-ghostty-vt-apple.mjs",
+  "scripts/build-ssh-candidate-apple.mjs",
+  "scripts/compose-ghosttea-apple-native.mjs",
+];
+
+// Build outputs and caches live inside some of the source trees above. They are
+// derived, machine-specific, and enormous, so hashing them would make the digest
+// a property of the machine instead of the source.
+const excludedSourceNames = new Set(["target", ".build", "node_modules", "build"]);
+
+export function nativeSourceDigest(inputs = nativeSourceInputs) {
+  const files = [];
+
+  const walk = (absolute, relative) => {
+    for (const child of readdirSync(absolute, { withFileTypes: true }).toSorted((left, right) =>
+      compareText(left.name, right.name),
+    )) {
+      if (excludedSourceNames.has(child.name)) continue;
+      const childAbsolute = join(absolute, child.name);
+      const childRelative = `${relative}/${child.name}`;
+      // A symlink's target is not covered by hashing what it points at, so treat
+      // it the way the artifact tree does and refuse rather than guess.
+      if (child.isSymbolicLink()) throw new Error(`Unexpected symlink in a native source input: ${childRelative}`);
+      if (child.isDirectory()) walk(childAbsolute, childRelative);
+      else if (child.isFile()) files.push([childRelative, sha256(readFileSync(childAbsolute))]);
+    }
+  };
+
+  for (const input of inputs.toSorted(compareText)) {
+    const absolute = join(root, input);
+    if (!existsSync(absolute)) throw new Error(`Native source input is missing: ${input}`);
+    if (statSync(absolute).isDirectory()) walk(absolute, input);
+    else files.push([input, sha256(readFileSync(absolute))]);
+  }
+
+  // Sort again: a file listed directly can sort inside another input's subtree.
+  const inventory = files
+    .toSorted(([left], [right]) => compareText(left, right))
+    .map(([path, digest]) => `${path}\0${digest}\n`)
+    .join("");
+  return sha256(Buffer.from(inventory));
 }
