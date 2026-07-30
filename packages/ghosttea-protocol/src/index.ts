@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 7;
+export const PROTOCOL_MINOR = 8;
 
 export type SessionActivityKind = "shell-idle" | "foreground-job" | "unknown";
 export type SessionActivitySource = "shell-integration" | "process-group" | "unsupported";
@@ -245,7 +245,13 @@ export type ServerEvent =
       rows: number;
       layoutEpoch: number;
     }
-  | { requestId: 0; type: "session-activity-changed"; sessionId: string; activity: SessionActivity };
+  | { requestId: 0; type: "session-activity-changed"; sessionId: string; activity: SessionActivity }
+  /**
+   * The daemon produced events faster than this client drained them and the
+   * overflow was dropped. Any of the lost events could have been a
+   * session-exited, so consumers should re-list sessions and reconcile.
+   */
+  | { requestId: 0; type: "events-lost"; skipped: number };
 
 export interface TerminalKeyEvent {
   type: "down" | "up";
@@ -453,6 +459,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       );
     case "session-activity-changed":
       return candidate.requestId === 0 && typeof candidate.sessionId === "string" && validActivity(candidate.activity);
+    case "events-lost":
+      return candidate.requestId === 0 && Number.isSafeInteger(candidate.skipped);
     default:
       return false;
   }

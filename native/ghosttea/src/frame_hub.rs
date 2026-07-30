@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use bytes::Bytes;
 use tokio::sync::broadcast;
 
 const FRAME_HISTORY_CAPACITY: usize = 16_384;
@@ -12,7 +13,7 @@ const FRAME_HISTORY_CAPACITY: usize = 16_384;
 pub struct FramePacket {
     pub ordinal: u64,
     pub session_handle: u64,
-    bytes: Arc<[u8]>,
+    bytes: Bytes,
 }
 
 impl Deref for FramePacket {
@@ -78,7 +79,9 @@ impl FrameHub {
         let _ = self.sender.send(FramePacket {
             ordinal,
             session_handle,
-            bytes: Arc::from(frame),
+            // Bytes::from(Vec) reuses the allocation, so fan-out to every
+            // subscriber shares one buffer without a publish-time copy.
+            bytes: Bytes::from(frame),
         });
     }
 

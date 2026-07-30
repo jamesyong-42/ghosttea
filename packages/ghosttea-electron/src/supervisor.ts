@@ -126,6 +126,14 @@ export class TerminalSupervisor extends EventEmitter {
     if (child) {
       this.#expectedExits.add(child);
       child.kill("SIGTERM");
+      // A daemon wedged past SIGTERM would linger holding PTYs and sockets.
+      // The timer is unref'd so a quitting app never waits on it; if the app
+      // exits first the daemon dies with its pipes as before.
+      const escalation = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 3_000);
+      escalation.unref?.();
+      child.once("exit", () => clearTimeout(escalation));
       if (this.#child === child) this.#child = undefined;
     }
     rmSync(this.connection.controlSocket, { force: true });

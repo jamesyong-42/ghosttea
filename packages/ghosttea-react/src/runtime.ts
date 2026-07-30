@@ -311,6 +311,12 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.dispatchEvent(new CustomEvent("session-metadata", { detail: exited }));
       this.dispatchEvent(new CustomEvent("session-exited", { detail }));
     });
+    this.#control.addEventListener("events-lost", () => {
+      // The daemon dropped events faster than this client drained them. Any
+      // of them could have been a session-exited, so reconcile against the
+      // daemon's authoritative session list.
+      void this.#resyncAfterLostEvents();
+    });
     this.#control.addEventListener("session-activity-changed", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "session-activity-changed" }>>).detail;
       const handle = this.#handleBySessionId.get(detail.sessionId);
@@ -672,6 +678,70 @@ export class GhostteaTerminalRuntime extends EventTarget {
       this.registerSession(session);
     }
     return response.sessions;
+  }
+
+  /**
+   * Reconcile tracked sessions against the daemon's authoritative list after
+   * an events-lost notice. A session still listed but now exited had its exit
+   * event lost; a session absent from the list entirely exited and left the
+   * registry, so its exit details are gone and are reported as unknown.
+   */
+  async #resyncAfterLostEvents(): Promise<void> {
+    try {
+      const before = new Map<string, SessionSummary>();
+      for (const session of this.#sessionByHandle.values()) {
+        before.set(session.id, session);
+      }
+      const sessions = await this.listSessions();
+      const known = new Set<string>();
+      for (const session of sessions) {
+        known.add(session.id);
+        const previous = before.get(session.id);
+        if (!previous || previous.exited || !session.exited) continue;
+        this.#cancelMetadataRefresh(session.handle);
+        this.dispatchEvent(new CustomEvent("session-metadata", { detail: session }));
+        this.dispatchEvent(
+          new CustomEvent("session-exited", {
+            detail: {
+              requestId: 0,
+              type: "session-exited",
+              sessionId: session.id,
+              exitCode: session.exitCode,
+              exitSignal: session.exitSignal,
+              requestedTermination: session.requestedTermination,
+              exitOutcome: session.exitOutcome ?? "unknown",
+            } satisfies Extract<ServerEvent, { type: "session-exited" }>,
+          }),
+        );
+      }
+      for (const [handle, session] of this.#sessionByHandle) {
+        if (session.exited || known.has(session.id)) continue;
+        const detail = {
+          requestId: 0,
+          type: "session-exited",
+          sessionId: session.id,
+          exitCode: null,
+          exitSignal: null,
+          requestedTermination: null,
+          exitOutcome: "unknown",
+        } satisfies Extract<ServerEvent, { type: "session-exited" }>;
+        this.#cancelMetadataRefresh(handle);
+        const exited = {
+          ...session,
+          exited: true,
+          exitCode: null,
+          exitSignal: null,
+          requestedTermination: null,
+          exitOutcome: "unknown" as const,
+        };
+        this.#sessionByHandle.set(handle, exited);
+        this.dispatchEvent(new CustomEvent("session-metadata", { detail: exited }));
+        this.dispatchEvent(new CustomEvent("session-exited", { detail }));
+      }
+    } catch (error) {
+      if (!this.#disposed)
+        console.error("[terminal-runtime] failed to resynchronize sessions after lost events", error);
+    }
   }
 
   async listRemoteHosts(): Promise<RemoteHostSummary[]> {
