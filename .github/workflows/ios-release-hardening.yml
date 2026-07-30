@@ -137,6 +137,6 @@ jobs:
             artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
             native/build/ghosttea-apple-native/metadata.json
             native/build/ghostty-apple/build-metadata.json
-            native/build/ssh-candidate-apple/build-metadata.json
+            native/build/ssh-apple/build-metadata.json
           if-no-files-found: error
           retention-days: 14
