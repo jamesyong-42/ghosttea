@@ -150,6 +150,18 @@ EgTerminal* eg_terminal_new(uint16_t cols, uint16_t rows, size_t max_scrollback)
           255, 255, 255,
           40, 44, 52,
           255, 255, 255) != GHOSTTY_SUCCESS) goto fail;
+  // A blinking cursor is this terminal's default, which takes two writes for
+  // two different questions. The mode is the cursor's state right now, before
+  // any program has expressed a preference. The option is what "default" means
+  // later: libghostty resolves both `CSI 0 q` and a terminal reset against
+  // DEFAULT_CURSOR_BLINK, whose built-in value is false. Setting only the mode
+  // made the default survive exactly until the first program asked for the
+  // default cursor — a steady cursor for the rest of the session, and one that
+  // is only visible in programs that show the real cursor rather than drawing
+  // their own.
+  bool default_cursor_blink = true;
+  ghostty_terminal_set(
+      state->terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &default_cursor_blink);
   ghostty_terminal_mode_set(state->terminal, GHOSTTY_MODE_CURSOR_BLINKING, true);
   return state;
 
@@ -352,6 +364,14 @@ int eg_terminal_snapshot(EgTerminal* state,
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &cursor_style);
   meta->cursor_style = (uint8_t)cursor_style;
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &meta->cursor_blinking);
+  // Two independent questions: CURSOR_VISIBLE answers "do the terminal modes
+  // show a cursor" (DECTCEM), while CURSOR_VIEWPORT_HAS_VALUE answers "is it
+  // inside the rows we are about to hand over". Scrolling into the scrollback
+  // leaves the first true and the second false, and the position values are
+  // documented as undefined in that case. Reporting mode-visible with a zeroed
+  // position parks a cursor in the top-left corner of the viewport for as long
+  // as the user stays scrolled up, so a cursor is drawable only when it is both
+  // enabled and actually on screen.
   bool cursor_has_value = false;
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_has_value);
   meta->cursor_x = 0;
@@ -359,6 +379,8 @@ int eg_terminal_snapshot(EgTerminal* state,
   if (cursor_has_value) {
     ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &meta->cursor_x);
     ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &meta->cursor_y);
+  } else {
+    meta->cursor_visible = 0;
   }
   meta->full_dirty = dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL;
   meta->dirty_count = 0;

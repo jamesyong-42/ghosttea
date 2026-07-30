@@ -890,6 +890,77 @@ mod tests {
         );
     }
 
+    /// Asking for the default cursor gets the same cursor as never asking.
+    ///
+    /// A blinking cursor is this terminal's default, but libghostty resolves
+    /// `CSI 0 q` and a terminal reset against a separate DEFAULT_CURSOR_BLINK
+    /// option that is false unless set. Declaring the default only as a mode
+    /// left `CSI 0 q` — which is what a crossterm-style "restore the user's
+    /// cursor" emits — turning blinking off for the rest of the session.
+    #[test]
+    fn resetting_to_the_default_cursor_keeps_it_blinking() {
+        for sequence in ["", "\x1b[0 q", "\x1b[1 q", "\x1b[!p", "\x1bc", "\x1b[?12h"] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(sequence.as_bytes());
+            assert!(
+                terminal.snapshot().unwrap().cursor.blinking,
+                "cursor stopped blinking after {sequence:?}"
+            );
+        }
+    }
+
+    /// The flip side: a program that explicitly asks for a steady cursor gets
+    /// one, so the default above cannot be implemented by forcing blink on.
+    #[test]
+    fn honors_an_explicit_request_for_a_steady_cursor() {
+        for (sequence, style) in [("\x1b[2 q", 1_u8), ("\x1b[4 q", 2), ("\x1b[6 q", 0)] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(sequence.as_bytes());
+            let cursor = terminal.snapshot().unwrap().cursor;
+            assert!(!cursor.blinking, "cursor still blinking after {sequence:?}");
+            assert_eq!(cursor.style, style, "unexpected style for {sequence:?}");
+        }
+        let mut disabled = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        disabled.feed(b"\x1b[?12l");
+        assert!(!disabled.snapshot().unwrap().cursor.blinking);
+    }
+
+    /// Scrolling the cursor out of the viewport hides it rather than parking it
+    /// in the top-left corner.
+    ///
+    /// Ghostty answers "are the terminal modes showing a cursor" and "is the
+    /// cursor inside the rows being rendered" separately, and documents the
+    /// viewport position as undefined when the latter is false. Forwarding
+    /// mode-visible alongside the zeroed position drew a cursor at (0, 0) for as
+    /// long as the user stayed scrolled up. Only clients that show the real
+    /// cursor could see it, which is why it looked specific to one program.
+    #[test]
+    fn hides_the_cursor_once_it_scrolls_out_of_the_viewport() {
+        let mut terminal = GhosttyTerminalCore::new(20, 3, 100).unwrap();
+        for line in 0..10 {
+            terminal.feed(format!("line-{line}\r\n").as_bytes());
+        }
+        terminal.feed(b"prompt> ");
+
+        let bottom = terminal.snapshot().unwrap();
+        assert_eq!((bottom.cursor.x, bottom.cursor.y), (8, 2));
+        assert!(bottom.cursor.visible);
+
+        terminal.scroll(-2);
+        let scrolled = terminal.snapshot().unwrap();
+        assert!(
+            !scrolled.cursor.visible,
+            "cursor reported visible at ({}, {}) while scrolled off screen",
+            scrolled.cursor.x, scrolled.cursor.y
+        );
+
+        // Returning to the bottom restores it, so this hides rather than latches.
+        terminal.scroll(2);
+        let restored = terminal.snapshot().unwrap();
+        assert_eq!((restored.cursor.x, restored.cursor.y), (8, 2));
+        assert!(restored.cursor.visible);
+    }
+
     #[test]
     fn encodes_mouse_only_when_application_tracking_is_active() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
