@@ -19,7 +19,7 @@ OFL-1.1 notices inherited from the pinned Ghostty source. Run:
 ```sh
 npm run sync:fonts
 npm run check:font-parity
-npm run build:font-parity:apple
+npm run build:apple-native
 npm run test:font-parity:apple-runtime
 ```
 

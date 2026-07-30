@@ -8,8 +8,6 @@ const artifacts = [
   join(root, "apple/GhostteaKit/Artifacts/ghostty-vt.xcframework"),
   join(root, "apple/GhostteaKit/Artifacts/ghosttea-libssh2-candidate.xcframework"),
 ];
-const fontFixtureArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-font-fixture.xcframework");
-const coreArtifact = join(root, "apple/GhostteaKit/Artifacts/GhostteaCoreFFI.xcframework");
 const combinedArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-apple-native.xcframework");
 const buildRoot = join(root, "native/build/ios-harness");
 const moduleCache = join(buildRoot, "module-cache");
@@ -28,32 +26,14 @@ for (const artifact of artifacts) {
     throw new Error(`Missing ${artifact}. Build the Apple VT and SSH artifacts first.`);
   }
 }
-const fontFixture = spawnSync(process.execPath, [join(root, "scripts/build-font-fixture-apple.mjs")], {
+const appleNative = spawnSync(process.execPath, [join(root, "scripts/build-ghosttea-apple-native.mjs")], {
   cwd: root,
   env: environment,
   encoding: "utf8",
 });
-if (fontFixture.error) throw fontFixture.error;
-if (fontFixture.status !== 0) throw new Error(fontFixture.stdout + fontFixture.stderr);
-process.stdout.write(fontFixture.stdout);
-if (!existsSync(fontFixtureArtifact)) throw new Error(`Missing ${fontFixtureArtifact}.`);
-const core = spawnSync(process.execPath, [join(root, "scripts/build-ghosttea-core-apple.mjs")], {
-  cwd: root,
-  env: environment,
-  encoding: "utf8",
-});
-if (core.error) throw core.error;
-if (core.status !== 0) throw new Error(core.stdout + core.stderr);
-process.stdout.write(core.stdout);
-if (!existsSync(coreArtifact)) throw new Error(`Missing ${coreArtifact}.`);
-const compose = spawnSync(process.execPath, [join(root, "scripts/compose-ghosttea-apple-native.mjs")], {
-  cwd: root,
-  env: environment,
-  encoding: "utf8",
-});
-if (compose.error) throw compose.error;
-if (compose.status !== 0) throw new Error(compose.stderr);
-process.stdout.write(compose.stdout);
+if (appleNative.error) throw appleNative.error;
+if (appleNative.status !== 0) throw new Error(appleNative.stdout + appleNative.stderr);
+process.stdout.write(appleNative.stdout);
 if (!existsSync(combinedArtifact)) throw new Error(`Missing composed artifact ${combinedArtifact}.`);
 rmSync(buildRoot, { recursive: true, force: true });
 mkdirSync(moduleCache, { recursive: true });

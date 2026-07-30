@@ -268,10 +268,10 @@ npm run bootstrap:ghostty-vt:apple
 npm run build:ghostty-vt:apple
 npm run bootstrap:ssh:apple
 npm run build:ssh:apple
-npm run build:font-parity:apple
-npm run build:ghosttea-core:apple
+npm run build:apple-native
 npm run check:ssh:apple
 npm run test:ghostty-vt:apple
+npm run test:swiftpm:consumer:local
 npm run test:font-parity:apple-runtime
 npm run test:ghosttea-core:ffi
 npm run test:ghosttea-core:apple-runtime
@@ -298,14 +298,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 The Ghostty build uses a repository-pinned Zig archive and Ghostty commit. The
 SSH candidate build uses pinned OpenSSL and libssh2 commits. Both produce and
-validate macOS, iOS device, and iOS simulator slices. Before SwiftPM resolves
-the package, `compose-ghosttea-apple-native.mjs` combines the VT, SSH, Rust
-font-fixture, and production core libraries into one generated XCFramework with
-separate `GhosttyVt`, `LibSSH2Candidate`, `GhostteaFontFixtureNative`, and
-`GhostteaCoreNative` Clang modules. This avoids Xcode's flattened-header
-collision when an application links multiple static binary targets. The test script runs
-the Swift proofs on macOS and cross-compiles the relevant targets for the arm64
-iOS simulator and device SDKs.
+validate macOS, iOS device, and iOS simulator slices.
+`build-ghosttea-apple-native.mjs` compiles the core and font-fixture Rust ABIs as
+dependencies of one final `ghosttea-apple-ffi` static library, then combines
+that single Rust linkage unit with SSH. This guarantees one Rust runtime while
+retaining separate `GhosttyVt`, `LibSSH2Candidate`,
+`GhostteaFontFixtureNative`, and `GhostteaCoreNative` Clang modules. The full
+Swift test suite and an external consumer linking every public product gate the
+result on macOS; the integration proof also cross-compiles relevant targets for
+the arm64 iOS simulator and device SDKs.
 
 `GhostteaFontProof` loads the five SHA-256-locked font resources from its Swift
 package bundle and runs the Rust shaping/rasterization fixture through the C ABI.

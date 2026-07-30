@@ -1,9 +1,9 @@
 # Publishing Ghosttea
 
 Ghosttea publishes one shared version across ten npm packages and six Rust
-crates. The `ghosttead`, `ghosttea-ffi`, and `ghosttea-font-fixture-ffi` Rust
-packages and both desktop applications are private integration targets and
-must never be published to crates.io.
+crates. The `ghosttead`, `ghosttea-ffi`, `ghosttea-font-fixture-ffi`, and
+`ghosttea-apple-ffi` Rust packages and both desktop applications are private
+integration targets and must never be published to crates.io.
 
 The `ghosttead` crate staying off crates.io does not keep the daemon out of
 consumers' hands: its release-built binary ships to npm through the
@@ -120,6 +120,7 @@ cargo publish \
   --workspace \
   --no-verify \
   --exclude ghosttead \
+  --exclude ghosttea-apple-ffi \
   --exclude ghosttea-ffi \
   --exclude ghosttea-font-fixture-ffi
 ```
@@ -186,8 +187,10 @@ from the bytes actually served.
 That is not theoretical: 0.6.2's key-encoder and cursor fixes compile into every
 slice of that artifact, and before these checks existed the whole gate passed
 against an artifact built before them. `apple-native-spm-publishing.md` has the
-publishing order, which is forced by the content-addressed tag, and explains why
-CI does not build these bytes.
+content-addressed publication order. The authoritative bytes are now built,
+tested, attested, published, downloaded, and re-verified by
+`ghosttea-apple-native-artifact.yml`; developer-built archives are candidates
+only.
 
 Machine-local WebGPU comparisons and the authenticated live Truffle QUIC test
 remain manual pre-release evidence because hosted GPU timing and tailnet

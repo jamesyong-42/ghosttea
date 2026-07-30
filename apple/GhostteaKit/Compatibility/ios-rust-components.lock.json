@@ -2,16 +2,15 @@
   "schemaVersion": 1,
   "target": "aarch64-apple-ios",
   "root": {
-    "ref": "pkg:cargo/ghosttea-ffi@0.6.2",
-    "name": "ghosttea-ffi",
+    "ref": "pkg:cargo/ghosttea-apple-ffi@0.6.2",
+    "name": "ghosttea-apple-ffi",
     "version": "0.6.2",
     "dependencies": [
-      "pkg:cargo/ghosttea-core@0.6.2",
-      "pkg:cargo/ghosttea-text@0.6.2",
-      "pkg:cargo/serde_json@1.0.150"
+      "pkg:cargo/ghosttea-ffi@0.6.2",
+      "pkg:cargo/ghosttea-font-fixture-ffi@0.6.2"
     ]
   },
-  "cargoLockSha256": "d6faaf38864477cec7f0f78e3521b9d68953ebbead11760abfc7b5f87d90a742",
+  "cargoLockSha256": "deb59927e216c0a78e00356a11595735cff93ed1044e3535f39d599d819e460d",
   "components": [
     {
       "ref": "pkg:cargo/anyhow@1.0.103",
@@ -329,6 +328,29 @@
         "pkg:cargo/ghosttea-vt@0.6.2",
         "pkg:cargo/serde@1.0.228",
         "pkg:cargo/smallvec@1.15.2"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-ffi@0.6.2",
+      "name": "ghosttea-ffi",
+      "version": "0.6.2",
+      "source": "workspace",
+      "license": "MIT",
+      "dependencies": [
+        "pkg:cargo/ghosttea-core@0.6.2",
+        "pkg:cargo/ghosttea-text@0.6.2",
+        "pkg:cargo/serde_json@1.0.150"
+      ]
+    },
+    {
+      "ref": "pkg:cargo/ghosttea-font-fixture-ffi@0.6.2",
+      "name": "ghosttea-font-fixture-ffi",
+      "version": "0.6.2",
+      "source": "workspace",
+      "license": "MIT",
+      "dependencies": [
+        "pkg:cargo/ghosttea-text@0.6.2",
+        "pkg:cargo/serde_json@1.0.150"
       ]
     },
     {

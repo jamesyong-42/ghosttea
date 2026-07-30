@@ -49,7 +49,7 @@ const metadata = JSON.parse(metadataResult.stdout);
 const componentNotices = [];
 const documentsByHash = new Map();
 
-addComponent("ghosttea-ffi", packageVersion, "MIT", ["native/ghosttea/LICENSE"]);
+addComponent(rustLock.root.name, packageVersion, "MIT", ["native/ghosttea/LICENSE"]);
 addComponent("Ghostty VT", versionOf("Ghostty VT"), "MIT", ["native/vendor/ghostty/LICENSE"]);
 addComponent("OpenSSL", versionOf("OpenSSL"), "Apache-2.0", ["native/vendor/openssl/LICENSE.txt"]);
 addComponent(

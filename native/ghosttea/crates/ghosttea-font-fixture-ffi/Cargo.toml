@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 ghosttea-text = { path = "../ghosttea-text", features = ["fixture"] }

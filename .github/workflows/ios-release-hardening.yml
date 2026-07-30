@@ -4,92 +4,38 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - ".github/workflows/ghostty-vt-artifact.yml"
+      - ".cargo/**"
+      - ".github/workflows/ghosttea-apple-native-artifact.yml"
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
-      - "package.json"
-      - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
-      - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
-      - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
-      - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
-      - "apple/GhostteaApp/Resources/**"
-      - "apple/GhostteaApp/App/**"
-      - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
-      - "apple/GhostteaKit/Package.swift"
+      - "Cargo.toml"
       - "Package.swift"
-      - "apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/**"
-      - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
-      - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
-      - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
-      - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
+      - "apple/**"
       - "native/fonts.lock.json"
+      - "native/ghosttea/**"
       - "native/ghostty.lock.json"
-      - "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"
       - "native/ssh.lock.json"
-      - "scripts/archive-ios-app.mjs"
-      - "scripts/bootstrap-ghostty-vt-apple.mjs"
-      - "scripts/bootstrap-ghostty-vt.mjs"
-      - "scripts/build-ghostty-vt-apple.mjs"
-      - "scripts/build-ghostty-vt.mjs"
-      - "scripts/check-apple-native-artifact.mjs"
-      - "scripts/check-bundled-fonts.mjs"
-      - "scripts/ghosttea-apple-native-artifact.mjs"
-      - "scripts/package-ghosttea-apple-native.mjs"
-      - "scripts/check-ios-release-bom.mjs"
-      - "scripts/check-ios-release-resources.mjs"
-      - "scripts/check-ios-app-store-readiness.mjs"
-      - "scripts/check-ios-redacted-diagnostics.mjs"
-      - "scripts/check-ghostty-upgrade-procedure.mjs"
-      - "scripts/check-ios-release-ready.mjs"
-      - "scripts/update-ios-release-resources.mjs"
+      - "package-lock.json"
+      - "package.json"
+      - "scripts/**"
   push:
     branches:
       - main
     paths:
-      - ".github/workflows/ghostty-vt-artifact.yml"
+      - ".cargo/**"
+      - ".github/workflows/ghosttea-apple-native-artifact.yml"
       - ".github/workflows/ios-release-hardening.yml"
       - "Cargo.lock"
-      - "package.json"
-      - "apple/GhostteaKit/Compatibility/ios-release.cdx.json"
-      - "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-app-store.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json"
-      - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
-      - "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md"
-      - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
-      - "apple/GhostteaApp/Resources/**"
-      - "apple/GhostteaApp/App/**"
-      - "apple/GhostteaApp/GhostteaApp.xcodeproj/project.pbxproj"
-      - "apple/GhostteaKit/Package.swift"
+      - "Cargo.toml"
       - "Package.swift"
-      - "apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/**"
-      - "apple/GhostteaKit/Sources/GhostteaDiagnostics/**"
-      - "apple/GhostteaKit/Sources/GhostteaTerminal/**"
-      - "apple/GhostteaKit/Tests/GhostteaDiagnosticsTests/**"
-      - "apple/GhostteaKit/Compatibility/truffle-swift.lock.json"
+      - "apple/**"
       - "native/fonts.lock.json"
+      - "native/ghosttea/**"
       - "native/ghostty.lock.json"
-      - "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"
       - "native/ssh.lock.json"
-      - "scripts/archive-ios-app.mjs"
-      - "scripts/bootstrap-ghostty-vt-apple.mjs"
-      - "scripts/bootstrap-ghostty-vt.mjs"
-      - "scripts/build-ghostty-vt-apple.mjs"
-      - "scripts/build-ghostty-vt.mjs"
-      - "scripts/check-apple-native-artifact.mjs"
-      - "scripts/check-bundled-fonts.mjs"
-      - "scripts/ghosttea-apple-native-artifact.mjs"
-      - "scripts/package-ghosttea-apple-native.mjs"
-      - "scripts/check-ios-release-bom.mjs"
-      - "scripts/check-ios-release-resources.mjs"
-      - "scripts/check-ios-app-store-readiness.mjs"
-      - "scripts/check-ios-redacted-diagnostics.mjs"
-      - "scripts/check-ghostty-upgrade-procedure.mjs"
-      - "scripts/check-ios-release-ready.mjs"
-      - "scripts/update-ios-release-resources.mjs"
+      - "package-lock.json"
+      - "package.json"
+      - "scripts/**"
 
 permissions:
   contents: read
@@ -143,7 +89,10 @@ jobs:
   # package graphs needs a Swift toolchain to evaluate them, so it runs here
   # rather than on the Linux BOM job, where the check would silently skip.
   validate-package-manifests:
-    runs-on: macos-15
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7
 
@@ -152,30 +101,39 @@ jobs:
           node-version: 24
           cache: npm
 
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
       - run: npm ci --ignore-scripts
+      - run: npm run check:ios-release-toolchain
+      - run: npm run check:swiftpm:manifests
 
-      # --release, not the offline form. This job's path filters include the
-      # artifact lock and both manifests, so it runs on exactly the changes that
-      # can repoint the binary target — which is where the published bytes are
-      # worth fetching and hashing, before the change merges rather than after.
-      # The offline form would only check that the lock agrees with itself and
-      # with a local artifact that does not exist on a runner.
-      - run: npm run check:apple-native-artifact:release
+      # Build every native input from its reviewed lock, then produce one Rust
+      # staticlib for the entire Swift package. This catches native/source drift
+      # before a remote artifact exists for the reviewed source.
+      - run: npm run bootstrap:ghostty-vt:apple
+      - run: npm run build:ghostty-vt:apple
+      - run: npm run bootstrap:ssh:apple
+      - run: npm run build:ssh:apple
+      - run: npm run build:apple-native
 
-      # Resolution is the artifact-specific assertion: SwiftPM enforces the
-      # committed manifest's checksum before unpacking, so this fails if the
-      # published artifact and the pin disagree — which is exactly what a consumer
-      # would hit.
-      #
-      # Deliberately not `swift build`. Compiling the Swift package is a separate
-      # concern from whether the artifact resolves, and gating it here means an
-      # unrelated toolchain difference reads as an artifact failure — it did on the
-      # first run, where GhostteaPerformance's generic `measure` tripped a
-      # non-Sendable diagnostic that this runner's Swift raises and newer Swift
-      # does not. Nothing is lost by leaving it out: the check above proves the
-      # published bytes are byte-identical to the artifact that was composed and
-      # built against locally, so a compile here would compile the same bytes.
-      - name: Prove SwiftPM resolves against the published artifact
-        env:
-          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-        run: swift package resolve
+      - name: Run the complete local-artifact SwiftPM suite
+        run: swift test --disable-sandbox --package-path apple/GhostteaKit
+
+      - name: Link every public product against the candidate artifact
+        run: npm run test:swiftpm:consumer:local
+
+      - run: npm run package:ghosttea-apple-native
+      - run: npm run verify:ghosttea-apple-native-package
+
+      - name: Preserve the reviewed Apple native candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghosttea-apple-native-candidate-${{ github.sha }}
+          path: |
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
+            native/build/ghosttea-apple-native/metadata.json
+          if-no-files-found: error
+          retention-days: 14

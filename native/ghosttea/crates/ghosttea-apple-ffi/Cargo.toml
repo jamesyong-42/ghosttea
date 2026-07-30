@@ -1,0 +1,19 @@
+[package]
+name = "ghosttea-apple-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# This is the only Rust system library linked into GhostteaAppleNative.
+# Its dependencies remain rlibs so rustc can unify their shared dependencies
+# and include exactly one Rust standard library/runtime in the final archive.
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+ghosttea-ffi = { path = "../ghosttea-ffi" }
+ghosttea-font-fixture-ffi = { path = "../ghosttea-font-fixture-ffi" }

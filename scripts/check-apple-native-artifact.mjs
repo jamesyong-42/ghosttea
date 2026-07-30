@@ -34,9 +34,27 @@ import {
   sourceArtifact,
 } from "./ghosttea-apple-native-artifact.mjs";
 
-const releaseMode = process.argv.includes("--release");
+const arguments_ = process.argv.slice(2);
+const unknownArguments = arguments_.filter((argument) => !["--manifests-only", "--release"].includes(argument));
+if (unknownArguments.length > 0 || new Set(arguments_).size !== arguments_.length) {
+  throw new Error("Usage: check-apple-native-artifact.mjs [--manifests-only | --release]");
+}
+const releaseMode = arguments_.includes("--release");
+const manifestsOnly = arguments_.includes("--manifests-only");
+if (releaseMode && manifestsOnly) {
+  throw new Error("--manifests-only and --release are mutually exclusive.");
+}
 const lock = readLock();
 const problems = [];
+const manifestCache = mkdtempSync(join(tmpdir(), "ghosttea-swift-manifest-"));
+const developerDirectory =
+  process.env.DEVELOPER_DIR ?? (process.platform === "darwin" ? "/Applications/Xcode.app/Contents/Developer" : null);
+const swiftEnvironment = {
+  ...process.env,
+  CLANG_MODULE_CACHE_PATH: manifestCache,
+  ...(developerDirectory ? { DEVELOPER_DIR: developerDirectory } : {}),
+  SWIFTPM_MODULECACHE_OVERRIDE: manifestCache,
+};
 
 const rootManifest = join(root, "Package.swift");
 const localManifest = join(root, "apple/GhostteaKit/Package.swift");
@@ -67,8 +85,9 @@ if (!lock.url.endsWith(`/${lock.filename}`)) {
 
 // ── 2. Both manifests describe the same package ─────────────────────────────
 function dumpPackage(packagePath) {
-  const result = spawnSync("swift", ["package", "--package-path", packagePath, "dump-package"], {
+  const result = spawnSync("swift", ["package", "--disable-sandbox", "--package-path", packagePath, "dump-package"], {
     cwd: root,
+    env: swiftEnvironment,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -112,36 +131,50 @@ function shape(dump) {
   };
 }
 
-if (spawnSync("swift", ["--version"], { encoding: "utf8" }).status !== 0) {
-  console.warn("swift is unavailable; skipping the manifest-parity comparison.");
-} else {
-  const rootDump = dumpPackage(".");
-  const localDump = dumpPackage("apple/GhostteaKit");
-  if (rootDump && localDump) {
-    const rootShape = shape(rootDump);
-    const localShape = shape(localDump);
-    for (const field of ["dependencies", "products", "targets"]) {
-      const onlyRoot = rootShape[field].filter((entry) => !localShape[field].includes(entry));
-      const onlyLocal = localShape[field].filter((entry) => !rootShape[field].includes(entry));
-      for (const entry of onlyRoot) problems.push(`${field}: only Package.swift declares ${entry}`);
-      for (const entry of onlyLocal) problems.push(`${field}: only apple/GhostteaKit/Package.swift declares ${entry}`);
-    }
-    // The one intended difference: the root manifest fetches the artifact, the
-    // local one builds against it. Assert that rather than let it slip.
-    const binaryTargetOf = (dump) => dump.targets.find((target) => target.type === "binary");
-    if (binaryTargetOf(rootDump)?.url !== lock.url) {
-      problems.push("Package.swift's binary target must be sourced by url; it is not.");
-    }
-    if (binaryTargetOf(localDump)?.path !== "Artifacts/ghosttea-apple-native.xcframework") {
-      problems.push(
-        "apple/GhostteaKit/Package.swift's binary target must stay path-sourced so Apple development builds against a local artifact.",
-      );
+try {
+  if (spawnSync("swift", ["--version"], { env: swiftEnvironment, encoding: "utf8" }).status !== 0) {
+    console.warn("swift is unavailable; skipping the manifest-parity comparison.");
+  } else {
+    const rootDump = dumpPackage(".");
+    const localDump = dumpPackage("apple/GhostteaKit");
+    if (rootDump && localDump) {
+      const rootShape = shape(rootDump);
+      const localShape = shape(localDump);
+      for (const field of ["dependencies", "products", "targets"]) {
+        const onlyRoot = rootShape[field].filter((entry) => !localShape[field].includes(entry));
+        const onlyLocal = localShape[field].filter((entry) => !rootShape[field].includes(entry));
+        for (const entry of onlyRoot) problems.push(`${field}: only Package.swift declares ${entry}`);
+        for (const entry of onlyLocal)
+          problems.push(`${field}: only apple/GhostteaKit/Package.swift declares ${entry}`);
+      }
+      // The one intended difference: the root manifest fetches the artifact, the
+      // local one builds against it. Assert that rather than let it slip.
+      const binaryTargetOf = (dump) => dump.targets.find((target) => target.type === "binary");
+      if (binaryTargetOf(rootDump)?.url !== lock.url) {
+        problems.push("Package.swift's binary target must be sourced by url; it is not.");
+      }
+      if (binaryTargetOf(localDump)?.path !== "Artifacts/ghosttea-apple-native.xcframework") {
+        problems.push(
+          "apple/GhostteaKit/Package.swift's binary target must stay path-sourced so Apple development builds against a local artifact.",
+        );
+      }
     }
   }
+} finally {
+  rmSync(manifestCache, { recursive: true, force: true });
 }
 
 if (!readFileSync(localManifest, "utf8").includes("Artifacts/ghosttea-apple-native.xcframework")) {
   problems.push(`${localManifest} no longer references the local artifact path.`);
+}
+
+if (manifestsOnly) {
+  if (problems.length > 0) {
+    console.error(problems.map((problem) => `- ${problem}`).join("\n"));
+    process.exit(1);
+  }
+  console.log(`SwiftPM manifests are equivalent and pin ${lock.tag}.`);
+  process.exit(0);
 }
 
 // ── 3. The lock still describes the artifact on disk ────────────────────────
@@ -177,8 +210,8 @@ if (!lock.sourceDigest) {
   problems.push(
     `The native sources hash to ${expectedSourceDigest}, but the artifact was built from ${lock.sourceDigest}. ` +
       `The published artifact predates this checkout, so GhostteaKit consumers would get the older native code. ` +
-      `Rebuild and republish: \`npm run build:ghosttea-core:apple\`, ` +
-      `\`node scripts/compose-ghosttea-apple-native.mjs\`, \`npm run package:ghosttea-apple-native\`, then publish ` +
+      `Rebuild and republish: \`npm run build:apple-native\`, ` +
+      `\`npm run package:ghosttea-apple-native\`, then publish ` +
       `the tag it names and copy its fields here. The Apple build is not byte-reproducible, so this always ` +
       `produces a new content digest and a new tag — there is no path that updates sourceDigest alone.`,
   );

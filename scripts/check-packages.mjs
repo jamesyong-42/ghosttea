@@ -261,6 +261,8 @@ try {
     "--exclude",
     "ghosttead",
     "--exclude",
+    "ghosttea-apple-ffi",
+    "--exclude",
     "ghosttea-ffi",
     "--exclude",
     "ghosttea-font-fixture-ffi",

@@ -62,7 +62,7 @@ test("lists what the workspace actually publishes", () => {
   const crates = publishedCrates();
   const packages = publishedPackages();
   // Declared `publish = false`, so they must never appear in release notes.
-  for (const priv of ["ghosttead", "ghosttea-ffi", "ghosttea-font-fixture-ffi"]) {
+  for (const priv of ["ghosttead", "ghosttea-apple-ffi", "ghosttea-ffi", "ghosttea-font-fixture-ffi"]) {
     assert.ok(!crates.includes(priv), `${priv} is private but was listed`);
   }
   assert.ok(crates.includes("ghosttea-vt-sys"), "a published crate went missing");

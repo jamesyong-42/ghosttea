@@ -1,53 +1,40 @@
 name: Ghosttea Apple native artifact
 
-# Audits the XCFramework that GhostteaKit's URL binary target resolves. It does
-# not build or publish it.
-#
-# The tag is content-addressed (`ghosttea-apple-native-<digest12>`), not keyed to
-# a ghosttea release: `.binaryTarget(url:checksum:)` needs a checksum that is
-# already valid at the commit SwiftPM resolves, and release assets are built
-# after their release commit. Publishing once per distinct artifact means every
-# later ghosttea tag points at bytes that already exist.
-#
-# This workflow used to build the artifact in CI and refuse to publish unless the
-# rebuild reproduced the digest the tag names. That cannot work, for two reasons
-# discovered when it first ran:
-#
-#   1. The Apple build is not byte-reproducible. Measured, not assumed:
-#      recomposing identical sources on one machine with one toolchain moved the
-#      archive by two bytes and changed its content digest. A rebuild can
-#      therefore never match a digest computed elsewhere, so "rebuild and
-#      compare" fails by construction.
-#   2. It triggered on the artifact tag and checked out that tag. The artifact is
-#      published before the lock update merges — it has to be, since the lock
-#      records the URL — so the tree at that tag still names the previous
-#      artifact. The comparison was guaranteed to disagree.
-#
-# The build stays local, where `npm run` already does it. Nothing is lost by that:
-# SwiftPM verifies the checksum from the *committed* manifest before unpacking, so
-# an asset cannot be substituted without editing a reviewed file, which is the
-# guarantee an attestation over CI-built bytes would have added.
-#
-# What is actually worth automating is the opposite direction — confirming that
-# the bytes consumers will fetch are still the bytes the lock names. Any PR
-# touching the lock or either manifest gets that from `iOS release hardening`;
-# this runs the same check on a schedule, because the artifact is an external
-# dependency of every GhostteaKit consumer and a deleted or altered release would
-# otherwise surface as a stranger's failed build.
+# The authoritative Apple binary is built by GitHub Actions from a reviewed
+# commit. A manual dispatch may stop after producing a candidate, or—behind the
+# protected release environment—publish that exact candidate under its
+# content-addressed tag. The scheduled job continuously verifies the artifact
+# currently pinned by Package.swift.
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the CI-built candidate as a content-addressed GitHub release
+        required: true
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "Package.swift"
+      - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
   schedule:
-    # Weekly. The artifact changes rarely; this is watching for it disappearing,
-    # not for it changing.
     - cron: "17 9 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ghosttea-apple-native-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
-  audit:
-    runs-on: macos-15
+  audit-published:
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7
 
@@ -57,20 +44,168 @@ jobs:
           cache: npm
 
       - run: npm ci --ignore-scripts
+      - run: npm run check:apple-native-artifact:release
 
-      # Fetches the locked URL, checks the archive's size and SHA-256, unpacks it,
-      # and re-derives the content digest and every slice digest from the bytes
-      # actually served. Also asserts the artifact was built from the native
-      # sources in this checkout.
-      - name: Verify the published artifact against its lock
-        run: npm run check:apple-native-artifact:release
+      - name: Link every public product against the published artifact
+        run: npm run test:swiftpm:consumer
 
-      # The check proves the bytes are right. This proves SwiftPM accepts them:
-      # resolution enforces the manifest's checksum before unpacking, and the
-      # build proves the slices link.
-      - name: Prove SwiftPM resolves and builds against it
-        env:
-          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+  build-candidate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      attestation_url: ${{ steps.attest.outputs.attestation-url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - run: npm ci --ignore-scripts
+      - run: npm run check:ios-release-toolchain
+
+      - name: Build pinned Ghostty VT input
         run: |
-          swift package resolve
-          swift build --target GhostteaCore
+          npm run bootstrap:ghostty-vt:apple
+          npm run build:ghostty-vt:apple
+
+      - name: Build pinned libssh2 and OpenSSL input
+        run: |
+          npm run bootstrap:ssh:apple
+          npm run build:ssh:apple
+
+      - run: npm run build:apple-native
+
+      - name: Run the complete SwiftPM suite against the candidate
+        run: swift test --disable-sandbox --package-path apple/GhostteaKit
+
+      - name: Link every public product against the candidate
+        run: npm run test:swiftpm:consumer:local
+
+      - run: npm run package:ghosttea-apple-native
+      - run: npm run verify:ghosttea-apple-native-package
+
+      - id: attest
+        name: Attest the qualified archive on its build runner
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+
+      - name: Verify the build-runner attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh attestation verify
+          artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+          --repo "$GITHUB_REPOSITORY"
+
+      - name: Preserve the exact candidate for promotion
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghosttea-apple-native-candidate-${{ github.sha }}
+          path: |
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
+            native/build/ghosttea-apple-native/metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-candidate:
+    needs: build-candidate
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghosttea-apple-native-candidate-${{ github.sha }}
+          path: .
+
+      - run: npm run verify:ghosttea-apple-native-package
+
+      - name: Require the candidate to come from this workflow commit
+        run: |
+          test \
+            "$(node -p "require('./native/build/ghosttea-apple-native/metadata.json').sourceCommit")" \
+            = "$GITHUB_SHA"
+          test \
+            "$(node -p "require('./native/build/ghosttea-apple-native/metadata.json').sourceDirty")" \
+            = "false"
+
+      - id: candidate
+        name: Read the verified content identity
+        run: |
+          result=artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
+          echo "tag=$(node -p "require('./${result}').tag")" >> "$GITHUB_OUTPUT"
+          echo "checksum=$(node -p "require('./${result}').checksum")" >> "$GITHUB_OUTPUT"
+          echo "source_digest=$(node -p "require('./${result}').sourceDigest")" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the attestation before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh attestation verify
+          artifacts/apple-native/GhostteaAppleNative.xcframework.zip
+          --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish an append-only content-addressed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to replace immutable bytes." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip \
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json \
+            --target "$GITHUB_SHA" \
+            --title "GhostteaAppleNative xcframework ${RELEASE_TAG#ghosttea-apple-native-}" \
+            --notes "CI-built and attested from $GITHUB_REPOSITORY@$GITHUB_SHA." \
+            --latest=false
+
+      - name: Re-download and verify the served release bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          mkdir verified-download
+          gh release download "$RELEASE_TAG" \
+            --pattern "GhostteaAppleNative.xcframework.zip*" \
+            --dir verified-download
+          npm run verify:ghosttea-apple-native-package -- verified-download
+
+      - name: Record promotion result
+        run: |
+          {
+            echo "### Published Ghosttea Apple native artifact"
+            echo
+            echo "- Tag: \`${{ steps.candidate.outputs.tag }}\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- SHA-256: \`${{ steps.candidate.outputs.checksum }}\`"
+            echo "- Source digest: \`${{ steps.candidate.outputs.source_digest }}\`"
+            echo "- Attestation: ${{ needs.build-candidate.outputs.attestation_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"

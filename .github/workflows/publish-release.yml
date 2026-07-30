@@ -49,9 +49,10 @@ jobs:
   validate:
     needs: resolve
     if: startsWith(needs.resolve.outputs.release_tag, 'v')
-    runs-on: macos-15
-    timeout-minutes: 45
+    runs-on: macos-26
+    timeout-minutes: 75
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v7
@@ -87,16 +88,14 @@ jobs:
       - name: Verify the published Apple native artifact
         run: npm run check:apple-native-artifact:release
 
-      # And that SwiftPM itself accepts it: resolution enforces the committed
-      # manifest's checksum before unpacking, which is what a consumer hits.
-      #
-      # Not `swift build` — see the same step in ios-release-hardening.yml. The
-      # check above already establishes that these bytes are byte-identical to the
-      # artifact composed and built against locally.
-      - name: Prove SwiftPM resolves against it
-        env:
-          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-        run: swift package resolve
+      - name: Run the complete published-artifact SwiftPM suite
+        run: swift test --disable-sandbox
+
+      # This is deliberately a separate package, resolved through the release
+      # tag rather than as the repository root. It proves stable-version
+      # resolution and links every public library product into one consumer.
+      - name: Prove the exact tagged SwiftPM release links all public products
+        run: node scripts/test-swiftpm-consumer.mjs --version "${RELEASE_TAG#v}"
 
       # The publish job runs on one platform, so every binary it publishes is
       # handed over as an artifact from the job that could build and gate it.

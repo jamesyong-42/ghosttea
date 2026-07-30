@@ -13,7 +13,7 @@ export const root = resolve(import.meta.dirname, "..");
 export const repository = "https://github.com/vibecook-dev/ghosttea";
 
 // The directory this artifact has on disk. It is a build output of
-// `scripts/compose-ghosttea-apple-native.mjs` and stays gitignored.
+// `scripts/build-ghosttea-apple-native.mjs` and stays gitignored.
 export const sourceArtifact = join(root, "apple/GhostteaKit/Artifacts/ghosttea-apple-native.xcframework");
 
 // The name the artifact takes *inside* the archive, which is not the same as
@@ -172,6 +172,7 @@ export function stableJson(value) {
  * rule can separate a comment from code that matters.
  */
 export const nativeSourceInputs = [
+  "native/ghosttea/crates/ghosttea-apple-ffi",
   "native/ghosttea/crates/ghosttea-ffi",
   "native/ghosttea/crates/ghosttea-vt-sys",
   "native/ghosttea/crates/ghosttea-vt",
@@ -181,15 +182,14 @@ export const nativeSourceInputs = [
   "native/ghostty.lock.json",
   "native/ssh.lock.json",
   "native/fonts.lock.json",
+  "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json",
   "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json",
   "Cargo.lock",
   "Cargo.toml",
   "native/ghosttea/Cargo.toml",
-  "scripts/build-ghosttea-core-apple.mjs",
-  "scripts/build-font-fixture-apple.mjs",
+  "scripts/build-ghosttea-apple-native.mjs",
   "scripts/build-ghostty-vt-apple.mjs",
   "scripts/build-ssh-candidate-apple.mjs",
-  "scripts/compose-ghosttea-apple-native.mjs",
 ];
 
 // Build outputs and caches live inside some of the source trees above. They are

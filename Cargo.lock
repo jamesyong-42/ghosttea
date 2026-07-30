@@ -668,6 +668,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosttea-apple-ffi"
+version = "0.6.2"
+dependencies = [
+ "ghosttea-ffi",
+ "ghosttea-font-fixture-ffi",
+]
+
+[[package]]
 name = "ghosttea-core"
 version = "0.6.2"
 dependencies = [

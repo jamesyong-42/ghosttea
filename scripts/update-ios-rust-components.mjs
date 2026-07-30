@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const target = "aarch64-apple-ios";
-const rootPackageName = "ghosttea-ffi";
+const rootPackageName = "ghosttea-apple-ffi";
 const outputPath = resolve(root, "apple/GhostteaKit/Compatibility/ios-rust-components.lock.json");
 
 const metadataResult = spawnSync(

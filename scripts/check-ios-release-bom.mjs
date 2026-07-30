@@ -37,7 +37,7 @@ const component = ({ type, ref, name, version, license, purl, hashes, repository
 });
 
 const appRef = `pkg:npm/ghosttea@${packageManifest.version}`;
-const runtimeRef = `pkg:cargo/ghosttea-ffi@${packageManifest.version}`;
+const runtimeRef = `pkg:cargo/ghosttea-apple-ffi@${packageManifest.version}`;
 const ghosttyRef = `pkg:github/ghostty-org/ghostty@${ghostty.ghostty.commit}`;
 const opensslRef = `pkg:github/openssl/openssl@${ssh.openssl.commit}`;
 const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
@@ -173,7 +173,7 @@ const expected = {
     component({
       type: "library",
       ref: runtimeRef,
-      name: "ghosttea-ffi",
+      name: "ghosttea-apple-ffi",
       version: packageManifest.version,
       license: "MIT",
       purl: runtimeRef,

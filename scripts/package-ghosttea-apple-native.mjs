@@ -59,9 +59,7 @@ const METHOD_STORE = 0;
 const METHOD_DEFLATE = 8;
 
 if (!existsSync(sourceArtifact)) {
-  throw new Error(
-    `Missing ${sourceArtifact}. Build it first: \`npm run build:ghosttea-core:apple\` then the compose step in \`npm run test:ghostty-vt:apple\`.`,
-  );
+  throw new Error(`Missing ${sourceArtifact}. Build it first with \`npm run build:apple-native\`.`);
 }
 
 const entries = collectEntries();
