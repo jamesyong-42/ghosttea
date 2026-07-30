@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex, RwLock},
-    time::Duration,
+    sync::{
+        Arc, Mutex, RwLock, Weak,
+        atomic::{self, AtomicBool, AtomicUsize},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -404,6 +407,114 @@ struct ControlContext {
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
+    shutdown: Arc<ShutdownState>,
+}
+
+/// Sessions that have been told to end but are no longer registry-resident.
+///
+/// The invariant this exists for: **a session whose ladder has started and
+/// which is not in the registry must be here.** Termination removes the
+/// registry entry immediately while the child can still take seconds to die,
+/// so without this a drain snapshot would miss exactly the sessions that are
+/// mid-death — resolve, let the host exit, and orphan them mid-grace.
+/// Held weakly on purpose. A strong reference would keep every closed
+/// session's PTY master, writer, shutdown pipe and scrollback alive until the
+/// next shutdown — which for a long-running host means every closed tab leaks
+/// a terminal. While a session is genuinely dying its reader and escalator
+/// threads each hold a strong reference, so upgrading here always succeeds for
+/// anything that still matters.
+type DyingSessions = Mutex<HashMap<String, Weak<Session>>>;
+
+/// Everything a shutdown needs to stop admissions and find what to drain.
+#[derive(Default)]
+struct ShutdownState {
+    /// Set once, before the drain snapshots. Never cleared: a service that has
+    /// begun shutting down does not reopen.
+    admissions_closed: AtomicBool,
+    /// Creates past the entry check but not yet resolved. A create parked in
+    /// `spawn_blocking` is invisible to every snapshot, so the drain cannot
+    /// conclude while this is non-zero.
+    creates_in_flight: AtomicUsize,
+    /// Published before `admissions_closed` flips, so a create refused inside
+    /// the barrier can bound its own doomed session by the same deadline.
+    deadline: Mutex<Option<Instant>>,
+    dying: DyingSessions,
+}
+
+impl ShutdownState {
+    /// Deposit into the dying set, then start the ladder — never the reverse,
+    /// or the session is briefly terminating and untracked.
+    fn terminate_tracked(
+        &self,
+        session: &Arc<Session>,
+        source: TerminationSource,
+        deadline: Option<Instant>,
+    ) -> Result<()> {
+        // Resolved before the lock: taking `dying` and then a session lock is
+        // the only nesting here, and not needing it keeps the set's lock a
+        // leaf.
+        let session_id = session.id();
+        {
+            let mut dying = self.dying.lock().unwrap();
+            // Prune here as well as in the drain: without a shutdown to force
+            // it, nothing else would ever clear entries whose sessions have
+            // finished, and the map would grow for the life of the host.
+            dying.retain(|_, session| {
+                session
+                    .upgrade()
+                    .is_some_and(|session| !session.has_concluded())
+            });
+            dying.insert(session_id, Arc::downgrade(session));
+        }
+        match deadline {
+            Some(deadline) => session.terminate_within(source, deadline),
+            None => session.terminate(source),
+        }
+    }
+
+    /// Drop entries that have finished concluding. Lazy on purpose: a task per
+    /// dying session would hold an `Arc` each and could go unscheduled during
+    /// the very shutdown this set serves.
+    fn prune_dying(&self) -> Vec<Arc<Session>> {
+        let mut dying = self.dying.lock().unwrap();
+        let mut alive = Vec::new();
+        dying.retain(|_, session| match session.upgrade() {
+            Some(session) if !session.has_concluded() => {
+                alive.push(session);
+                true
+            }
+            _ => false,
+        });
+        alive
+    }
+
+    fn admissions_closed(&self) -> bool {
+        self.admissions_closed.load(atomic::Ordering::SeqCst)
+    }
+}
+
+/// Marks a create as past the entry check and not yet resolved.
+///
+/// Released on drop, so every exit path — refusal, spawn failure, success —
+/// decrements exactly once, and always after the session it produced has been
+/// made visible in the registry or the dying set.
+struct CreateInFlight<'a>(&'a ShutdownState);
+
+impl<'a> CreateInFlight<'a> {
+    fn enter(shutdown: &'a ShutdownState) -> Self {
+        shutdown
+            .creates_in_flight
+            .fetch_add(1, atomic::Ordering::SeqCst);
+        Self(shutdown)
+    }
+}
+
+impl Drop for CreateInFlight<'_> {
+    fn drop(&mut self) {
+        self.0
+            .creates_in_flight
+            .fetch_sub(1, atomic::Ordering::SeqCst);
+    }
 }
 
 /// Local IPC endpoints and bearer token owned by the embedding application.
@@ -532,7 +643,44 @@ impl TerminalService {
     }
 
     /// Serve authenticated control and frame traffic on host-owned listeners.
+    ///
+    /// Returns only when a listener fails. A host that needs to stop the
+    /// service deliberately wants [`TerminalService::serve_managed`].
     pub async fn serve(self, listeners: TerminalServiceListeners) -> Result<()> {
+        let (handle, serving) = self.serve_managed(listeners);
+        // Held for the lifetime of the future on purpose: while a handle
+        // exists the coordinator keeps waiting for a shutdown that, here,
+        // nobody can ask for — which is exactly this function's contract.
+        let _handle = handle;
+        serving.await
+    }
+
+    /// Serve, and hand back a handle that can stop the service.
+    ///
+    /// The future resolves on listener failure as [`TerminalService::serve`]
+    /// does, and additionally on a completed
+    /// [`ServiceHandle::shutdown`] — the first non-failure way serving ends.
+    pub fn serve_managed(
+        self,
+        listeners: TerminalServiceListeners,
+    ) -> (ServiceHandle, impl Future<Output = Result<()>>) {
+        let (requests, shutdown_rx) = tokio::sync::mpsc::channel(1);
+        let shutdown: Arc<ShutdownState> = Arc::default();
+        (
+            ServiceHandle {
+                requests,
+                shutdown: Arc::clone(&shutdown),
+            },
+            self.serve_until_shutdown(listeners, shutdown_rx, shutdown),
+        )
+    }
+
+    async fn serve_until_shutdown(
+        self,
+        listeners: TerminalServiceListeners,
+        mut shutdown_rx: tokio::sync::mpsc::Receiver<ShutdownRequest>,
+        shutdown: Arc<ShutdownState>,
+    ) -> Result<()> {
         let configured_text_engine = self.text_engine;
         let ready = self.ready;
         let auth_token = self.config.auth_token;
@@ -627,21 +775,116 @@ impl TerminalService {
                 }
             }))
         });
-        let control_task = serve_control(
-            control,
-            auth_token.clone(),
-            ControlContext {
-                registry: Arc::clone(&registry),
-                frames: frame_hub.clone(),
-                event_tx,
-                text_engine,
-                mesh_runtime,
-                closed_owners: Arc::default(),
-                private_env_prefixes: self.private_env_prefixes.into(),
-            },
-        );
-        let frame_task = serve_frames(frames, auth_token, frame_hub);
-        tokio::try_join!(control_task, frame_task).map(|_| ())
+        let context = ControlContext {
+            registry: Arc::clone(&registry),
+            frames: frame_hub.clone(),
+            event_tx,
+            text_engine,
+            mesh_runtime,
+            closed_owners: Arc::default(),
+            private_env_prefixes: self.private_env_prefixes.into(),
+            shutdown: Arc::clone(&shutdown),
+        };
+        // Spawned rather than joined in place: the drain has to run *while*
+        // both keep serving, so observers can watch `terminate`, `list-sessions`
+        // and events for the whole of it. A select!-cancel shape would silence
+        // exactly the connections that need to see the drain happen.
+        let mut control_task =
+            tokio::spawn(serve_control(control, auth_token.clone(), context.clone()));
+        let mut frame_task = tokio::spawn(serve_frames(frames, auth_token, frame_hub));
+        let finish = |result: std::result::Result<Result<()>, tokio::task::JoinError>| match result
+        {
+            Ok(served) => served,
+            Err(error) => Err(anyhow::Error::new(error)).context("terminal listener task stopped"),
+        };
+        let mut handles_dropped = false;
+        loop {
+            tokio::select! {
+                served = &mut control_task => return finish(served),
+                served = &mut frame_task => return finish(served),
+                // Once every handle is gone `recv` is permanently ready with
+                // `None`, so this arm has to leave the select rather than
+                // `continue` into a loop that never awaits anything again.
+                request = shutdown_rx.recv(), if !handles_dropped => {
+                    let Some(request) = request else {
+                        handles_dropped = true;
+                        continue;
+                    };
+                    let report = drain(&context, request.budget).await;
+                    let _ = request.reply.send(report);
+                    control_task.abort();
+                    frame_task.abort();
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+/// What a drain actually managed to do.
+///
+/// Reported rather than summarised as success: an embedder that promised "no
+/// PTY outlives the service" needs to know when that promise was kept on time,
+/// kept by force, or not kept at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DrainReport {
+    /// Concluded within their deadline.
+    pub drained: usize,
+    /// Concluded, but only after the deadline forced the ladder to the end.
+    pub killed: usize,
+    /// Still not concluded when the budget ran out, by session id.
+    pub unresponsive: Vec<String>,
+    /// Creates still inside their spawn when the budget ran out. Non-zero means
+    /// a PTY may have been born that this drain could not wait for.
+    pub pending_creates: usize,
+    pub spent: Duration,
+}
+
+struct ShutdownRequest {
+    budget: Duration,
+    reply: tokio::sync::oneshot::Sender<DrainReport>,
+}
+
+/// Asks a running service to stop admitting sessions and drain the ones it has.
+#[derive(Clone)]
+pub struct ServiceHandle {
+    requests: tokio::sync::mpsc::Sender<ShutdownRequest>,
+    shutdown: Arc<ShutdownState>,
+}
+
+impl ServiceHandle {
+    /// How many terminated-but-unregistered sessions are currently tracked.
+    ///
+    /// Read only by the Unix drain tests, which are the only ones that drive a
+    /// live service over a socket.
+    #[cfg(all(test, unix))]
+    fn dying_count(&self) -> usize {
+        self.shutdown.dying.lock().unwrap().len()
+    }
+
+    /// Stop admissions, drain every local session, and resolve when they have
+    /// all concluded or `budget` expires — whichever comes first.
+    ///
+    /// The budget bounds the whole drain: ladder phases are scaled to fit it,
+    /// so a small budget compresses the graces rather than reporting healthy
+    /// sessions as unresponsive. Remote sessions are out of scope; they are
+    /// governed by the host that owns them.
+    pub async fn shutdown(&self, budget: Duration) -> Result<DrainReport> {
+        // Answer precisely rather than leaving the caller to infer it from a
+        // closed channel: admissions close as the first act of a drain, so a
+        // second request — concurrent or after the fact — is distinguishable
+        // from a service that simply stopped.
+        if self.shutdown.admissions_closed() {
+            bail!("terminal service is already shutting down");
+        }
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.requests
+            .send(ShutdownRequest { budget, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("terminal service is already shutting down or stopped"))?;
+        answer
+            .await
+            .context("terminal service stopped before reporting its drain")
     }
 }
 
@@ -794,6 +1037,171 @@ async fn serve_control(
     }
 }
 
+/// Time held back from the session deadline so a forced end still has room to
+/// reap, stamp, and broadcast before the budget expires.
+///
+/// A tuning knob rather than a constant: the conclusion path's final refresh
+/// renders through the one shared text engine, so many still-viewed sessions
+/// concluding at once serialise there. Calibrated for a handful of panes.
+const REAP_RESERVE: Duration = Duration::from_millis(250);
+
+/// How often to re-check when the only thing left is a create still inside its
+/// `spawn_blocking`. There is nothing to await on, so this is a poll — kept
+/// short because it bounds how long a drain lingers after the last session.
+const IN_FLIGHT_POLL: Duration = Duration::from_millis(5);
+
+/// A moment at the end of a drain for connection tasks to write the exit
+/// events they were just handed.
+///
+/// The drain observes conclusion directly from the session, which can outrun a
+/// client's socket; without this, stopping the listeners can cut off the very
+/// `session-exited` an observer was watching the drain for. Taken out of the
+/// remaining budget, never added to it.
+const EVENT_FLUSH: Duration = Duration::from_millis(100);
+
+/// Stop admitting sessions, end every local one, and report honestly.
+///
+/// The ordering here is the whole correctness argument:
+///
+/// 1. publish the deadline, so a create refused inside the barrier can bound
+///    the session it already forked;
+/// 2. close admissions;
+/// 3. take and release the owner lock — the same lock a create holds across
+///    its registry insert, so every in-flight create is now either inserted
+///    (and visible below) or destined to be refused;
+/// 4. only then start looking at what is live.
+async fn drain(context: &ControlContext, budget: Duration) -> DrainReport {
+    let started = Instant::now();
+    // Saturating rather than `+`: an absurd budget from a caller must not
+    // panic the task that owns the reply channel.
+    let budget_ends = started
+        .checked_add(budget)
+        .unwrap_or_else(|| started + Duration::from_secs(3_600));
+    let session_deadline = budget_ends.checked_sub(REAP_RESERVE).unwrap_or(started);
+
+    *context.shutdown.deadline.lock().unwrap() = Some(session_deadline);
+    context
+        .shutdown
+        .admissions_closed
+        .store(true, atomic::Ordering::SeqCst);
+    drop(context.closed_owners.lock().await);
+
+    let mut concluded_at: HashMap<String, Option<Instant>> = HashMap::new();
+    loop {
+        // The counter is read *before* the snapshot, and a refusal deposits
+        // into the dying set before it decrements. So a zero here means every
+        // refusal's deposit is already visible to the snapshot taken next;
+        // reading them the other way round could miss a session that landed in
+        // between and let the drain resolve over a live PTY.
+        let in_flight = context
+            .shutdown
+            .creates_in_flight
+            .load(atomic::Ordering::SeqCst);
+        let live = live_sessions(context);
+        if live.is_empty() {
+            if in_flight == 0 {
+                break;
+            }
+            // Nothing to await yet, but a create is still inside its spawn.
+            // Yield rather than spin: on a current-thread runtime a tight loop
+            // here would starve the very task being waited for, turning a
+            // bounded wait into a guaranteed one.
+            tokio::time::sleep(IN_FLIGHT_POLL).await;
+            if Instant::now() >= budget_ends {
+                break;
+            }
+            continue;
+        }
+        for session in &live {
+            concluded_at.entry(session.id()).or_default();
+            if let Err(error) = session.terminate_within(
+                session::TerminationSource::ServiceShutdown,
+                session_deadline,
+            ) {
+                eprintln!(
+                    "[ghosttea] failed to terminate {} during shutdown: {error:#}",
+                    session.id()
+                );
+            }
+        }
+        for session in live {
+            let remaining = budget_ends.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let mut conclusion = session.subscribe_conclusion();
+            // Both results matter: the outer is the timeout, the inner would be
+            // a closed channel. Only an actual conclusion counts as one.
+            if matches!(
+                tokio::time::timeout(remaining, conclusion.wait_for(|concluded| *concluded)).await,
+                Ok(Ok(_))
+            ) {
+                concluded_at.insert(session.id(), Some(Instant::now()));
+            }
+        }
+        if Instant::now() >= budget_ends {
+            break;
+        }
+    }
+
+    let flush = budget_ends
+        .saturating_duration_since(Instant::now())
+        .min(EVENT_FLUSH);
+    if !flush.is_zero() {
+        tokio::time::sleep(flush).await;
+    }
+
+    let mut report = DrainReport {
+        pending_creates: context
+            .shutdown
+            .creates_in_flight
+            .load(atomic::Ordering::SeqCst),
+        ..DrainReport::default()
+    };
+    for (session_id, concluded) in concluded_at {
+        // Timing is the only signal, so a session that concluded while another
+        // was being awaited can be booked late; the distinction is a quality
+        // report, not a correctness claim.
+        match concluded {
+            Some(at) if at <= session_deadline => report.drained += 1,
+            Some(_) => report.killed += 1,
+            None => report.unresponsive.push(session_id),
+        }
+    }
+    report.unresponsive.sort();
+    report.spent = started.elapsed();
+    report
+}
+
+/// Everything this host still has to end: registered sessions plus the ones
+/// already dying outside the registry, minus whatever has finished concluding.
+///
+/// One session is deliberately invisible here: one exiting *naturally* is
+/// removed from the registry by `on_exit` a moment before its conclusion is
+/// signalled, so in that window it is in neither set. That costs the report a
+/// count, never a PTY — the child is reaped and the exit broadcast before
+/// `on_exit` runs. Signalling conclusion earlier would close the gap and break
+/// the property the drain depends on, that conclusion is strictly later than
+/// exit; the undercount is the cheaper of the two.
+fn live_sessions(context: &ControlContext) -> Vec<Arc<Session>> {
+    // The registry guard below is a statement-scoped temporary, released at the
+    // `;` before `prune_dying` takes the dying set on the next statement. Keep
+    // it that way: binding it to a variable would hold registry across dying,
+    // which is the reverse of the order termination takes them in.
+    let mut live: HashMap<String, Arc<Session>> = context
+        .registry
+        .read()
+        .unwrap()
+        .values()
+        .filter(|session| !session.has_concluded())
+        .map(|session| (session.id(), Arc::clone(session)))
+        .collect();
+    for session in context.shutdown.prune_dying() {
+        live.entry(session.id()).or_insert(session);
+    }
+    live.into_values().collect()
+}
+
 async fn handle_command(
     command: Envelope,
     client_id: &str,
@@ -820,6 +1228,16 @@ async fn handle_command(
             Command::CreateSession { options } => {
                 validate_grid(options.cols, options.rows)?;
                 validate_owner(options.owner_id.as_deref())?;
+                // Count first, then check — the order is the guarantee. A
+                // create that reads the flag as open before being descheduled
+                // has already made itself visible, so a shutdown that observes
+                // zero in-flight creates knows none can still appear. Checking
+                // first would let a create slip between the read and the count
+                // and fork a child after the drain had already resolved.
+                let _in_flight = CreateInFlight::enter(&context.shutdown);
+                if context.shutdown.admissions_closed() {
+                    bail!("service is shutting down");
+                }
                 if let Some(owner) = options.owner_id.as_deref()
                     && context.closed_owners.lock().await.contains(owner)
                 {
@@ -973,8 +1391,32 @@ async fn handle_command(
                         .is_some_and(|owner| owner_lifecycle.contains(owner))
                     {
                         drop(owner_lifecycle);
-                        let _ = session.terminate(TerminationSource::User);
+                        // Never in the registry, but its ladder is running, so
+                        // the invariant applies: track it or lose it.
+                        let _ = context.shutdown.terminate_tracked(
+                            &session,
+                            TerminationSource::User,
+                            None,
+                        );
                         bail!("session owner is already closed");
+                    }
+                    // The shutdown re-check that matters: the entry check ran
+                    // before `spawn_blocking`, and a shutdown could have begun
+                    // during the fork. The barrier takes this same lock, so a
+                    // create either inserts before the drain's snapshot or is
+                    // refused here — the registry cannot grow behind the drain.
+                    if context.shutdown.admissions_closed() {
+                        let deadline = *context.shutdown.deadline.lock().unwrap();
+                        drop(owner_lifecycle);
+                        // Already forked: refusing the request does not unmake
+                        // the child, so hand it to the drain rather than
+                        // dropping it and leaking a PTY the snapshot never saw.
+                        let _ = context.shutdown.terminate_tracked(
+                            &session,
+                            TerminationSource::ServiceShutdown,
+                            deadline,
+                        );
+                        bail!("service is shutting down");
                     }
                     registry
                         .write()
@@ -1552,7 +1994,9 @@ async fn handle_command(
                     for (view_id, _) in remove_session_attachments(attached, &session_id) {
                         session.detach_view(&view_id, client_id);
                     }
-                    session.terminate(source)?;
+                    // Tracked, because the removal below outruns the ladder:
+                    // the entry disappears while the child is still dying.
+                    context.shutdown.terminate_tracked(&session, source, None)?;
                     registry.write().unwrap().remove(&session_id);
                 } else {
                     if !context.mesh_runtime.close_session(&session_id).await {
@@ -1580,8 +2024,16 @@ async fn handle_command(
                         session.detach_view(&view_id, client_id);
                     }
                     // One failed termination must not strand the owner's
-                    // remaining sessions in the registry.
-                    if let Err(error) = session.terminate(TerminationSource::User) {
+                    // remaining sessions in the registry. Tracked for the same
+                    // reason as the wire terminate, and more urgently: this
+                    // removes a whole cohort at once, and an owner closed just
+                    // before a shutdown would otherwise leave every one of them
+                    // dying where no snapshot can see them.
+                    if let Err(error) = context.shutdown.terminate_tracked(
+                        &session,
+                        TerminationSource::User,
+                        None,
+                    ) {
                         eprintln!(
                             "[ghosttea] failed to terminate session {} while closing owner {owner_id}: {error:#}",
                             session.id()
@@ -1822,6 +2274,394 @@ mod protocol_tests {
                 .into_owned();
             Endpoint { name, directory }
         }
+    }
+
+    /// A running service plus the pieces a test needs to talk to it.
+    ///
+    /// Unix-only: the client below speaks to a socket directly rather than
+    /// through the Node client, and a named-pipe dial needs the retry dance
+    /// that `ipc`'s own tests carry.
+    #[cfg(unix)]
+    struct TestService {
+        handle: ServiceHandle,
+        serving: tokio::task::JoinHandle<Result<()>>,
+        control: String,
+        token: String,
+        _control_endpoint: Endpoint,
+        _frame_endpoint: Endpoint,
+    }
+
+    #[cfg(unix)]
+    fn start_test_service(label: &str) -> TestService {
+        let control_endpoint = unique_endpoint(&format!("{label}-control"));
+        let frame_endpoint = unique_endpoint(&format!("{label}-frames"));
+        let token = "shutdown-test-token".to_owned();
+        let service = TerminalService::new(TerminalServiceConfig {
+            control_socket: control_endpoint.name.clone(),
+            frame_socket: frame_endpoint.name.clone(),
+            auth_token: token.clone(),
+        })
+        .with_text_engine(TextEngine::discover().unwrap());
+        let listeners = service.bind().unwrap();
+        let (handle, serving) = service.serve_managed(listeners);
+        TestService {
+            handle,
+            serving: tokio::spawn(serving),
+            control: control_endpoint.name.clone(),
+            token,
+            _control_endpoint: control_endpoint,
+            _frame_endpoint: frame_endpoint,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn connect_control(service: &TestService) -> tokio::net::UnixStream {
+        let mut stream = tokio::net::UnixStream::connect(&service.control)
+            .await
+            .expect("control endpoint should accept a client");
+        write_packet(&mut stream, service.token.as_bytes())
+            .await
+            .unwrap();
+        let acknowledgement = read_packet(&mut stream, 64).await.unwrap();
+        assert_eq!(acknowledgement, b"ok");
+        stream
+    }
+
+    /// Send a command and return its response, skipping pushed events.
+    #[cfg(unix)]
+    async fn request(stream: &mut tokio::net::UnixStream, command: Value) -> Value {
+        write_packet(stream, &serde_json::to_vec(&command).unwrap())
+            .await
+            .unwrap();
+        loop {
+            let packet = read_packet(stream, MAX_CONTROL_BYTES).await.unwrap();
+            let response: Value = serde_json::from_slice(&packet).unwrap();
+            if response["requestId"] != 0 {
+                return response;
+            }
+        }
+    }
+
+    /// Long enough for the shell below to install its traps.
+    ///
+    /// Until it has, the ladder's opening interrupt simply kills it — which
+    /// makes a "stubborn" child conclude in microseconds and quietly turns
+    /// these tests into assertions about nothing.
+    #[cfg(unix)]
+    const TRAP_SETTLE: Duration = Duration::from_millis(600);
+
+    /// A child that ignores both the interrupt and SIGTERM, so terminating it
+    /// has to walk the whole ladder to SIGKILL.
+    #[cfg(unix)]
+    fn stubborn_session(request_id: u64) -> Value {
+        json!({
+            "requestId": request_id,
+            "type": "create-session",
+            "options": {
+                "executable": "/bin/sh",
+                "args": ["-c", "trap '' INT TERM; sleep 30"],
+                "env": {},
+                "environment": { "mode": "clean", "variables": { "PATH": "/usr/bin:/bin" } },
+                "cols": 40,
+                "rows": 10,
+                "persistence": "terminate-with-app",
+                "programKind": "application",
+            },
+        })
+    }
+
+    /// The drain ends every live session and says so, and the service refuses
+    /// new ones from the moment it starts — including creates carrying no
+    /// owner, which the per-owner tombstone would never have caught.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_drains_live_sessions_and_refuses_new_ones() {
+        let service = start_test_service("drain");
+        let mut client = connect_control(&service).await;
+        let created = request(&mut client, stubborn_session(1)).await;
+        assert_eq!(created["type"], "session-created");
+        tokio::time::sleep(TRAP_SETTLE).await;
+
+        let handle = service.handle.clone();
+        let draining = tokio::spawn(async move { handle.shutdown(Duration::from_secs(8)).await });
+
+        // Mid-drain, on a second connection: the create must be refused, and
+        // refused without an owner id, which is the case per-owner closure
+        // structurally cannot cover.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut latecomer = connect_control(&service).await;
+        let refused = request(&mut latecomer, stubborn_session(2)).await;
+        assert_eq!(
+            refused["type"], "error",
+            "a create during a drain must fail"
+        );
+        assert!(
+            refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("shutting down"),
+            "the refusal must say why: {refused}"
+        );
+
+        let report = draining.await.unwrap().unwrap();
+        assert_eq!(
+            report.unresponsive,
+            Vec::<String>::new(),
+            "a SIGKILL-able child must not be reported unresponsive"
+        );
+        assert_eq!(
+            report.drained + report.killed,
+            1,
+            "the live session must be accounted for exactly once: {report:?}"
+        );
+        assert_eq!(report.pending_creates, 0);
+        assert!(service.serving.await.unwrap().is_ok());
+        assert!(
+            service
+                .handle
+                .shutdown(Duration::from_secs(1))
+                .await
+                .is_err(),
+            "a second shutdown has nothing left to stop"
+        );
+    }
+
+    /// A budget smaller than the default ladder compresses it rather than
+    /// expiring by construction: the ladder alone is 5s, so finishing inside
+    /// a 3s budget can only happen if the phases scaled.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_compresses_the_ladder_to_fit_a_small_budget() {
+        let service = start_test_service("budget");
+        let mut client = connect_control(&service).await;
+        assert_eq!(
+            request(&mut client, stubborn_session(1)).await["type"],
+            "session-created"
+        );
+        tokio::time::sleep(TRAP_SETTLE).await;
+
+        let started = Instant::now();
+        let report = service
+            .handle
+            .shutdown(Duration::from_secs(3))
+            .await
+            .unwrap();
+        let spent = started.elapsed();
+
+        assert!(
+            spent < Duration::from_millis(4_500),
+            "the drain outran its budget, so the ladder did not scale: {spent:?}"
+        );
+        // Guards the premise: a child that died to the opening interrupt would
+        // finish in microseconds and make the bound above vacuous.
+        assert!(
+            spent > Duration::from_millis(700),
+            "the child was not actually stubborn, so this proved nothing: {spent:?}"
+        );
+        assert_eq!(
+            report.unresponsive,
+            Vec::<String>::new(),
+            "a healthy-but-stubborn child must not be booked unresponsive: {report:?}"
+        );
+        assert_eq!(report.drained + report.killed, 1);
+    }
+
+    /// The leak the dying set exists for: a wire `terminate` drops the registry
+    /// entry immediately while the child can still take seconds to die, so a
+    /// shutdown arriving in that window must still find and await it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_awaits_sessions_already_dying_outside_the_registry() {
+        let service = start_test_service("dying");
+        let mut client = connect_control(&service).await;
+        let created = request(&mut client, stubborn_session(1)).await;
+        let session_id = created["session"]["id"].as_str().unwrap().to_owned();
+        tokio::time::sleep(TRAP_SETTLE).await;
+
+        // Removed from the registry here, but its ladder is still running.
+        let terminated = request(
+            &mut client,
+            json!({ "requestId": 2, "type": "terminate", "sessionId": session_id }),
+        )
+        .await;
+        assert_eq!(terminated["type"], "ok");
+        let listed = request(
+            &mut client,
+            json!({ "requestId": 3, "type": "list-sessions" }),
+        )
+        .await;
+        assert!(
+            !listed["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|session| session["id"] == session_id.as_str()),
+            "the wire terminate should already have unregistered it"
+        );
+
+        let report = service
+            .handle
+            .shutdown(Duration::from_secs(8))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.drained + report.killed,
+            1,
+            "a session dying outside the registry was not drained: {report:?}"
+        );
+        assert_eq!(report.unresponsive, Vec::<String>::new());
+    }
+
+    /// Closing tabs must not accumulate terminals.
+    ///
+    /// Tracking a dying session is what lets a drain find it, but tracking it
+    /// *strongly* and pruning only during a shutdown would pin every closed
+    /// session's PTY master, writer, shutdown pipe and scrollback for the life
+    /// of the host — a leak per closed tab, on the ordinary path, with no
+    /// shutdown in sight. This drives the wire `terminate` path specifically,
+    /// since that is the one that leaked.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminating_sessions_does_not_accumulate_them() {
+        let service = start_test_service("churn");
+        let mut client = connect_control(&service).await;
+        let mut ids = Vec::new();
+        for round in 0..12 {
+            let created = request(
+                &mut client,
+                json!({
+                    "requestId": 100 + round,
+                    "type": "create-session",
+                    "options": {
+                        "executable": "/bin/sh",
+                        "args": ["-c", "exit 0"],
+                        "env": {},
+                        "environment": { "mode": "clean", "variables": { "PATH": "/usr/bin:/bin" } },
+                        "cols": 20,
+                        "rows": 4,
+                        "persistence": "terminate-with-app",
+                        "programKind": "application",
+                    },
+                }),
+            )
+            .await;
+            let session_id = created["session"]["id"].as_str().unwrap().to_owned();
+            let _ = request(
+                &mut client,
+                json!({
+                    "requestId": 200 + round,
+                    "type": "terminate",
+                    "sessionId": session_id,
+                }),
+            )
+            .await;
+            ids.push(session_id);
+        }
+
+        // Every one of them has been terminated, so once they conclude the set
+        // must let go of them without a shutdown having to sweep it.
+        let settled = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if service.handle.dying_count() <= 1 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        let remaining = service.handle.dying_count();
+        assert!(
+            settled.is_ok(),
+            "{remaining} of {} terminated sessions were still retained",
+            ids.len()
+        );
+    }
+
+    /// A session already on its way out keeps the source that asked for it,
+    /// while one the drain ends is stamped `service-shutdown`. The honest
+    /// report is who asked first, not who happened to be last.
+    ///
+    /// These are the crate's first assertions on `ExitOutcome::ServiceTerminated`,
+    /// which until now existed only in its declaration and its mapping.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_stamps_only_the_sessions_it_actually_ended() {
+        let service = start_test_service("stamps");
+        let mut client = connect_control(&service).await;
+        let user_closed = request(&mut client, stubborn_session(1)).await;
+        let drained = request(&mut client, stubborn_session(2)).await;
+        let user_closed_id = user_closed["session"]["id"].as_str().unwrap().to_owned();
+        let drained_id = drained["session"]["id"].as_str().unwrap().to_owned();
+        tokio::time::sleep(TRAP_SETTLE).await;
+
+        // Starts a ladder under `user` before any shutdown exists.
+        assert_eq!(
+            request(
+                &mut client,
+                json!({
+                    "requestId": 3,
+                    "type": "terminate",
+                    "sessionId": user_closed_id,
+                    "source": "user",
+                }),
+            )
+            .await["type"],
+            "ok"
+        );
+
+        // Collect the exit events while the drain runs; they are broadcast, so
+        // this connection sees both sessions conclude.
+        let exits = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let collected = Arc::clone(&exits);
+        let (mut reader, _writer) = tokio::io::split(client);
+        let collecting = tokio::spawn(async move {
+            while let Ok(packet) = read_packet(&mut reader, MAX_CONTROL_BYTES).await {
+                let Ok(event) = serde_json::from_slice::<Value>(&packet) else {
+                    break;
+                };
+                if event["type"] == "session-exited" {
+                    collected.lock().unwrap().push(event);
+                }
+            }
+        });
+
+        let report = service
+            .handle
+            .shutdown(Duration::from_secs(8))
+            .await
+            .unwrap();
+        assert_eq!(
+            report.unresponsive,
+            Vec::<String>::new(),
+            "user-closed={user_closed_id} drained={drained_id} report={report:?}"
+        );
+        collecting.abort();
+
+        let exits = exits.lock().unwrap();
+        let stamp = |session_id: &str| {
+            exits
+                .iter()
+                .find(|event| event["sessionId"] == session_id)
+                .map(|event| {
+                    (
+                        event["requestedTermination"].clone(),
+                        event["exitOutcome"].clone(),
+                    )
+                })
+                .unwrap_or_else(|| panic!("no exit event for {session_id}: {exits:?}"))
+        };
+
+        assert_eq!(
+            stamp(&user_closed_id),
+            (json!("user"), json!("user-terminated")),
+            "a session already terminating must keep the source that asked first"
+        );
+        assert_eq!(
+            stamp(&drained_id),
+            (json!("service-shutdown"), json!("service-terminated")),
+            "a session the drain ended must say so"
+        );
     }
 
     /// The library announces readiness to its host instead of printing it.
