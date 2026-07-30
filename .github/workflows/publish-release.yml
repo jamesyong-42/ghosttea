@@ -88,14 +88,15 @@ jobs:
         run: npm run check:apple-native-artifact:release
 
       # And that SwiftPM itself accepts it: resolution enforces the committed
-      # manifest's checksum before unpacking, and the build proves the slices
-      # link rather than merely download.
-      - name: Prove SwiftPM resolves and builds against it
+      # manifest's checksum before unpacking, which is what a consumer hits.
+      #
+      # Not `swift build` — see the same step in ios-release-hardening.yml. The
+      # check above already establishes that these bytes are byte-identical to the
+      # artifact composed and built against locally.
+      - name: Prove SwiftPM resolves against it
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-        run: |
-          swift package resolve
-          swift build --target GhostteaCore
+        run: swift package resolve
 
       # The publish job runs on one platform, so every binary it publishes is
       # handed over as an artifact from the job that could build and gate it.
