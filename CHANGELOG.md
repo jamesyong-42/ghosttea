@@ -3,6 +3,68 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.6.2 - 2026-07-30
+
+### Fixed
+
+- Shifted keys send the character the keyboard layout produced. The key encoder
+  reported that the layout consumed no modifiers, and Ghostty sends a key's text
+  verbatim only when the modifiers left after removing the consumed ones are
+  empty — so every shifted keypress looked like a modified one and fell through
+  to an escape sequence keyed on the _unshifted_ codepoint. `Shift`+`/` encoded
+  as `CSI 47;2u`, which is "the `/` key plus shift", and a client that cannot map
+  a keycode back through the layout inserted `/` for `?`.
+
+  Nothing showed this in a plain shell, because the fast path that sends text is
+  only bypassed once a client enables the Kitty keyboard protocol. Clients that
+  request alternate-key reporting recovered the character from the `47:63`
+  alternate; clients that request only escape-code disambiguation had nothing to
+  recover from. Letters were unaffected either way, since a client can uppercase
+  those itself — punctuation cannot be derived without the layout, so `?` `!` `@`
+  `~` `|` `:` `"` and the shifted digits were all affected.
+
+  Shift is now reported as consumed exactly when the layout translated it into
+  different text. The escape sequence still reports every modifier actually held,
+  so genuinely modified keys are unchanged.
+
+- The cursor no longer parks in the top-left corner while scrolled up.
+  libghostty answers "do the terminal modes show a cursor" and "is the cursor
+  inside the rows being rendered" separately, documenting the position as
+  undefined when the second is false. Both were forwarded as one, so scrolling
+  the cursor into the scrollback drew it at (0, 0) until the viewport returned to
+  the bottom.
+- `CSI 0 q` no longer stops the cursor blinking for the rest of the session. A
+  blinking cursor is this terminal's default, but libghostty resolves both
+  `CSI 0 q` and a terminal reset against a separate default-blink option that is
+  off unless set, so the default survived only until the first program asked for
+  the default cursor. An explicit request for a steady cursor is still honored.
+- Terminating a Unix session whose background children hold the PTY slave now
+  concludes. The reader never saw end of file, so the exit was never observed, no
+  session-exited event fired, and three threads plus the terminal model leaked
+  per session. The reader now polls the master alongside a shutdown pipe, the
+  escalation signals the foreground process group as well as the root group, and
+  it waits on an exit latch rather than fixed sleeps.
+- Session creation no longer serializes globally behind the closed-owner mutex,
+  closing an owner no longer holds that mutex across mesh network calls, and one
+  failed termination no longer strands the owner's remaining sessions.
+
+### Changed
+
+- Control protocol 1.8. A client that lags the event stream now receives an
+  events-lost notice instead of having events silently dropped, the event channel
+  is deeper, and the control forwarder re-announces current state after a lag.
+  The React runtime reconciles against `list-sessions` on that notice, retiring
+  sessions whose exits were lost.
+- Mesh discovery commands run off the connection loop so a slow peer cannot
+  stall input queued behind them, both listeners time out unauthenticated
+  connections, frame publishing shares one buffer instead of copying, and the
+  supervisor escalates to `SIGKILL` when the daemon outlives `SIGTERM`.
+- The GhostteaKit native artifact is republished as
+  `ghosttea-apple-native-c134a0bb09d6`. The VT shim carrying the three fixes
+  above compiles into every slice, so the Apple plane needed rebuilt bytes rather
+  than only a version bump. Artifact bytes are never replaced in place, so this
+  is a new content digest under a new tag, and the root `Package.swift` pins it.
+
 ## 0.6.1 - 2026-07-29
 
 ### Fixed
