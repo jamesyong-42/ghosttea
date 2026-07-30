@@ -150,6 +150,18 @@ EgTerminal* eg_terminal_new(uint16_t cols, uint16_t rows, size_t max_scrollback)
           255, 255, 255,
           40, 44, 52,
           255, 255, 255) != GHOSTTY_SUCCESS) goto fail;
+  // A blinking cursor is this terminal's default, which takes two writes for
+  // two different questions. The mode is the cursor's state right now, before
+  // any program has expressed a preference. The option is what "default" means
+  // later: libghostty resolves both `CSI 0 q` and a terminal reset against
+  // DEFAULT_CURSOR_BLINK, whose built-in value is false. Setting only the mode
+  // made the default survive exactly until the first program asked for the
+  // default cursor — a steady cursor for the rest of the session, and one that
+  // is only visible in programs that show the real cursor rather than drawing
+  // their own.
+  bool default_cursor_blink = true;
+  ghostty_terminal_set(
+      state->terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &default_cursor_blink);
   ghostty_terminal_mode_set(state->terminal, GHOSTTY_MODE_CURSOR_BLINKING, true);
   return state;
 
@@ -352,6 +364,14 @@ int eg_terminal_snapshot(EgTerminal* state,
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &cursor_style);
   meta->cursor_style = (uint8_t)cursor_style;
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &meta->cursor_blinking);
+  // Two independent questions: CURSOR_VISIBLE answers "do the terminal modes
+  // show a cursor" (DECTCEM), while CURSOR_VIEWPORT_HAS_VALUE answers "is it
+  // inside the rows we are about to hand over". Scrolling into the scrollback
+  // leaves the first true and the second false, and the position values are
+  // documented as undefined in that case. Reporting mode-visible with a zeroed
+  // position parks a cursor in the top-left corner of the viewport for as long
+  // as the user stays scrolled up, so a cursor is drawable only when it is both
+  // enabled and actually on screen.
   bool cursor_has_value = false;
   ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_has_value);
   meta->cursor_x = 0;
@@ -359,6 +379,8 @@ int eg_terminal_snapshot(EgTerminal* state,
   if (cursor_has_value) {
     ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &meta->cursor_x);
     ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &meta->cursor_y);
+  } else {
+    meta->cursor_visible = 0;
   }
   meta->full_dirty = dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL;
   meta->dirty_count = 0;
@@ -482,6 +504,57 @@ static bool eg_code_is(const uint8_t* code, size_t code_len, const char* expecte
   return code_len == expected_len && memcmp(code, expected, code_len) == 0;
 }
 
+// Decodes `text` when it is exactly one UTF-8 scalar, else returns 0. Ghostty
+// compares the produced text against the unshifted codepoint one scalar at a
+// time, so a multi-scalar string (IME preedit, an emoji cluster) is not a
+// shifted-key translation and must not be treated as one.
+static uint32_t eg_single_codepoint(const uint8_t* text, size_t text_len) {
+  if (text == NULL || text_len == 0) return 0;
+  uint32_t codepoint;
+  size_t width;
+  if ((text[0] & 0x80) == 0) {
+    codepoint = text[0];
+    width = 1;
+  } else if ((text[0] & 0xE0) == 0xC0) {
+    codepoint = (uint32_t)(text[0] & 0x1F);
+    width = 2;
+  } else if ((text[0] & 0xF0) == 0xE0) {
+    codepoint = (uint32_t)(text[0] & 0x0F);
+    width = 3;
+  } else if ((text[0] & 0xF8) == 0xF0) {
+    codepoint = (uint32_t)(text[0] & 0x07);
+    width = 4;
+  } else {
+    return 0;
+  }
+  if (width != text_len) return 0;
+  for (size_t index = 1; index < width; index++) {
+    if ((text[index] & 0xC0) != 0x80) return 0;
+    codepoint = (codepoint << 6) | (uint32_t)(text[index] & 0x3F);
+  }
+  return codepoint;
+}
+
+// Which modifiers the keyboard layout spent to produce `text`, as opposed to
+// which ones the application should still be told about.
+//
+// Ghostty's encoders send text verbatim only when `mods.unset(consumed_mods)`
+// is empty, so reporting nothing consumed makes every shifted key look like a
+// modified keypress. Under the Kitty protocol that turns Shift+/ into
+// `CSI 47;2u` — keycode `/` plus a shift modifier — and a client that cannot
+// map a keycode back through the layout inserts `/`. Shift is consumed exactly
+// when the layout translated it into different text, which is the same test
+// Ghostty's own apprts perform against the platform keymap.
+static GhosttyMods eg_consumed_mods(const uint8_t* text,
+                                    size_t text_len,
+                                    uint32_t unshifted_codepoint,
+                                    uint16_t mods) {
+  if ((mods & GHOSTTY_MODS_SHIFT) == 0) return 0;
+  uint32_t produced = eg_single_codepoint(text, text_len);
+  if (produced == 0 || unshifted_codepoint == 0 || produced == unshifted_codepoint) return 0;
+  return GHOSTTY_MODS_SHIFT;
+}
+
 static GhosttyKey eg_key_from_code(const uint8_t* code, size_t code_len) {
   if (code == NULL) return GHOSTTY_KEY_UNIDENTIFIED;
   if (code_len == 4 && memcmp(code, "Key", 3) == 0 && code[3] >= 'A' && code[3] <= 'Z')
@@ -559,7 +632,11 @@ int eg_terminal_encode_key(EgTerminal* state,
   ghostty_key_event_set_action(state->key_event, (GhosttyKeyAction)action);
   ghostty_key_event_set_key(state->key_event, eg_key_from_code(code, code_len));
   ghostty_key_event_set_mods(state->key_event, mods);
-  ghostty_key_event_set_consumed_mods(state->key_event, 0);
+  ghostty_key_event_set_consumed_mods(
+      state->key_event,
+      action == GHOSTTY_KEY_ACTION_RELEASE
+          ? 0
+          : eg_consumed_mods(text, text_len, unshifted_codepoint, mods));
   ghostty_key_event_set_composing(state->key_event, false);
   ghostty_key_event_set_unshifted_codepoint(state->key_event, unshifted_codepoint);
   ghostty_key_event_set_utf8(

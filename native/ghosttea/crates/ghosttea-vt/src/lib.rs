@@ -818,6 +818,149 @@ mod tests {
         assert_eq!(release, b"\x1b[119;1:3u");
     }
 
+    const MODS_SHIFT: u16 = 1 << 0;
+    const MODS_CTRL: u16 = 1 << 1;
+
+    /// A shifted key sends the text the layout produced, not the unshifted key
+    /// plus a shift modifier.
+    ///
+    /// Ghostty emits text verbatim only when the modifiers left after removing
+    /// the ones the layout consumed are empty, so a shifted keypress that
+    /// reports nothing consumed looks like a modified keypress instead. Under
+    /// the Kitty protocol that made `shift+/` encode as `CSI 47;2u` — keycode
+    /// `/` plus shift — so clients that enable progressive enhancement and
+    /// cannot map a keycode back through the layout inserted `/` for `?`.
+    /// Clients that never enable it were unaffected, which is why this survived
+    /// in a plain shell.
+    #[test]
+    fn shifted_keys_encode_their_translated_text() {
+        for flags in ["", "\x1b[>1u", "\x1b[>5u", "\x1b[>7u"] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(flags.as_bytes());
+            let encoded = terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT, 1)
+                .unwrap();
+            assert_eq!(
+                encoded,
+                b"?",
+                "shift+slash under kitty flags {flags:?}: {:?}",
+                String::from_utf8_lossy(&encoded)
+            );
+            assert_eq!(
+                terminal
+                    .encode_key("KeyW", "W", 'w'.into(), MODS_SHIFT, 1)
+                    .unwrap(),
+                b"W"
+            );
+            assert_eq!(
+                terminal.encode_key("Slash", "/", '/'.into(), 0, 1).unwrap(),
+                b"/"
+            );
+        }
+    }
+
+    /// `report_all` requires every key to be an escape sequence, so the shifted
+    /// text cannot be sent verbatim. The shifted codepoint has to survive as the
+    /// alternate key (`47:63`) and, once associated text is negotiated, as the
+    /// trailing text field — otherwise the client is back to guessing.
+    #[test]
+    fn reporting_all_keys_still_carries_the_shifted_codepoint() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        terminal.feed(b"\x1b[>31u");
+        assert_eq!(
+            terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT, 1)
+                .unwrap(),
+            b"\x1b[47:63;2;63u"
+        );
+    }
+
+    /// Consuming shift must not hide modifiers the application still needs: the
+    /// text fast path is gated on *unconsumed* mods, and the reported bitmask
+    /// keeps every mod that was actually held.
+    #[test]
+    fn consuming_shift_preserves_other_modifiers() {
+        let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        terminal.feed(b"\x1b[>1u");
+        assert_eq!(
+            terminal
+                .encode_key("Slash", "?", '/'.into(), MODS_SHIFT | MODS_CTRL, 1)
+                .unwrap(),
+            b"\x1b[47;6u"
+        );
+    }
+
+    /// Asking for the default cursor gets the same cursor as never asking.
+    ///
+    /// A blinking cursor is this terminal's default, but libghostty resolves
+    /// `CSI 0 q` and a terminal reset against a separate DEFAULT_CURSOR_BLINK
+    /// option that is false unless set. Declaring the default only as a mode
+    /// left `CSI 0 q` — which is what a crossterm-style "restore the user's
+    /// cursor" emits — turning blinking off for the rest of the session.
+    #[test]
+    fn resetting_to_the_default_cursor_keeps_it_blinking() {
+        for sequence in ["", "\x1b[0 q", "\x1b[1 q", "\x1b[!p", "\x1bc", "\x1b[?12h"] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(sequence.as_bytes());
+            assert!(
+                terminal.snapshot().unwrap().cursor.blinking,
+                "cursor stopped blinking after {sequence:?}"
+            );
+        }
+    }
+
+    /// The flip side: a program that explicitly asks for a steady cursor gets
+    /// one, so the default above cannot be implemented by forcing blink on.
+    #[test]
+    fn honors_an_explicit_request_for_a_steady_cursor() {
+        for (sequence, style) in [("\x1b[2 q", 1_u8), ("\x1b[4 q", 2), ("\x1b[6 q", 0)] {
+            let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+            terminal.feed(sequence.as_bytes());
+            let cursor = terminal.snapshot().unwrap().cursor;
+            assert!(!cursor.blinking, "cursor still blinking after {sequence:?}");
+            assert_eq!(cursor.style, style, "unexpected style for {sequence:?}");
+        }
+        let mut disabled = GhosttyTerminalCore::new(20, 4, 100).unwrap();
+        disabled.feed(b"\x1b[?12l");
+        assert!(!disabled.snapshot().unwrap().cursor.blinking);
+    }
+
+    /// Scrolling the cursor out of the viewport hides it rather than parking it
+    /// in the top-left corner.
+    ///
+    /// Ghostty answers "are the terminal modes showing a cursor" and "is the
+    /// cursor inside the rows being rendered" separately, and documents the
+    /// viewport position as undefined when the latter is false. Forwarding
+    /// mode-visible alongside the zeroed position drew a cursor at (0, 0) for as
+    /// long as the user stayed scrolled up. Only clients that show the real
+    /// cursor could see it, which is why it looked specific to one program.
+    #[test]
+    fn hides_the_cursor_once_it_scrolls_out_of_the_viewport() {
+        let mut terminal = GhosttyTerminalCore::new(20, 3, 100).unwrap();
+        for line in 0..10 {
+            terminal.feed(format!("line-{line}\r\n").as_bytes());
+        }
+        terminal.feed(b"prompt> ");
+
+        let bottom = terminal.snapshot().unwrap();
+        assert_eq!((bottom.cursor.x, bottom.cursor.y), (8, 2));
+        assert!(bottom.cursor.visible);
+
+        terminal.scroll(-2);
+        let scrolled = terminal.snapshot().unwrap();
+        assert!(
+            !scrolled.cursor.visible,
+            "cursor reported visible at ({}, {}) while scrolled off screen",
+            scrolled.cursor.x, scrolled.cursor.y
+        );
+
+        // Returning to the bottom restores it, so this hides rather than latches.
+        terminal.scroll(2);
+        let restored = terminal.snapshot().unwrap();
+        assert_eq!((restored.cursor.x, restored.cursor.y), (8, 2));
+        assert!(restored.cursor.visible);
+    }
+
     #[test]
     fn encodes_mouse_only_when_application_tracking_is_active() {
         let mut terminal = GhosttyTerminalCore::new(20, 4, 100).unwrap();
