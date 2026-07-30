@@ -1145,6 +1145,72 @@ try {
   );
   if ((await nextControlResponse(control, requestId - 1)).type !== "ok")
     throw new Error("retained session close failed");
+
+  // Re-policy: a session born disposable is promoted while it runs, and the
+  // promotion — not the class it was created with — decides retention when the
+  // child exits on its own. (A wire `terminate` is the *explicit close* that
+  // keep-until-explicit-close names, so retention is only observable across a
+  // natural exit; the child sleeps to leave room to reclassify it first, and
+  // the set-persistence response below proves the reclassification landed
+  // while the session was still alive.)
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "create-session",
+        options: {
+          executable: "/bin/sh",
+          args: ["-c", "sleep 3"],
+          env: {},
+          cols: 20,
+          rows: 4,
+          persistence: "keep-until-exit",
+        },
+      }),
+    ),
+  );
+  const promoted = await nextControlResponse(control, requestId - 1);
+  if (promoted.type !== "session-created") throw new Error("promotable session creation failed");
+  if (promoted.session.persistence !== "keep-until-exit") {
+    throw new Error(`create did not report its class: ${JSON.stringify(promoted.session.persistence)}`);
+  }
+  subscribeFrames(promoted.session.handle);
+
+  control.socket.write(
+    packet(
+      JSON.stringify({
+        requestId: requestId++,
+        type: "set-persistence",
+        sessionId: promoted.session.id,
+        persistence: "keep-until-explicit-close",
+      }),
+    ),
+  );
+  const reclassified = await nextControlResponse(control, requestId - 1);
+  if (reclassified.type !== "session" || reclassified.session.persistence !== "keep-until-explicit-close") {
+    throw new Error(`set-persistence did not report the applied class: ${JSON.stringify(reclassified)}`);
+  }
+
+  await Promise.race([
+    nextControlEvent(control, "session-exited", (event) => event.sessionId === promoted.session.id),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("promoted session exit timeout")), 20_000)),
+  ]);
+
+  control.socket.write(packet(JSON.stringify({ requestId: requestId++, type: "list-sessions" })));
+  const afterPromotion = await nextControlResponse(control, requestId - 1);
+  const survivor = afterPromotion.sessions?.find((session) => session.id === promoted.session.id);
+  if (!survivor || !survivor.exited) {
+    throw new Error("a session promoted to keep-until-explicit-close was not retained after exit");
+  }
+  if (survivor.persistence !== "keep-until-explicit-close") {
+    throw new Error(`retained session lost its class: ${JSON.stringify(survivor.persistence)}`);
+  }
+  control.socket.write(
+    packet(JSON.stringify({ requestId: requestId++, type: "terminate", sessionId: promoted.session.id })),
+  );
+  if ((await nextControlResponse(control, requestId - 1)).type !== "ok")
+    throw new Error("promoted session close failed");
+
   console.log("ghosttead smoke test passed");
 } finally {
   automationClient?.dispose();

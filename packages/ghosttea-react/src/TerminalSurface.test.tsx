@@ -23,6 +23,7 @@ function session(id: string, handle: string): SessionSummary {
     requestedTermination: null,
     exitOutcome: null,
     ownerId: null,
+    persistence: null,
     activity: unknownSessionActivity(),
   };
 }

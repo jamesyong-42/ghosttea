@@ -35,18 +35,51 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 8;
+const CONTROL_PROTOCOL_MINOR: u16 = 9;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
+const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
+// A gate above the advertised minor would be unreachable: no client could ever
+// negotiate high enough to receive the event it guards.
+const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// How long an accepted connection may take to present its token before the
 /// daemon reclaims the task and socket.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Whether a broadcast event may reach a client that negotiated this minor.
+///
+/// A pushed event added after a client's version must not surprise it, so each
+/// one names the minor that introduced it. (`events-lost` is gated at its send
+/// site instead: it is generated per connection rather than broadcast.)
 fn client_accepts_event(event: &Value, protocol_minor: u16) -> bool {
-    event.get("type").and_then(Value::as_str) != Some("session-activity-changed")
-        || protocol_minor >= ACTIVITY_EVENT_PROTOCOL_MINOR
+    match event.get("type").and_then(Value::as_str) {
+        Some("session-activity-changed") => protocol_minor >= ACTIVITY_EVENT_PROTOCOL_MINOR,
+        Some("session-created") => protocol_minor >= SESSION_CREATED_PROTOCOL_MINOR,
+        _ => true,
+    }
+}
+
+/// Announce a session that has just entered the local registry.
+///
+/// Carries the full summary so a subscriber needs no follow-up `list-sessions`,
+/// and reuses the `session` key of the create response so one event name keeps
+/// one shape on the wire; `requestId: 0` marks it as pushed.
+fn announce_session_created(
+    event_tx: &broadcast::Sender<Value>,
+    summary: &session::SessionSummary,
+) {
+    let Ok(session) = serde_json::to_value(summary) else {
+        return;
+    };
+    let _ = event_tx.send(json!({
+        "requestId": 0,
+        "type": "session-created",
+        "session": session,
+    }));
 }
 
 struct TaskGuard(JoinHandle<()>);
@@ -273,6 +306,10 @@ enum Command {
         session_id: String,
         expected_human_input_epoch: u64,
         operation: AutomationInputOperation,
+    },
+    SetPersistence {
+        session_id: String,
+        persistence: Persistence,
     },
     Terminate {
         session_id: String,
@@ -792,10 +829,23 @@ async fn handle_command(
                 let events_on_exit = event_tx.clone();
                 let (session_exit_tx, mut control_exit) = watch::channel(false);
                 let mut activity_exit = session_exit_tx.subscribe();
-                let on_exit: ExitCallback = Arc::new(move |session_id, exit, persistence| {
+                let on_exit: ExitCallback = Arc::new(move |session_id, exit| {
                     session_exit_tx.send_replace(true);
-                    if persistence != Persistence::KeepUntilExplicitClose {
-                        registry_on_exit.write().unwrap().remove(&session_id);
+                    {
+                        // Read the class under the same lock the removal takes,
+                        // and the same one `set-persistence` writes under: a set
+                        // that returned success before this point is the value
+                        // that decides retention, never one sampled earlier.
+                        let mut registry = registry_on_exit.write().unwrap();
+                        let retain = registry
+                            .get(&session_id)
+                            .and_then(|session| session.persistence())
+                            .is_some_and(|persistence| {
+                                persistence == Persistence::KeepUntilExplicitClose
+                            });
+                        if !retain {
+                            registry.remove(&session_id);
+                        }
                     }
                     let _ = events_on_exit.send(json!({
                         "requestId": 0,
@@ -931,10 +981,20 @@ async fn handle_command(
                         .unwrap()
                         .insert(summary.id.clone(), Arc::clone(&session));
                 }
-                if session.has_exited()
-                    && session.persistence() != Persistence::KeepUntilExplicitClose
-                {
-                    registry.write().unwrap().remove(&summary.id);
+                // A child that died during spawn leaves nothing to keep unless
+                // its class says otherwise. Read that class under the same lock
+                // as the removal, exactly as the exit path does.
+                let retained = {
+                    let mut registry = registry.write().unwrap();
+                    let retain = !session.has_exited()
+                        || session.persistence() == Some(Persistence::KeepUntilExplicitClose);
+                    if !retain {
+                        registry.remove(&summary.id);
+                    }
+                    retain
+                };
+                if retained {
+                    announce_session_created(event_tx, &summary);
                 }
                 Ok(ResponseBody::SessionCreated { session: summary })
             }
@@ -1466,6 +1526,25 @@ async fn handle_command(
                     input_sequence: result.input_sequence,
                     reason: (!result.accepted).then_some("human-input-conflict"),
                 })
+            }
+            Command::SetPersistence {
+                session_id,
+                persistence,
+            } => {
+                // Hold the registry write lock across the write so this cannot
+                // interleave with the retention decision that reads it back:
+                // either the set lands and decides retention, or the session
+                // has already concluded and left, and this reports that
+                // honestly rather than succeeding over a session that is gone.
+                let summary = {
+                    let registry = registry.write().unwrap();
+                    let session = registry
+                        .get(&session_id)
+                        .context("unknown or remote session")?;
+                    session.set_persistence(persistence);
+                    session.summary()
+                };
+                Ok(ResponseBody::Session { session: summary })
             }
             Command::Terminate { session_id, source } => {
                 let local_session = { registry.read().unwrap().get(&session_id).cloned() };
@@ -2054,6 +2133,78 @@ mod protocol_tests {
             ACTIVITY_EVENT_PROTOCOL_MINOR
         ));
         assert!(client_accepts_event(&exit, 0));
+    }
+
+    /// A client that negotiated an older minor never hears about a birth: the
+    /// event did not exist when its expectations were fixed.
+    #[test]
+    fn creation_events_reach_only_clients_that_negotiated_them() {
+        let created = json!({ "type": "session-created" });
+        assert!(!client_accepts_event(
+            &created,
+            SESSION_CREATED_PROTOCOL_MINOR - 1
+        ));
+        assert!(client_accepts_event(
+            &created,
+            SESSION_CREATED_PROTOCOL_MINOR
+        ));
+    }
+
+    /// The pushed birth reuses the create response's `session` key, so one
+    /// event name keeps one shape; `requestId: 0` is what marks it as pushed.
+    #[test]
+    fn creation_events_carry_the_summary_under_the_response_key() {
+        let (event_tx, mut events) = broadcast::channel(4);
+        let summary = session::SessionSummary {
+            id: "session".to_owned(),
+            handle: "7".to_owned(),
+            executable: "/bin/zsh".to_owned(),
+            cols: 80,
+            rows: 24,
+            exited: false,
+            read_write: true,
+            title: None,
+            cwd: None,
+            bell_count: 0,
+            pid: Some(1),
+            created_at_ms: 1,
+            exit_code: None,
+            exit_signal: None,
+            requested_termination: None,
+            exit_outcome: None,
+            owner_id: None,
+            persistence: Some(session::Persistence::KeepUntilExit),
+            activity: session::SessionActivity::default(),
+        };
+
+        announce_session_created(&event_tx, &summary);
+
+        let event = events.try_recv().unwrap();
+        assert_eq!(event["type"], "session-created");
+        assert_eq!(event["requestId"], 0);
+        assert_eq!(event["session"]["id"], "session");
+        assert_eq!(event["session"]["persistence"], "keep-until-exit");
+    }
+
+    #[test]
+    fn deserializes_session_reclassification() {
+        let envelope: Envelope = serde_json::from_value(json!({
+            "requestId": 23,
+            "type": "set-persistence",
+            "sessionId": "session",
+            "persistence": "keep-until-explicit-close",
+        }))
+        .unwrap();
+        match envelope.command {
+            Command::SetPersistence {
+                session_id,
+                persistence,
+            } => {
+                assert_eq!(session_id, "session");
+                assert_eq!(persistence, session::Persistence::KeepUntilExplicitClose);
+            }
+            _ => panic!("expected set-persistence command"),
+        }
     }
 
     #[test]

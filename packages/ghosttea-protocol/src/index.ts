@@ -1,5 +1,8 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 8;
+export const PROTOCOL_MINOR = 9;
+
+/** How long a session outlives the thing that asked for it. */
+export type SessionPersistence = "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
 
 export type SessionActivityKind = "shell-idle" | "foreground-job" | "unknown";
 export type SessionActivitySource = "shell-integration" | "process-group" | "unsupported";
@@ -51,7 +54,7 @@ export interface CreateSessionOptions {
   environment?: SessionEnvironment;
   cols: number;
   rows: number;
-  persistence: "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
+  persistence: SessionPersistence;
   /**
    * Helps activity detection distinguish an interactive shell that owns the
    * foreground process group from a directly launched application.
@@ -137,6 +140,8 @@ export type ClientCommand =
       operation: AutomationInputOperation;
     }
   | { requestId: number; type: "terminate"; sessionId: string; source?: TerminationSource }
+  /** Re-class a live, locally governed session; answered with the updated summary. */
+  | { requestId: number; type: "set-persistence"; sessionId: string; persistence: SessionPersistence }
   | { requestId: number; type: "close-session-owner"; ownerId: string };
 
 export interface SessionSummary {
@@ -157,6 +162,12 @@ export interface SessionSummary {
   requestedTermination: TerminationSource | null;
   exitOutcome: ExitOutcome | null;
   ownerId: string | null;
+  /**
+   * The retention class this session is governed by, or `null` for a replica
+   * of a session another host governs. Also `null` from daemons older than
+   * protocol 1.9, which did not report it.
+   */
+  persistence: SessionPersistence | null;
   activity: SessionActivity;
 }
 
@@ -303,6 +314,10 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     typeof candidate.type !== "string"
   )
     return false;
+  const validPersistence = (persistence: unknown): boolean =>
+    persistence === "terminate-with-app" ||
+    persistence === "keep-until-exit" ||
+    persistence === "keep-until-explicit-close";
   const validTerminationSource = (source: unknown): boolean =>
     source === null || source === "user" || source === "application" || source === "service-shutdown";
   const validExitOutcome = (outcome: unknown): boolean =>
@@ -330,6 +345,11 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     if (summary.activity === undefined) summary.activity = unknownSessionActivity();
     return validActivity(summary.activity);
   };
+  /** Daemons before protocol 1.9 report no class; that reads as "unknown", not invalid. */
+  const normalizePersistence = (summary: Record<string, unknown>): boolean => {
+    if (summary.persistence === undefined) summary.persistence = null;
+    return summary.persistence === null || validPersistence(summary.persistence);
+  };
   const validSession = (session: unknown): boolean => {
     if (!session || typeof session !== "object") return false;
     const summary = session as Record<string, unknown>;
@@ -351,6 +371,7 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       validTerminationSource(summary.requestedTermination) &&
       (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome)) &&
       (summary.ownerId === null || typeof summary.ownerId === "string") &&
+      normalizePersistence(summary) &&
       normalizeActivity(summary)
     );
   };
