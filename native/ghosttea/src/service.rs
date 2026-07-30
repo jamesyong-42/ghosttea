@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use ghosttea_text::TextEngine;
+use ghosttea_text::{FontMode, TextEngine};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
@@ -394,6 +394,18 @@ impl TerminalServiceListeners {
     }
 }
 
+/// What the service resolved on its way to serving, handed to the callback
+/// installed with [`TerminalService::with_ready`].
+///
+/// The font values are the ones a host banner would report; they are delivered
+/// as values rather than as a rendered string so the host owns its own
+/// formatting.
+#[derive(Clone, Debug)]
+pub struct ReadyInfo {
+    pub primary_family: String,
+    pub font_mode: FontMode,
+}
+
 /// A terminal session service that can run locally or expose sessions through
 /// an injected remote transport.
 pub struct TerminalService {
@@ -401,6 +413,7 @@ pub struct TerminalService {
     mesh: Option<Box<dyn mesh::TerminalMesh>>,
     text_engine: Option<TextEngine>,
     private_env_prefixes: Vec<String>,
+    ready: Option<Box<dyn FnOnce(ReadyInfo) + Send>>,
 }
 
 impl TerminalService {
@@ -410,7 +423,22 @@ impl TerminalService {
             mesh: None,
             text_engine: None,
             private_env_prefixes: Vec::new(),
+            ready: None,
         }
+    }
+
+    /// Observe the moment the service has resolved its text engine and is
+    /// about to accept connections.
+    ///
+    /// The library writes nothing to stdout: a host process may be speaking
+    /// its own protocol there. A host that wants a readiness banner prints it
+    /// from here, which also lets it choose the wording and the stream.
+    pub fn with_ready<F>(mut self, ready: F) -> Self
+    where
+        F: FnOnce(ReadyInfo) + Send + 'static,
+    {
+        self.ready = Some(Box::new(ready));
+        self
     }
 
     /// Strip additional host-private prefixes from inherited PTY
@@ -469,6 +497,7 @@ impl TerminalService {
     /// Serve authenticated control and frame traffic on host-owned listeners.
     pub async fn serve(self, listeners: TerminalServiceListeners) -> Result<()> {
         let configured_text_engine = self.text_engine;
+        let ready = self.ready;
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
         let frame_hub = FrameHub::new(32);
@@ -541,13 +570,17 @@ impl TerminalService {
             None => TextEngine::discover().context("system font discovery failed")?,
         }));
 
-        {
-            let engine = text_engine.lock().unwrap();
-            println!(
-                "ghosttead ready ({}; {:?})",
-                engine.primary_family(),
-                engine.font_mode()
-            );
+        if let Some(ready) = ready {
+            // Read the values, release the lock, then hand them over: the
+            // callback is host code and must not run under a service mutex.
+            let info = {
+                let engine = text_engine.lock().unwrap();
+                ReadyInfo {
+                    primary_family: engine.primary_family().to_owned(),
+                    font_mode: engine.font_mode(),
+                }
+            };
+            ready(info);
         }
         let _mesh_task = self.mesh.map(|mesh| {
             let mesh_registry = Arc::clone(&registry);
@@ -1681,6 +1714,129 @@ fn frame_session_handle(frame: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+
+    /// An endpoint name no other test shares, in the two forms `ipc::Listener`
+    /// accepts: a socket path on Unix, a pipe name on Windows.
+    struct Endpoint {
+        name: String,
+        /// Never read: held so the socket's directory outlives the test.
+        #[cfg(unix)]
+        #[allow(dead_code)]
+        directory: tempfile::TempDir,
+    }
+
+    fn unique_endpoint(label: &str) -> Endpoint {
+        #[cfg(windows)]
+        {
+            let id = uuid::Uuid::new_v4();
+            Endpoint {
+                name: format!(r"\\.\pipe\ghosttea-service-test-{label}-{id}"),
+            }
+        }
+        #[cfg(unix)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let name = directory
+                .path()
+                .join(format!("{label}.sock"))
+                .to_string_lossy()
+                .into_owned();
+            Endpoint { name, directory }
+        }
+    }
+
+    /// The library announces readiness to its host instead of printing it.
+    ///
+    /// This is the behavioral half of the stdout contract; the source guard
+    /// below is the half that keeps it from regressing.
+    #[tokio::test]
+    async fn serve_reports_readiness_to_the_host_rather_than_printing_it() {
+        let control = unique_endpoint("ready-control");
+        let frames = unique_endpoint("ready-frames");
+        let engine = TextEngine::discover().unwrap();
+        let expected_family = engine.primary_family().to_owned();
+        let expected_mode = engine.font_mode();
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let service = TerminalService::new(TerminalServiceConfig {
+            control_socket: control.name.clone(),
+            frame_socket: frames.name.clone(),
+            auth_token: "secret".to_owned(),
+        })
+        .with_text_engine(engine)
+        .with_ready(move |info| {
+            let _ = ready_tx.send(info);
+        });
+
+        // `run` only returns on listener failure, so the readiness signal is
+        // the sole way to observe that serving began.
+        let serving = tokio::spawn(async move { service.run().await });
+        let info = tokio::time::timeout(Duration::from_secs(30), ready_rx)
+            .await
+            .expect("readiness was never signalled")
+            .expect("the service dropped the readiness sender");
+        serving.abort();
+
+        assert_eq!(info.primary_family, expected_family);
+        assert_eq!(info.font_mode, expected_mode);
+    }
+
+    /// Nothing in the library may write to stdout: an embedding host owns that
+    /// stream and may be speaking its own protocol on it. The readiness hook
+    /// exists so `ghosttead` can print its banner without the library doing so.
+    ///
+    /// Scans each source only up to its test module, since test code may print
+    /// freely. `eprintln!` is deliberately not matched — stderr stays open to
+    /// the library for diagnostics.
+    #[test]
+    fn the_library_never_writes_to_the_host_stdout() {
+        fn scan(directory: &std::path::Path, offenders: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, offenders);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let library = match source.find("#[cfg(test)]") {
+                    Some(tests_begin) => &source[..tests_begin],
+                    None => &source[..],
+                };
+                for (index, line) in library.lines().enumerate() {
+                    // Drop the stderr macros first: `eprintln!` contains
+                    // `println!`, and stderr stays open to the library.
+                    let sanitized = line.replace("eprintln!", "").replace("eprint!", "");
+                    let writes_stdout = sanitized.contains("println!")
+                        || sanitized.contains("print!")
+                        || sanitized.contains("stdout()");
+                    // A doc comment may legitimately name the macro it replaced.
+                    if writes_stdout && !line.trim_start().starts_with("//") {
+                        offenders.push(format!(
+                            "{}:{}: {}",
+                            path.display(),
+                            index + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut offenders = Vec::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut offenders,
+        );
+        assert!(
+            offenders.is_empty(),
+            "the ghosttea library must not write to the host's stdout; \
+             use TerminalService::with_ready and let the host print:\n{}",
+            offenders.join("\n")
+        );
+    }
 
     #[test]
     fn verifies_local_auth_tokens_without_length_shortcuts() {
