@@ -10,7 +10,8 @@ const output = join(root, "native/build/ghostty-apple");
 const install = join(output, "install");
 const xcframework = join(install, "lib/ghostty-vt.xcframework");
 const packageArtifact = join(root, "apple/GhostteaKit/Artifacts/ghostty-vt.xcframework");
-const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
+const developerDir =
+  process.env.GHOSTTY_DEVELOPER_DIR ?? `/Applications/Xcode_${lock.appleBuilder.xcodeVersion}.app/Contents/Developer`;
 const commandEnvironment = { ...process.env, DEVELOPER_DIR: developerDir };
 
 function capture(command, args, cwd = root) {
@@ -30,6 +31,12 @@ function directorySize(path) {
 if (process.platform !== "darwin" || process.arch !== "arm64") {
   throw new Error("The pinned Apple build currently requires Apple Silicon macOS.");
 }
+if (!existsSync(developerDir)) {
+  throw new Error(
+    `Pinned Ghostty Xcode developer directory does not exist: ${developerDir}. ` +
+      "Set GHOSTTY_DEVELOPER_DIR to the reviewed side-by-side Xcode installation.",
+  );
+}
 if (!existsSync(join(vendor, ".git")) || !existsSync(zig)) {
   throw new Error("Ghostty sources or macOS Zig are missing. Run `npm run bootstrap:ghostty-vt:apple` first.");
 }
@@ -44,8 +51,20 @@ if (capture(zig, ["version"]) !== lock.zig.version) {
 }
 
 const xcodeVersion = capture("xcodebuild", ["-version"]).replaceAll("\n", " ");
+const macosSdk = capture("xcrun", ["--sdk", "macosx", "--show-sdk-version"]);
 const iphoneosSdk = capture("xcrun", ["--sdk", "iphoneos", "--show-sdk-version"]);
 const simulatorSdk = capture("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-version"]);
+for (const [description, actual, expected] of [
+  ["Xcode version", xcodeVersion, `Xcode ${lock.appleBuilder.xcodeVersion}`],
+  ["Xcode build", xcodeVersion, `Build version ${lock.appleBuilder.xcodeBuild}`],
+  ["macOS SDK", macosSdk, lock.appleBuilder.macosSdkVersion],
+  ["iPhoneOS SDK", iphoneosSdk, lock.appleBuilder.iphoneosSdkVersion],
+  ["iPhoneSimulator SDK", simulatorSdk, lock.appleBuilder.iphonesimulatorSdkVersion],
+]) {
+  if (!actual.includes(expected)) {
+    throw new Error(`${description} drifted; expected ${JSON.stringify(expected)} in ${JSON.stringify(actual)}.`);
+  }
+}
 mkdirSync(output, { recursive: true });
 
 const args = [
@@ -80,6 +99,7 @@ const metadata = {
   source: { repository: lock.ghostty.repository, commit: lock.ghostty.commit },
   zigVersion: lock.zig.version,
   xcodeVersion,
+  macosSdk,
   iphoneosSdk,
   simulatorSdk,
   minimumIosVersion: lock.appleBuilder.minimumIosVersion,

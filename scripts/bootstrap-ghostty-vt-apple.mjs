@@ -10,7 +10,8 @@ const vendor = join(root, "native/vendor/ghostty");
 const tools = join(root, ".tools");
 const zigRoot = join(tools, `zig-aarch64-macos-${lock.zig.version}`);
 const zig = join(zigRoot, "zig");
-const developerDir = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
+const developerDir =
+  process.env.GHOSTTY_DEVELOPER_DIR ?? `/Applications/Xcode_${lock.appleBuilder.xcodeVersion}.app/Contents/Developer`;
 const commandEnvironment = { ...process.env, DEVELOPER_DIR: developerDir };
 
 function run(command, args, cwd = root) {
@@ -30,12 +31,30 @@ if (process.platform !== "darwin" || process.arch !== "arm64") {
   throw new Error("The pinned Apple bootstrap currently requires Apple Silicon macOS.");
 }
 if (!existsSync(developerDir)) {
-  throw new Error(`Xcode developer directory does not exist: ${developerDir}`);
+  throw new Error(
+    `Pinned Ghostty Xcode developer directory does not exist: ${developerDir}. ` +
+      "Set GHOSTTY_DEVELOPER_DIR to the reviewed side-by-side Xcode installation.",
+  );
 }
 
-capture("xcodebuild", ["-version"]);
+const xcode = capture("xcodebuild", ["-version"]);
+const macosSdk = capture("xcrun", ["--sdk", "macosx", "--show-sdk-version"]);
+const iphoneosSdk = capture("xcrun", ["--sdk", "iphoneos", "--show-sdk-version"]);
+const simulatorSdk = capture("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-version"]);
 capture("xcrun", ["--sdk", "iphoneos", "--show-sdk-path"]);
 capture("xcrun", ["--sdk", "iphonesimulator", "--show-sdk-path"]);
+
+for (const [description, actual, expected] of [
+  ["Xcode version", xcode, `Xcode ${lock.appleBuilder.xcodeVersion}`],
+  ["Xcode build", xcode, `Build version ${lock.appleBuilder.xcodeBuild}`],
+  ["macOS SDK", macosSdk, lock.appleBuilder.macosSdkVersion],
+  ["iPhoneOS SDK", iphoneosSdk, lock.appleBuilder.iphoneosSdkVersion],
+  ["iPhoneSimulator SDK", simulatorSdk, lock.appleBuilder.iphonesimulatorSdkVersion],
+]) {
+  if (!actual.includes(expected)) {
+    throw new Error(`${description} drifted; expected ${JSON.stringify(expected)} in ${JSON.stringify(actual)}.`);
+  }
+}
 
 mkdirSync(join(root, "native/vendor"), { recursive: true });
 mkdirSync(tools, { recursive: true });
@@ -72,6 +91,4 @@ if (capture(zig, ["version"]) !== lock.zig.version) {
   throw new Error(`Expected Zig ${lock.zig.version} at ${zig}`);
 }
 
-console.log(
-  `Ghostty ${lock.ghostty.commit}, Zig ${lock.zig.version}, and ${capture("xcodebuild", ["-version"]).replaceAll("\n", " ")} are ready.`,
-);
+console.log(`Ghostty ${lock.ghostty.commit}, Zig ${lock.zig.version}, and ${xcode.replaceAll("\n", " ")} are ready.`);

@@ -9,6 +9,8 @@ const artifacts = join(root, "apple/GhostteaKit/Artifacts");
 const ghosttyArtifact = join(artifacts, "ghostty-vt.xcframework");
 const sshArtifact = join(artifacts, "ghosttea-libssh2-candidate.xcframework");
 const output = join(artifacts, "ghosttea-apple-native.xcframework");
+const ghosttyBuildMetadataPath = join(root, "native/build/ghostty-apple/build-metadata.json");
+const sshBuildMetadataPath = join(root, "native/build/ssh-candidate-apple/build-metadata.json");
 const coreHeaders = join(root, "native/ghosttea/crates/ghosttea-ffi/include");
 const fontFixtureHeaders = join(root, "native/ghosttea/crates/ghosttea-font-fixture-ffi/include");
 const publicHeaders = [join(coreHeaders, "ghosttea.h"), join(fontFixtureHeaders, "ghosttea_font_fixture.h")];
@@ -140,6 +142,14 @@ for (const artifact of [ghosttyArtifact, sshArtifact]) {
     throw new Error(`Missing ${artifact}. Bootstrap the pinned Apple native inputs first.`);
   }
 }
+for (const metadata of [ghosttyBuildMetadataPath, sshBuildMetadataPath]) {
+  if (!existsSync(metadata)) {
+    throw new Error(`Missing input provenance ${metadata}. Rebuild the pinned Apple native inputs first.`);
+  }
+}
+
+const ghosttyBuildMetadata = JSON.parse(readFileSync(ghosttyBuildMetadataPath, "utf8"));
+const sshBuildMetadata = JSON.parse(readFileSync(sshBuildMetadataPath, "utf8"));
 
 execute(process.execPath, [join(root, "scripts/check-ios-release-toolchain.mjs")]);
 execute(process.execPath, [join(root, "scripts/sync-ghosttea-fonts.mjs")]);
@@ -261,12 +271,16 @@ writeFileSync(
   join(work, "metadata.json"),
   `${JSON.stringify(
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       packageVersion,
       sourceCommit: capture("git", ["rev-parse", "HEAD"]),
       sourceDirty: capture("git", ["status", "--porcelain"]).length > 0,
       rustc: capture("rustc", ["--version"]),
       xcode: capture("xcodebuild", ["-version"]).split("\n"),
+      inputs: {
+        ghostty: ghosttyBuildMetadata,
+        sshCandidate: sshBuildMetadata,
+      },
       headers: {
         coreSha256: sha256(join(coreHeaders, "ghosttea.h")),
         fontFixtureSha256: sha256(join(fontFixtureHeaders, "ghosttea_font_fixture.h")),

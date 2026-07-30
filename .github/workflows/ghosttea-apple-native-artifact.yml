@@ -55,6 +55,7 @@ jobs:
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GHOSTTY_DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     permissions:
       attestations: write
       contents: read
@@ -95,6 +96,13 @@ jobs:
         run: npm run test:swiftpm:consumer:local
 
       - run: npm run package:ghosttea-apple-native
+
+      - name: Attach build provenance to the candidate
+        run: >-
+          cp
+          native/build/ghosttea-apple-native/metadata.json
+          artifacts/apple-native/GhostteaAppleNative.xcframework.zip.provenance.json
+
       - run: npm run verify:ghosttea-apple-native-package
 
       - id: attest
@@ -118,6 +126,7 @@ jobs:
           path: |
             artifacts/apple-native/GhostteaAppleNative.xcframework.zip
             artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.provenance.json
             native/build/ghosttea-apple-native/metadata.json
           if-no-files-found: error
           retention-days: 14
@@ -158,9 +167,11 @@ jobs:
         name: Read the verified content identity
         run: |
           result=artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json
-          echo "tag=$(node -p "require('./${result}').tag")" >> "$GITHUB_OUTPUT"
-          echo "checksum=$(node -p "require('./${result}').checksum")" >> "$GITHUB_OUTPUT"
-          echo "source_digest=$(node -p "require('./${result}').sourceDigest")" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$(node -p "require('./${result}').tag")"
+            echo "checksum=$(node -p "require('./${result}').checksum")"
+            echo "source_digest=$(node -p "require('./${result}').sourceDigest")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify the attestation before publishing
         env:
@@ -182,6 +193,7 @@ jobs:
           gh release create "$RELEASE_TAG" \
             artifacts/apple-native/GhostteaAppleNative.xcframework.zip \
             artifacts/apple-native/GhostteaAppleNative.xcframework.zip.json \
+            artifacts/apple-native/GhostteaAppleNative.xcframework.zip.provenance.json \
             --target "$GITHUB_SHA" \
             --title "GhostteaAppleNative xcframework ${RELEASE_TAG#ghosttea-apple-native-}" \
             --notes "CI-built and attested from $GITHUB_REPOSITORY@$GITHUB_SHA." \

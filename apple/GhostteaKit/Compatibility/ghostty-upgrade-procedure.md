@@ -34,7 +34,8 @@ both bootstrap commands verify it:
 git -C native/vendor/ghostty fetch --depth=1 origin NEW_FULL_COMMIT
 git -C native/vendor/ghostty checkout --detach NEW_FULL_COMMIT
 npm run bootstrap:ghostty-vt
-npm run bootstrap:ghostty-vt:apple
+GHOSTTY_DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
+  npm run bootstrap:ghostty-vt:apple
 ```
 
 `native/vendor/ghostty` must have the expected `HEAD`, the expected origin, and
@@ -88,7 +89,8 @@ Build and validate every Apple slice, then recompose the local combined binary
 used by SwiftPM:
 
 ```sh
-npm run build:ghostty-vt:apple
+GHOSTTY_DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
+  npm run build:ghostty-vt:apple
 npm run check:ghostty-vt:apple
 npm run test:ghostty-vt:apple
 npm run test:ios:harness
@@ -97,7 +99,9 @@ npm run test:ios:harness
 The Apple build replaces `apple/GhostteaKit/Artifacts/ghostty-vt.xcframework`;
 the test command composes `ghosttea-apple-native.xcframework`. Both are ignored
 build outputs and must be rebuilt on a clean release machine, never copied from
-an older pin. Stop at **[STOP-PACKAGING]** for a nondeterministic downloadable
+an older pin. The side-by-side Xcode version and SDKs used by Zig are part of
+`native/ghostty.lock.json`; do not use the moving default Xcode. Stop at
+**[STOP-PACKAGING]** for a nondeterministic downloadable
 bundle, hash/size mismatch, missing architecture, stale header, unexpected
 symbol, invalid SPDX, or provenance subject that differs from the locked
 artifact. The workflow resolves its attestation path from the artifact manifest

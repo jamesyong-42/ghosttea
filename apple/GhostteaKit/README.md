@@ -264,8 +264,10 @@ request.
 From the repository root on Apple Silicon macOS:
 
 ```sh
-npm run bootstrap:ghostty-vt:apple
-npm run build:ghostty-vt:apple
+GHOSTTY_DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
+  npm run bootstrap:ghostty-vt:apple
+GHOSTTY_DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
+  npm run build:ghostty-vt:apple
 npm run bootstrap:ssh:apple
 npm run build:ssh:apple
 npm run build:apple-native

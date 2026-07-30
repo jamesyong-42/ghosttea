@@ -33,6 +33,11 @@
   },
   "appleBuilder": {
     "architecture": "arm64",
-    "minimumIosVersion": "17.0"
+    "minimumIosVersion": "17.0",
+    "xcodeVersion": "26.3",
+    "xcodeBuild": "17C529",
+    "macosSdkVersion": "26.2",
+    "iphoneosSdkVersion": "26.2",
+    "iphonesimulatorSdkVersion": "26.2"
   }
 }
