@@ -43,9 +43,42 @@ public actor GhostteaTruffleReplicaPump {
   }
 
   public func next() async throws -> GhostteaRenderedAttachmentEvent {
+    while true {
+      if let event = try await nextRenderedEvent() { return event }
+    }
+  }
+
+  /// `nil` for a frame this rendering vocabulary cannot express — a cleared
+  /// controller, or heartbeat traffic — so the caller reads on rather than
+  /// inventing an event. Lifecycle-bearing frames throw instead: a session
+  /// that is over must not read as a stream that merely went quiet.
+  private func nextRenderedEvent() async throws -> GhostteaRenderedAttachmentEvent? {
     switch try await attachment.nextEvent() {
     case .selectionText(let requestID, let text):
       return .selectionText(requestID: requestID, text: text)
+    // Answering a host's probe costs nothing and keeps the channel symmetric;
+    // this pump owns no contact clock, so a pong tells it nothing.
+    case .ping(let nonce):
+      try await attachment.pong(nonce: nonce)
+      return nil
+    case .pong:
+      return nil
+    case .state(.sessionEnded(let reason)):
+      throw GhostteaTruffleError.sessionEnded(reason)
+    case .state(.hostShutdown):
+      throw GhostteaTruffleError.hostShutdown
+    case .state(.controlState(let controller, _, let cols, let rows, let layout)):
+      // Republished as the same event a legacy frame produces, so consumers
+      // see one vocabulary. A cleared controller has no such event — the
+      // gap this frame exists to fix — and is left to the lifecycle owner.
+      guard let controller else { return nil }
+      return .controlChanged(
+        controllerViewID: controller.controllerViewID,
+        controlEpoch: controller.controlEpoch,
+        cols: cols,
+        rows: rows,
+        layoutEpoch: layout
+      )
     case .state(.controlChanged(let viewID, let epoch, let cols, let rows, let layout)):
       return .controlChanged(
         controllerViewID: viewID,

@@ -99,6 +99,40 @@ private struct CompactStateMessage: Decodable {
         layoutEpoch: tuple.decode(UInt64.self)
       )
       try requireEnd(tuple)
+    // Compact tuples are never widened — an appended element is a decode error
+    // on the peer, not a default — so the revisioned controller shape gets its
+    // own tag and "c" keeps decoding byte-identically from legacy hosts.
+    case "cs":
+      var tuple = try values.nestedUnkeyedContainer(forKey: key)
+      let controller = try tuple.decodeIfPresent(CompactController.self)?.value
+      message = try .controlState(
+        controller: controller,
+        controlRevision: tuple.decode(UInt64.self),
+        cols: tuple.decode(UInt16.self),
+        rows: tuple.decode(UInt16.self),
+        layoutEpoch: tuple.decode(UInt64.self)
+      )
+      try requireEnd(tuple)
+    case "se":
+      var tuple = try values.nestedUnkeyedContainer(forKey: key)
+      let reason = try tuple.decode(String.self)
+      // Read the exit slot rather than treating its absence as null: a short
+      // tuple is a decode error on the Rust side, and a codec that shrugs at
+      // one here would let the two planes disagree about the shape.
+      guard !tuple.isAtEnd else { throw GhostteaTruffleError.malformedMessage }
+      let exitCode = try tuple.decodeNil() ? nil : tuple.decode(Int32.self)
+      try requireEnd(tuple)
+      switch reason {
+      case "exited": message = .sessionEnded(.exited(code: exitCode))
+      // An exit code on a session nobody says exited is a contradiction, not a
+      // field to ignore.
+      case "closed" where exitCode == nil: message = .sessionEnded(.closed)
+      default: throw GhostteaTruffleError.malformedMessage
+      }
+    case "hs":
+      let tuple = try values.nestedUnkeyedContainer(forKey: key)
+      try requireEnd(tuple)
+      message = .hostShutdown
     case "a":
       message = try .activityChanged(values.decode(GhostteaSessionActivity.self, forKey: key))
     case "g":
@@ -109,6 +143,19 @@ private struct CompactStateMessage: Decodable {
     default:
       throw GhostteaTruffleError.malformedMessage
     }
+  }
+}
+
+private struct CompactController: Decodable {
+  let value: GhostteaControllerInfo
+
+  init(from decoder: Decoder) throws {
+    var tuple = try decoder.unkeyedContainer()
+    value = try GhostteaControllerInfo(
+      controllerViewID: tuple.decode(String.self),
+      controlEpoch: tuple.decode(UInt64.self)
+    )
+    try requireEnd(tuple)
   }
 }
 

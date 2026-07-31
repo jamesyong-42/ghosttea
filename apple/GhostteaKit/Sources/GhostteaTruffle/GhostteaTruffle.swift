@@ -12,7 +12,11 @@ public enum GhostteaTruffleContract {
   public static let compactTerminalPort: UInt16 = 9421
 
   public static let protocolMajor: UInt16 = 1
-  public static let protocolMinor: UInt16 = 5
+  /// The highest minor this client offers. A host answers with the minor it
+  /// settled on, which is what every reconnect behaviour is gated by — never
+  /// this number. Counterpart: `PROTOCOL_MINOR` in
+  /// `native/ghosttea/src/tunnel_protocol.rs`.
+  public static let protocolMinor: UInt16 = 6
   public static let maximumControlMessageBytes = 1 * 1024 * 1024
   public static let maximumStateMessageBytes = 16 * 1024 * 1024
   public static let maximumPrefaceMetadataBytes = 4 * 1024
@@ -72,6 +76,13 @@ public enum GhostteaTruffleError: Error, Equatable, Sendable {
   case unsupportedProtocol(major: UInt16, minor: UInt16)
   case handshakeRejected(String)
   case mismatchedResponse
+  /// A definitive attach refusal (§6.2). The code decides the action; the
+  /// host's advisory `retryable` flag deliberately does not travel with it.
+  case attachRejected(GhostteaAttachRejectCode)
+  /// The host said the session itself is over. Terminal: no redial can undo it.
+  case sessionEnded(GhostteaSessionEndReason)
+  /// The host announced its own shutdown.
+  case hostShutdown
 }
 
 /// Resolves generation-checked live peers while ensuring only durable Truffle
@@ -158,6 +169,70 @@ public actor GhostteaTrufflePeerDirectory {
       rows: rows,
       accessToken: accessToken
     )
+  }
+
+  /// A raw compact connection to a discovered host. The reconnect engine needs
+  /// the connection rather than a finished attachment: the attach shape
+  /// depends on the minor the hello settles on, and nothing before the hello
+  /// knows it.
+  public func dialCompact(
+    to candidate: GhostteaTruffleHostCandidate
+  ) async throws -> any MeshConnection {
+    try await node.dial(
+      to: candidate.peer,
+      port: GhostteaTruffleContract.compactTerminalPort
+    )
+  }
+
+  public func localDeviceID() async throws -> String {
+    guard let deviceID = await node.localPeer.deviceId else {
+      throw GhostteaTruffleError.handshakeRejected("local Truffle device ID is unavailable")
+    }
+    return deviceID
+  }
+}
+
+/// The production dialer behind ``GhostteaAttachmentLifecycle``.
+///
+/// Discovery is re-resolved on every dial rather than captured once: a host
+/// that left and came back is a different peer value, and a cached one would
+/// keep dialing an address nobody is listening on — which the engine would
+/// read as "still absent" forever.
+public struct GhostteaTruffleAttachmentDialer: GhostteaAttachmentDialer {
+  public let localDeviceID: String
+
+  private let directory: GhostteaTrufflePeerDirectory
+  private let host: GhostteaTruffleHostReference
+  /// Whether each attempt asks the host what it is serving before attaching.
+  /// It costs a second short-lived connection per attempt — a compact
+  /// connection carries one view and cannot also answer a listing — and it
+  /// buys the only evidence §6.4 accepts for ending a session that is gone.
+  private let listsSessions: Bool
+
+  public init(
+    directory: GhostteaTrufflePeerDirectory,
+    host: GhostteaTruffleHostReference,
+    localDeviceID: String,
+    listsSessions: Bool = true
+  ) {
+    self.directory = directory
+    self.host = host
+    self.localDeviceID = localDeviceID
+    self.listsSessions = listsSessions
+  }
+
+  public func dial() async throws -> any MeshConnection {
+    let candidate = try await directory.resolve(host)
+    return try await directory.dialCompact(to: candidate)
+  }
+
+  public func listSessions() async throws -> [GhostteaSharedSessionSummary]? {
+    guard listsSessions else { return nil }
+    let candidate = try await directory.resolve(host)
+    let client = try await directory.connect(to: candidate)
+    let sessions = try await client.listSessions()
+    await client.close()
+    return sessions
   }
 }
 

@@ -198,7 +198,10 @@ private func presentation(
     viewID: "view-1",
     accessToken: nil,
     cols: 100,
-    rows: 30
+    rows: 30,
+    attachGeneration: 0,
+    resume: nil,
+    wantsState: true
   )
   let attachObject = try #require(
     JSONSerialization.jsonObject(with: JSONEncoder().encode(attach)) as? [String: Any]
@@ -312,7 +315,9 @@ private func presentation(
 
   #expect(Data(data.prefix(4)) == Data("TSP1".utf8))
   #expect(data[4] == 0 && data[5] == 1)
-  #expect(data[6] == 0 && data[7] == 5)
+  // The header carries the minor this client offers, which the reconnect work
+  // moved to 6. Hosts ignore it and negotiate through the hello.
+  #expect(data[6] == 0 && data[7] == 6)
   #expect(data[8] == 2)
   #expect(data[9] == 0 && data[10] == 0 && data[11] == 0)
 
@@ -527,7 +532,9 @@ private func presentation(
     let (attachChannel, attachPayload) = try await readCompact(from: serverConnection)
     #expect(attachChannel == .control)
     let attach = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: attachPayload)
-    guard case .attachView(let requestID, let sessionID, let viewID, _, let cols, let rows) = attach
+    guard
+      case .attachView(let requestID, let sessionID, let viewID, _, let cols, let rows, _, _, _) =
+        attach
     else {
       Issue.record("expected attach-view")
       return
@@ -548,7 +555,10 @@ private func presentation(
           cols: 100,
           rows: 30,
           readWrite: true,
-          presentation: nil
+          presentation: nil,
+          resumed: false,
+          controller: nil,
+          controlRevision: 0
         )
       )
     )
@@ -724,7 +734,7 @@ private func presentation(
 
     let (_, attachPayload) = try await readCompact(from: serverConnection)
     let attach = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: attachPayload)
-    guard case .attachView(let requestID, _, _, _, _, _) = attach else {
+    guard case .attachView(let requestID, _, _, _, _, _, _, _, _) = attach else {
       Issue.record("expected attach-view")
       return
     }
@@ -739,7 +749,10 @@ private func presentation(
           cols: 100,
           rows: 30,
           readWrite: true,
-          presentation: presentation(revision: "initial", fontSize: 13)
+          presentation: presentation(revision: "initial", fontSize: 13),
+          resumed: false,
+          controller: nil,
+          controlRevision: 0
         )
       )
     )
