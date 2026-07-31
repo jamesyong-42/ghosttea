@@ -90,7 +90,7 @@ private func ghostteaApplicationConfiguration() -> GhostteaConfigSnapshot {
     do {
       return try GhostteaConfiguration.load(loadGhosttyFiles: false)
     } catch {
-      preconditionFailure("Ghosttea configuration engine unavailable: \(error)")
+      preconditionFailure("Ghosttea configuration engine unavailable")
     }
   }
 }
