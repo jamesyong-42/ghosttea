@@ -44,11 +44,11 @@ to try Ghosttea.
 
 | Area                                             | Daemon / Electron                                                                                                                                     | Swift / Metal                                                                                                                                                        |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Available through the same snapshot; fixed colors are applied by `GhostteaTerminal.apply(config:)` and `GhostteaTerminalMetalView.applyConfiguration(_:)`            |
+| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Loaded once by the iOS app and applied to SSH terminal models, shared-session presentation, and Metal surfaces                                                               |
 | `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                        | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget |
 | `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied  | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                      |
 | `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                               | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                        |
-| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                                | Parsed; callers must select metrics while constructing `GhostteaRuntime`                                                                                             |
+| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                                | `font-size` scales runtime shaping and grid metrics at app startup; arbitrary `font-family` values remain diagnosed because Apple currently uses the bundled font set         |
 | `custom-shader`                                  | `ghosttea:better-crt` is applied by WebGPU; Canvas fallback and arbitrary Ghostty GLSL are unsupported                                                | Diagnosed/preserved; Metal post-processing is not implemented                                                                                                        |
 
 Other recognized keys—including `theme`, `palette`, background opacity,
@@ -95,6 +95,13 @@ Reload immediately updates model colors and desktop presentation. Scrollback
 limits apply only to new sessions. Parsed startup-only settings remain visible
 so a settings UI can explain that a restart or future implementation is
 required.
+
+The iOS app loads one immutable snapshot at launch from
+`Library/Application Support/Ghosttea/config.ghostty` inside its container,
+after the standard Ghostty-compatible layers. That same revision configures
+shared-session rendering and every local SSH pane. The configured scrollback
+limit is honored up to the app's device-specific memory cap. iOS reload and a
+document-picker import flow remain future work.
 
 ## Upgrade discipline
 

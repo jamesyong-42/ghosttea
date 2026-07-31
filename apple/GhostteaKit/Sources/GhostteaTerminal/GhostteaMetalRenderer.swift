@@ -326,14 +326,14 @@ private struct GhostteaMetalGeometryCache {
 }
 
 final class GhostteaMetalRenderer {
-  static let cellWidth = GhostteaTerminalLayout.cellWidth
-  static let lineHeight = GhostteaTerminalLayout.lineHeight
   static let originX = GhostteaTerminalLayout.horizontalPadding
   static let originY = GhostteaTerminalLayout.verticalPadding
 
   let runtime: GhostteaMetalRuntime
   let atlases: GhostteaMetalAtlasSet
   let shaderFunctionNames: Set<String>
+  let cellWidth: Float
+  let lineHeight: Float
   private let rectanglePipeline: any MTLRenderPipelineState
   private let alphaGlyphPipeline: any MTLRenderPipelineState
   private let colorGlyphPipeline: any MTLRenderPipelineState
@@ -356,12 +356,22 @@ final class GhostteaMetalRenderer {
     runtime: GhostteaMetalRuntime,
     alphaAtlasSize: Int = 2048,
     colorAtlasSize: Int = 2048,
+    cellWidth: Float = GhostteaTerminalLayout.cellWidth,
+    lineHeight: Float = GhostteaTerminalLayout.lineHeight,
     encodedGeometryReuseEnabled: Bool = true,
     instancedSubmissionEnabled: Bool = true,
     rowGeometryReuseEnabled: Bool = true,
     lazyColorAtlasEnabled: Bool = true
   ) throws {
+    guard cellWidth.isFinite, cellWidth > 0, lineHeight.isFinite, lineHeight > 0 else {
+      throw GhostteaMetalError.invalidTextMetrics(
+        cellWidth: cellWidth,
+        lineHeight: lineHeight
+      )
+    }
     self.runtime = runtime
+    self.cellWidth = cellWidth
+    self.lineHeight = lineHeight
     self.encodedGeometryReuseEnabled = encodedGeometryReuseEnabled
     self.instancedSubmissionEnabled = instancedSubmissionEnabled
     self.rowGeometryReuseEnabled = rowGeometryReuseEnabled
@@ -783,10 +793,10 @@ final class GhostteaMetalRenderer {
           : max(0, Int(state.columns) - 1)
         pushRectangle(
           into: &mesh.selection,
-          x: (originX + Float(first) * Self.cellWidth) * scale,
-          y: (originY + Float(row) * Self.lineHeight) * scale,
-          width: Float(max(1, last - first + 1)) * Self.cellWidth * scale,
-          height: Self.lineHeight * scale,
+          x: (originX + Float(first) * cellWidth) * scale,
+          y: (originY + Float(row) * lineHeight) * scale,
+          width: Float(max(1, last - first + 1)) * cellWidth * scale,
+          height: lineHeight * scale,
           color: theme.selection,
           viewportWidth: width,
           viewportHeight: height
@@ -797,16 +807,16 @@ final class GhostteaMetalRenderer {
       guard Int(cursor.x) < Int(state.columns), Int(cursor.y) < state.rows.count else {
         throw TRF1DecodingError("cursor exceeds viewport")
       }
-      let x = (originX + Float(cursor.x) * Self.cellWidth) * scale
-      let y = (originY + Float(cursor.y) * Self.lineHeight) * scale
+      let x = (originX + Float(cursor.x) * cellWidth) * scale
+      let y = (originY + Float(cursor.y) * lineHeight) * scale
       let cursorStyle: TRF1CursorStyle = focused ? cursor.style : .hollowBlock
-      let cursorWidth = cursorStyle == .bar ? max(2, (2 * scale).rounded()) : Self.cellWidth * scale
+      let cursorWidth = cursorStyle == .bar ? max(2, (2 * scale).rounded()) : cellWidth * scale
       pushRectangle(
         into: &mesh.cursor,
         x: x,
         y: y,
         width: cursorWidth,
-        height: Self.lineHeight * scale,
+        height: lineHeight * scale,
         color: theme.cursor,
         viewportWidth: width,
         viewportHeight: height
@@ -833,10 +843,10 @@ final class GhostteaMetalRenderer {
       if let background = style.background {
         pushRectangle(
           into: &mesh.backgrounds,
-          x: (originX + Float(run.cellStart) * Self.cellWidth) * scale,
-          y: (originY + Float(rowIndex) * Self.lineHeight) * scale,
-          width: Float(run.cellSpan) * Self.cellWidth * scale,
-          height: Self.lineHeight * scale,
+          x: (originX + Float(run.cellStart) * cellWidth) * scale,
+          y: (originY + Float(rowIndex) * lineHeight) * scale,
+          width: Float(run.cellSpan) * cellWidth * scale,
+          height: lineHeight * scale,
           color: background,
           viewportWidth: width,
           viewportHeight: height
@@ -858,7 +868,7 @@ final class GhostteaMetalRenderer {
         pushGlyph(
           into: &mesh.alphaGlyphs,
           x: (originX + instance.x) * scale,
-          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
+          y: (originY + Float(rowIndex) * lineHeight + instance.y) * scale,
           width: instance.width * scale,
           height: instance.height * scale,
           location: location,
@@ -870,7 +880,7 @@ final class GhostteaMetalRenderer {
         pushGlyph(
           into: &mesh.colorGlyphs,
           x: (originX + instance.x) * scale,
-          y: (originY + Float(rowIndex) * Self.lineHeight + instance.y) * scale,
+          y: (originY + Float(rowIndex) * lineHeight + instance.y) * scale,
           width: instance.width * scale,
           height: instance.height * scale,
           location: location,
@@ -883,15 +893,16 @@ final class GhostteaMetalRenderer {
     for run in row.styles {
       let style = resolveStyle(state.styleDefinitions[run.styleID], theme: theme)
       if style.invisible { continue }
-      let x = (originX + Float(run.cellStart) * Self.cellWidth) * scale
-      let rowTop = (originY + Float(rowIndex) * Self.lineHeight) * scale
-      let runWidth = Float(run.cellSpan) * Self.cellWidth * scale
+      let x = (originX + Float(run.cellStart) * cellWidth) * scale
+      let rowTop = (originY + Float(rowIndex) * lineHeight) * scale
+      let runWidth = Float(run.cellSpan) * cellWidth * scale
       let stroke = max(1, scale.rounded())
+      let metricScale = lineHeight / GhostteaTerminalLayout.lineHeight
       if style.underline {
         pushRectangle(
           into: &mesh.decorations,
           x: x,
-          y: (rowTop + 16 * scale).rounded(),
+          y: (rowTop + 16 * metricScale * scale).rounded(),
           width: runWidth,
           height: stroke,
           color: style.foreground,
@@ -903,7 +914,7 @@ final class GhostteaMetalRenderer {
         pushRectangle(
           into: &mesh.decorations,
           x: x,
-          y: (rowTop + 9 * scale).rounded(),
+          y: (rowTop + 9 * metricScale * scale).rounded(),
           width: runWidth,
           height: stroke,
           color: style.foreground,

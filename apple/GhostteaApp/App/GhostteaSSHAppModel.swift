@@ -41,6 +41,7 @@ final class GhostteaSSHAppModel: ObservableObject {
 
   private var runtime: GhostteaRuntime?
   private let diagnostics: GhostteaDiagnosticRecorder
+  let configuration: GhostteaConfigSnapshot
   private var factory: GhostteaSSHWorkspaceSessionFactory?
   private var coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>?
   private var repository: GhostteaSSHConnectionProfileRepository?
@@ -70,8 +71,12 @@ final class GhostteaSSHAppModel: ObservableObject {
     private var memoryRecoveryEvictionOrder: [String] = []
   #endif
 
-  init(diagnostics: GhostteaDiagnosticRecorder) {
+  init(
+    diagnostics: GhostteaDiagnosticRecorder,
+    configuration: GhostteaConfigSnapshot
+  ) {
     self.diagnostics = diagnostics
+    self.configuration = configuration
     memoryBudget = .recommended(
       forPhysicalMemoryBytes: ProcessInfo.processInfo.physicalMemory)
   }
@@ -152,8 +157,7 @@ final class GhostteaSSHAppModel: ObservableObject {
     Task {
       await disconnectWorkspace(clearPersistence: true)
       do {
-        let runtime = try self.runtime ?? GhostteaRuntime()
-        self.runtime = runtime
+        let runtime = try terminalRuntime()
         let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
         let allocation = try await factory.allocate(.newTab)
         let paneID = identity("pane")
@@ -464,8 +468,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       return false
     }
 
-    let runtime = try self.runtime ?? GhostteaRuntime()
-    self.runtime = runtime
+    let runtime = try terminalRuntime()
     let factory = try makeFactory(runtime: runtime, defaultProfile: defaultProfile)
     let result = try await factory.restore(
       persisted,
@@ -515,7 +518,11 @@ final class GhostteaSSHAppModel: ObservableObject {
       profileID: defaultProfile.id.uuidString.lowercased(),
       sessionConfiguration: .ssh(initialPath: networkPath),
       initialSessionHandle: initialHandle,
-      scrollbackBytes: UInt64(memoryBudget.scrollbackBytesPerSession),
+      scrollbackBytes: min(
+        UInt64(memoryBudget.scrollbackBytesPerSession),
+        configuration.terminal.scrollbackBytes
+      ),
+      terminalConfiguration: configuration,
       eventHandler: { [weak self] event in await self?.handle(event) })
   }
 
@@ -907,17 +914,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   }
 
   private func applicationSupportRoot() throws -> URL {
-    guard
-      let root = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask
-      ).first
-    else { throw GhostteaSSHAppError.applicationSupportUnavailable }
-    #if DEBUG
-      if let automationDirectory = ghostteaAutomationDirectory() {
-        return root.appendingPathComponent(automationDirectory, isDirectory: true)
-      }
-    #endif
-    return root.appendingPathComponent("Ghosttea", isDirectory: true)
+    try ghostteaApplicationSupportRoot()
   }
 
   private func knownHostsPath() throws -> String {
@@ -973,8 +970,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       try await profileStore.save([profile])
       profiles = [profile]
 
-      let runtime = try self.runtime ?? GhostteaRuntime()
-      self.runtime = runtime
+      let runtime = try terminalRuntime()
       let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
       let allocation = try await factory.allocate(.newTab, connect: false)
       let pane = GhostteaWorkspacePane(id: "automation-pane", sessionID: allocation.sessionID)
@@ -1111,8 +1107,7 @@ final class GhostteaSSHAppModel: ObservableObject {
       try await profileStore.save([profile])
       profiles = [profile]
 
-      let runtime = try self.runtime ?? GhostteaRuntime()
-      self.runtime = runtime
+      let runtime = try terminalRuntime()
       let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
       var sessions: [String: GhostteaSSHWorkspaceSession] = [:]
       var tabs: [GhostteaWorkspaceTab] = []
@@ -1269,6 +1264,13 @@ final class GhostteaSSHAppModel: ObservableObject {
     "ios-\(kind)-\(UUID().uuidString.lowercased())"
   }
 
+  private func terminalRuntime() throws -> GhostteaRuntime {
+    if let runtime { return runtime }
+    let runtime = try GhostteaRuntime(config: configuration)
+    self.runtime = runtime
+    return runtime
+  }
+
   private func record(
     _ code: GhostteaDiagnosticCode,
     severity: GhostteaDiagnosticSeverity = .error
@@ -1296,7 +1298,6 @@ private enum GhostteaSSHAppError: Error {
   case notReady
   case missingProfile
   case missingResidentSession
-  case applicationSupportUnavailable
   #if DEBUG
     case automationInvariant
   #endif

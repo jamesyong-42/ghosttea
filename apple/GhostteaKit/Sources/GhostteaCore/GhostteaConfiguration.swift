@@ -134,6 +134,41 @@ public enum GhostteaConfiguration {
   }
 }
 
+extension GhostteaTextMetrics {
+  /// Scales the bundled-font geometry to the resolved Ghostty font size.
+  ///
+  /// Ghosttea does not yet load arbitrary `font-family` values on Apple
+  /// platforms, but applying the size here keeps shaping, grid calculation,
+  /// and Metal presentation on one set of metrics.
+  public init(
+    config: GhostteaConfigSnapshot,
+    base: GhostteaTextMetrics = .init()
+  ) {
+    let configuredSize = config.renderer.fontSize
+    guard configuredSize.isFinite, configuredSize > 0,
+      base.fontSizePixels.isFinite, base.fontSizePixels > 0
+    else {
+      self = base
+      return
+    }
+    let scale = configuredSize / base.fontSizePixels
+    self.init(
+      fontSizePixels: configuredSize,
+      cellWidthPixels: base.cellWidthPixels * scale,
+      lineHeightPixels: base.lineHeightPixels * scale,
+      baselinePixels: base.baselinePixels * scale,
+      rasterScale: base.rasterScale
+    )
+  }
+}
+
+extension GhostteaRuntime {
+  /// Creates the shared native runtime with the resolved Ghostty font size.
+  public convenience init(config: GhostteaConfigSnapshot) throws {
+    try self.init(metrics: GhostteaTextMetrics(config: config))
+  }
+}
+
 extension GhostteaTerminalConfiguration {
   /// Builds a terminal using the resolved Ghostty scrollback limit.
   public init(

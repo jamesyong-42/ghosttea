@@ -21,6 +21,7 @@ final class GhostteaAppModel: ObservableObject {
 
   private let sharedRuntime: GhostteaSharedRuntimeModel
   let diagnostics: GhostteaDiagnosticRecorder
+  let configuration: GhostteaConfigSnapshot
   private let sceneIdentity: GhostteaSceneTerminalIdentity
   private var runtimeObservation: AnyCancellable?
   private var selectedHost: GhostteaTruffleHostCandidate?
@@ -49,10 +50,12 @@ final class GhostteaAppModel: ObservableObject {
   init(
     sharedRuntime: GhostteaSharedRuntimeModel,
     diagnostics: GhostteaDiagnosticRecorder,
+    configuration: GhostteaConfigSnapshot,
     sceneID: UUID = UUID()
   ) {
     self.sharedRuntime = sharedRuntime
     self.diagnostics = diagnostics
+    self.configuration = configuration
     sceneIdentity = GhostteaSceneTerminalIdentity(sceneID: sceneID)
     runtimeObservation = sharedRuntime.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
@@ -68,7 +71,7 @@ final class GhostteaAppModel: ObservableObject {
       }
     #endif
     if renderRuntime == nil {
-      do { renderRuntime = try GhostteaRuntime() } catch {
+      do { renderRuntime = try GhostteaRuntime(config: configuration) } catch {
         fail("Could not start terminal renderer", code: .rendererStartFailed)
         return
       }

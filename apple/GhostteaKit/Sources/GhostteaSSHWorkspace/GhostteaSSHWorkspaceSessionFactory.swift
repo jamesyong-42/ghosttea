@@ -71,6 +71,7 @@ public actor GhostteaSSHWorkspaceSessionFactory {
   private let defaultProfileID: String?
   private let sessionConfiguration: GhostteaSessionConfiguration
   private let scrollbackBytes: UInt64
+  private let terminalConfiguration: GhostteaConfigSnapshot?
   private let identityPrefix: String
   private let eventHandler: EventHandler
   private var nextSessionHandle: UInt64?
@@ -83,6 +84,7 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     sessionConfiguration: GhostteaSessionConfiguration = .ssh(),
     initialSessionHandle: UInt64 = 1,
     scrollbackBytes: UInt64 = 5_000_000,
+    terminalConfiguration: GhostteaConfigSnapshot? = nil,
     identityPrefix: String = UUID().uuidString.lowercased(),
     eventHandler: @escaping EventHandler = { _ in }
   ) throws {
@@ -95,6 +97,7 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     self.sessionConfiguration = sessionConfiguration
     self.nextSessionHandle = initialSessionHandle
     self.scrollbackBytes = scrollbackBytes
+    self.terminalConfiguration = terminalConfiguration
     self.identityPrefix = identityPrefix
     self.eventHandler = eventHandler
   }
@@ -154,6 +157,9 @@ public actor GhostteaSSHWorkspaceSessionFactory {
         rows: rows
       )
     )
+    if let terminalConfiguration {
+      _ = try await terminal.apply(config: terminalConfiguration, render: .none)
+    }
     let handler = eventHandler
     let session = GhostteaSSHSessionFactory.make(
       terminal: terminal,

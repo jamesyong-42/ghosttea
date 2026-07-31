@@ -1,3 +1,4 @@
+import GhostteaCore
 import GhostteaDiagnostics
 import SwiftUI
 
@@ -5,8 +6,11 @@ import SwiftUI
 struct GhostteaApp: App {
   @StateObject private var sharedRuntime: GhostteaSharedRuntimeModel
   @StateObject private var sshModel: GhostteaSSHAppModel
+  private let configuration: GhostteaConfigSnapshot
 
   init() {
+    let configuration = ghostteaApplicationConfiguration()
+    self.configuration = configuration
     let diagnostics: GhostteaDiagnosticRecorder
     #if DEBUG
       if let automationDirectory = ghostteaAutomationDirectory() {
@@ -33,7 +37,10 @@ struct GhostteaApp: App {
     #endif
     _sharedRuntime = StateObject(
       wrappedValue: GhostteaSharedRuntimeModel(diagnostics: diagnostics))
-    let sshModel = GhostteaSSHAppModel(diagnostics: diagnostics)
+    let sshModel = GhostteaSSHAppModel(
+      diagnostics: diagnostics,
+      configuration: configuration
+    )
     _sshModel = StateObject(wrappedValue: sshModel)
     Task { try? await diagnostics.beginLaunch() }
     #if DEBUG
@@ -48,9 +55,48 @@ struct GhostteaApp: App {
       GhostteaSceneContainer(
         requestedSceneID: requestedSceneID.wrappedValue,
         sharedRuntime: sharedRuntime,
-        sshModel: sshModel)
+        sshModel: sshModel,
+        configuration: configuration)
     }
   }
+}
+
+func ghostteaApplicationSupportRoot() throws -> URL {
+  guard
+    let root = FileManager.default.urls(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask
+    ).first
+  else {
+    throw GhostteaAppBootstrapError.applicationSupportUnavailable
+  }
+  #if DEBUG
+    if let automationDirectory = ghostteaAutomationDirectory() {
+      return root.appendingPathComponent(automationDirectory, isDirectory: true)
+    }
+  #endif
+  return root.appendingPathComponent("Ghosttea", isDirectory: true)
+}
+
+private func ghostteaApplicationConfiguration() -> GhostteaConfigSnapshot {
+  let overlayURL = try? ghostteaApplicationSupportRoot()
+    .appendingPathComponent("config.ghostty")
+  do {
+    return try GhostteaConfiguration.load(
+      overlayURL: overlayURL,
+      loadGhosttyFiles: true
+    )
+  } catch {
+    do {
+      return try GhostteaConfiguration.load(loadGhosttyFiles: false)
+    } catch {
+      preconditionFailure("Ghosttea configuration engine unavailable: \(error)")
+    }
+  }
+}
+
+private enum GhostteaAppBootstrapError: Error {
+  case applicationSupportUnavailable
 }
 
 #if DEBUG
@@ -87,22 +133,26 @@ private struct GhostteaSceneContainer: View {
   @State private var sceneID: UUID
   let sharedRuntime: GhostteaSharedRuntimeModel
   let sshModel: GhostteaSSHAppModel
+  let configuration: GhostteaConfigSnapshot
 
   init(
     requestedSceneID: UUID?,
     sharedRuntime: GhostteaSharedRuntimeModel,
-    sshModel: GhostteaSSHAppModel
+    sshModel: GhostteaSSHAppModel,
+    configuration: GhostteaConfigSnapshot
   ) {
     _sceneID = State(initialValue: requestedSceneID ?? UUID())
     self.sharedRuntime = sharedRuntime
     self.sshModel = sshModel
+    self.configuration = configuration
   }
 
   var body: some View {
     GhostteaSceneRoot(
       sceneID: sceneID,
       sharedRuntime: sharedRuntime,
-      sshModel: sshModel)
+      sshModel: sshModel,
+      configuration: configuration)
   }
 }
 
@@ -113,19 +163,23 @@ private struct GhostteaSceneRoot: View {
   let sceneID: UUID
   let sharedRuntime: GhostteaSharedRuntimeModel
   let sshModel: GhostteaSSHAppModel
+  let configuration: GhostteaConfigSnapshot
 
   init(
     sceneID: UUID,
     sharedRuntime: GhostteaSharedRuntimeModel,
-    sshModel: GhostteaSSHAppModel
+    sshModel: GhostteaSSHAppModel,
+    configuration: GhostteaConfigSnapshot
   ) {
     self.sceneID = sceneID
     self.sharedRuntime = sharedRuntime
     self.sshModel = sshModel
+    self.configuration = configuration
     _sharedModel = StateObject(
       wrappedValue: GhostteaAppModel(
         sharedRuntime: sharedRuntime,
         diagnostics: sharedRuntime.diagnostics,
+        configuration: configuration,
         sceneID: sceneID))
   }
 

@@ -30,6 +30,12 @@ The app requires iOS 18.1 or newer, matching the minimum deployment target of
 the pinned TailscaleKit binary. Simulator builds are arm64-only because the
 Ghosttea native core is intentionally distributed without an x86_64 slice.
 
+At launch the app resolves the shared Ghostty-compatible configuration and an
+app-owned `Library/Application Support/Ghosttea/config.ghostty` overlay. One
+immutable revision configures runtime font metrics, terminal colors and
+scrollback, and every Metal surface. The per-device workspace memory budget
+remains an upper bound on configured scrollback.
+
 Truffle resolves from its published repository, and its pinned TailscaleKit
 artifact arrives as a checksum-verified SwiftPM binary target. No sibling
 checkout and no local materialization step are required:

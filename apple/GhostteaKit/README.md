@@ -21,6 +21,9 @@ files plus an app-owned overlay; `GhostteaTerminalConfiguration(config:)`,
 `GhostteaTerminalMetalView.applyConfiguration(_:)` apply the currently
 supported terminal and presentation fields. The exact support matrix is in
 [`docs/ghostty-config-compatibility.md`](../../docs/ghostty-config-compatibility.md).
+`GhostteaRuntime(config:)` applies the resolved font size to shaping and grid
+metrics. The iOS app loads one snapshot at launch and passes it through both
+shared and SSH terminal paths.
 
 `GhostteaCredentials` defines the first persistent-secret boundary. It stores
 opaque credential references in Apple's device-only, non-synchronizing
