@@ -89,13 +89,26 @@ pub struct TakeOverRequest<'a> {
     pub resume: Option<ResumeEvidence>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Everything the host needs to answer an attach, composed under the single
+/// critical section that performed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TakeOver {
     pub attachment_epoch: u64,
     /// Whether a live attachment of this view was replaced. Reported to the
     /// viewer as `ViewAttached.resumed`.
     pub resumed: bool,
+    /// Whether this takeover dropped a controller held by the superseded
+    /// incarnation — the trigger for announcing the new control state.
     pub controller_cleared: bool,
+    /// The controller as of this attach, reported here rather than left for
+    /// the caller to read back: a takeover clears the controller only when it
+    /// names *this* view, so another view may still hold control, and a second
+    /// read could observe a different controller than the one this attach
+    /// actually landed against.
+    ///
+    /// `None` is a first-class observation — "no controller at
+    /// `control_revision`" — never "unknown".
+    pub controller: Option<ControllerState>,
     pub control_revision: u64,
 }
 
@@ -390,6 +403,7 @@ impl ViewAuthority {
             attachment_epoch,
             resumed: previous.is_some(),
             controller_cleared,
+            controller: self.controller.clone(),
             control_revision: self.control_revision,
         })
     }
@@ -910,6 +924,36 @@ mod tests {
     }
 
     #[test]
+    fn attested_termination_collects_every_watermark_it_covers() {
+        // The leak the 256 cap cannot catch: without a collection path the
+        // store only grows, and the first symptom is a spurious view-limit
+        // rejection long after the connections were gone.
+        let mut authority = ViewAuthority::new(80, 24);
+        for index in 0..8 {
+            let view_id = format!("view-{index}");
+            let attached = authority
+                .take_over(TakeOverRequest {
+                    fence_conn_id: index + 1,
+                    ..attempt(&view_id, "client", 1)
+                })
+                .unwrap();
+            assert!(authority.detach_view_if_epoch(&view_id, "client", attached.attachment_epoch));
+        }
+        assert_eq!(authority.attach_watermark_count("client"), 8);
+
+        // Connections 1..=4 have terminated; the rest are still fencing.
+        assert_eq!(authority.gc_attach_watermarks("client", 4), 4);
+        assert_eq!(authority.attach_watermark_count("client"), 4);
+
+        assert_eq!(authority.gc_attach_watermarks("client", 8), 4);
+        assert_eq!(
+            authority.attach_watermark_count("client"),
+            0,
+            "attesting every fencing connection terminated must leave nothing behind"
+        );
+    }
+
+    #[test]
     fn watermarks_of_attached_views_survive_gc() {
         let mut authority = ViewAuthority::new(80, 24);
         authority.take_over(attempt("a", "client", 1)).unwrap();
@@ -1026,6 +1070,30 @@ mod tests {
         assert!(authority.controller().is_none());
         assert_eq!(second.control_revision, authority.control_revision());
         assert_eq!(authority.size(), (100, 30), "a takeover keeps the size");
+    }
+
+    #[test]
+    fn takeover_reports_the_controller_another_view_still_holds() {
+        let mut authority = ViewAuthority::new(80, 24);
+        let holder = authority.take_over(attempt("b", "client", 1)).unwrap();
+        authority.claim_control("b", "client", 100, 30).unwrap();
+
+        // "a" resuming does not disturb b's control, so the attach response
+        // has to report it — otherwise the resuming viewer cannot tell "no
+        // controller" from "someone else holds it" and races a reclaim.
+        let taken = authority.take_over(attempt("a", "client", 1)).unwrap();
+        assert!(!taken.controller_cleared);
+        let controller = taken.controller.expect("b still holds control");
+        assert_eq!(controller.view_id, "b");
+        assert_eq!(controller.attachment_epoch, holder.attachment_epoch);
+        assert_eq!(taken.control_revision, authority.control_revision());
+
+        // And when the takeover is the thing that cleared it, the composed
+        // outcome says so in the same breath.
+        let retaken = authority.take_over(attempt("b", "client", 2)).unwrap();
+        assert!(retaken.controller_cleared);
+        assert!(retaken.controller.is_none());
+        assert_eq!(retaken.control_revision, authority.control_revision());
     }
 
     #[test]
