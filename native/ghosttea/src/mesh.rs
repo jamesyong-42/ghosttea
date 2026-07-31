@@ -178,6 +178,44 @@ pub struct RemoteViewRecord {
     pub retryable: Option<bool>,
 }
 
+/// Who holds control, if anyone. `view_id` is a *local* view id: the mesh
+/// translates wire identities at its boundary, so callers never see a rotated
+/// or hashed one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteController {
+    pub view_id: String,
+    pub control_epoch: u64,
+}
+
+/// A session's controller state as of one revision. `controller: None` is
+/// finally expressible — which is the whole reason this exists rather than
+/// another field on [`RemoteControlChanged`].
+#[derive(Clone, Debug)]
+pub struct RemoteControlState {
+    pub session_id: String,
+    pub controller: Option<RemoteController>,
+    /// 0 means "legacy, unknown": the host negotiated below the reconnect
+    /// minor and cannot report revisions or clears. A reconnect-capable
+    /// authority starts at 1, so 0 is unreachable for it — never CAS against
+    /// this value.
+    pub control_revision: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub layout_epoch: u64,
+}
+
+/// The outcome of a compare-and-swap claim.
+///
+/// The asymmetric reclaim rule reads off the announced state: `Rejected`
+/// showing *another* view holding control ends the reclaim — do not retry;
+/// `Rejected` showing *no* controller at a newer revision may be retried with
+/// that revision, while the pane still holds meaningful focus.
+#[derive(Clone, Debug)]
+pub enum RemoteControlOutcome {
+    Claimed(RemoteControlState),
+    Rejected(RemoteControlState),
+}
+
 /// Recovery tunables. These belong to the mesh rather than the local IPC
 /// config: they describe how this viewer treats a host that has gone quiet,
 /// not how clients reach this daemon.
@@ -323,6 +361,42 @@ pub trait RemoteTerminalRuntime: Send + Sync {
     /// re-attach of its feed. Errors when the session is not live — there is
     /// no host to ask, and a local re-render is `refresh`'s job.
     async fn refresh_remote(&self, _session_id: &str) -> Result<()> {
+        unavailable()
+    }
+
+    /// Every controller change, clears included. The reconnect-capable path
+    /// publishes here; legacy hosts still populate it, but only ever with a
+    /// controller present and `control_revision: 0`.
+    fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        closed_channel()
+    }
+
+    /// The last observed controller state — the reconciliation source, so a
+    /// lost clear has a repair path.
+    async fn control_state(&self, _session_id: &str) -> Option<RemoteControlState> {
+        None
+    }
+
+    /// Claim control, optionally compare-and-swapping against the revision the
+    /// caller observed. `expected_control_revision: None` is legacy
+    /// unconditional last-write-wins, which is all a pre-reconnect host
+    /// understands.
+    ///
+    /// On [`RemoteControlOutcome::Rejected`] the announced state is *also*
+    /// published through [`subscribe_control_state`](Self::subscribe_control_state)
+    /// before this returns, so a client's retry rule fires off its own
+    /// subscription rather than depending on the host's frame racing in.
+    /// Duplicate announcements at one revision are expected; consumers are
+    /// idempotent by revision.
+    async fn claim_control_at(
+        &self,
+        _session_id: &str,
+        _view_id: &str,
+        _attachment_epoch: u64,
+        _cols: u16,
+        _rows: u16,
+        _expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
         unavailable()
     }
 

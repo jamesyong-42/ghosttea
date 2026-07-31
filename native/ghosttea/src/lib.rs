@@ -18,16 +18,19 @@ pub use ghosttea_config::{
     MAX_CONFIG_DOCUMENT_BYTES, RendererConfig, RendererPostProcess, TerminalConfig,
     TerminalPresentationConfig, WorkspaceConfig,
 };
-pub use ghosttea_core::ViewAccess;
+pub use ghosttea_core::{
+    AttachRejection, AttachRejectionCode, ControlSnapshot, ControllerState, ResumeEvidence,
+    StateStreamCancel, TakeOver, ViewAccess,
+};
 pub use ghosttea_text::{
     FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
 };
 pub use mesh::{
     MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment, RemoteControlChanged,
-    RemoteControlClaim, RemoteEndedReason, RemoteExitInfo, RemoteHostSummary,
-    RemoteLifecycleChanged, RemoteLifecycleState, RemoteResize, RemoteSelection,
-    RemoteSessionLifecycle, RemoteSessionOpen, RemoteTerminalRuntime, RemoteViewRecord,
-    RemoteViewState, RemoteViewStateChanged, TerminalMesh,
+    RemoteControlClaim, RemoteControlOutcome, RemoteControlState, RemoteController,
+    RemoteEndedReason, RemoteExitInfo, RemoteHostSummary, RemoteLifecycleChanged,
+    RemoteLifecycleState, RemoteResize, RemoteSelection, RemoteSessionLifecycle, RemoteSessionOpen,
+    RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState, RemoteViewStateChanged, TerminalMesh,
 };
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;

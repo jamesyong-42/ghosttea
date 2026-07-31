@@ -28,15 +28,18 @@ use truffle_core::{
 use uuid::Uuid;
 
 use ghosttea::{
-    MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment, RemoteControlChanged,
-    RemoteControlClaim, RemoteEndedReason, RemoteHostSummary, RemoteLifecycleChanged,
-    RemoteLifecycleState, RemoteReplica, RemoteResize, RemoteSelection, RemoteSessionLifecycle,
-    RemoteSessionOpen, RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState,
-    RemoteViewStateChanged, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
-    TerminalPresentationConfig, ViewAccess,
+    AttachRejectionCode, ControlSnapshot, MeshReconnectConfig, RemoteActivityChanged,
+    RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteControlOutcome,
+    RemoteControlState, RemoteController, RemoteEndedReason, RemoteHostSummary,
+    RemoteLifecycleChanged, RemoteLifecycleState, RemoteReplica, RemoteResize, RemoteSelection,
+    RemoteSessionLifecycle, RemoteSessionOpen, RemoteTerminalRuntime, RemoteViewRecord,
+    RemoteViewState, RemoteViewStateChanged, ResumeEvidence, Session, SessionRegistry as Registry,
+    SessionSummary, StateStreamCancel, TakeOver, TerminalMesh, TerminalPresentationConfig,
+    ViewAccess,
     tunnel_protocol::{
-        CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
-        MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+        AttachRejectCode, CompactChannel, ConnectionMessage, ControllerInfo, LogicalTerminalPatch,
+        LogicalTerminalSnapshot, MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES,
+        PROTOCOL_MAJOR, PROTOCOL_MINOR, REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint,
         RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
         SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
         TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
@@ -97,6 +100,10 @@ pub struct MeshRuntime {
     activity_tx: broadcast::Sender<RemoteActivityChanged>,
     lifecycle_tx: broadcast::Sender<RemoteLifecycleChanged>,
     view_state_tx: broadcast::Sender<RemoteViewStateChanged>,
+    control_state_tx: broadcast::Sender<RemoteControlState>,
+    /// Last controller state seen per session — the reconciliation source, so
+    /// a dropped clear has a repair path.
+    control_states: Arc<SyncMutex<HashMap<String, RemoteControlState>>>,
     config: Arc<SyncMutex<MeshReconnectConfig>>,
     jitter: Arc<SyncMutex<JitterSource>>,
     /// Fires when a device looks reachable again, so a session waiting out its
@@ -120,6 +127,8 @@ impl Default for MeshRuntime {
             activity_tx,
             lifecycle_tx,
             view_state_tx,
+            control_state_tx: broadcast::channel(64).0,
+            control_states: Arc::default(),
             config: Arc::new(SyncMutex::new(MeshReconnectConfig::default())),
             jitter: Arc::new(SyncMutex::new(uniform_jitter())),
             wakeup_tx: broadcast::channel(64).0,
@@ -361,6 +370,51 @@ fn warn_whois_unsupported(cause: &str) {
 
 /// One diagnostic line per refused connection. Carries the address and the
 /// reason only — never a hello payload, a token, or an owner's tailnet login.
+/// Map an authority rejection onto the wire's closed code set. `ghosttea-core`
+/// deliberately does not depend on the wire types, so the translation lives
+/// here — and the codes the authority cannot produce (`unknown-session`,
+/// `access-denied`) come from this host's own lookup and auth checks.
+/// The controller frame a viewer at this minor can decode. Only a
+/// reconnect-capable viewer gets `ControlState`, which is the only shape that
+/// can say "no controller"; below that a clear stays unrepresentable and is
+/// simply not announced, exactly as before.
+fn control_state_message(snapshot: &ControlSnapshot, protocol_minor: u16) -> Option<StateMessage> {
+    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+        return Some(StateMessage::ControlState {
+            controller: snapshot
+                .controller
+                .as_ref()
+                .map(|controller| ControllerInfo {
+                    controller_view_id: controller.view_id.clone(),
+                    control_epoch: controller.control_epoch,
+                }),
+            control_revision: snapshot.control_revision,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            layout_epoch: snapshot.layout_epoch,
+        });
+    }
+    snapshot
+        .controller
+        .as_ref()
+        .map(|controller| StateMessage::ControlChanged {
+            controller_view_id: controller.view_id.clone(),
+            control_epoch: controller.control_epoch,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            layout_epoch: snapshot.layout_epoch,
+        })
+}
+
+fn attach_reject_code(code: AttachRejectionCode) -> AttachRejectCode {
+    match code {
+        AttachRejectionCode::StaleResume => AttachRejectCode::StaleResume,
+        AttachRejectionCode::ViewInvalid => AttachRejectCode::ViewInvalid,
+        AttachRejectionCode::ViewLimit => AttachRejectCode::ViewLimit,
+        AttachRejectionCode::SessionEpochMismatch => AttachRejectCode::SessionEpochMismatch,
+    }
+}
+
 fn reject_connection(remote_ip: Option<IpAddr>, error: anyhow::Error) -> anyhow::Error {
     let source = remote_ip.map_or_else(
         || "an unaddressed connection".to_owned(),
@@ -419,6 +473,20 @@ struct RemoteHostConnection {
     state_codec: StateCodec,
     healthy: AtomicBool,
     incarnation: u64,
+    /// The minor this connection negotiated. Every reconnect behavior reads
+    /// its gate from here rather than from the advertisement: the
+    /// advertisement says what the host offers, only the handshake says what
+    /// this connection settled on.
+    protocol_minor: u16,
+}
+
+impl RemoteHostConnection {
+    /// Whether this connection can carry ordered takeover, heartbeats, and
+    /// the controller-state frames. Below it the viewer keeps the rotation
+    /// path, which is the whole 1.4 compatibility story.
+    fn supports_reconnect(&self) -> bool {
+        self.protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR
+    }
 }
 
 fn connection_is_reusable(
@@ -434,15 +502,23 @@ fn connection_is_reusable(
 /// prefixes keep the two namespaces disjoint: without them a short local id
 /// equal to another id's hash would produce the same base.
 fn wire_view_id(local_view_id: &str, generation: u64) -> String {
+    format!("{}#g{generation}", stable_wire_view_id(local_view_id))
+}
+
+/// The rotation-free identity, for hosts that order attempts by
+/// `attach_generation` instead. The namespace prefixes and the length bound
+/// still apply — only the per-attempt suffix goes away, because on those hosts
+/// reusing the id is the point: takeover mints a fresh epoch for it.
+fn stable_wire_view_id(local_view_id: &str) -> String {
     if local_view_id.len() <= MAX_INLINE_LOCAL_VIEW_ID_BYTES {
-        format!("r:{local_view_id}#g{generation}")
+        format!("r:{local_view_id}")
     } else {
         let digest = Sha256::digest(local_view_id.as_bytes());
         let mut hashed = String::with_capacity(32);
         for byte in &digest[..16] {
             hashed.push_str(&format!("{byte:02x}"));
         }
-        format!("h:{hashed}#g{generation}")
+        format!("h:{hashed}")
     }
 }
 
@@ -450,7 +526,19 @@ fn wire_view_id(local_view_id: &str, generation: u64) -> String {
 /// session does not own: a peer's rotated id carries no local meaning, and
 /// leaving the rotation visible would make it compare unequal to itself.
 fn local_view_id_from_wire(wire_view_id: &str) -> Option<String> {
-    let base = wire_view_id.rsplit_once("#g")?.0;
+    // Both encodings appear on the wire depending on the peer's minor, so the
+    // rotation suffix is stripped only when it looks like one. A local id that
+    // itself ends in `#g<digits>` would be mis-split here — acceptable because
+    // this is the best-effort path for ids this session does not own; ids it
+    // does own resolve exactly through the view map before reaching it.
+    let base = match wire_view_id.rsplit_once("#g") {
+        Some((base, generation))
+            if !generation.is_empty() && generation.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => wire_view_id,
+    };
     base.strip_prefix("r:").map(str::to_owned)
 }
 
@@ -474,6 +562,10 @@ struct ViewRecord {
     /// The newest generation whose `AttachView` actually reached the wire. An
     /// attempt that never got written stranded nothing to purge.
     written: u64,
+    /// The last epoch this lineage held. Unlike `attachment_epoch` it survives
+    /// the view going pending, because that is exactly when a resume needs to
+    /// cite what it is resuming from.
+    last_attachment_epoch: Option<u64>,
 }
 
 impl ViewRecord {
@@ -489,6 +581,7 @@ impl ViewRecord {
             wire_view_id: None,
             oldest_unpurged: 1,
             written: 0,
+            last_attachment_epoch: None,
         }
     }
 
@@ -859,14 +952,22 @@ impl SessionLifecycle {
 
     /// Rotate one view's wire identity for an attach attempt that is about to
     /// be written.
-    fn begin_view_attempt(&self, local_view_id: &str) -> (String, u64) {
+    fn begin_view_attempt(&self, local_view_id: &str, rotate: bool) -> (String, u64) {
         let mut state = self.state.lock().unwrap();
         let mut wire = String::new();
         let mut generation = 0;
         self.set_view(&mut state, local_view_id, |record| {
             record.generation = record.generation.saturating_add(1);
             generation = record.generation;
-            wire = wire_view_id(local_view_id, record.generation);
+            // The lineage counter advances either way — it is the
+            // `attach_generation` a minor-6 host orders attempts by, and the
+            // rotation suffix a legacy host is fenced by. Only the encoding
+            // differs.
+            wire = if rotate {
+                wire_view_id(local_view_id, record.generation)
+            } else {
+                stable_wire_view_id(local_view_id)
+            };
             record.wire_view_id = Some(wire.clone());
             record.state = RemoteViewState::Pending;
             record.attachment_epoch = None;
@@ -882,6 +983,7 @@ impl SessionLifecycle {
         self.set_view(&mut state, local_view_id, |record| {
             record.state = RemoteViewState::Attached;
             record.attachment_epoch = Some(attachment_epoch);
+            record.last_attachment_epoch = Some(attachment_epoch);
             record.read_write = Some(read_write);
             record.error = None;
             record.retryable = None;
@@ -917,6 +1019,19 @@ impl SessionLifecycle {
 
     fn forget_view(&self, local_view_id: &str) {
         self.state.lock().unwrap().views.remove(local_view_id);
+    }
+
+    /// Evidence for a resume: what this view last held, so the host can refuse
+    /// a takeover aimed at a world that no longer exists. `None` when this
+    /// lineage has never attached — there is nothing to resume.
+    fn resume_hint(&self, local_view_id: &str, terminal_revision: u64) -> Option<ResumeHint> {
+        let state = self.state.lock().unwrap();
+        let previous_attachment_epoch = state.views.get(local_view_id)?.last_attachment_epoch?;
+        Some(ResumeHint {
+            previous_session_epoch: state.session_epoch?,
+            previous_attachment_epoch,
+            previous_terminal_revision: terminal_revision,
+        })
     }
 
     fn record_identity(&self, host_instance_id: &str, session_epoch: u64) {
@@ -1361,6 +1476,20 @@ async fn purge_attachment(
 /// The Phase-1 end-reason evidence rules. A listing is the only evidence a 1.4
 /// host can offer, and absence proves nothing beyond unavailability — so the
 /// honest fallback is `session-unavailable`, never a guessed close or exit.
+/// Record the latest controller state and announce it. Recording first is what
+/// gives a dropped announcement a repair path through reconciliation.
+fn publish_control_state(
+    states: &Arc<SyncMutex<HashMap<String, RemoteControlState>>>,
+    sender: &broadcast::Sender<RemoteControlState>,
+    state: RemoteControlState,
+) {
+    states
+        .lock()
+        .unwrap()
+        .insert(state.session_id.clone(), state.clone());
+    let _ = sender.send(state);
+}
+
 fn ended_reason_from_listing(entry: Option<&SharedSessionSummary>) -> Option<RemoteEndedReason> {
     match entry {
         None => Some(RemoteEndedReason::SessionUnavailable),
@@ -1735,7 +1864,22 @@ impl MeshRuntime {
         let _incoming = host.incoming.lock().await;
         // Rotate immediately before the write, never earlier: a stalled
         // attempt must not carry an old generation onto a newer connection.
-        let (wire_view_id, view_generation) = remote.lifecycle.begin_view_attempt(local_view_id);
+        // A minor-6 host orders attempts by `attach_generation` and mints a
+        // fresh epoch per takeover, so the identity is reused; below that the
+        // rotation suffix is the only fence available.
+        let takeover = host.supports_reconnect();
+        let (wire_view_id, view_generation) = remote
+            .lifecycle
+            .begin_view_attempt(local_view_id, !takeover);
+        let resume = takeover
+            .then(|| {
+                let revision = remote
+                    .replica
+                    .retained_snapshot()
+                    .map_or(0, |snapshot| snapshot.terminal_revision);
+                remote.lifecycle.resume_hint(local_view_id, revision)
+            })
+            .flatten();
         let state_generation = remote.lifecycle.generation();
         let connection = Arc::clone(&host.connection);
         let mut session_control = ProtocolStream::new(connection.open_stream().await?);
@@ -1756,12 +1900,11 @@ impl MeshRuntime {
                     access_token: remote.access_token.clone(),
                     cols: summary.cols,
                     rows: summary.rows,
-                    // Zero declares the 1.4 path: this viewer still fences by
-                    // rotating the wire id per attempt rather than by ordered
-                    // takeover, so it must not claim a generation lineage the
-                    // host would enforce against.
-                    attach_generation: 0,
-                    resume: None,
+                    // Zero is the legacy declaration: a rotating viewer must
+                    // not claim a lineage the host would order against, and a
+                    // host that sees it routes to the plain attach path.
+                    attach_generation: if takeover { view_generation } else { 0 },
+                    resume,
                     wants_state: true,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
@@ -1865,6 +2008,8 @@ impl MeshRuntime {
         let connections = Arc::clone(&self.connections);
         let remote_control_tx = self.control_tx.clone();
         let remote_activity_tx = self.activity_tx.clone();
+        let control_state_tx = self.control_state_tx.clone();
+        let control_states = Arc::clone(&self.control_states);
         let engine_runtime = self.clone();
         let incarnation = host.incarnation;
         tokio::spawn(async move {
@@ -1937,6 +2082,52 @@ impl MeshRuntime {
                             break;
                         }
                     }
+                    // The reconnect shape, the only one that can say "no
+                    // controller". Republished as the same mesh-level state a
+                    // legacy frame produces, so consumers see one vocabulary.
+                    StateMessage::ControlState {
+                        controller,
+                        control_revision,
+                        cols,
+                        rows,
+                        layout_epoch,
+                    } => {
+                        let controller = controller.map(|controller| RemoteController {
+                            view_id: lifecycle.local_view_id_for(&controller.controller_view_id),
+                            control_epoch: controller.control_epoch,
+                        });
+                        control_sender.send_replace(controller.as_ref().map(|controller| {
+                            RemoteControlClaim {
+                                controller_view_id: controller.view_id.clone(),
+                                control_epoch: controller.control_epoch,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            }
+                        }));
+                        if let Some(controller) = controller.as_ref() {
+                            let _ = remote_control_tx.send(RemoteControlChanged {
+                                session_id: local_session_id.clone(),
+                                controller_view_id: controller.view_id.clone(),
+                                control_epoch: controller.control_epoch,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            });
+                        }
+                        publish_control_state(
+                            &control_states,
+                            &control_state_tx,
+                            RemoteControlState {
+                                session_id: local_session_id.clone(),
+                                controller,
+                                control_revision,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            },
+                        );
+                    }
                     StateMessage::ControlChanged {
                         controller_view_id,
                         control_epoch,
@@ -1957,12 +2148,30 @@ impl MeshRuntime {
                         control_sender.send_replace(Some(claim));
                         let _ = remote_control_tx.send(RemoteControlChanged {
                             session_id: local_session_id.clone(),
-                            controller_view_id,
+                            controller_view_id: controller_view_id.clone(),
                             control_epoch,
                             cols,
                             rows,
                             layout_epoch,
                         });
+                        // Revision 0 says "legacy, unknown": this host cannot
+                        // report revisions or clears, and a client must never
+                        // compare-and-swap against it.
+                        publish_control_state(
+                            &control_states,
+                            &control_state_tx,
+                            RemoteControlState {
+                                session_id: local_session_id.clone(),
+                                controller: Some(RemoteController {
+                                    view_id: controller_view_id,
+                                    control_epoch,
+                                }),
+                                control_revision: 0,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            },
+                        );
                     }
                     StateMessage::ActivityChanged { activity } => {
                         replica.set_activity(activity.clone());
@@ -1980,7 +2189,6 @@ impl MeshRuntime {
                     // needs a shape that can say "no controller", which the
                     // current RemoteControlClaim cannot. No host emits this
                     // until the minor-6 host behaviors land alongside it.
-                    StateMessage::ControlState { .. } => {}
                     // Handled above, before the feed check.
                     StateMessage::SessionEnded { .. } | StateMessage::HostShutdown {} => {}
                 }
@@ -2513,6 +2721,98 @@ impl MeshRuntime {
         .context("timed out claiming remote terminal control")?
     }
 
+    pub fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        self.control_state_tx.subscribe()
+    }
+
+    pub fn last_control_state(&self, session_id: &str) -> Option<RemoteControlState> {
+        self.control_states.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// Claim control, compare-and-swapping against an observed revision when
+    /// one is supplied. `None` is legacy last-write-wins.
+    pub async fn claim_control_at(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        attachment_epoch: u64,
+        cols: u16,
+        rows: u16,
+        expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
+        let view = self
+            .remote_view(session_id, view_id, attachment_epoch)
+            .await?;
+        if !view.read_write {
+            bail!("remote terminal view is read-only");
+        }
+        let mut state = view.control.clone();
+        let previous_epoch = state
+            .borrow()
+            .as_ref()
+            .map_or(0, |current| current.control_epoch);
+        let wire_view_id = view.wire_view_id.clone();
+        view.session_control
+            .lock()
+            .await
+            .write_message(
+                &SessionControlMessage::FocusAndResize {
+                    view_id: wire_view_id,
+                    attachment_epoch,
+                    cols,
+                    rows,
+                    client_sequence: 0,
+                    expected_control_revision,
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await?;
+
+        // The first controller change after the request settles it: either it
+        // names this view at a newer epoch, or the swap lost — to another
+        // holder or to a clear. There is nothing to keep waiting for.
+        let claimed = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            state
+                .changed()
+                .await
+                .context("remote terminal control stream closed")?;
+            let current = state.borrow_and_update().clone();
+            Ok::<bool, anyhow::Error>(current.is_some_and(|current| {
+                current.controller_view_id == view_id && current.control_epoch > previous_epoch
+            }))
+        })
+        .await
+        .context("timed out claiming remote terminal control")??;
+
+        let announced = self.last_control_state(session_id).unwrap_or_else(|| {
+            let current = state.borrow().clone();
+            RemoteControlState {
+                session_id: session_id.to_owned(),
+                controller: current.as_ref().map(|claim| RemoteController {
+                    view_id: claim.controller_view_id.clone(),
+                    control_epoch: claim.control_epoch,
+                }),
+                control_revision: 0,
+                cols,
+                rows,
+                layout_epoch: current.map_or(0, |claim| claim.layout_epoch),
+            }
+        });
+        if claimed {
+            return Ok(RemoteControlOutcome::Claimed(announced));
+        }
+        // Announce the losing outcome ourselves rather than leaving the retry
+        // rule waiting on the host's frame to race in: a lost or oddly ordered
+        // announcement would otherwise kill the reclaim silently. Duplicates at
+        // one revision are expected; consumers are idempotent by revision.
+        publish_control_state(
+            &self.control_states,
+            &self.control_state_tx,
+            announced.clone(),
+        );
+        Ok(RemoteControlOutcome::Rejected(announced))
+    }
+
     pub async fn resize(
         &self,
         session_id: &str,
@@ -3005,6 +3305,7 @@ impl HostTransport for QuicHostTransport {
             &self.ready.node.local_info().device_id,
             &self.ready.host_instance_id,
             &advertisement.host_instance_id,
+            PROTOCOL_MINOR,
         )
         .await
         {
@@ -3027,6 +3328,7 @@ async fn client_handshake(
     local_device_id: &str,
     local_host_instance_id: &str,
     expected_host_instance_id: &str,
+    offered_minor: u16,
 ) -> Result<Arc<RemoteHostConnection>> {
     let mut control = ProtocolStream::new(connection.open_stream().await?);
     control
@@ -3041,7 +3343,7 @@ async fn client_handshake(
         .write_message(
             &ConnectionMessage::ClientHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                protocol_minor: offered_minor,
                 host_instance_id: local_host_instance_id.to_owned(),
                 local_device_id: local_device_id.to_owned(),
                 nonce: nonce.clone(),
@@ -3050,7 +3352,7 @@ async fn client_handshake(
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await?;
-    let state_codec = match tokio::time::timeout(
+    let (state_codec, protocol_minor) = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
         control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
     )
@@ -3070,7 +3372,10 @@ async fn client_handshake(
             && host_instance_id == expected_host_instance_id
             && state_codec.is_none_or(|codec| codec == StateCodec::CompactJsonV1) =>
         {
-            state_codec.unwrap_or(StateCodec::Json)
+            (
+                state_codec.unwrap_or(StateCodec::Json),
+                protocol_minor.min(offered_minor),
+            )
         }
         _ => bail!("remote host returned an invalid server hello"),
     };
@@ -3082,6 +3387,7 @@ async fn client_handshake(
         state_codec,
         healthy: AtomicBool::new(true),
         incarnation: NEXT_CONNECTION_INCARNATION.fetch_add(1, Ordering::Relaxed),
+        protocol_minor,
     }))
 }
 
@@ -3561,7 +3867,9 @@ where
         .write_message(
             &ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                // What was negotiated, not what this host could manage alone:
+                // a client that offered less must not be told it got more.
+                protocol_minor,
                 host_instance_id,
                 nonce: client_nonce,
                 state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
@@ -3707,7 +4015,7 @@ where
         .context("write compact view-attached response")?;
 
     let result = async {
-        let mut controls = session.subscribe_control();
+        let mut controls = session.subscribe_control_state();
         let mut activities = session.subscribe_activity();
         let mut snapshots = session.subscribe_logical();
         let mut previous = session.logical_snapshot();
@@ -3930,16 +4238,9 @@ where
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
-                    control.write_compact_state_message(
-                        &StateMessage::ControlChanged {
-                            controller_view_id: changed.controller.view_id,
-                            control_epoch: changed.controller.control_epoch,
-                            cols: changed.cols,
-                            rows: changed.rows,
-                            layout_epoch: changed.layout_epoch,
-                        },
-                        state_codec,
-                    ).await?;
+                    if let Some(message) = control_state_message(&changed, protocol_minor) {
+                        control.write_compact_state_message(&message, state_codec).await?;
+                    }
                 }
                 changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
                     let activity = match changed {
@@ -3960,7 +4261,12 @@ where
         Ok(())
     }
     .await;
-    session.detach_view(&view_id, &client_id);
+    // Epoch-conditional, because a handler outlives its attachment: once a
+    // takeover has replaced this view, detaching by (view, client) alone would
+    // destroy the successor's attachment — and if it lands between that
+    // takeover and its state-stream registration, the successor never gets a
+    // stream at all.
+    session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
     result
 }
 
@@ -4026,6 +4332,24 @@ impl ConnectionLedger {
             .iter()
             .find(|(_, owner)| owner.as_deref().is_none_or(|owner| owner == client_id))
             .map_or(state.highest_accepted, |(id, _)| id - 1)
+    }
+
+    /// The highest connection id this client could still be holding.
+    ///
+    /// This is the fence an attach is stamped with (§4.2.1). Stamping the
+    /// arriving connection's own id would under-fence: a client with an
+    /// overlapping newer connection could have a delayed attach on it that the
+    /// watermark then fails to cover. Connections not yet bound to a client
+    /// count, for the same reason `terminated_through` counts them.
+    pub fn highest_for(&self, client_id: &str) -> u64 {
+        let state = self.state.lock().unwrap();
+        state
+            .live
+            .iter()
+            .filter(|(_, owner)| owner.as_deref().is_none_or(|owner| owner == client_id))
+            .map(|(id, _)| *id)
+            .next_back()
+            .unwrap_or(state.highest_accepted)
     }
 
     /// Whether one connection is fully terminated. The per-connection form of
@@ -4205,7 +4529,9 @@ async fn serve_connection(
         .write_message(
             &ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                // What was negotiated, not what this host could manage alone:
+                // a client that offered less must not be told it got more.
+                protocol_minor,
                 host_instance_id,
                 nonce: client_nonce,
                 state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
@@ -4308,16 +4634,24 @@ async fn handle_application_stream(
     .await
     .context("timed out reading session attach")??
     .context("session stream closed before attach")?;
-    let (request_id, view_id, access_token, _cols, _rows) = match attach {
+    let (request_id, view_id, access_token, attach_generation, resume, wants_state) = match attach {
         SessionControlMessage::AttachView {
             request_id,
             session_id: requested_session,
             view_id,
             access_token,
-            cols,
-            rows,
+            attach_generation,
+            resume,
+            wants_state,
             ..
-        } if requested_session == session_id => (request_id, view_id, access_token, cols, rows),
+        } if requested_session == session_id => (
+            request_id,
+            view_id,
+            access_token,
+            attach_generation,
+            resume,
+            wants_state,
+        ),
         _ => bail!("expected matching attach-view message"),
     };
     let session = registry
@@ -4327,8 +4661,62 @@ async fn handle_application_stream(
         .cloned()
         .context("unknown shared terminal session")?;
     let access = config.access_for(access_token.as_deref());
-    let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
-    session.refresh()?;
+    // A zero generation is a viewer that fences by rotating its wire id, so it
+    // has no lineage to order and must not go through takeover — the second
+    // such attach would be rejected as stale, correctly but uselessly.
+    let ordered = protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR && attach_generation > 0;
+    let attached = if ordered {
+        let fence_conn_id = _connection_scope.ledger().highest_for(&client_id);
+        match session.take_over_view(
+            &view_id,
+            &client_id,
+            access,
+            attach_generation,
+            fence_conn_id,
+            resume.map(|hint| ResumeEvidence {
+                previous_session_epoch: hint.previous_session_epoch,
+                previous_attachment_epoch: hint.previous_attachment_epoch,
+                previous_terminal_revision: hint.previous_terminal_revision,
+            }),
+        ) {
+            Ok(taken) => taken,
+            Err(rejection) => {
+                // A rejection the viewer can act on. Without it the stream just
+                // closes, which is indistinguishable from a transport failure
+                // and sends the viewer down the ambiguous path.
+                let _ = control
+                    .write_message(
+                        &SessionControlMessage::AttachRejected {
+                            request_id,
+                            code: attach_reject_code(rejection.code),
+                            retryable: matches!(
+                                rejection.code,
+                                AttachRejectionCode::ViewInvalid | AttachRejectionCode::ViewLimit
+                            ),
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await;
+                return Err(anyhow::Error::new(rejection));
+            }
+        }
+    } else {
+        let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
+        let snapshot = session.control_snapshot();
+        TakeOver {
+            attachment_epoch,
+            resumed: false,
+            controller_cleared: false,
+            control_revision: snapshot.control_revision,
+            controller: snapshot.controller,
+        }
+    };
+    let attachment_epoch = attached.attachment_epoch;
+    // Takeover deliberately publishes nothing, so a `wants_state: false` attach
+    // creates no snapshot at all — that is its entire purpose.
+    if wants_state {
+        session.refresh()?;
+    }
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
     let presentation = (protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR)
         .then(|| host_config.borrow().as_ref().clone());
@@ -4343,28 +4731,50 @@ async fn handle_application_stream(
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
-                // The authority does not yet mint fresh epochs on takeover or
-                // report controller state at attach, so these stay at their
-                // pre-takeover values rather than asserting a capability the
-                // host does not have. Revision 0 is the "unknown" sentinel.
-                resumed: false,
-                controller: None,
-                control_revision: 0,
+                resumed: attached.resumed,
+                // Read under the same lock the takeover mutated, so the viewer
+                // cannot observe a controller torn between two reads.
+                controller: attached
+                    .controller
+                    .as_ref()
+                    .map(|controller| ControllerInfo {
+                        controller_view_id: controller.view_id.clone(),
+                        control_epoch: controller.control_epoch,
+                    }),
+                control_revision: attached.control_revision,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await?;
     let (state_cancel, state_cancelled) = tokio::sync::watch::channel(false);
-    spawn_state_stream(
-        Arc::clone(&connection),
-        Arc::clone(&session),
-        &view_id,
-        state_cancelled.clone(),
-        state_codec,
-        protocol_minor,
-        host_config.clone(),
-    )
-    .await?;
+    // A view that declined state gets no stream and no snapshot; its
+    // `ViewAttached` satisfies only the per-view half of the input barrier.
+    if wants_state {
+        // Registration is epoch-checked against the authority's *current*
+        // attachment, and a handler whose registration fails aborts without
+        // spawning. That is the half of the race cancellation alone cannot
+        // win: either the takeover finds this handle and fires it, or this
+        // registration finds the epoch already superseded and self-cancels —
+        // no interleaving lets a superseded stream run.
+        let registration_cancel = state_cancel.clone();
+        session.register_state_stream(
+            &view_id,
+            attachment_epoch,
+            StateStreamCancel::new(move || {
+                registration_cancel.send_replace(true);
+            }),
+        )?;
+        spawn_state_stream(
+            Arc::clone(&connection),
+            Arc::clone(&session),
+            &view_id,
+            state_cancelled.clone(),
+            state_codec,
+            protocol_minor,
+            host_config.clone(),
+        )
+        .await?;
+    }
 
     let result = session_control_loop(
         &mut control,
@@ -4382,7 +4792,12 @@ async fn handle_application_stream(
     )
     .await;
     state_cancel.send_replace(true);
-    session.detach_view(&view_id, &client_id);
+    // Epoch-conditional, because a handler outlives its attachment: once a
+    // takeover has replaced this view, detaching by (view, client) alone would
+    // destroy the successor's attachment — and if it lands between that
+    // takeover and its state-stream registration, the successor never gets a
+    // stream at all.
+    session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
     result
 }
 
@@ -4550,7 +4965,7 @@ async fn spawn_state_stream(
             view_id: Some(view_id.to_owned()),
         })
         .await?;
-    let mut controls = session.subscribe_control();
+    let mut controls = session.subscribe_control_state();
     let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
     let mut previous = session.logical_snapshot();
@@ -4652,13 +5067,7 @@ async fn spawn_state_stream(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 changed = controls.recv() => match changed {
-                    Ok(changed) => Some(StateMessage::ControlChanged {
-                        controller_view_id: changed.controller.view_id,
-                        control_epoch: changed.controller.control_epoch,
-                        cols: changed.cols,
-                        rows: changed.rows,
-                        layout_epoch: changed.layout_epoch,
-                    }),
+                    Ok(changed) => control_state_message(&changed, protocol_minor),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
@@ -5190,6 +5599,35 @@ impl RemoteTerminalRuntime for MeshRuntime {
 
     async fn refresh_remote(&self, session_id: &str) -> Result<()> {
         MeshRuntime::refresh_remote(self, session_id).await
+    }
+
+    fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        MeshRuntime::subscribe_control_state(self)
+    }
+
+    async fn control_state(&self, session_id: &str) -> Option<RemoteControlState> {
+        MeshRuntime::last_control_state(self, session_id)
+    }
+
+    async fn claim_control_at(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        attachment_epoch: u64,
+        cols: u16,
+        rows: u16,
+        expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
+        MeshRuntime::claim_control_at(
+            self,
+            session_id,
+            view_id,
+            attachment_epoch,
+            cols,
+            rows,
+            expected_control_revision,
+        )
+        .await
     }
 
     async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64) {
@@ -5883,6 +6321,17 @@ mod tests {
         registry: &Registry,
         host_instance_id: &str,
     ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
+        connect_loopback_at(registry, host_instance_id, PROTOCOL_MINOR).await
+    }
+
+    /// `offered_minor` is what the viewer asks for; the host answers with the
+    /// negotiated minimum, so passing < REMOTE_RECONNECT_PROTOCOL_MINOR gives
+    /// a genuine legacy pair rather than a simulated one.
+    async fn connect_loopback_at(
+        registry: &Registry,
+        host_instance_id: &str,
+        offered_minor: u16,
+    ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
         let (client, server) = loopback_pair();
         let (presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
             ghosttea::ConfigSnapshot::default().terminal_presentation(),
@@ -5908,6 +6357,7 @@ mod tests {
             "viewer-device",
             "viewer-instance",
             host_instance_id,
+            offered_minor,
         )
         .await?;
         Ok((
@@ -5979,6 +6429,7 @@ mod tests {
         remote_session_id: String,
         session_id: String,
         hosts: Vec<LoopbackHost>,
+        offered_minor: u16,
     }
 
     impl Fixture {
@@ -5987,7 +6438,17 @@ mod tests {
             Self::attached_with(quiet_reconnect()).await
         }
 
+        /// A pair that negotiated below the reconnect minor, so the viewer is
+        /// on the rotation path — the compatibility half of every behavior.
+        async fn attached_legacy() -> Result<Self> {
+            Self::attached_at(quiet_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await
+        }
+
         async fn attached_with(config: MeshReconnectConfig) -> Result<Self> {
+            Self::attached_at(config, PROTOCOL_MINOR).await
+        }
+
+        async fn attached_at(config: MeshReconnectConfig, offered_minor: u16) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = spawn_host_session(&registry)?;
             let transport = TestTransport::new("host-1");
@@ -5996,7 +6457,8 @@ mod tests {
             runtime
                 .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
                 .await;
-            let (connection, host) = connect_loopback(&registry, "host-1").await?;
+            let (connection, host) =
+                connect_loopback_at(&registry, "host-1", offered_minor).await?;
             transport.queue(connection);
 
             let summary = runtime
@@ -6019,6 +6481,7 @@ mod tests {
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![host],
+                offered_minor,
             };
             fixture
                 .runtime
@@ -6054,6 +6517,7 @@ mod tests {
                 "viewer-device",
                 "viewer-instance",
                 "host-1",
+                PROTOCOL_MINOR,
             )
             .await?;
             transport.queue(connection);
@@ -6086,6 +6550,7 @@ mod tests {
                     connections: ConnectionLedger::default(),
                     connection_id: 0,
                 }],
+                offered_minor: PROTOCOL_MINOR,
             })
         }
 
@@ -6131,7 +6596,8 @@ mod tests {
 
         /// Queue a fresh host connection for the next dial.
         async fn arm_host(&mut self, host_instance_id: &str) -> Result<()> {
-            let (connection, host) = connect_loopback(&self.registry, host_instance_id).await?;
+            let (connection, host) =
+                connect_loopback_at(&self.registry, host_instance_id, self.offered_minor).await?;
             self.transport.queue(connection);
             self.hosts.push(host);
             Ok(())
@@ -6309,8 +6775,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn attaching_a_remote_view_reports_live_with_a_wire_identity() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+    async fn a_legacy_pair_rotates_the_wire_identity_per_attempt() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
         let lifecycle = fixture.lifecycle().await;
         assert_eq!(lifecycle.state, RemoteLifecycleState::Live);
         assert_eq!(lifecycle.device_name, "studio-mac");
@@ -6331,6 +6797,183 @@ mod tests {
             .map(|view| view.wire_view_id.clone())
             .expect("attached view");
         assert_eq!(wire, "r:pane-1#g1");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reconnect_capable_pair_keeps_one_identity_and_advances_the_lineage() -> Result<()> {
+        let mut fixture = Fixture::attached().await?;
+        fixture.await_first_snapshot().await?;
+        let wire = |fixture: &Fixture| {
+            let session_id = fixture.session_id.clone();
+            let views = Arc::clone(&fixture.runtime.views);
+            async move {
+                views
+                    .lock()
+                    .await
+                    .get(&(session_id, "pane-1".to_owned()))
+                    .map(|view| view.wire_view_id.clone())
+            }
+        };
+        // Reused, not rotated: on this path the host mints a fresh epoch for
+        // the same identity, so a new id per attempt would defeat the fence
+        // rather than provide one.
+        assert_eq!(wire(&fixture).await.as_deref(), Some("r:pane-1"));
+        let before = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-1")
+            .await
+            .expect("attached")
+            .0;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        assert_eq!(wire(&fixture).await.as_deref(), Some("r:pane-1"));
+        // The lineage counter still advances — it is what a minor-6 host
+        // orders attempts by, it just stopped riding in the identity.
+        let remote = fixture.remote().await;
+        let generation = remote
+            .lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .views
+            .get("pane-1")
+            .map(|record| record.generation);
+        assert_eq!(generation, Some(2));
+        assert_ne!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-1")
+                .await
+                .expect("resumed")
+                .0,
+            before
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reconnect_capable_host_announces_the_controller_with_a_real_revision() -> Result<()>
+    {
+        let fixture = Fixture::attached().await?;
+        let mut states = fixture.runtime.subscribe_control_state();
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.claim_control("r:pane-1", "truffle:peer:1", 100, 30)?;
+        let claimed = tokio::time::timeout(Duration::from_secs(5), states.recv())
+            .await
+            .context("no controller announcement arrived")??;
+        let controller = claimed.controller.expect("a controller was announced");
+        // Translated back to the local id before it crosses the mesh boundary.
+        assert_eq!(controller.view_id, "pane-1");
+        // A reconnect-capable authority starts at 1, so 0 survives only as the
+        // legacy sentinel a client must never compare-and-swap against.
+        assert!(claimed.control_revision >= 1);
+        assert_eq!(
+            fixture
+                .runtime
+                .last_control_state(&fixture.session_id)
+                .and_then(|state| state.controller)
+                .map(|controller| controller.view_id),
+            Some("pane-1".to_owned()),
+            "reconciliation did not retain the announced controller"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_legacy_host_reports_the_unknown_revision_sentinel() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
+        let mut states = fixture.runtime.subscribe_control_state();
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.claim_control("r:pane-1#g1", "truffle:peer:1", 100, 30)?;
+        let state = tokio::time::timeout(Duration::from_secs(5), states.recv()).await??;
+        assert_eq!(
+            state.controller.map(|controller| controller.view_id),
+            Some("pane-1".to_owned())
+        );
+        // This host cannot report revisions, and a client must never CAS
+        // against the value that says so.
+        assert_eq!(state.control_revision, 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_superseded_handler_does_not_detach_its_successor() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        let first = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-2")
+            .await
+            .expect("secondary attached")
+            .0;
+
+        // Strand the host's handler: the viewer drops the view without ever
+        // sending Detach, so that handler keeps running against an attachment
+        // a takeover is about to replace.
+        fixture
+            .runtime
+            .retire_view(&fixture.session_id, "pane-2")
+            .await;
+        fixture
+            .remote()
+            .await
+            .lifecycle
+            .commit_view_failed("pane-2", "stranded".into(), true);
+
+        let record = fixture
+            .runtime
+            .retry_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(
+            record.view_state,
+            RemoteViewState::Attached,
+            "the successor never attached: {record:?}"
+        );
+        let second = record.attachment_epoch.expect("successor epoch");
+        assert_ne!(second, first);
+
+        // The stranded handler exits here. Detaching by (view, client) alone
+        // would take the successor's attachment with it — and, landing between
+        // the takeover and its stream registration, would leave the successor
+        // with no state stream at all.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-2")
+                .await
+                .map(|(epoch, _)| epoch),
+            Some(second),
+            "a superseded handler detached its successor"
+        );
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
         Ok(())
     }
 
@@ -6395,7 +7038,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn one_shot_resume_reattaches_under_a_fresh_epoch_and_generation() -> Result<()> {
-        let mut fixture = Fixture::attached().await?;
+        let mut fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let before = fixture
             .runtime
@@ -7001,6 +7644,7 @@ mod tests {
                 "viewer-device",
                 "viewer-instance",
                 "host-1",
+                PROTOCOL_MINOR,
             )
             .await
             .is_err()
@@ -7140,7 +7784,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_manual_retries_run_exactly_one_attempt() -> Result<()> {
-        let mut fixture = Fixture::attached().await?;
+        let mut fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         fixture.kill_host();
         fixture
@@ -7282,7 +7926,11 @@ mod tests {
             .runtime
             .retry_view(&fixture.session_id, "pane-2")
             .await?;
-        assert_eq!(record.view_state, RemoteViewState::Attached);
+        assert_eq!(
+            record.view_state,
+            RemoteViewState::Attached,
+            "retry left the view unattached: {record:?}"
+        );
         assert!(record.attachment_epoch.is_some());
         assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
         // Still exactly one publishing stream.
@@ -7799,7 +8447,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn refreshing_a_live_session_re_attaches_the_feed() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+        let fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let before = fixture
             .runtime
@@ -7900,7 +8548,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_zombie_reader_moves_no_state_after_its_generation_is_retired() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+        let fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let remote = fixture
             .runtime
