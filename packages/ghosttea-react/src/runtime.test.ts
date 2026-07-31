@@ -37,6 +37,7 @@ class FakePort extends EventTarget {
   subscriptionControlAsArrayBuffer = false;
   helloProtocolMinor: number | undefined;
   configSnapshot: ConfigSnapshot | undefined;
+  sessions: SessionSummary[] = [];
   closed = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
 
@@ -64,6 +65,12 @@ class FakePort extends EventTarget {
           }),
         );
       }
+    } else if (message.type === "list-sessions") {
+      this.dispatchEvent(
+        new MessageEvent("message", {
+          data: { requestId, type: "sessions", sessions: this.sessions },
+        }),
+      );
     } else if (message.type === "subscribe") {
       if (this.bridgeCapabilities && message.bridgeCapabilities === 1) {
         this.onmessage?.(
@@ -247,6 +254,39 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await expect(runtime.reloadConfig()).resolves.toEqual(control.configSnapshot);
     expect(runtime.configSnapshot?.renderer.postProcess).toBe("better-crt");
     expect(changes).toHaveLength(2);
+    runtime.dispose();
+  });
+
+  it("refreshes configuration after the daemon reports lost events", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.configSnapshot = configSnapshot;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+
+    await runtime.connect();
+    control.configSnapshot = {
+      ...configSnapshot,
+      revision: "config-after-gap",
+      renderer: { ...configSnapshot.renderer, postProcess: "better-crt" },
+    };
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: { requestId: 0, type: "events-lost", skipped: 2 },
+      }),
+    );
+    await flushMicrotasks();
+
+    expect(runtime.configSnapshot).toEqual(control.configSnapshot);
+    expect(control.messages.filter((message) => message.type === "get-config")).toHaveLength(2);
     runtime.dispose();
   });
 

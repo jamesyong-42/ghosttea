@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
   GhostteaElectronBackend,
@@ -74,7 +74,11 @@ ipcMain.on("terminal-close-all-windows", () => {
   for (const window of BrowserWindow.getAllWindows()) window.close();
 });
 
-ipcMain.on("terminal-open-config", () => {
+ipcMain.on("terminal-open-config", (event) => {
+  if (externalBackendConfigured()) {
+    void showExternalConfigOwnershipMessage(event.sender, "open");
+    return;
+  }
   if (!existsSync(terminalConfigPath)) {
     mkdirSync(app.getPath("userData"), { recursive: true, mode: 0o700 });
     writeFileSync(
@@ -97,7 +101,11 @@ ipcMain.on("terminal-open-config", () => {
     .catch((error) => console.error("failed to open terminal config", error));
 });
 
-ipcMain.on("terminal-reload-config", () => {
+ipcMain.on("terminal-reload-config", (event) => {
+  if (externalBackendConfigured()) {
+    void showExternalConfigOwnershipMessage(event.sender, "reload");
+    return;
+  }
   void ensureBackend()
     .then(() => backend!.automation.reloadConfig())
     .catch((error) => console.error("failed to reload terminal config", error));
@@ -161,6 +169,31 @@ const QUIT_CLEANUP_TIMEOUT_MS = 5_000;
 const closingSessionOwners = new Set<Promise<void>>();
 let recoveringBackend: Promise<void> | undefined;
 let lastFocusedWindow: BrowserWindow | undefined;
+
+function externalBackendConfigured(): boolean {
+  return Boolean(
+    process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET &&
+    process.env.GHOSTTEA_EXTERNAL_FRAME_SOCKET &&
+    process.env.GHOSTTEA_EXTERNAL_AUTH_TOKEN,
+  );
+}
+
+async function showExternalConfigOwnershipMessage(
+  sender: Electron.WebContents,
+  action: "open" | "reload",
+): Promise<void> {
+  const owner = BrowserWindow.fromWebContents(sender);
+  const options = {
+    type: "info" as const,
+    title: "Configuration managed externally",
+    message: `Ghosttea cannot ${action} this configuration`,
+    detail:
+      "This window is connected to an externally managed daemon. Open or reload the configuration from the process that started that daemon.",
+    buttons: ["OK"],
+  };
+  if (owner) await dialog.showMessageBox(owner, options);
+  else await dialog.showMessageBox(options);
+}
 
 function backendOptions(): GhostteaElectronBackendOptions {
   const externalControl = process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET;

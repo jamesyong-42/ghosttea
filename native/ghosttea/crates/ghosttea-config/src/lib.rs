@@ -37,8 +37,12 @@ pub struct ConfigLoadOptions {
     pub home_dir: Option<PathBuf>,
     /// Test/embedding override. `None` resolves from `XDG_CONFIG_HOME`.
     pub xdg_config_home: Option<PathBuf>,
+    /// Test/embedding override for Ghostty's Windows `LOCALAPPDATA` fallback.
+    pub local_app_data: Option<PathBuf>,
     /// Treat the host as macOS when adding Application Support paths.
     pub macos: bool,
+    /// Treat the host as Windows when resolving XDG and home fallbacks.
+    pub windows: bool,
 }
 
 impl Default for ConfigLoadOptions {
@@ -48,7 +52,9 @@ impl Default for ConfigLoadOptions {
             explicit_path: None,
             home_dir: None,
             xdg_config_home: None,
+            local_app_data: None,
             macos: cfg!(target_os = "macos"),
+            windows: cfg!(target_os = "windows"),
         }
     }
 }
@@ -271,6 +277,7 @@ struct Setting {
     value: String,
     source: String,
     line: usize,
+    bare: bool,
 }
 
 #[derive(Default)]
@@ -314,6 +321,17 @@ pub fn standard_config_paths(options: &ConfigLoadOptions) -> Vec<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         })
+        .or_else(|| {
+            if options.windows {
+                options.local_app_data.clone().or_else(|| {
+                    env::var_os("LOCALAPPDATA")
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                })
+            } else {
+                None
+            }
+        })
         .or_else(|| home.as_ref().map(|path| path.join(".config")));
     let mut paths = Vec::new();
     if let Some(xdg) = xdg {
@@ -334,10 +352,28 @@ pub fn standard_config_paths(options: &ConfigLoadOptions) -> Vec<PathBuf> {
 
 fn resolved_home(options: &ConfigLoadOptions) -> Option<PathBuf> {
     options.home_dir.clone().or_else(|| {
-        env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+        if options.windows {
+            env_path("USERPROFILE")
+                .or_else(windows_home_from_drive_and_path)
+                .or_else(|| env_path("HOME"))
+        } else {
+            env_path("HOME")
+        }
     })
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn windows_home_from_drive_and_path() -> Option<PathBuf> {
+    let drive = env::var_os("HOMEDRIVE").filter(|value| !value.is_empty())?;
+    let path = env::var_os("HOMEPATH").filter(|value| !value.is_empty())?;
+    let mut joined = drive;
+    joined.push(path);
+    Some(PathBuf::from(joined))
 }
 
 fn root_sources(options: &ConfigLoadOptions) -> Vec<(PathBuf, ConfigSourceKind, bool)> {
@@ -403,6 +439,7 @@ fn load_file(
             return;
         }
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     state.sources.push(ConfigSource {
         path: path.to_string_lossy().into_owned(),
         kind,
@@ -414,16 +451,9 @@ fn load_file(
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let Some((raw_key, raw_value)) = raw.split_once('=') else {
-            state.diagnostics.push(diagnostic(
-                DiagnosticSeverity::Warning,
-                "invalid-line",
-                "configuration line must contain `=`".to_owned(),
-                Some(path),
-                Some(line),
-                None,
-            ));
-            continue;
+        let (raw_key, raw_value, bare) = match raw.split_once('=') {
+            Some((key, value)) => (key, value, false),
+            None => (raw, "", true),
         };
         let key = raw_key.trim();
         if key.is_empty() {
@@ -440,6 +470,17 @@ fn load_file(
         *state.configured.entry(key.to_owned()).or_default() += 1;
         let (value, quoted) = parse_value(raw_value.trim());
         if key == "config-file" {
+            if bare {
+                state.diagnostics.push(diagnostic(
+                    DiagnosticSeverity::Error,
+                    "invalid-value",
+                    "`config-file` requires a value".to_owned(),
+                    Some(path),
+                    Some(line),
+                    Some(key),
+                ));
+                continue;
+            }
             if value.is_empty() {
                 if !quoted {
                     includes.clear();
@@ -469,6 +510,7 @@ fn load_file(
             value,
             source: path.to_string_lossy().into_owned(),
             line,
+            bare,
         });
     }
 }
@@ -552,6 +594,15 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
             ));
             continue;
         }
+        if setting.bare && support_for_key(&setting.key) != ConfigSupport::Unsupported {
+            state.diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-value",
+                format!("`{}` requires a value", setting.key),
+                &setting,
+            ));
+            continue;
+        }
         match setting.key.as_str() {
             "font-family" => {
                 if setting.value.is_empty() {
@@ -584,12 +635,12 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         }
     }
 
+    let mut parsed_only_keys = BTreeSet::new();
     apply_color(
         &scalars,
         "background",
         &mut snapshot.renderer.background,
         DEFAULT_BACKGROUND,
-        None,
         &mut state.diagnostics,
     );
     apply_color(
@@ -597,36 +648,38 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         "foreground",
         &mut snapshot.renderer.foreground,
         DEFAULT_FOREGROUND,
-        None,
         &mut state.diagnostics,
     );
     snapshot.renderer.cursor = snapshot.renderer.foreground;
-    apply_color(
+    if apply_terminal_color(
         &scalars,
         "cursor-color",
         &mut snapshot.renderer.cursor,
         snapshot.renderer.foreground,
-        Some((snapshot.renderer.foreground, snapshot.renderer.background)),
         &mut state.diagnostics,
-    );
+    ) {
+        parsed_only_keys.insert("cursor-color");
+    }
     snapshot.renderer.selection_background = snapshot.renderer.foreground;
     snapshot.renderer.selection_foreground = snapshot.renderer.background;
-    apply_color(
+    if apply_terminal_color(
         &scalars,
         "selection-background",
         &mut snapshot.renderer.selection_background,
         snapshot.renderer.foreground,
-        Some((snapshot.renderer.foreground, snapshot.renderer.background)),
         &mut state.diagnostics,
-    );
-    apply_color(
+    ) {
+        parsed_only_keys.insert("selection-background");
+    }
+    if apply_terminal_color(
         &scalars,
         "selection-foreground",
         &mut snapshot.renderer.selection_foreground,
         snapshot.renderer.background,
-        Some((snapshot.renderer.foreground, snapshot.renderer.background)),
         &mut state.diagnostics,
-    );
+    ) {
+        parsed_only_keys.insert("selection-foreground");
+    }
     for setting in scalars
         .iter()
         .filter(|setting| setting.key == "scrollback-limit")
@@ -749,7 +802,11 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         .configured
         .into_iter()
         .map(|(key, occurrences)| {
-            let support = support_for_key(&key);
+            let support = if parsed_only_keys.contains(key.as_str()) {
+                ConfigSupport::Parsed
+            } else {
+                support_for_key(&key)
+            };
             if known.contains(key.as_str())
                 && support == ConfigSupport::Unsupported
                 && unsupported_reported.insert(key.clone())
@@ -816,7 +873,6 @@ fn apply_color(
     key: &str,
     output: &mut [u8; 3],
     reset: [u8; 3],
-    cell_colors: Option<([u8; 3], [u8; 3])>,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) {
     for setting in scalars.iter().filter(|setting| setting.key == key) {
@@ -824,23 +880,68 @@ fn apply_color(
             *output = reset;
             continue;
         }
-        let parsed = match (setting.value.as_str(), cell_colors) {
-            ("cell-foreground", Some((foreground, _))) => Some(foreground),
-            ("cell-background", Some((_, background))) => Some(background),
-            _ => parse_color(&setting.value),
-        };
-        match parsed {
+        match parse_color(&setting.value) {
             Some(value) => *output = value,
             None => diagnostics.push(diagnostic_at(
                 DiagnosticSeverity::Error,
                 "invalid-color",
-                format!(
-                    "`{key}` must be #RRGGBB, RRGGBB, #RGB, RGB, a supported named X11 color, or an allowed cell color reference"
-                ),
+                format!("`{key}` must be a valid Ghostty color"),
                 setting,
             )),
         }
     }
+}
+
+/// Apply a Ghostty `TerminalColor` to the fixed-color runtime projection.
+///
+/// Cell color references are valid Ghostty syntax, but their value is chosen
+/// per rendered cell. Keep the last representable fixed value and report that
+/// the dynamic value was parsed rather than pretending it is globally fixed.
+/// Returns true when the effective final value is a dynamic reference.
+fn apply_terminal_color(
+    scalars: &[Setting],
+    key: &str,
+    output: &mut [u8; 3],
+    reset: [u8; 3],
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> bool {
+    let mut dynamic = false;
+    for setting in scalars.iter().filter(|setting| setting.key == key) {
+        if setting.value.is_empty() {
+            *output = reset;
+            dynamic = false;
+            continue;
+        }
+        if matches!(
+            setting.value.as_str(),
+            "cell-foreground" | "cell-background"
+        ) {
+            dynamic = true;
+            diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Warning,
+                "dynamic-color-not-applied",
+                format!(
+                    "`{key} = {}` is valid Ghostty syntax but requires per-cell rendering that Ghosttea does not apply yet",
+                    setting.value
+                ),
+                setting,
+            ));
+            continue;
+        }
+        match parse_color(&setting.value) {
+            Some(value) => {
+                *output = value;
+                dynamic = false;
+            }
+            None => diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-color",
+                format!("`{key}` must be a valid Ghostty color or cell color reference"),
+                setting,
+            )),
+        }
+    }
+    dynamic
 }
 
 fn apply_padding(
@@ -1155,7 +1256,9 @@ mod tests {
             explicit_path: Some(root),
             home_dir: Some(home),
             xdg_config_home: None,
+            local_app_data: None,
             macos: false,
+            windows: false,
         });
         assert_eq!(snapshot.renderer.background, [0x44, 0x44, 0x44]);
         assert_eq!(
@@ -1212,7 +1315,9 @@ mod tests {
             explicit_path: None,
             home_dir: Some(home.clone()),
             xdg_config_home: Some(xdg.clone()),
+            local_app_data: None,
             macos: true,
+            windows: false,
         };
         let snapshot = load_config(&defaults);
         assert_eq!(snapshot.renderer.background, [0x44, 0x44, 0x44]);
@@ -1258,7 +1363,9 @@ mod tests {
             explicit_path: Some(overlay),
             home_dir: None,
             xdg_config_home: Some(xdg),
+            local_app_data: None,
             macos: false,
+            windows: false,
         });
         assert_eq!(snapshot.renderer.background, [0x33, 0x33, 0x33]);
         assert_eq!(
@@ -1372,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_and_selection_colors_support_ghostty_cell_references() {
+    fn cursor_and_selection_cell_references_are_reported_as_parsed_only() {
         let temporary = TempDir::new().unwrap();
         let config = temporary.path().join("config");
         write(
@@ -1381,10 +1488,92 @@ mod tests {
         );
 
         let snapshot = load_config(&ConfigLoadOptions::explicit(&config));
-        assert_eq!(snapshot.renderer.cursor, [0x44, 0x55, 0x66]);
+        assert_eq!(snapshot.renderer.cursor, [0x11, 0x22, 0x33]);
         assert_eq!(snapshot.renderer.selection_background, [0x11, 0x22, 0x33]);
         assert_eq!(snapshot.renderer.selection_foreground, [0x44, 0x55, 0x66]);
+        assert_eq!(
+            snapshot
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "dynamic-color-not-applied")
+                .count(),
+            3
+        );
+        for key in [
+            "cursor-color",
+            "selection-background",
+            "selection-foreground",
+        ] {
+            assert_eq!(
+                snapshot
+                    .configured_keys
+                    .iter()
+                    .find(|configured| configured.key == key)
+                    .map(|configured| configured.support),
+                Some(ConfigSupport::Parsed)
+            );
+        }
         assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics);
+    }
+
+    #[test]
+    fn strips_utf8_bom_and_accepts_bare_cli_style_options() {
+        let temporary = TempDir::new().unwrap();
+        let config = temporary.path().join("config");
+        write(
+            &config,
+            "\u{feff}background = 112233\nwindow-save-state\nfont-size\n",
+        );
+
+        let snapshot = load_config(&ConfigLoadOptions::explicit(&config));
+        assert_eq!(snapshot.renderer.background, [0x11, 0x22, 0x33]);
+        assert!(
+            snapshot
+                .configured_keys
+                .iter()
+                .any(|configured| configured.key == "window-save-state")
+        );
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "recognized-not-applied"
+                    && diagnostic.key.as_deref() == Some("window-save-state"))
+        );
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "invalid-value"
+                    && diagnostic.key.as_deref() == Some("font-size"))
+        );
+        assert!(snapshot.diagnostics.iter().all(
+            |diagnostic| diagnostic.code != "unknown-key" && diagnostic.code != "invalid-line"
+        ));
+    }
+
+    #[test]
+    fn windows_discovery_uses_local_app_data_before_home() {
+        let temporary = TempDir::new().unwrap();
+        let local_app_data = temporary.path().join("local");
+        let home = temporary.path().join("home");
+        let options = ConfigLoadOptions {
+            load_default_files: true,
+            explicit_path: None,
+            home_dir: Some(home),
+            xdg_config_home: None,
+            local_app_data: Some(local_app_data.clone()),
+            macos: false,
+            windows: true,
+        };
+
+        assert_eq!(
+            standard_config_paths(&options),
+            [
+                local_app_data.join("ghostty/config"),
+                local_app_data.join("ghostty/config.ghostty"),
+            ]
+        );
     }
 
     #[test]

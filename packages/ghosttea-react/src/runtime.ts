@@ -145,6 +145,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #views = new Map<string, ViewRuntimeState>();
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
+  #configProtocolSupported = false;
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
   #performanceRequestId = 1;
@@ -398,10 +399,9 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR)
       throw new Error("ghosttead protocol mismatch");
     this.#frameSubscriptionAcksSupported = hello.protocolMinor >= FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR;
-    if (hello.protocolMinor >= CONFIG_PROTOCOL_MINOR && hello.configRevision !== undefined) {
-      const response = await this.#control.request({ type: "get-config" });
-      if (response.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
-      this.#installConfig(response.config);
+    this.#configProtocolSupported = hello.protocolMinor >= CONFIG_PROTOCOL_MINOR;
+    if (this.#configProtocolSupported && hello.configRevision !== undefined) {
+      await this.#refreshConfig();
     }
     await this.#queueFrameSubscriptionSync();
     console.info("[terminal-runtime] authenticated ghosttead protocol");
@@ -428,6 +428,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (this.#configSnapshot?.revision === config.revision) return;
     this.#configSnapshot = config;
     this.dispatchEvent(new CustomEvent("config-changed", { detail: config }));
+  }
+
+  async #refreshConfig(): Promise<void> {
+    if (!this.#configProtocolSupported || !this.#control) return;
+    const response = await this.#control.request({ type: "get-config" });
+    if (response.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
+    this.#installConfig(response.config);
   }
 
   #handleFrameChannelControl(message: unknown): boolean {
@@ -727,7 +734,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       for (const session of this.#sessionByHandle.values()) {
         before.set(session.id, session);
       }
-      const sessions = await this.listSessions();
+      const [sessions] = await Promise.all([this.listSessions(), this.#refreshConfig()]);
       const known = new Set<string>();
       for (const session of sessions) {
         known.add(session.id);
@@ -774,8 +781,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.dispatchEvent(new CustomEvent("session-exited", { detail }));
       }
     } catch (error) {
-      if (!this.#disposed)
-        console.error("[terminal-runtime] failed to resynchronize sessions after lost events", error);
+      if (!this.#disposed) console.error("[terminal-runtime] failed to resynchronize state after lost events", error);
     }
   }
 
