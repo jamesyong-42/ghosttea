@@ -1936,6 +1936,12 @@ impl MeshRuntime {
                 remote.lifecycle.resume_hint(local_view_id, revision)
             })
             .flatten();
+        // A secondary's stream is drained and discarded, so a host that can
+        // honour the request is told not to open one: it costs a full snapshot
+        // per pane and a patch stream nobody reads. Below the reconnect minor
+        // the field means nothing to the host, which opens a stream either
+        // way — so there the viewer must still expect one.
+        let wants_state = feed || !host.supports_reconnect();
         let state_generation = remote.lifecycle.generation();
         let connection = Arc::clone(&host.connection);
         let mut session_control = ProtocolStream::new(connection.open_stream().await?);
@@ -1961,7 +1967,7 @@ impl MeshRuntime {
                     // host that sees it routes to the plain attach path.
                     attach_generation: if takeover { view_generation } else { 0 },
                     resume,
-                    wants_state: true,
+                    wants_state,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -2027,26 +2033,37 @@ impl MeshRuntime {
         // Bind before the reader exists, so the reader's eventual verdict has
         // an incarnation to be compared against.
         remote.lifecycle.bind_connection(host.incarnation);
-        let state_stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
-            .await
-            .context("timed out waiting for remote terminal state")??
-            .context("remote terminal closed before opening state stream")?;
-        let mut state = ProtocolStream::new(state_stream);
-        let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, state.read_preface())
-            .await
-            .context("timed out reading remote state preface")?
-            .context("read remote terminal state preface")?;
-        if preface.stream_kind != StreamKind::LiveState
-            || preface.session_id.as_deref() != Some(remote.remote_session_id.as_str())
-            || preface.view_id.as_deref() != Some(wire_view_id.as_str())
-        {
-            return Err(AttachFailure::Failed(anyhow::anyhow!(
-                "remote terminal returned a misrouted state stream"
-            )));
-        }
+        // Waiting for a stream this attach declined would hang here for the
+        // whole handshake timeout and then fail — the one way this change can
+        // break, and the reason the two decisions are read from one flag.
+        let state = if wants_state {
+            let state_stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
+                .await
+                .context("timed out waiting for remote terminal state")??
+                .context("remote terminal closed before opening state stream")?;
+            let mut state = ProtocolStream::new(state_stream);
+            let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, state.read_preface())
+                .await
+                .context("timed out reading remote state preface")?
+                .context("read remote terminal state preface")?;
+            if preface.stream_kind != StreamKind::LiveState
+                || preface.session_id.as_deref() != Some(remote.remote_session_id.as_str())
+                || preface.view_id.as_deref() != Some(wire_view_id.as_str())
+            {
+                return Err(AttachFailure::Failed(anyhow::anyhow!(
+                    "remote terminal returned a misrouted state stream"
+                )));
+            }
+            Some(state)
+        } else {
+            None
+        };
         let (control_sender, control) = tokio::sync::watch::channel(None);
         let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
-        let (synchronized_tx, synchronized) = tokio::sync::watch::channel(false);
+        // A view with no stream has nothing to wait for and is as synchronized
+        // as it will ever be; only the feed is ever awaited, and the feed
+        // always has one.
+        let (synchronized_tx, synchronized) = tokio::sync::watch::channel(state.is_none());
         let view = Arc::new(RemoteView {
             session_control: tokio::sync::Mutex::new(session_control),
             control,
@@ -2077,6 +2094,16 @@ impl MeshRuntime {
                 displaced.state_cancel.send_replace(true);
             }
         }
+        // A view that declined state has no reader to spawn. Nothing arrives on
+        // its behalf — including the session-level verdicts and the disconnect
+        // report, which the feed's reader raises for the whole session.
+        let Some(mut state) = state else {
+            return Ok(AttachOutcome {
+                attachment_epoch,
+                read_write,
+                synchronized,
+            });
+        };
         let replica = Arc::clone(&remote.replica);
         let local_session_id = remote.replica.summary().id;
         let remote_device_id = remote.device_id.clone();
@@ -7310,6 +7337,75 @@ mod tests {
         assert!(
             reopened.control_revision >= 1,
             "re-attaching the feed downgraded the session to the legacy sentinel"
+        );
+        Ok(())
+    }
+
+    /// A secondary tells a reconnect-capable host not to open a state stream,
+    /// and must then not wait for one. Waiting would cost the whole handshake
+    /// timeout and end in a failure that names the wrong thing, so the bound
+    /// here is far below it: this test is about the hang, not the attach.
+    ///
+    /// The third view is the proof the host opened nothing. Every state stream
+    /// for a connection arrives on one accept queue, so an unclaimed stream
+    /// would be handed to the next attach and fail its preface check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_declines_its_state_stream_and_does_not_wait_for_one() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-2"),
+        )
+        .await
+        .context("a secondary attach waited for a stream its host was told not to open")??;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-3"),
+        )
+        .await
+        .context("the attach after a secondary stalled")??;
+        assert_eq!(
+            fixture.feed_reader_count().await,
+            1,
+            "more than one reader is publishing into the replica"
+        );
+        assert_eq!(
+            fixture.view_state("pane-2").await,
+            Some(RemoteViewState::Attached)
+        );
+        assert_eq!(
+            fixture.view_state("pane-3").await,
+            Some(RemoteViewState::Attached)
+        );
+        Ok(())
+    }
+
+    /// The compatibility half: secondaries still attach on a pair that
+    /// negotiated below the reconnect minor.
+    ///
+    /// Scope: this cannot exercise the `!supports_reconnect()` guard on the
+    /// request itself. That guard exists for hosts old enough to predate the
+    /// field and open a stream regardless; the host here is this same
+    /// implementation negotiated down, and it honours the field at any minor,
+    /// so it behaves identically with the guard removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_still_attaches_against_a_legacy_host() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-2"),
+        )
+        .await
+        .context("a secondary attach against a legacy host stalled")??;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-3"),
+        )
+        .await
+        .context("the attach after a legacy secondary stalled")??;
+        assert_eq!(
+            fixture.view_state("pane-2").await,
+            Some(RemoteViewState::Attached)
         );
         Ok(())
     }
