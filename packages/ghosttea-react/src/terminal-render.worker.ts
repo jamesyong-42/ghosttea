@@ -855,6 +855,10 @@ function applyFrame(packet: ArrayBuffer): void {
     sessionHandle: id,
     sessionEpoch: frame.sessionEpoch,
     frameSequence: frame.frameSequence,
+    // A resume publishes a full refresh, and `classifyFrame` only accepts a
+    // resync-completing frame that carries one, so this flag is what tells a
+    // recovered screen apart from a partial update of the stale one.
+    fullSnapshot: fullFrame,
   });
   if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
 }

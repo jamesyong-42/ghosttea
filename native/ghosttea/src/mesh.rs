@@ -326,6 +326,14 @@ pub trait RemoteTerminalRuntime: Send + Sync {
         unavailable()
     }
 
+    /// Re-attach one non-feed view of a live session — the per-pane retry for
+    /// a view that failed while the rest of the session kept working. Errors
+    /// when the session is not live or the view is the replica's feed; both are
+    /// recovered through the session-level paths instead.
+    async fn retry_view(&self, _session_id: &str, _view_id: &str) -> Result<RemoteViewRecord> {
+        unavailable()
+    }
+
     /// Liveness round-trip on a device's cached connection, bypassing
     /// advertisement validation. Used as a probe, never as a teardown trigger.
     async fn probe_connection(&self, _device_id: &str) -> Result<()> {

@@ -25,6 +25,20 @@ class FakeWorker extends EventTarget {
   terminate(): void {
     this.terminated = true;
   }
+
+  commitFrame(sessionHandle: string, options: { fullSnapshot?: boolean; frameSequence?: bigint } = {}): void {
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "frame-committed",
+          sessionHandle,
+          sessionEpoch: 4n,
+          frameSequence: options.frameSequence ?? 1n,
+          fullSnapshot: options.fullSnapshot ?? true,
+        },
+      }),
+    );
+  }
 }
 
 class FakePort extends EventTarget {
@@ -1143,11 +1157,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       },
     );
 
-    worker.dispatchEvent(
-      new MessageEvent("message", {
-        data: { type: "frame-committed", sessionHandle: remote.handle, sessionEpoch: 4n, frameSequence: 1n },
-      }),
-    );
+    worker.commitFrame(remote.handle);
 
     expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
     expect(states).toEqual([false, true, false]);
@@ -1198,6 +1208,104 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.dispose();
   });
 
+  it("thaws an idle pane whose recovery frame committed before the live event", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    // Frames and lifecycle events travel independent channels, so the recovery
+    // snapshot can land first. An idle session then sends nothing further, and
+    // waiting for a later frame would leave the pane frozen for good.
+    worker.commitFrame(remote.handle);
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    expect(worker.messages.filter((message) => (message as { type?: string }).type === "cursor-frozen").at(-1)).toEqual(
+      { type: "cursor-frozen", surfaceId: "view-1", frozen: false },
+    );
+    runtime.dispose();
+  });
+
+  it("does not let a partial repaint of the stale screen pass as recovery", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    // An older queued frame repaints part of the pre-outage screen.
+    worker.commitFrame(remote.handle, { fullSnapshot: false, frameSequence: 7n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(true);
+
+    worker.commitFrame(remote.handle, { frameSequence: 8n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    runtime.dispose();
+  });
+
+  it("requires a fresh snapshot for each outage, not the one that ended the last", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    worker.commitFrame(remote.handle);
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+
+    // A second outage starts its own episode; the previous snapshot proves
+    // nothing about the screen this one left behind.
+    control.emitLifecycle({ lifecycleSeq: 3, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 4, state: "live" });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(true);
+
+    worker.commitFrame(remote.handle, { frameSequence: 2n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    runtime.dispose();
+  });
+
   it("claims once when a recovered view is marked attached before its session is live", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();
@@ -1232,11 +1340,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     // Still showing the pre-outage screen: input is not ready, so neither is a claim.
     expect(claims()).toHaveLength(before);
 
-    renderWorker.dispatchEvent(
-      new MessageEvent("message", {
-        data: { type: "frame-committed", sessionHandle: remote.handle, sessionEpoch: 1n, frameSequence: 2n },
-      }),
-    );
+    renderWorker.commitFrame(remote.handle, { frameSequence: 2n });
     expect(claims()).toHaveLength(before + 1);
     expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 30 });
 

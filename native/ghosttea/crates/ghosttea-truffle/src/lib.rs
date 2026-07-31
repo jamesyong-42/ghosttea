@@ -347,6 +347,9 @@ struct LifecycleState {
     feed_view_id: Option<String>,
     /// How long until the engine's next dial, while one is scheduled.
     next_retry: Option<Duration>,
+    /// The connection incarnation already torn down. Every reader on a
+    /// multi-view connection reports the same death; only the first may act.
+    disconnected: Option<(u64, u64)>,
 }
 
 /// The serialized owner of one open remote session's lifecycle. Every
@@ -391,6 +394,7 @@ impl SessionLifecycle {
                 views: HashMap::new(),
                 feed_view_id: None,
                 next_retry: None,
+                disconnected: None,
             }),
             attempts: tokio::sync::Mutex::new(()),
             engine: SyncMutex::new(None),
@@ -603,6 +607,15 @@ impl SessionLifecycle {
         if let Some(record) = self.state.lock().unwrap().views.get_mut(local_view_id) {
             record.oldest_unpurged = record.oldest_unpurged.max(generation.saturating_add(1));
         }
+    }
+
+    fn view_record(&self, local_view_id: &str) -> Option<RemoteViewRecord> {
+        self.state
+            .lock()
+            .unwrap()
+            .views
+            .get(local_view_id)
+            .map(|record| record.record(local_view_id))
     }
 
     fn feed_view_id(&self) -> Option<String> {
@@ -829,12 +842,19 @@ impl SessionLifecycle {
         if state.generation != generation || state.incarnation != incarnation {
             return false;
         }
+        // Every view riding a dead connection reports it. Acting more than
+        // once would re-arm an engine that is already dialing and reset the
+        // schedule it is partway through.
+        if state.disconnected == Some((generation, incarnation)) {
+            return false;
+        }
         if matches!(
             state.state,
             RemoteLifecycleState::Ended | RemoteLifecycleState::Suspended
         ) {
             return false;
         }
+        state.disconnected = Some((generation, incarnation));
         let view_ids = state.views.keys().cloned().collect::<Vec<_>>();
         for local_view_id in view_ids {
             self.set_view(&mut state, &local_view_id, |record| {
@@ -1629,7 +1649,23 @@ impl MeshRuntime {
         });
         let key = (remote.replica.summary().id, local_view_id.to_owned());
         let local_view_key = key.clone();
-        self.views.lock().await.insert(key, Arc::clone(&view));
+        {
+            // Publication is the fence. An attempt that began before a
+            // promotion, refresh, or duplicate resume must not install itself
+            // into the world that superseded it — and must never displace a
+            // live entry without cancelling the reader behind it.
+            let mut views = self.views.lock().await;
+            if remote.lifecycle.generation() != state_generation {
+                drop(views);
+                view.state_cancel.send_replace(true);
+                return Err(AttachFailure::Failed(anyhow::anyhow!(
+                    "remote view attach was superseded before it could publish"
+                )));
+            }
+            if let Some(displaced) = views.insert(key, Arc::clone(&view)) {
+                displaced.state_cancel.send_replace(true);
+            }
+        }
         let replica = Arc::clone(&remote.replica);
         let local_session_id = remote.replica.summary().id;
         let remote_device_id = remote.device_id.clone();
@@ -1817,6 +1853,34 @@ impl MeshRuntime {
             .context("unknown remote session")
     }
 
+    /// Re-attach one non-feed view of a live session. The feed and the session
+    /// itself are recovered through the session-level paths, which own the
+    /// generation; this is the per-pane affordance for a view that failed on
+    /// its own while the rest of the session kept working.
+    pub async fn retry_view(&self, session_id: &str, view_id: &str) -> Result<RemoteViewRecord> {
+        let remote = self.remote_session(session_id).await?;
+        if remote.lifecycle.state_kind() != RemoteLifecycleState::Live {
+            bail!("remote terminal session is not live");
+        }
+        if remote.lifecycle.feed_view_id().as_deref() == Some(view_id) {
+            bail!("the feed view is retried through the session, not per view");
+        }
+        let record = remote
+            .lifecycle
+            .view_record(view_id)
+            .context("unknown remote view")?;
+        if record.view_state == RemoteViewState::Attached {
+            return Ok(record);
+        }
+        let generation = remote.lifecycle.generation();
+        self.attach_secondaries(&remote, vec![view_id.to_owned()], generation)
+            .await;
+        remote
+            .lifecycle
+            .view_record(view_id)
+            .context("unknown remote view")
+    }
+
     /// Liveness round-trip on a device's cached connection. Advertisement
     /// validation is deliberately skipped: the probe matters exactly when the
     /// advertisement has expired, and `remote_connection` bails on that before
@@ -1873,7 +1937,31 @@ impl MeshRuntime {
 
     async fn resume_attempt(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
         let _attempt = remote.lifecycle.attempts.lock().await;
+        // Whoever held this lock may already have finished the job. Running a
+        // second pass would retire the views it just attached and invalidate
+        // the epoch it just handed back.
+        if self.session_is_established(remote).await {
+            return Ok(());
+        }
         self.resume_once(remote).await
+    }
+
+    /// Whether the session is live around a feed that belongs to the current
+    /// generation — the condition a further resume attempt would destroy.
+    async fn session_is_established(&self, remote: &RemoteSession) -> bool {
+        if remote.lifecycle.state_kind() != RemoteLifecycleState::Live {
+            return false;
+        }
+        let Some(feed_view_id) = remote.lifecycle.feed_view_id() else {
+            return false;
+        };
+        let generation = remote.lifecycle.generation();
+        let key = (remote.replica.summary().id, feed_view_id);
+        self.views
+            .lock()
+            .await
+            .get(&key)
+            .is_some_and(|view| view.feed && view.state_generation == generation)
     }
 
     /// Arm auto-resume for a session that has lost its host.
@@ -1913,11 +2001,32 @@ impl MeshRuntime {
     /// machinery: attach semantics are what guarantee a fresh stream, a full
     /// snapshot, and reset sequencing.
     async fn reestablish_feed(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
-        let _attempt = remote.lifecycle.attempts.lock().await;
+        let attempt = remote.lifecycle.attempts.lock().await;
         let session_id = remote.replica.summary().id;
+        // Say it before doing it. The next two lines cancel every reader and
+        // retire the generation, so the session stops being live and its views
+        // stop being attached at this instant — announcing that only on
+        // success would leave a failed handoff claiming a liveness it lost.
+        remote.lifecycle.commit_synchronizing();
+        remote.lifecycle.mark_views_pending();
         self.retire_session_views(&session_id).await;
         remote.lifecycle.advance_generation();
-        self.establish_feed(remote).await
+        match self.establish_feed(remote).await {
+            Ok(()) => Ok(()),
+            Err(AttachFailure::Ended(reason)) => {
+                remote.lifecycle.commit_ended(reason);
+                Err(AttachFailure::Ended(reason))
+            }
+            Err(AttachFailure::Failed(error)) => {
+                // Nothing is attached and the cancellations were deliberate,
+                // so no reader will report a disconnect. Hand to the engine
+                // explicitly or the session rests where nothing recovers it.
+                remote.lifecycle.commit_reconnecting();
+                drop(attempt);
+                self.arm_reconnect(remote).await;
+                Err(AttachFailure::Failed(error))
+            }
+        }
     }
 
     async fn resume_once(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
@@ -2017,8 +2126,11 @@ impl MeshRuntime {
         if !secondaries.is_empty() {
             let runtime = self.clone();
             let remote = remote.clone();
+            let generation = lifecycle.generation();
             tokio::spawn(async move {
-                runtime.attach_secondaries(&remote, secondaries).await;
+                runtime
+                    .attach_secondaries(&remote, secondaries, generation)
+                    .await;
             });
         }
         Ok(())
@@ -2026,10 +2138,18 @@ impl MeshRuntime {
 
     /// Attach non-feed views. Each is independent: one failing marks only its
     /// own pane, leaving the rest of the session Live.
-    async fn attach_secondaries(&self, remote: &RemoteSession, local_view_ids: Vec<String>) {
+    async fn attach_secondaries(
+        &self,
+        remote: &RemoteSession,
+        local_view_ids: Vec<String>,
+        generation: u64,
+    ) {
         let _attempt = remote.lifecycle.attempts.lock().await;
         for local_view_id in local_view_ids {
-            if remote.lifecycle.state_kind() != RemoteLifecycleState::Live {
+            // Stop the moment the activation this task belongs to is over.
+            if remote.lifecycle.generation() != generation
+                || remote.lifecycle.state_kind() != RemoteLifecycleState::Live
+            {
                 return;
             }
             match self
@@ -4707,6 +4827,10 @@ impl RemoteTerminalRuntime for MeshRuntime {
         MeshRuntime::probe_connection(self, device_id).await
     }
 
+    async fn retry_view(&self, session_id: &str, view_id: &str) -> Result<RemoteViewRecord> {
+        MeshRuntime::retry_view(self, session_id, view_id).await
+    }
+
     async fn offline_selection_text(
         &self,
         session_id: &str,
@@ -6526,6 +6650,245 @@ mod tests {
         assert!(
             Arc::ptr_eq(&left, &cached),
             "the cache holds a third connection"
+        );
+        Ok(())
+    }
+
+    impl Fixture {
+        async fn remote(&self) -> RemoteSession {
+            self.runtime
+                .replicas
+                .read()
+                .await
+                .get(&self.session_id)
+                .cloned()
+                .expect("open remote session")
+        }
+
+        async fn has_view(&self, local_view_id: &str) -> bool {
+            self.runtime
+                .views
+                .lock()
+                .await
+                .contains_key(&(self.session_id.clone(), local_view_id.to_owned()))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_handoff_lands_in_reconnecting_with_the_engine_armed() -> Result<()> {
+        // A real suspend_after, so the armed engine stays in Reconnecting
+        // instead of parking before the assertions below can read it.
+        let fixture = Fixture::attached_with(MeshReconnectConfig {
+            backoff_base: Duration::from_millis(200),
+            backoff_cap: Duration::from_millis(200),
+            backoff_floor: Duration::from_millis(200),
+            suspend_after: Duration::from_secs(60),
+            advertisement_fast_path: false,
+            zombie_purge: false,
+            ..MeshReconnectConfig::default()
+        })
+        .await?;
+        fixture.await_first_snapshot().await?;
+        let remote = fixture.remote().await;
+
+        // Make the replacement unattainable without closing anything: with no
+        // advertisement the dial is refused before the cache is touched, so
+        // the only thing that can move the lifecycle is the handoff itself.
+        fixture.transport.advertise(None);
+        assert!(fixture.runtime.reestablish_feed(&remote).await.is_err());
+
+        // The handoff cancelled every reader deliberately, so no reader will
+        // report a disconnect. If this path did not transition, the session
+        // would sit claiming a liveness it no longer has.
+        let lifecycle = fixture.lifecycle().await;
+        assert_eq!(lifecycle.state, RemoteLifecycleState::Reconnecting);
+        // The view that failed keeps `failed` so it can carry why; what must
+        // never survive is a claimed attachment.
+        assert!(
+            lifecycle.views.iter().all(|view| {
+                view.view_state != RemoteViewState::Attached
+                    && view.attachment_epoch.is_none()
+                    && view.read_write.is_none()
+            }),
+            "a view still claimed an attachment: {:?}",
+            lifecycle.views
+        );
+        assert_eq!(fixture.feed_reader_count().await, 0);
+        assert!(
+            remote.lifecycle.has_engine(),
+            "nothing was left to recover the session"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_manual_retries_run_exactly_one_attempt() -> Result<()> {
+        let mut fixture = Fixture::attached().await?;
+        fixture.await_first_snapshot().await?;
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture.arm_host("host-1").await?;
+
+        let dials = fixture.transport.dials();
+        let left = fixture.runtime.clone();
+        let right = fixture.runtime.clone();
+        let session = fixture.session_id.clone();
+        let other = fixture.session_id.clone();
+        let (left, right) = tokio::join!(
+            async move { left.reconnect_session(&session).await },
+            async move { right.reconnect_session(&other).await },
+        );
+        assert_eq!(left?.state, RemoteLifecycleState::Live);
+        assert_eq!(right?.state, RemoteLifecycleState::Live);
+
+        // The loser must recognise the job is done. A second full pass would
+        // retire the views the winner just attached and invalidate the epoch
+        // it just handed back — and every pass rotates the wire identity, so
+        // the generation is what gives a duplicate away. (The dial count does
+        // not: a second resume reuses the connection the first established.)
+        assert_eq!(fixture.transport.dials(), dials + 1);
+        let wire = fixture
+            .runtime
+            .views
+            .lock()
+            .await
+            .get(&(fixture.session_id.clone(), "pane-1".to_owned()))
+            .map(|view| view.wire_view_id.clone())
+            .expect("resumed view");
+        assert_eq!(
+            wire, "r:pane-1#g2",
+            "a second resume rotated the view again"
+        );
+        let epoch = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-1")
+            .await
+            .expect("resumed attachment")
+            .0;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-1")
+                .await
+                .map(|(epoch, _)| epoch),
+            Some(epoch),
+            "the epoch moved after the retries settled"
+        );
+        assert_eq!(fixture.feed_reader_count().await, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_task_from_a_retired_activation_publishes_nothing() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let remote = fixture.remote().await;
+        let generation = remote.lifecycle.generation();
+        remote.lifecycle.record_view("pane-2");
+
+        // The activation this task belongs to is over — a promotion, refresh,
+        // or duplicate resume moved on without it.
+        remote.lifecycle.advance_generation();
+        fixture
+            .runtime
+            .attach_secondaries(&remote, vec!["pane-2".to_owned()], generation)
+            .await;
+
+        assert!(
+            !fixture.has_view("pane-2").await,
+            "a stale task installed a view into the current generation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn only_the_first_reader_of_a_dead_connection_arms_recovery() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let remote = fixture.remote().await;
+        let view = fixture
+            .runtime
+            .views
+            .lock()
+            .await
+            .get(&(fixture.session_id.clone(), "pane-1".to_owned()))
+            .cloned()
+            .expect("attached view");
+
+        // Every view riding one connection reports the same death.
+        assert!(
+            remote
+                .lifecycle
+                .commit_disconnect(view.state_generation, view.incarnation)
+        );
+        assert!(
+            !remote
+                .lifecycle
+                .commit_disconnect(view.state_generation, view.incarnation),
+            "a second reader re-armed an engine that was already dialing"
+        );
+        assert!(
+            !remote
+                .lifecycle
+                .commit_disconnect(view.state_generation, view.incarnation)
+        );
+        assert_eq!(
+            fixture.lifecycle().await.state,
+            RemoteLifecycleState::Reconnecting
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn retry_view_reattaches_a_secondary_and_refuses_the_feed() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(fixture.feed_view_id().await.as_deref(), Some("pane-1"));
+
+        // Strand the secondary the way a failed pane is stranded: no
+        // attachment, session otherwise untouched.
+        fixture
+            .runtime
+            .retire_view(&fixture.session_id, "pane-2")
+            .await;
+        fixture
+            .remote()
+            .await
+            .lifecycle
+            .commit_view_failed("pane-2", "view-invalid".into(), true);
+
+        let record = fixture
+            .runtime
+            .retry_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(record.view_state, RemoteViewState::Attached);
+        assert!(record.attachment_epoch.is_some());
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
+        // Still exactly one publishing stream.
+        assert_eq!(fixture.feed_reader_count().await, 1);
+
+        // The feed and the session itself belong to the session-level paths.
+        assert!(
+            fixture
+                .runtime
+                .retry_view(&fixture.session_id, "pane-1")
+                .await
+                .is_err()
+        );
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        assert!(
+            fixture
+                .runtime
+                .retry_view(&fixture.session_id, "pane-2")
+                .await
+                .is_err()
         );
         Ok(())
     }

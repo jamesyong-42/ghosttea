@@ -1343,8 +1343,15 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// Commands that dial the mesh and may block on the network for as long as a
 /// peer takes to answer. They run off the connection loop so input queued
-/// behind them on the same socket stays latency-clean. None of them touch the
-/// connection's view-attachment bookkeeping.
+/// behind them on the same socket stays latency-clean.
+///
+/// The membership rule is not "it touches the network" but "it touches the
+/// network and nothing per-connection": an off-loop command is handed a fresh,
+/// empty ownership map, so one that read or wrote the connection's real one
+/// would silently see no attachments. Every command here is checked against
+/// that. `refresh-session` qualifies — on a Live remote session it re-attaches
+/// the feed through the mesh, which can take as long as a dial, and it reads
+/// the registry and the mesh runtime only.
 fn runs_off_connection_loop(command: &Command) -> bool {
     matches!(
         command,
@@ -1352,6 +1359,8 @@ fn runs_off_connection_loop(command: &Command) -> bool {
             | Command::ListRemoteSessions { .. }
             | Command::OpenRemoteSession { .. }
             | Command::ReconnectRemoteSession { .. }
+            | Command::RefreshSession { .. }
+            | Command::RetryRemoteView { .. }
     )
 }
 
@@ -2136,29 +2145,47 @@ async fn handle_command(
                 session_id,
                 view_id,
             } => {
-                // Dormant in Phase 1: per-view re-attach arrives with the
-                // promotion machinery (§4.5). The command exists now because
-                // minor 12 is advertised with its complete surface, and it
-                // answers with the view's current record — a real response
-                // shape, with no side effect.
-                let lifecycle = context
+                // The per-pane retry (§4.5): re-attach one view that failed
+                // while the rest of the session kept working. The mesh refuses
+                // the cases it does not own — a session that is not live, or
+                // the feed view, both of which recover through the
+                // session-level paths — and those refusals answer with the
+                // view's current record rather than an error, which is what
+                // this command did for every client before it went live.
+                let record = match context
                     .mesh_runtime
-                    .session_lifecycle(&session_id)
+                    .retry_view(&session_id, &view_id)
                     .await
-                    .context("unknown remote session")?;
-                let record = lifecycle
-                    .views
-                    .iter()
-                    .find(|record| record.local_view_id == view_id)
-                    .context("unknown remote view")?;
+                {
+                    Ok(record) => record,
+                    // Re-read rather than reuse a copy taken before the call:
+                    // an attempt can move the view on its way to failing, and
+                    // reporting the state it held beforehand would describe a
+                    // view that no longer exists in that state. The two
+                    // failures are told apart because they mean different
+                    // things to whoever is reading the error — the session is
+                    // gone, or only this pane is.
+                    Err(_) => {
+                        let lifecycle = context
+                            .mesh_runtime
+                            .session_lifecycle(&session_id)
+                            .await
+                            .context("unknown remote session")?;
+                        lifecycle
+                            .views
+                            .into_iter()
+                            .find(|record| record.local_view_id == view_id)
+                            .context("unknown remote view")?
+                    }
+                };
                 Ok(ResponseBody::ViewState {
                     session_id,
-                    view_id: record.local_view_id.clone(),
+                    view_id: record.local_view_id,
                     view_state_seq: record.view_state_seq,
                     view_state: record.view_state,
                     attachment_epoch: record.attachment_epoch,
                     read_write: record.read_write,
-                    error: record.error.clone(),
+                    error: record.error,
                     retryable: record.retryable,
                 })
             }
@@ -4110,6 +4137,7 @@ mod protocol_tests {
         calls: Vec<String>,
         next_attachment_epoch: u64,
         reconnect_fails: bool,
+        retry_view_fails: bool,
     }
 
     struct TestRuntime {
@@ -4316,6 +4344,38 @@ mod protocol_tests {
                 .calls
                 .push(format!("refresh-remote:{session_id}"));
             Ok(())
+        }
+
+        /// Reattaches the named view the way the mesh does: the record comes
+        /// back attached, with a fresh epoch and an advanced sequence.
+        async fn retry_view(
+            &self,
+            session_id: &str,
+            view_id: &str,
+        ) -> Result<mesh::RemoteViewRecord> {
+            let mut state = self.state.lock().unwrap();
+            state
+                .calls
+                .push(format!("retry-view:{session_id}:{view_id}"));
+            if state.retry_view_fails {
+                bail!("remote terminal session is not live");
+            }
+            let lifecycle = state
+                .lifecycles
+                .get_mut(session_id)
+                .context("unknown remote session")?;
+            let record = lifecycle
+                .views
+                .iter_mut()
+                .find(|record| record.local_view_id == view_id)
+                .context("unknown remote view")?;
+            record.view_state = mesh::RemoteViewState::Attached;
+            record.view_state_seq += 1;
+            record.attachment_epoch = Some(42);
+            record.read_write = Some(true);
+            record.error = None;
+            record.retryable = None;
+            Ok(record.clone())
         }
 
         async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64) {
@@ -4930,6 +4990,61 @@ mod protocol_tests {
         }));
     }
 
+    /// Membership in the off-loop set is a claim about what a command touches,
+    /// not only about how slow it is. Off-loop commands are handed an empty
+    /// ownership map, so one that read or wrote the connection's own would
+    /// quietly find nothing attached — which is why the second half of this
+    /// test matters as much as the first.
+    #[test]
+    fn only_commands_that_touch_no_per_connection_state_run_off_the_loop() {
+        for command in [
+            Command::ListRemoteHosts,
+            Command::ListRemoteSessions {
+                device_id: "device-1".to_owned(),
+            },
+            Command::ReconnectRemoteSession {
+                session_id: "session-1".to_owned(),
+            },
+            // Dials on a Live remote session: as slow as any of the above.
+            Command::RefreshSession {
+                session_id: "session-1".to_owned(),
+            },
+            // Re-attaches one pane over the wire, which is a dial too.
+            Command::RetryRemoteView {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+        ] {
+            assert!(
+                runs_off_connection_loop(&command),
+                "a command that can block on a peer must not hold up the loop"
+            );
+        }
+
+        for command in [
+            Command::AttachSession {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+            Command::DetachSession {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+            Command::FocusAndResize {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+                attachment_epoch: 1,
+                cols: 120,
+                rows: 40,
+            },
+        ] {
+            assert!(
+                !runs_off_connection_loop(&command),
+                "a command that reads or writes the ownership map must stay on the loop that owns it"
+            );
+        }
+    }
+
     /// Both outcomes are states, not errors: the caller needs to know where
     /// the session landed, and a refused dial lands it in Suspended.
     #[tokio::test]
@@ -4982,14 +5097,14 @@ mod protocol_tests {
     /// Dormant in Phase 1: the command exists because minor 12 ships its whole
     /// surface, and it answers with the record it found, untouched.
     #[tokio::test]
-    async fn retrying_a_view_answers_with_its_record_and_changes_nothing() {
+    async fn retrying_a_view_reattaches_it_and_answers_with_the_new_record() {
         let (service, runtime) = start_remote_service("retry-view");
         let mut failed = remote_view("view-1", mesh::RemoteViewState::Failed);
         failed.error = Some("attach refused".to_owned());
         failed.retryable = Some(true);
         runtime.open(remote_lifecycle(
             "session-1",
-            mesh::RemoteLifecycleState::Suspended,
+            mesh::RemoteLifecycleState::Live,
             vec![failed],
         ));
 
@@ -5008,17 +5123,68 @@ mod protocol_tests {
         assert_eq!(response["type"], "view-state");
         assert_eq!(response["sessionId"], "session-1");
         assert_eq!(response["viewId"], "view-1");
+        assert_eq!(response["viewState"], "attached");
+        assert_eq!(response["attachmentEpoch"], 42);
+        assert_eq!(response["readWrite"], json!(true));
+        assert_eq!(
+            response["viewStateSeq"], 5,
+            "a reattach advances the sequence, or the client would drop it"
+        );
+        assert_eq!(response["error"], json!(null));
+        assert_eq!(response["retryable"], json!(null));
+        assert_eq!(
+            runtime.calls(),
+            vec!["retry-view:session-1:view-1".to_owned()]
+        );
+
+        service.serving.abort();
+    }
+
+    /// The mesh refuses what it does not own — a session that is not live, or
+    /// the feed view. Those answer with the view's current record rather than
+    /// an error, which is what every client saw from this command before it
+    /// went live, so nothing regresses for one that has not learned the new
+    /// behaviour.
+    #[tokio::test]
+    async fn a_refused_retry_answers_with_the_view_as_it_stands() {
+        let (service, runtime) = start_remote_service("retry-view-refused");
+        let mut failed = remote_view("view-1", mesh::RemoteViewState::Failed);
+        failed.error = Some("attach refused".to_owned());
+        failed.retryable = Some(true);
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Suspended,
+            vec![failed],
+        ));
+        runtime.state.lock().unwrap().retry_view_fails = true;
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let response = request(
+            &mut client,
+            json!({
+                "requestId": 2,
+                "type": "retry-remote-view",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+            }),
+        )
+        .await;
+        assert_eq!(response["type"], "view-state");
+        assert_eq!(response["viewId"], "view-1");
         assert_eq!(response["viewStateSeq"], 4);
         assert_eq!(response["viewState"], "failed");
         assert_eq!(response["attachmentEpoch"], json!(null));
         assert_eq!(response["readWrite"], json!(null));
         assert_eq!(response["error"], "attach refused");
         assert_eq!(response["retryable"], json!(true));
-        assert!(
-            runtime.calls().is_empty(),
-            "a dormant retry touches the mesh not at all"
+        assert_eq!(
+            runtime.calls(),
+            vec!["retry-view:session-1:view-1".to_owned()],
+            "the refusal is the mesh's to make; nothing else is touched"
         );
 
+        // A view the session has never heard of has no record to fall back to.
         let unknown = request(
             &mut client,
             json!({

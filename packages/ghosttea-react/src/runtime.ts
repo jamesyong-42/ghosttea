@@ -202,6 +202,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #views = new Map<string, ViewRuntimeState>();
   readonly #remoteSessions = new Map<string, RemoteSessionRuntimeState>();
   readonly #controlBySession = new Map<string, { controller: RemoteControllerInfo | null; revision: number }>();
+  /** Sessions whose current outage episode has already produced a full snapshot. */
+  readonly #recoveredSessions = new Set<string>();
   #remoteLifecycleSupported = false;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
@@ -267,7 +269,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       } else if (data.type === "frame-resync-complete") {
         this.#resync.complete(data.sessionHandle);
       } else if (data.type === "frame-committed") {
-        this.#thawRecoveredSession(data.sessionHandle);
+        this.#recordCommittedFrame(data.sessionHandle, data.fullSnapshot);
       } else if (data.type === "catalog-pressure") {
         console.warn(
           `[terminal-runtime] native text catalog budget exceeded for ${data.sessionHandle}; using bounded fallback text`,
@@ -914,7 +916,12 @@ export class GhostteaTerminalRuntime extends EventTarget {
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
     if (!this.#control) throw new Error(`Session ${sessionHandle} is not ready for frame resynchronization`);
-    const response = await this.#control.request({ type: "refresh-session", sessionId: session.id });
+    // A refresh of a remote session re-attaches and resynchronizes over the
+    // network, so it needs the same budget as a one-shot reconnect.
+    const response = await this.#control.request(
+      { type: "refresh-session", sessionId: session.id },
+      RECONNECT_REQUEST_TIMEOUT_MS,
+    );
     if (response.type !== "ok") throw new Error("ghosttead rejected frame resynchronization");
   }
 
@@ -1176,13 +1183,21 @@ export class GhostteaTerminalRuntime extends EventTarget {
         : lifecycle.lifecycleSeq <= previous.lifecycleSeq;
       if (stale) return false;
     }
+    // Lifecycle events and frames travel independent channels, so a recovery
+    // snapshot can commit either side of the live transition. An episode's
+    // latch is cleared when it begins and set by any full snapshot, which lets
+    // both arrival orders resolve without either one having to come first.
+    if (showsStaleScreen(lifecycle.state) && (previous === undefined || !showsStaleScreen(previous.state))) {
+      this.#recoveredSessions.delete(sessionId);
+    }
     // Coming back from a frozen state, the screen on display is still the one
     // from before the outage. Keep it marked stale until the recovered stream
-    // actually commits a frame; `opening` never had a screen to distrust.
+    // has committed a full frame; `opening` never had a screen to distrust.
     const awaitingRecoveryFrame =
       lifecycle.state === "live" &&
       previous !== undefined &&
-      (previous.awaitingRecoveryFrame || showsStaleScreen(previous.state));
+      (previous.awaitingRecoveryFrame || showsStaleScreen(previous.state)) &&
+      !this.#recoveredSessions.has(sessionId);
     const state: RemoteSessionRuntimeState = {
       ...lifecycle,
       sessionId,
@@ -1202,20 +1217,27 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   /**
-   * A frame from the recovered stream has been committed, so what the pane
-   * shows is current again. The first commit after the session went live is by
-   * construction the recovery snapshot or later, since the daemon reaches live
-   * only once that snapshot has been ingested.
+   * A committed frame is only evidence of recovery if it carries a whole
+   * screen: a partial update repaints part of the stale one, which is exactly
+   * what would thaw a pane too early.
    */
-  #thawRecoveredSession(sessionHandle: string): void {
+  #recordCommittedFrame(sessionHandle: string, fullSnapshot: boolean): void {
+    if (!fullSnapshot) return;
     const sessionId = this.#sessionByHandle.get(sessionHandle)?.id;
-    const state = sessionId === undefined ? undefined : this.#remoteSessions.get(sessionId);
-    if (!state || !state.awaitingRecoveryFrame) return;
+    if (sessionId === undefined || !this.#remoteSessions.has(sessionId)) return;
+    this.#recoveredSessions.add(sessionId);
+    this.#thawRecoveredSession(sessionId);
+  }
+
+  /** What the pane shows is current again, so stop marking it stale. */
+  #thawRecoveredSession(sessionId: string): void {
+    const state = this.#remoteSessions.get(sessionId);
+    if (!state || !state.awaitingRecoveryFrame || !this.#recoveredSessions.has(sessionId)) return;
     const thawed: RemoteSessionRuntimeState = { ...state, awaitingRecoveryFrame: false };
-    this.#remoteSessions.set(thawed.sessionId, thawed);
-    this.#setCursorFrozen(thawed.sessionId, sessionIsFrozen(thawed));
+    this.#remoteSessions.set(sessionId, thawed);
+    this.#setCursorFrozen(sessionId, sessionIsFrozen(thawed));
     this.dispatchEvent(new CustomEvent("remote-session-state", { detail: thawed }));
-    for (const viewId of this.#viewIdsForSession(thawed.sessionId)) this.#maybeReclaim(viewId);
+    for (const viewId of this.#viewIdsForSession(sessionId)) this.#maybeReclaim(viewId);
   }
 
   /** Hold the cursor steady while the replica is frozen, without disturbing focus. */
@@ -1262,7 +1284,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
   async retryRemoteView(sessionId: string, viewId: string): Promise<void> {
     await this.connect();
     if (!this.#remoteLifecycleSupported) return;
-    const response = await this.#control!.request({ type: "retry-remote-view", sessionId, viewId });
+    const response = await this.#control!.request(
+      { type: "retry-remote-view", sessionId, viewId },
+      RECONNECT_REQUEST_TIMEOUT_MS,
+    );
     if (response.type !== "view-state") throw new Error("ghosttead returned an unexpected view state");
     this.#applyViewState(response.viewId, response);
   }
@@ -1579,6 +1604,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#handleBySessionId.delete(sessionId);
     this.#remoteSessions.delete(sessionId);
     this.#controlBySession.delete(sessionId);
+    this.#recoveredSessions.delete(sessionId);
     if (subscriptionChanged) {
       this.#frameSubscriptionVersion += 1;
       this.#syncFrameSubscriptionsInBackground();
@@ -1641,6 +1667,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#views.clear();
     this.#remoteSessions.clear();
     this.#controlBySession.clear();
+    this.#recoveredSessions.clear();
     this.#focusByView.clear();
     this.#mountGenerationBySurface.clear();
     this.#mouseTrackingByHandle.clear();
