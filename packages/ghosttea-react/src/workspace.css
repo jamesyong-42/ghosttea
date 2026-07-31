@@ -165,6 +165,92 @@ body {
   pointer-events: none;
 }
 
+/* A replica the host stopped updating reads as stale rather than live. */
+.ghostty-pane.is-frozen .terminal-surface {
+  filter: saturate(0.6) contrast(0.9);
+}
+
+.remote-session-banner {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+  color: rgb(255 255 255 / 82%);
+  background: rgb(26 28 34 / 94%);
+  font:
+    12px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+.remote-session-banner.is-ended {
+  color: #ffcdb0;
+  border-bottom-color: rgb(255 160 110 / 34%);
+}
+
+.remote-session-banner-glyph {
+  animation: remote-session-spin 1.4s linear infinite;
+}
+
+.remote-session-banner-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-session-banner-hint {
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: rgb(255 255 255 / 62%);
+  background: rgb(255 255 255 / 8%);
+  white-space: nowrap;
+}
+
+.remote-session-banner-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.remote-session-banner-actions button {
+  padding: 3px 9px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 5px;
+  color: inherit;
+  background: rgb(255 255 255 / 7%);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.remote-session-banner-actions button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 14%);
+}
+
+.remote-session-banner-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@keyframes remote-session-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-session-banner-glyph {
+    animation: none;
+  }
+}
+
 .ghostty-pane.is-zoomed {
   position: absolute;
   z-index: 6;

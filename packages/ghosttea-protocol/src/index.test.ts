@@ -6,6 +6,9 @@ describe("isServerEvent", () => {
     expect(isRendererClientCommandAllowed({ requestId: 1, type: "get-config" })).toBe(true);
     expect(isRendererClientCommandAllowed({ requestId: 2, type: "replace-config-document" })).toBe(false);
     expect(isRendererClientCommandAllowed({ requestId: 3, type: "future-command" })).toBe(false);
+    expect(isRendererClientCommandAllowed({ requestId: 4, type: "reconnect-remote-session" })).toBe(true);
+    expect(isRendererClientCommandAllowed({ requestId: 5, type: "get-remote-session-state" })).toBe(true);
+    expect(isRendererClientCommandAllowed({ requestId: 6, type: "retry-remote-view" })).toBe(true);
   });
 
   const config = {
@@ -50,6 +53,37 @@ describe("isServerEvent", () => {
     exists: true,
     contents: "# exact comment\r\nbackground = 112233\r\n",
   };
+  const lifecycle = {
+    sessionId: "session",
+    lifecycleSeq: 7,
+    deviceId: "device",
+    deviceName: "studio-mac",
+    state: "reconnecting",
+    reason: null,
+    exit: null,
+    attempt: 3,
+    nextRetryMs: 4_000,
+    lastContactMs: 12_000,
+  };
+  const viewRecord = {
+    viewId: "view",
+    viewStateSeq: 12,
+    viewState: "attached",
+    attachmentEpoch: 9,
+    readWrite: true,
+    error: null,
+    retryable: null,
+  };
+  const controlState = {
+    sessionId: "session",
+    controller: { viewId: "view", controlEpoch: 5 },
+    controlRevision: 17,
+    cols: 120,
+    rows: 40,
+    layoutEpoch: 3,
+  };
+  const { sessionId: _sessionId, ...controlFields } = controlState;
+  const remoteSessionState = { ...lifecycle, ...controlFields, views: [viewRecord] };
 
   it("accepts validated responses and unsolicited lifecycle events", () => {
     expect(
@@ -95,6 +129,46 @@ describe("isServerEvent", () => {
       }),
     ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "bridge-error", message: "disconnected" })).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 0,
+        type: "remote-session-state-changed",
+        ...lifecycle,
+        state: "ended",
+        reason: "session-exited",
+        exit: { code: 1 },
+      }),
+    ).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "view-state-changed", sessionId: "session", ...viewRecord })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 0,
+        type: "view-state-changed",
+        sessionId: "session",
+        ...viewRecord,
+        viewState: "failed",
+        attachmentEpoch: null,
+        readWrite: null,
+        error: "view-invalid",
+        retryable: true,
+      }),
+    ).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "control-state", ...controlState })).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "control-state", ...controlState, controller: null })).toBe(true);
+    expect(isServerEvent({ requestId: 9, type: "remote-session-state", ...remoteSessionState })).toBe(true);
+    expect(isServerEvent({ requestId: 10, type: "view-state", sessionId: "session", ...viewRecord })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 11,
+        type: "view-attached",
+        sessionId: "session",
+        viewId: "view",
+        attachmentEpoch: 4,
+        readWrite: true,
+        viewStateSeq: 12,
+      }),
+    ).toBe(true);
     expect(
       isServerEvent({
         requestId: 0,
@@ -220,6 +294,38 @@ describe("isServerEvent", () => {
           foregroundProcessGroupId: 42,
           observedAtMs: 100,
         },
+      }),
+    ).toBe(false);
+    expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, state: "dozing" })).toBe(
+      false,
+    );
+    expect(
+      isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, reason: "bored" }),
+    ).toBe(false);
+    expect(
+      isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, deviceName: undefined }),
+    ).toBe(false);
+    expect(
+      isServerEvent({ requestId: 0, type: "view-state-changed", sessionId: "session", ...viewRecord, viewStateSeq: "1" }),
+    ).toBe(false);
+    expect(
+      isServerEvent({ requestId: 0, type: "view-state-changed", sessionId: "session", ...viewRecord, viewState: "gone" }),
+    ).toBe(false);
+    expect(
+      isServerEvent({ requestId: 0, type: "control-state", ...controlState, controller: { viewId: "view" } }),
+    ).toBe(false);
+    expect(isServerEvent({ requestId: 9, type: "remote-session-state", ...remoteSessionState, views: [{}] })).toBe(
+      false,
+    );
+    expect(
+      isServerEvent({
+        requestId: 11,
+        type: "view-attached",
+        sessionId: "session",
+        viewId: "view",
+        attachmentEpoch: 4,
+        readWrite: true,
+        viewStateSeq: null,
       }),
     ).toBe(false);
   });

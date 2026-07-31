@@ -14,6 +14,8 @@ import type { TerminalEffects, TerminalTheme } from "../renderers/types.js";
 import { useGhostteaRuntime } from "../context.js";
 import { terminalEffectsFromConfig, terminalThemeFromConfig } from "../config.js";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette.js";
+import { RemoteSessionBanner, useInputSuppressionHint, useRemoteSessionLifecycle } from "./RemoteSessionBanner.js";
+import { paneIsFrozen } from "./remote-banner.js";
 import { TERMINAL_THEMES } from "./themes.js";
 import {
   appendPane,
@@ -198,6 +200,101 @@ function sharedInitialization(
   );
 }
 
+interface WorkspacePaneProps {
+  paneId: string;
+  session: SessionSummary;
+  active: boolean;
+  zoomed: boolean;
+  workspaceActive: boolean;
+  platform: GhostteaWorkspacePlatform;
+  theme: TerminalTheme;
+  effects: TerminalEffects;
+  bindings: readonly GhosttyBindingEntry[];
+  decoration: GhostteaWorkspacePaneDecoration | undefined;
+  onActivate: () => void;
+  onClose: () => void;
+  onBrowseDevice: (deviceId: string) => void;
+}
+
+function WorkspacePane({
+  paneId,
+  session,
+  active,
+  zoomed,
+  workspaceActive,
+  platform,
+  theme,
+  effects,
+  bindings,
+  decoration,
+  onActivate,
+  onClose,
+  onBrowseDevice,
+}: WorkspacePaneProps) {
+  const terminalRuntime = useGhostteaRuntime();
+  const lifecycle = useRemoteSessionLifecycle(session.id);
+  const hint = useInputSuppressionHint(session.id);
+  const [retrying, setRetrying] = useState(false);
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const retry = useCallback((): void => {
+    setRetrying(true);
+    void terminalRuntime
+      .reconnectRemoteSession(session.id)
+      .catch((cause: unknown) => console.error("[terminal-runtime] remote session reconnect failed", cause))
+      .finally(() => {
+        if (aliveRef.current) setRetrying(false);
+      });
+  }, [session.id, terminalRuntime]);
+
+  const frozen = paneIsFrozen(lifecycle);
+  const paneStyle = decoration?.color ? ({ "--ghostty-pane-color": decoration.color } as CSSProperties) : undefined;
+  return (
+    <div
+      className={`ghostty-pane${active ? " is-active" : ""}${zoomed ? " is-zoomed" : ""}${frozen ? " is-frozen" : ""}`}
+      data-pane-id={paneId}
+      data-pane-accent={decoration?.color ? "true" : undefined}
+      style={paneStyle}
+      onPointerDown={onActivate}
+    >
+      {lifecycle ? (
+        <RemoteSessionBanner
+          lifecycle={lifecycle}
+          hint={hint}
+          retrying={retrying}
+          onRetry={retry}
+          onClose={onClose}
+          onBrowse={() => onBrowseDevice(lifecycle.deviceId)}
+        />
+      ) : null}
+      <TerminalSurface
+        session={session}
+        theme={theme}
+        effects={effects}
+        bindings={bindings}
+        active={active}
+        {...(platform.platform ? { platform: platform.platform } : {})}
+        visible={workspaceActive}
+        controlsResize
+        onActivate={onActivate}
+        readClipboard={platform.readClipboard}
+        {...(active && platform.setCanCopy ? { onCopyAvailabilityChange: platform.setCanCopy } : {})}
+        onContextMenu={platform.showContextMenu}
+        onToggleFullscreen={platform.toggleFullscreen}
+        onMenuAction={platform.onMenuAction}
+      />
+      {decoration?.label ? <span className="ghostty-pane-badge">{decoration.label}</span> : null}
+      {!session.readWrite ? <span className="ghostty-pane-access">View only</span> : null}
+    </div>
+  );
+}
+
 interface SplitViewProps {
   node: PaneNode;
   activePaneId: string;
@@ -208,6 +305,8 @@ interface SplitViewProps {
   effects: TerminalEffects;
   bindings: readonly GhosttyBindingEntry[];
   onActivate: (paneId: string) => void;
+  onClosePane: (paneId: string) => void;
+  onBrowseDevice: (deviceId: string) => void;
   decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onRatio: (splitId: string, ratio: number) => void;
 }
@@ -222,6 +321,8 @@ function SplitView({
   effects,
   bindings,
   onActivate,
+  onClosePane,
+  onBrowseDevice,
   decoratePane,
   onRatio,
 }: SplitViewProps) {
@@ -229,37 +330,22 @@ function SplitView({
   const dragRef = useRef<{ pointerId: number } | null>(null);
 
   if (node.kind === "pane") {
-    const active = workspaceActive && node.id === activePaneId;
-    const zoomed = node.id === zoomedPaneId;
-    const decoration = decoratePane?.(node.session, node.id);
-    const paneStyle = decoration?.color ? ({ "--ghostty-pane-color": decoration.color } as CSSProperties) : undefined;
     return (
-      <div
-        className={`ghostty-pane${active ? " is-active" : ""}${zoomed ? " is-zoomed" : ""}`}
-        data-pane-id={node.id}
-        data-pane-accent={decoration?.color ? "true" : undefined}
-        style={paneStyle}
-        onPointerDown={() => onActivate(node.id)}
-      >
-        <TerminalSurface
-          session={node.session}
-          theme={theme}
-          effects={effects}
-          bindings={bindings}
-          active={active}
-          {...(platform.platform ? { platform: platform.platform } : {})}
-          visible={workspaceActive}
-          controlsResize
-          onActivate={() => onActivate(node.id)}
-          readClipboard={platform.readClipboard}
-          {...(active && platform.setCanCopy ? { onCopyAvailabilityChange: platform.setCanCopy } : {})}
-          onContextMenu={platform.showContextMenu}
-          onToggleFullscreen={platform.toggleFullscreen}
-          onMenuAction={platform.onMenuAction}
-        />
-        {decoration?.label ? <span className="ghostty-pane-badge">{decoration.label}</span> : null}
-        {!node.session.readWrite ? <span className="ghostty-pane-access">View only</span> : null}
-      </div>
+      <WorkspacePane
+        paneId={node.id}
+        session={node.session}
+        active={workspaceActive && node.id === activePaneId}
+        zoomed={node.id === zoomedPaneId}
+        workspaceActive={workspaceActive}
+        platform={platform}
+        theme={theme}
+        effects={effects}
+        bindings={bindings}
+        decoration={decoratePane?.(node.session, node.id)}
+        onActivate={() => onActivate(node.id)}
+        onClose={() => onClosePane(node.id)}
+        onBrowseDevice={onBrowseDevice}
+      />
     );
   }
 
@@ -292,6 +378,8 @@ function SplitView({
           effects,
           bindings,
           onActivate,
+          onClosePane,
+          onBrowseDevice,
           decoratePane,
           onRatio,
         }}
@@ -325,6 +413,8 @@ function SplitView({
           effects,
           bindings,
           onActivate,
+          onClosePane,
+          onBrowseDevice,
           decoratePane,
           onRatio,
         }}
@@ -358,6 +448,7 @@ export function GhostteaWorkspace({
   const [operationError, setOperationError] = useState<string>();
   const [focused, setFocused] = useState(document.hasFocus());
   const [remotePaletteOpen, setRemotePaletteOpen] = useState(false);
+  const [remotePaletteDeviceId, setRemotePaletteDeviceId] = useState<string>();
   const creatingSessionRef = useRef(false);
   const workspaceRef = useRef<HTMLElement>(null);
   const layoutRef = useRef<PaneNode | undefined>(undefined);
@@ -635,21 +726,37 @@ export function GhostteaWorkspace({
     [activatePane, activePaneId, zoomedPaneId],
   );
 
+  const closePane = useCallback(
+    (paneId: string): void => {
+      const current = layoutRef.current;
+      const panes = leaves(current);
+      const target = panes.find((candidate) => candidate.id === paneId);
+      if (!current || !target || creatingSessionRef.current) return;
+      if (panes.length === 1) {
+        platform.closeWindow();
+        return;
+      }
+      const index = panes.findIndex((candidate) => candidate.id === target.id);
+      const next = panes[index === panes.length - 1 ? index - 1 : index + 1]!;
+      setLayout(removePane(current, target.id) ?? undefined);
+      setZoomedPaneId(null);
+      activatePane(next.id);
+    },
+    [activatePane, platform],
+  );
+
   const closeActivePane = useCallback((): void => {
-    const current = layoutRef.current;
-    const active = leaves(current).find((candidate) => candidate.id === activePaneIdRef.current);
-    if (!current || !active || creatingSessionRef.current) return;
-    const panes = leaves(current);
-    if (panes.length === 1) {
-      platform.closeWindow();
-      return;
-    }
-    const index = panes.findIndex((candidate) => candidate.id === active.id);
-    const next = panes[index === panes.length - 1 ? index - 1 : index + 1]!;
-    setLayout(removePane(current, active.id) ?? undefined);
-    setZoomedPaneId(null);
-    activatePane(next.id);
-  }, [activatePane, platform]);
+    if (activePaneIdRef.current) closePane(activePaneIdRef.current);
+  }, [closePane]);
+
+  const browseDeviceSessions = useCallback(
+    (deviceId: string): void => {
+      if (!enableRemoteSessions) return;
+      setRemotePaletteDeviceId(deviceId);
+      setRemotePaletteOpen(true);
+    },
+    [enableRemoteSessions],
+  );
 
   const openRemoteChoice = useCallback(
     async (choice: RemoteChoice): Promise<void> => {
@@ -663,6 +770,7 @@ export function GhostteaWorkspace({
           choice.session.sessionId,
           active.session.cols,
           active.session.rows,
+          choice.host.deviceName,
         );
         if (!mountedRef.current || !layoutRef.current || !containsPane(layoutRef.current, active.id)) {
           terminalRuntime.terminate(session.id);
@@ -691,7 +799,10 @@ export function GhostteaWorkspace({
       } else if (command.type === "close-tab") {
         platform.closeTab?.();
       } else if (command.type === "remote-sessions") {
-        if (enableRemoteSessions) setRemotePaletteOpen(true);
+        if (enableRemoteSessions) {
+          setRemotePaletteDeviceId(undefined);
+          setRemotePaletteOpen(true);
+        }
       } else if (command.type === "split") {
         void newSplit(command.axis);
       } else if (command.type === "focus-relative") {
@@ -852,6 +963,8 @@ export function GhostteaWorkspace({
               effects={effects}
               bindings={bindings}
               onActivate={activatePane}
+              onClosePane={closePane}
+              onBrowseDevice={browseDeviceSessions}
               decoratePane={decoratePane}
               onRatio={(splitId, ratio) =>
                 setLayout((current) =>
@@ -866,7 +979,14 @@ export function GhostteaWorkspace({
             </div>
           ) : null}
           {remotePaletteOpen ? (
-            <RemoteSessionPalette onClose={() => setRemotePaletteOpen(false)} onOpen={openRemoteChoice} />
+            <RemoteSessionPalette
+              {...(remotePaletteDeviceId ? { deviceId: remotePaletteDeviceId } : {})}
+              onClose={() => {
+                setRemotePaletteOpen(false);
+                setRemotePaletteDeviceId(undefined);
+              }}
+              onOpen={openRemoteChoice}
+            />
           ) : null}
         </section>
         {Sidebar ? (

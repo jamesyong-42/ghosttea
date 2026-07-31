@@ -4,7 +4,11 @@ import {
   PROTOCOL_MINOR,
   type ConfigSnapshot,
   type CreateSessionOptions,
+  type RemoteControllerInfo,
   type RemoteHostSummary,
+  type RemoteSessionLifecycle,
+  type RemoteSessionStateSnapshot,
+  type RemoteViewRecord,
   type SessionActivity,
   type ServerEvent,
   type SessionSummary,
@@ -71,7 +75,7 @@ interface MountedCanvas {
 interface ViewRuntimeState {
   sessionId: string;
   sessionHandle: string;
-  attachmentEpoch?: number;
+  attachmentEpoch?: number | undefined;
   readWrite?: boolean;
   inputSequence: number;
   resizeSequence: number;
@@ -79,7 +83,31 @@ interface ViewRuntimeState {
   desiredCols: number | undefined;
   desiredRows: number | undefined;
   pendingInput: Array<(attachmentEpoch: number, inputSequence: number) => void>;
+  /** Highest per-view sequence applied, from any of the three update paths. */
+  lastViewStateSeq: number | undefined;
+  /**
+   * Survives the epoch being cleared so a frozen replica stays copyable: the
+   * daemon authorizes offline selection from its ownership record, not from a
+   * live attachment.
+   */
+  lastAttachmentEpoch: number | undefined;
 }
+
+/** A session's lifecycle as this client currently believes it. */
+export type RemoteSessionRuntimeState = RemoteSessionLifecycle & {
+  sessionId: string;
+  /** Monotonic clock reading when this state was observed, for honest elapsed timing. */
+  observedAt: number;
+};
+
+export interface RemoteInputSuppression {
+  sessionId: string;
+  viewId: string;
+  state: RemoteSessionRuntimeState["state"];
+}
+
+/** A per-view update from an event, a reconciliation, or an attach response. */
+type RemoteViewStateUpdate = Omit<RemoteViewRecord, "viewId" | "viewStateSeq"> & { viewStateSeq?: number };
 
 type FrameChannelMessage =
   | ArrayBuffer
@@ -91,7 +119,10 @@ const FRAME_SUBSCRIPTION_ACK_TIMEOUT_MS = 10_000;
 const FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR = 7;
 const FRAME_BRIDGE_CAPABILITY_VERSION = 1;
 const CONFIG_PROTOCOL_MINOR = 10;
+const REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12;
 const DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS = 1_000;
+/** A one-shot resume covers a 20 s dial plus the attach handshake. */
+const RECONNECT_REQUEST_TIMEOUT_MS = 60_000;
 
 export function waitForGhostteaRendererPorts(timeoutMs = 10_000): Promise<GhostteaRendererPorts> {
   return new Promise((resolve, reject) => {
@@ -143,6 +174,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #scrollbarByHandle = new Map<string, TerminalScrollbarState>();
   readonly #focusByView = new Map<string, boolean>();
   readonly #views = new Map<string, ViewRuntimeState>();
+  readonly #remoteSessions = new Map<string, RemoteSessionRuntimeState>();
+  #remoteLifecycleSupported = false;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
   #configProtocolSupported = false;
@@ -333,21 +366,24 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     this.#control.addEventListener("control-changed", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "control-changed" }>>).detail;
-      for (const [viewId, view] of this.#views) {
-        if (view.sessionId !== detail.sessionId) continue;
-        if (viewId !== detail.controllerViewId) {
-          view.controlEpoch = undefined;
-          continue;
-        }
-        view.controlEpoch = detail.controlEpoch;
-        if (
-          view.desiredCols !== undefined &&
-          view.desiredRows !== undefined &&
-          (view.desiredCols !== detail.cols || view.desiredRows !== detail.rows)
-        ) {
-          this.#sendResize(viewId, view, view.desiredCols, view.desiredRows);
-        }
-      }
+      this.#applyController(
+        detail.sessionId,
+        { viewId: detail.controllerViewId, controlEpoch: detail.controlEpoch },
+        detail.cols,
+        detail.rows,
+      );
+    });
+    this.#control.addEventListener("control-state", (event) => {
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "control-state" }>>).detail;
+      this.#applyController(detail.sessionId, detail.controller, detail.cols, detail.rows);
+    });
+    this.#control.addEventListener("remote-session-state-changed", (event) => {
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "remote-session-state-changed" }>>).detail;
+      this.#applyRemoteSessionState(detail.sessionId, detail, false);
+    });
+    this.#control.addEventListener("view-state-changed", (event) => {
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "view-state-changed" }>>).detail;
+      this.#applyViewState(detail.viewId, detail);
     });
     this.#control.addEventListener("config-changed", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "config-changed" }>>).detail;
@@ -400,6 +436,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       throw new Error("ghosttead protocol mismatch");
     this.#frameSubscriptionAcksSupported = hello.protocolMinor >= FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR;
     this.#configProtocolSupported = hello.protocolMinor >= CONFIG_PROTOCOL_MINOR;
+    this.#remoteLifecycleSupported = hello.protocolMinor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR;
     if (this.#configProtocolSupported && hello.configRevision !== undefined) {
       await this.#refreshConfig();
     }
@@ -734,7 +771,11 @@ export class GhostteaTerminalRuntime extends EventTarget {
       for (const session of this.#sessionByHandle.values()) {
         before.set(session.id, session);
       }
-      const [sessions] = await Promise.all([this.listSessions(), this.#refreshConfig()]);
+      const [sessions] = await Promise.all([
+        this.listSessions(),
+        this.#refreshConfig(),
+        this.#reconcileRemoteSessions(),
+      ]);
       const known = new Set<string>();
       for (const session of sessions) {
         known.add(session.id);
@@ -805,6 +846,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     remoteSessionId: string,
     cols: number,
     rows: number,
+    deviceName = deviceId,
   ): Promise<SessionSummary> {
     await this.connect();
     const response = await this.#control!.request({
@@ -817,6 +859,23 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     if (response.type !== "session-created") throw new Error("ghosttead could not open the remote session");
     this.registerSession(response.session);
+    // The session counts as remote from here, before any daemon event, so its
+    // input is never queued. A completed open is the daemon's own evidence
+    // that it dialed and attached, so the honest starting state is live; the
+    // sequence below is under every real event, which therefore wins.
+    this.#remoteSessions.set(response.session.id, {
+      sessionId: response.session.id,
+      state: "live",
+      reason: null,
+      exit: null,
+      lifecycleSeq: -1,
+      deviceId,
+      deviceName,
+      attempt: null,
+      nextRetryMs: null,
+      lastContactMs: null,
+      observedAt: performance.now(),
+    });
     return response.session;
   }
 
@@ -870,8 +929,12 @@ export class GhostteaTerminalRuntime extends EventTarget {
       desiredCols: undefined,
       desiredRows: undefined,
       pendingInput: [],
+      lastViewStateSeq: undefined,
+      lastAttachmentEpoch: undefined,
     };
     this.#views.set(viewId, view);
+    const remote = this.#remoteSessions.get(sessionId);
+    if (remote && remote.state !== "live") this.#setCursorFrozen(sessionId, true);
     void subscription.ready
       .then(() => {
         const current = this.#views.get(viewId);
@@ -886,8 +949,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
         }
         const current = this.#views.get(viewId);
         if (current !== view) return;
-        current.attachmentEpoch = response.attachmentEpoch;
-        current.readWrite = response.readWrite;
+        const applied = this.#applyViewState(viewId, {
+          ...(response.viewStateSeq !== undefined ? { viewStateSeq: response.viewStateSeq } : {}),
+          viewState: "attached",
+          attachmentEpoch: response.attachmentEpoch,
+          readWrite: response.readWrite,
+          error: null,
+          retryable: null,
+        });
+        if (!applied) return;
         this.dispatchEvent(
           new CustomEvent("view-attached", {
             detail: { sessionId, sessionHandle, viewId, readWrite: response.readWrite },
@@ -941,15 +1011,180 @@ export class GhostteaTerminalRuntime extends EventTarget {
     };
   }
 
-  #sendViewInput(viewId: string, operation: (attachmentEpoch: number, inputSequence: number) => void): void {
+  get remoteLifecycleSupported(): boolean {
+    return this.#remoteLifecycleSupported;
+  }
+
+  /** Last known lifecycle of a remote session; undefined for local sessions. */
+  remoteSession(sessionId: string): RemoteSessionRuntimeState | undefined {
+    return this.#remoteSessions.get(sessionId);
+  }
+
+  #applyController(
+    sessionId: string,
+    controller: RemoteControllerInfo | null,
+    cols: number,
+    rows: number,
+  ): void {
+    for (const [viewId, view] of this.#views) {
+      if (view.sessionId !== sessionId) continue;
+      if (!controller || controller.viewId !== viewId) {
+        view.controlEpoch = undefined;
+        continue;
+      }
+      view.controlEpoch = controller.controlEpoch;
+      if (
+        view.desiredCols !== undefined &&
+        view.desiredRows !== undefined &&
+        (view.desiredCols !== cols || view.desiredRows !== rows)
+      ) {
+        this.#sendResize(viewId, view, view.desiredCols, view.desiredRows);
+      }
+    }
+  }
+
+  /**
+   * The only path that mutates per-view attachment state, whether the update
+   * arrived as an event, a reconciliation, or an attach response. A sequence
+   * at or below the last applied one is a delayed transition from an abandoned
+   * attempt and is dropped; an update without a sequence comes from a daemon
+   * older than the fence and applies directly.
+   */
+  #applyViewState(viewId: string, update: RemoteViewStateUpdate): boolean {
+    const view = this.#views.get(viewId);
+    if (!view) return false;
+    if (update.viewStateSeq !== undefined) {
+      if (view.lastViewStateSeq !== undefined && update.viewStateSeq <= view.lastViewStateSeq) return false;
+      view.lastViewStateSeq = update.viewStateSeq;
+    }
+    const remote = this.#remoteSessions.has(view.sessionId);
+    if (update.viewState === "attached" && update.attachmentEpoch !== null) {
+      // Nothing typed against the previous incarnation may ride out on a
+      // freshly armed epoch.
+      if (remote) view.pendingInput.length = 0;
+      view.attachmentEpoch = update.attachmentEpoch;
+      view.lastAttachmentEpoch = update.attachmentEpoch;
+      if (update.readWrite !== null) view.readWrite = update.readWrite;
+      return true;
+    }
+    view.pendingInput.length = 0;
+    view.attachmentEpoch = undefined;
+    return true;
+  }
+
+  #applyRemoteSessionState(sessionId: string, lifecycle: RemoteSessionLifecycle, authoritative: boolean): boolean {
+    const previous = this.#remoteSessions.get(sessionId);
+    if (previous) {
+      // A reconciliation is the source of truth and may restate its sequence;
+      // a pushed event at a sequence already seen is stale.
+      const stale = authoritative
+        ? lifecycle.lifecycleSeq < previous.lifecycleSeq
+        : lifecycle.lifecycleSeq <= previous.lifecycleSeq;
+      if (stale) return false;
+    }
+    const state: RemoteSessionRuntimeState = { ...lifecycle, sessionId, observedAt: performance.now() };
+    this.#remoteSessions.set(sessionId, state);
+    if (state.state !== "live") {
+      for (const view of this.#views.values()) {
+        if (view.sessionId === sessionId) view.pendingInput.length = 0;
+      }
+    }
+    this.#setCursorFrozen(sessionId, state.state !== "live");
+    this.dispatchEvent(new CustomEvent("remote-session-state", { detail: state }));
+    return true;
+  }
+
+  /** Hold the cursor steady while the replica is frozen, without disturbing focus. */
+  #setCursorFrozen(sessionId: string, frozen: boolean): void {
+    for (const [viewId, view] of this.#views) {
+      if (view.sessionId === sessionId) this.#postWorker({ type: "cursor-frozen", surfaceId: viewId, frozen });
+    }
+  }
+
+  async #remoteSessionStateRequest(
+    command: { type: "get-remote-session-state" | "reconnect-remote-session"; sessionId: string },
+    timeoutMs: number,
+  ): Promise<RemoteSessionRuntimeState | undefined> {
+    await this.connect();
+    if (!this.#remoteLifecycleSupported) return undefined;
+    const response = await this.#control!.request(command, timeoutMs);
+    if (response.type !== "remote-session-state") {
+      throw new Error("ghosttead returned an unexpected remote session state");
+    }
+    this.#applyRemoteSessionState(command.sessionId, response, true);
+    this.#applyController(command.sessionId, response.controller, response.cols, response.rows);
+    for (const view of response.views) this.#applyViewState(view.viewId, view);
+    return this.#remoteSessions.get(command.sessionId);
+  }
+
+  /** Rebuild this client's state for one remote session from the daemon. */
+  async getRemoteSessionState(sessionId: string): Promise<RemoteSessionRuntimeState | undefined> {
+    return this.#remoteSessionStateRequest({ type: "get-remote-session-state", sessionId }, 10_000);
+  }
+
+  async reconnectRemoteSession(sessionId: string): Promise<RemoteSessionRuntimeState | undefined> {
+    return this.#remoteSessionStateRequest(
+      { type: "reconnect-remote-session", sessionId },
+      RECONNECT_REQUEST_TIMEOUT_MS,
+    );
+  }
+
+  async retryRemoteView(sessionId: string, viewId: string): Promise<void> {
+    await this.connect();
+    if (!this.#remoteLifecycleSupported) return;
+    const response = await this.#control!.request({ type: "retry-remote-view", sessionId, viewId });
+    if (response.type !== "view-state") throw new Error("ghosttead returned an unexpected view state");
+    this.#applyViewState(response.viewId, response);
+  }
+
+  #reconcileRemoteSessions(): Promise<unknown> {
+    if (!this.#remoteLifecycleSupported) return Promise.resolve();
+    return Promise.all(
+      [...this.#remoteSessions.keys()].map((sessionId) =>
+        this.getRemoteSessionState(sessionId).catch((error: unknown) => {
+          if (!this.#disposed) {
+            console.warn(`[terminal-runtime] could not reconcile remote session ${sessionId}`, error);
+          }
+        }),
+      ),
+    );
+  }
+
+  /**
+   * `silent` marks operations that drop without the keystroke hint: focus and
+   * geometry updates are cosmetic, and pointer gestures are already answered
+   * by the pane's frozen treatment.
+   */
+  #sendViewInput(
+    viewId: string,
+    operation: (attachmentEpoch: number, inputSequence: number) => void,
+    silent = false,
+  ): void {
     const view = this.#views.get(viewId);
     if (!view || view.readWrite === false) return;
-    if (view.attachmentEpoch === undefined) {
+    const remote = this.#remoteSessions.get(view.sessionId);
+    const attachmentEpoch = view.attachmentEpoch;
+    // Input for a remote session is dropped with feedback rather than queued:
+    // replaying a keystroke across an outage would deliver it to a screen the
+    // user has never seen. The queue below survives only for a local session's
+    // mount-to-attach gap, which is a local IPC round-trip.
+    if (remote && (remote.state !== "live" || attachmentEpoch === undefined)) {
+      view.pendingInput.length = 0;
+      if (!silent) this.#reportSuppressedInput(view.sessionId, viewId, remote.state);
+      return;
+    }
+    if (attachmentEpoch === undefined) {
       if (view.pendingInput.length < 256) view.pendingInput.push(operation);
       return;
     }
     view.inputSequence += 1;
-    operation(view.attachmentEpoch, view.inputSequence);
+    operation(attachmentEpoch, view.inputSequence);
+  }
+
+  #reportSuppressedInput(sessionId: string, viewId: string, state: RemoteSessionRuntimeState["state"]): void {
+    this.dispatchEvent(
+      new CustomEvent("input-suppressed", { detail: { sessionId, viewId, state } satisfies RemoteInputSuppression }),
+    );
   }
 
   sendText(sessionId: string, viewId: string, text: string): void {
@@ -977,22 +1212,32 @@ export class GhostteaTerminalRuntime extends EventTarget {
   }
 
   sendMouse(sessionId: string, viewId: string, event: TerminalMouseEvent): void {
-    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
-      this.#control?.notify({ type: "send-mouse", sessionId, viewId, attachmentEpoch, inputSequence, event }),
+    this.#sendViewInput(
+      viewId,
+      (attachmentEpoch, inputSequence) =>
+        this.#control?.notify({ type: "send-mouse", sessionId, viewId, attachmentEpoch, inputSequence, event }),
+      true,
     );
   }
 
   scroll(sessionId: string, viewId: string, rows: number): void {
     if (rows === 0) return;
-    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
-      this.#control?.notify({ type: "scroll", sessionId, viewId, attachmentEpoch, inputSequence, rows }),
+    // Scrolling is host-side input, so it is simply inert while frozen.
+    this.#sendViewInput(
+      viewId,
+      (attachmentEpoch, inputSequence) =>
+        this.#control?.notify({ type: "scroll", sessionId, viewId, attachmentEpoch, inputSequence, rows }),
+      true,
     );
   }
 
   scrollTo(sessionId: string, viewId: string, row: number): void {
     if (!Number.isSafeInteger(row) || row < 0) return;
-    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) =>
-      this.#control?.notify({ type: "scroll-to", sessionId, viewId, attachmentEpoch, inputSequence, row }),
+    this.#sendViewInput(
+      viewId,
+      (attachmentEpoch, inputSequence) =>
+        this.#control?.notify({ type: "scroll-to", sessionId, viewId, attachmentEpoch, inputSequence, row }),
+      true,
     );
   }
 
@@ -1054,16 +1299,20 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
-    this.#sendViewInput(viewId, (attachmentEpoch) => {
-      this.#control?.notify({
-        type: "focus-and-resize",
-        sessionId: session.id,
-        viewId,
-        attachmentEpoch,
-        cols,
-        rows,
-      });
-    });
+    this.#sendViewInput(
+      viewId,
+      (attachmentEpoch) => {
+        this.#control?.notify({
+          type: "focus-and-resize",
+          sessionId: session.id,
+          viewId,
+          attachmentEpoch,
+          cols,
+          rows,
+        });
+      },
+      true,
+    );
   }
 
   setFocused(sessionHandle: string, viewId: string, focused: boolean, cols: number, rows: number): void {
@@ -1077,37 +1326,46 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#postWorker({ type: "focus", surfaceId: viewId, sessionHandle, focused });
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
-    this.#sendViewInput(viewId, (attachmentEpoch, inputSequence) => {
-      this.#control?.notify({
-        type: "focus",
-        sessionId: session.id,
-        viewId,
-        attachmentEpoch,
-        inputSequence,
-        focused,
-      });
-      if (focused) {
+    this.#sendViewInput(
+      viewId,
+      (attachmentEpoch, inputSequence) => {
         this.#control?.notify({
-          type: "focus-and-resize",
+          type: "focus",
           sessionId: session.id,
           viewId,
           attachmentEpoch,
-          cols,
-          rows,
+          inputSequence,
+          focused,
         });
-      }
-    });
+        if (focused) {
+          this.#control?.notify({
+            type: "focus-and-resize",
+            sessionId: session.id,
+            viewId,
+            attachmentEpoch,
+            cols,
+            rows,
+          });
+        }
+      },
+      true,
+    );
   }
 
   async copySelection(sessionId: string, viewId: string, selection: CellSelection, selectAll = false): Promise<string> {
     await this.connect();
     const view = this.#views.get(viewId);
-    if (!view || view.sessionId !== sessionId || view.attachmentEpoch === undefined) return "";
+    if (!view || view.sessionId !== sessionId) return "";
+    // A frozen replica stays copyable: offline the daemon answers from the
+    // retained snapshot and authorizes by ownership, so the last epoch this
+    // view held is enough to name the attachment.
+    const attachmentEpoch = view.attachmentEpoch ?? view.lastAttachmentEpoch;
+    if (attachmentEpoch === undefined) return "";
     const response = await this.#control!.request({
       type: "selection-text",
       sessionId,
       viewId,
-      attachmentEpoch: view.attachmentEpoch,
+      attachmentEpoch,
       startColumn: selection.anchor.column,
       startRow: selection.anchor.row,
       endColumn: selection.focus.column,
@@ -1166,6 +1424,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     this.#sessionByHandle.delete(handle);
     this.#handleBySessionId.delete(sessionId);
+    this.#remoteSessions.delete(sessionId);
     if (subscriptionChanged) {
       this.#frameSubscriptionVersion += 1;
       this.#syncFrameSubscriptionsInBackground();
@@ -1221,6 +1480,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     this.#performanceRequests.clear();
     this.#views.clear();
+    this.#remoteSessions.clear();
     this.#focusByView.clear();
     this.#mountGenerationBySurface.clear();
     this.#mouseTrackingByHandle.clear();

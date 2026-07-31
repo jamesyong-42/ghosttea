@@ -8,6 +8,8 @@ export {
   type GhostteaRendererPlatform,
   type GhostteaRendererPorts,
   type GhostteaTerminalRuntimeOptions,
+  type RemoteInputSuppression,
+  type RemoteSessionRuntimeState,
   type TerminalMount,
 } from "./runtime.js";
 export { DEFAULT_THEME, type CellPoint, type CellSelection, type TerminalTheme } from "./renderers/types.js";

@@ -110,6 +110,10 @@ const dirty = new Set<string>();
 // Occluded surfaces continue ingesting frames so they resume from current state,
 // but do not schedule GPU flushes or cursor timers while their native tab is hidden.
 const occluded = new Set<string>();
+// A frozen replica must not animate: a blinking cursor on a screen the host
+// stopped updating reads as a live session. Focus is left untouched, since the
+// runtime owns focus truth for control reclaim.
+const frozenCursors = new Set<string>();
 let renderer: TerminalRenderer | undefined;
 let rendererPromise: Promise<TerminalRenderer> | undefined;
 let flushScheduled = false;
@@ -421,7 +425,14 @@ function scheduleCursorBlink(surfaceId: string, reset: boolean): void {
   if (!value) return;
   const session = snapshot(value.sessionHandle);
   if (reset) value.cursorBlinkVisible = true;
-  if (occluded.has(surfaceId) || !value.focused || !session.cursor.visible || !session.cursor.blinking) return;
+  if (
+    occluded.has(surfaceId) ||
+    frozenCursors.has(surfaceId) ||
+    !value.focused ||
+    !session.cursor.visible ||
+    !session.cursor.blinking
+  )
+    return;
   cursorBlinkTimers.set(
     surfaceId,
     setTimeout(() => {
@@ -857,6 +868,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       dirty.delete(message.surfaceId);
       deleteSurface(message.surfaceId);
       occluded.delete(message.surfaceId);
+      frozenCursors.delete(message.surfaceId);
       renderer?.unmount(message.surfaceId);
       const timer = cursorBlinkTimers.get(message.surfaceId);
       if (timer !== undefined) clearTimeout(timer);
@@ -869,6 +881,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
         dirty.delete(surfaceId);
         surfaces.delete(surfaceId);
         occluded.delete(surfaceId);
+        frozenCursors.delete(surfaceId);
         renderer?.unmount(surfaceId);
         const timer = cursorBlinkTimers.get(surfaceId);
         if (timer !== undefined) clearTimeout(timer);
@@ -956,6 +969,24 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       value.focused = Boolean(message.focused);
       scheduleCursorBlink(message.surfaceId, value.focused);
       invalidateRows(message.surfaceId, [snapshot(message.sessionHandle).cursor.y]);
+    } else if (message.type === "cursor-frozen") {
+      const value = surfaces.get(message.surfaceId);
+      if (!value) return;
+      if (message.frozen) {
+        frozenCursors.add(message.surfaceId);
+        const timer = cursorBlinkTimers.get(message.surfaceId);
+        if (timer !== undefined) clearTimeout(timer);
+        cursorBlinkTimers.delete(message.surfaceId);
+        // Rest on the visible half of the blink so the frozen screen shows the
+        // cursor where the host left it.
+        if (!value.cursorBlinkVisible) {
+          value.cursorBlinkVisible = true;
+          invalidateRows(message.surfaceId, [snapshot(value.sessionHandle).cursor.y]);
+        }
+      } else {
+        frozenCursors.delete(message.surfaceId);
+        scheduleCursorBlink(message.surfaceId, true);
+      }
     } else if (message.type === "cursor-activity") {
       const session = snapshot(message.sessionHandle);
       for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
