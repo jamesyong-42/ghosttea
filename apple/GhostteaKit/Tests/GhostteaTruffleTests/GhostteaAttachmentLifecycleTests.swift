@@ -392,6 +392,27 @@ import Truffle
   await lifecycle.close()
 }
 
+@Test func aLegacyHostIsNeverProbed() async {
+  let dialer = ScriptedDialer()
+  let clock = ManualClock()
+  let lifecycle = makeLifecycle(dialer: dialer, clock: clock)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 5)
+  let live = await recorder.wait { $0.phase == .live }
+  #expect(live?.negotiatedMinor == 5)
+
+  // A Ping below the reconnect minor is not ignored by the host — it reaches
+  // the catch-all and closes the connection. Probing here would manufacture
+  // the outage the probe exists to detect, so nothing is scheduled at all.
+  #expect(await clock.settledSleeperCount() == 0)
+  await clock.advance(30_000, sleepers: 0)
+  #expect(await peer.pendingControlCount == 0)
+  #expect(await lifecycle.currentSnapshot.phase == .live)
+  await lifecycle.close()
+}
+
 @Test func silencePastTheFailWindowTearsTheConnectionDown() async {
   let dialer = ScriptedDialer()
   let clock = ManualClock()

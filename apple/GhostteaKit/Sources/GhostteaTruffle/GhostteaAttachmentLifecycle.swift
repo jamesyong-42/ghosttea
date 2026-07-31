@@ -479,7 +479,14 @@ public actor GhostteaAttachmentLifecycle {
     absentSinceMs = nil
     lastContactMs = clock.nowMs
     advance(to: .live)
-    startHeartbeat(attachment: attachment, incarnation: attemptIncarnation)
+    // Only against a host that negotiated the reconnect minor. A `Ping` below
+    // it is not ignored — it reaches the compact host's catch-all and closes
+    // the connection — so probing a legacy host would manufacture the very
+    // outage the heartbeat exists to detect. There, detection falls back to
+    // the transport's own idle timeout (§5).
+    if info.supportsReconnect {
+      startHeartbeat(attachment: attachment, incarnation: attemptIncarnation)
+    }
 
     // Hold here until the connection is finished: the reader commits the
     // disconnect, so the engine never has to guess whether one happened. The
@@ -556,7 +563,14 @@ public actor GhostteaAttachmentLifecycle {
       // clients. An inbound probe is not evidence the host is answering *us*,
       // so it refreshes nothing — and a probe that arrived on a connection
       // since replaced must not be answered on its replacement.
-      guard incarnation == self.incarnation, let attachment = current else { return true }
+      //
+      // Gated on the negotiated minor for the same reason the probe itself is:
+      // below it, a liveness frame is not ignored but closes the connection.
+      // A legacy host cannot have sent this, so answering could only be a
+      // reply to something that is not a probe at all.
+      guard incarnation == self.incarnation, let attachment = current,
+        attachment.info.supportsReconnect
+      else { return true }
       try? await attachment.pong(nonce: nonce)
       return true
     case .selectionText:
