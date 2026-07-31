@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use crate::{
     FrameHub, TerminalPresentationConfig,
     service::Registry,
-    session::{SessionActivity, SessionSummary},
+    session::{SessionActivity, SessionStatus, SessionSummary},
     tunnel_protocol::{SharedSessionSummary, TunnelInput},
 };
 
@@ -442,6 +442,56 @@ fn closed_channel<T: Clone>() -> broadcast::Receiver<T> {
     receiver
 }
 
+/// What a host can honestly answer about a session id it is no longer
+/// listing. The daemon owns the evidence — its registry and its tombstones —
+/// and the mesh only asks; nothing about *how* a host remembers crosses this
+/// seam, because a resuming viewer needs the verdict and nothing else.
+pub trait SessionStatusSource: Send + Sync {
+    fn session_status(&self, session_id: &str) -> SessionStatus;
+}
+
+/// Tells every connected viewer, once, that this host is going away.
+///
+/// It exists as a separate handle because [`TerminalMesh::serve`] consumes the
+/// mesh: a drain running long after that still needs something to call, and
+/// this is cheap to clone and safe to hold. Announcing is idempotent, and a
+/// connection accepted after the announcement sees it immediately rather than
+/// missing it.
+#[derive(Clone)]
+pub struct HostShutdownAnnouncer {
+    announced: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for HostShutdownAnnouncer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostShutdownAnnouncer {
+    pub fn new() -> Self {
+        Self {
+            announced: tokio::sync::watch::channel(false).0,
+        }
+    }
+
+    /// Publish the announcement to every connection watching. Returns as soon
+    /// as it is published, not when viewers have acted on it: a drain must not
+    /// be able to stall on a viewer that has stopped reading.
+    pub fn announce(&self) {
+        self.announced.send_replace(true);
+    }
+
+    pub fn announced(&self) -> bool {
+        *self.announced.borrow()
+    }
+
+    /// For the mesh implementation: one receiver per connection handler.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.announced.subscribe()
+    }
+}
+
 #[async_trait]
 pub trait TerminalMesh: Send {
     fn runtime(&self) -> Arc<dyn RemoteTerminalRuntime>;
@@ -450,6 +500,19 @@ pub trait TerminalMesh: Send {
         registry: Registry,
         host_config: tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>,
     ) -> Result<()>;
+
+    /// Hand the mesh the lookup it answers session-status requests from, and
+    /// that a resuming viewer's own consult goes through. Call before `serve`;
+    /// a mesh without one answers `Unknown`, which is the honest reading of
+    /// "this host cannot say".
+    fn set_session_status_source(&mut self, _source: Arc<dyn SessionStatusSource>) {}
+
+    /// The handle a drain keeps to announce shutdown. Defaulted to a detached
+    /// announcer so a mesh that cannot announce is not a special case at the
+    /// call site — announcing into it is a no-op rather than an error.
+    fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        HostShutdownAnnouncer::new()
+    }
 }
 
 #[derive(Default)]

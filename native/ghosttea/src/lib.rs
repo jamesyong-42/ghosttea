@@ -26,11 +26,12 @@ pub use ghosttea_text::{
     FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
 };
 pub use mesh::{
-    MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment, RemoteControlChanged,
-    RemoteControlClaim, RemoteControlOutcome, RemoteControlState, RemoteController,
-    RemoteEndedReason, RemoteExitInfo, RemoteHostSummary, RemoteLifecycleChanged,
+    HostShutdownAnnouncer, MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment,
+    RemoteControlChanged, RemoteControlClaim, RemoteControlOutcome, RemoteControlState,
+    RemoteController, RemoteEndedReason, RemoteExitInfo, RemoteHostSummary, RemoteLifecycleChanged,
     RemoteLifecycleState, RemoteResize, RemoteSelection, RemoteSessionLifecycle, RemoteSessionOpen,
-    RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState, RemoteViewStateChanged, TerminalMesh,
+    RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState, RemoteViewStateChanged,
+    SessionStatusSource, TerminalMesh,
 };
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;

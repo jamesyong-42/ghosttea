@@ -28,23 +28,23 @@ use truffle_core::{
 use uuid::Uuid;
 
 use ghosttea::{
-    AttachRejectionCode, ControlSnapshot, MeshReconnectConfig, RemoteActivityChanged,
-    RemoteAttachment, RemoteControlChanged, RemoteControlClaim, RemoteControlOutcome,
-    RemoteControlState, RemoteController, RemoteEndedReason, RemoteHostSummary,
-    RemoteLifecycleChanged, RemoteLifecycleState, RemoteReplica, RemoteResize, RemoteSelection,
-    RemoteSessionLifecycle, RemoteSessionOpen, RemoteTerminalRuntime, RemoteViewRecord,
-    RemoteViewState, RemoteViewStateChanged, ResumeEvidence, Session, SessionRegistry as Registry,
-    SessionSummary, StateStreamCancel, TakeOver, TerminalMesh, TerminalPresentationConfig,
-    ViewAccess,
+    AttachRejectionCode, ControlSnapshot, HostShutdownAnnouncer, MeshReconnectConfig,
+    RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
+    RemoteControlOutcome, RemoteControlState, RemoteController, RemoteEndedReason,
+    RemoteHostSummary, RemoteLifecycleChanged, RemoteLifecycleState, RemoteReplica, RemoteResize,
+    RemoteSelection, RemoteSessionLifecycle, RemoteSessionOpen, RemoteTerminalRuntime,
+    RemoteViewRecord, RemoteViewState, RemoteViewStateChanged, ResumeEvidence, Session,
+    SessionRegistry as Registry, SessionStatusSource, SessionSummary, StateStreamCancel, TakeOver,
+    TerminalMesh, TerminalPresentationConfig, ViewAccess,
     tunnel_protocol::{
         AttachRejectCode, CompactChannel, ConnectionMessage, ControllerInfo, HeartbeatMessage,
         LogicalTerminalPatch, LogicalTerminalSnapshot, MAX_CONTROL_MESSAGE_BYTES,
         MAX_HEARTBEAT_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
         REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint, RowReplacement,
         SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
-        SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
-        TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
-        decode_compact_message, decode_message, decode_preface, decode_state_message,
+        SessionStatusKind, SharedSessionSummary, StateCodec, StateMessage, StreamKind,
+        StreamPreface, TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement,
+        TunnelInput, decode_compact_message, decode_message, decode_preface, decode_state_message,
         encode_compact_message, encode_message, encode_preface, encode_state_message,
     },
 };
@@ -59,10 +59,23 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 type HostStore = truffle::synced_store::SyncedStore<TerminalHostAdvertisement>;
 type HostConfigReceiver = tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>;
 
+/// What a host connection needs from the daemon above it and cannot work out
+/// for itself. Kept apart from [`TruffleTerminalConfig`], which is the knobs a
+/// caller writes down literally; these are wiring the daemon hands over.
+#[derive(Clone, Default)]
+struct HostServices {
+    /// Absent until the daemon supplies one, and absent forever in tests and
+    /// in the loopback harness: a host with no source answers `Unknown`, which
+    /// is exactly what "this host cannot say" means on the wire.
+    session_status: Option<Arc<dyn SessionStatusSource>>,
+    shutdown: HostShutdownAnnouncer,
+}
+
 #[derive(Clone)]
 struct IncomingSessionContext {
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     client_id: String,
     state_codec: StateCodec,
     protocol_minor: u16,
@@ -1351,6 +1364,43 @@ async fn list_sessions_on(host: &RemoteHostConnection) -> Result<Vec<SharedSessi
     }
 }
 
+/// Ask a host what became of a session it is no longer listing. Same lockstep
+/// discipline as the listing: one request under the control mutex, matched by
+/// request id.
+async fn session_status_on(
+    host: &RemoteHostConnection,
+    remote_session_id: &str,
+) -> Result<SessionStatusKind> {
+    let mut control = host.control.lock().await;
+    let request_id = Uuid::new_v4().to_string();
+    control
+        .write_message(
+            &ConnectionMessage::SessionStatus {
+                request_id: request_id.clone(),
+                session_id: remote_session_id.to_owned(),
+            },
+            MAX_CONTROL_MESSAGE_BYTES,
+        )
+        .await?;
+    match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
+    )
+    .await
+    .context("timed out waiting for a session-status answer")??
+    .context("remote host closed before answering session status")?
+    {
+        ConnectionMessage::SessionStatusResult {
+            request_id: response_id,
+            status,
+        } if response_id == request_id => Ok(status),
+        ConnectionMessage::Error { message, .. } => {
+            bail!("remote host rejected the session-status request: {message}")
+        }
+        _ => bail!("remote host returned an invalid session-status answer"),
+    }
+}
+
 /// Full jitter, AWS definition: the window doubles per attempt up to the cap
 /// and the delay is sampled uniformly inside it, so viewers that lost the same
 /// host do not come back in lockstep and re-flood it.
@@ -1831,6 +1881,37 @@ impl MeshRuntime {
         }
     }
 
+    /// The §6.4 verdict, improved by the host's own records where the listing
+    /// has nothing to say. Absence is exactly the case a tombstone exists for:
+    /// without asking, every session killed during an outage reads as
+    /// "unavailable", which tells a user nothing about what happened to it.
+    async fn ended_reason_with_status(
+        &self,
+        host: &Arc<RemoteHostConnection>,
+        entry: Option<&SharedSessionSummary>,
+        remote_session_id: &str,
+    ) -> Option<RemoteEndedReason> {
+        let listed = ended_reason_from_listing(entry);
+        // A listed session has already answered for itself, and a host below
+        // the reconnect minor has no answer to give.
+        if entry.is_some() || !host.supports_reconnect() {
+            return listed;
+        }
+        match session_status_on(host, remote_session_id).await {
+            Ok(SessionStatusKind::Ended { reason }) => Some(match reason {
+                SessionEndReason::Exited { .. } => RemoteEndedReason::SessionExited,
+                SessionEndReason::Closed => RemoteEndedReason::SessionClosed,
+            }),
+            // It holds the session after all — it appeared between the listing
+            // and this question. Claim nothing: the attach that follows is
+            // better evidence than either answer.
+            Ok(SessionStatusKind::Live) => None,
+            // An expired or never-written tombstone, or a host that cannot
+            // say. `Unknown` is never upgraded, so absence stands on its own.
+            Ok(SessionStatusKind::Unknown) | Err(_) => listed,
+        }
+    }
+
     /// Apply §6.4 listing evidence to sessions that are already off the air.
     /// A live session is never ended from a listing: the host lists what it
     /// serves, and our own attachment is the better evidence.
@@ -1851,11 +1932,22 @@ impl MeshRuntime {
                 )
             })
             .collect::<Vec<_>>();
+        // Both verdict paths consult, or the two would disagree: whichever of
+        // this sweep and a resume attempt ran first would decide the reason a
+        // user is shown.
+        let host = self.cached_connection(device_id).await;
         for (remote_session_id, lifecycle) in candidates {
             let entry = sessions
                 .iter()
                 .find(|summary| summary.session_id == remote_session_id);
-            if let Some(reason) = ended_reason_from_listing(entry) {
+            let reason = match host.as_ref() {
+                Some(host) => {
+                    self.ended_reason_with_status(host, entry, &remote_session_id)
+                        .await
+                }
+                None => ended_reason_from_listing(entry),
+            };
+            if let Some(reason) = reason {
                 lifecycle.commit_ended(reason);
             }
         }
@@ -2756,7 +2848,10 @@ impl MeshRuntime {
         let entry = sessions
             .iter()
             .find(|summary| summary.session_id == remote.remote_session_id);
-        if let Some(reason) = ended_reason_from_listing(entry) {
+        if let Some(reason) = self
+            .ended_reason_with_status(&host, entry, &remote.remote_session_id)
+            .await
+        {
             return Err(AttachFailure::Ended(reason));
         }
 
@@ -3805,6 +3900,7 @@ pub struct TruffleTerminalMesh {
     config: TruffleTerminalConfig,
     runtime: MeshRuntime,
     connections: ConnectionLedger,
+    services: HostServices,
 }
 
 impl TruffleTerminalMesh {
@@ -3817,7 +3913,21 @@ impl TruffleTerminalMesh {
             config,
             runtime,
             connections: ConnectionLedger::default(),
+            services: HostServices::default(),
         })
+    }
+
+    /// The lookup this host answers session-status requests from. Set before
+    /// `serve`. Only the host half needs it: a resuming viewer asks the host
+    /// that owns the session over the wire, never a source of its own.
+    pub fn set_session_status_source(&mut self, source: Arc<dyn SessionStatusSource>) {
+        self.services.session_status = Some(source);
+    }
+
+    /// Cloneable and safe to keep after `serve` has taken the mesh, which is
+    /// the whole point: a drain announces long after that.
+    pub fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        self.services.shutdown.clone()
     }
 
     pub fn runtime(&self) -> MeshRuntime {
@@ -3836,6 +3946,7 @@ impl TruffleTerminalMesh {
             config,
             runtime,
             connections,
+            services,
         } = self;
         let host_instance_id = Uuid::new_v4().to_string();
         let listener = Arc::new(
@@ -3892,6 +4003,7 @@ impl TruffleTerminalMesh {
             Arc::clone(&listener),
             registry.clone(),
             config.clone(),
+            services.clone(),
             host_instance_id.clone(),
             host_config.clone(),
             connections.clone(),
@@ -3901,6 +4013,7 @@ impl TruffleTerminalMesh {
             compact_listener,
             registry,
             config.clone(),
+            services,
             host_instance_id,
             host_config,
             connections,
@@ -4060,11 +4173,13 @@ async fn request_advertisements_from_online_peers(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compact_accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     mut listener: truffle::transport::RawListener,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
     connections: ConnectionLedger,
@@ -4076,6 +4191,7 @@ async fn compact_accept_loop(
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
+        let services = services.clone();
         let host_instance_id = host_instance_id.clone();
         let host_config = host_config.clone();
         tokio::spawn(async move {
@@ -4084,6 +4200,7 @@ async fn compact_accept_loop(
                 incoming,
                 registry,
                 config,
+                services,
                 host_instance_id,
                 host_config,
                 scope,
@@ -4103,6 +4220,7 @@ async fn handle_compact_connection(
     incoming: truffle::transport::RawIncoming,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
     scope: ConnectionScope,
@@ -4124,6 +4242,7 @@ async fn handle_compact_connection(
         incoming.stream,
         registry,
         config,
+        services,
         host_instance_id,
         peer.device_id,
         client_id,
@@ -4138,6 +4257,7 @@ async fn handle_compact_protocol<S>(
     stream: S,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     expected_device_id: Option<String>,
     client_id: String,
@@ -4217,6 +4337,18 @@ where
                             )
                             .await?;
                     }
+                    ConnectionMessage::SessionStatus {
+                        request_id,
+                        session_id,
+                    } => {
+                        let status = session_status_for(&services, &session_id);
+                        control
+                            .write_message(
+                                &ConnectionMessage::SessionStatusResult { request_id, status },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
                     _ => {
                         control
                             .write_message(
@@ -4241,6 +4373,7 @@ where
                 IncomingSessionContext {
                     registry,
                     config,
+                    services: services.clone(),
                     client_id,
                     state_codec,
                     protocol_minor,
@@ -4266,6 +4399,7 @@ where
     let IncomingSessionContext {
         registry,
         config,
+        services,
         client_id,
         state_codec,
         protocol_minor,
@@ -4341,6 +4475,15 @@ where
         let mut snapshots = session.subscribe_logical();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
+        let mut shutdown = services.shutdown.watch();
+        // An attachment arriving after the announcement has already gone out
+        // must not be told the host is healthy by omission.
+        if *shutdown.borrow_and_update() {
+            control
+                .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                .await?;
+            return Ok(());
+        }
         if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
             let presentation = host_config.borrow_and_update().as_ref().clone();
             control
@@ -4382,6 +4525,17 @@ where
         loop {
             tokio::select! {
                 biased;
+                // §6.3's compact half: this transport has no heartbeat stream
+                // to carry the announcement, so it travels as state.
+                announced = shutdown.changed() => {
+                    if announced.is_err() || !*shutdown.borrow_and_update() {
+                        continue;
+                    }
+                    control
+                        .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                        .await?;
+                    return Ok(());
+                }
                 changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
                     changed.context("host configuration publisher closed")?;
                     let presentation = host_config.borrow_and_update().as_ref().clone();
@@ -4753,11 +4907,13 @@ impl Drop for ConnectionScopeInner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     listener: Arc<truffle::transport::quic::QuicListener>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
     connections: ConnectionLedger,
@@ -4769,6 +4925,7 @@ async fn accept_loop(
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
+        let services = services.clone();
         let host_instance_id = host_instance_id.clone();
         let host_config = host_config.clone();
         tokio::spawn(async move {
@@ -4777,6 +4934,7 @@ async fn accept_loop(
                 Arc::new(connection),
                 registry,
                 config,
+                services,
                 host_instance_id,
                 host_config,
                 scope,
@@ -4796,6 +4954,7 @@ async fn handle_connection(
     connection: Arc<truffle::transport::quic::QuicConnection>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
     scope: ConnectionScope,
@@ -4805,6 +4964,7 @@ async fn handle_connection(
         connection,
         registry,
         config,
+        services,
         host_instance_id,
         Arc::new(NodeClientResolver { node }),
         Some(remote_ip),
@@ -4819,6 +4979,7 @@ async fn serve_connection(
     connection: Arc<dyn MeshConnection>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     resolver: Arc<dyn ClientResolver>,
     remote_ip: Option<IpAddr>,
@@ -4894,6 +5055,7 @@ async fn serve_connection(
     let streams_context = IncomingSessionContext {
         registry: registry.clone(),
         config: config.clone(),
+        services: services.clone(),
         client_id: client_id.clone(),
         state_codec,
         protocol_minor,
@@ -4930,6 +5092,21 @@ async fn serve_connection(
                     )
                     .await?;
             }
+            // Why a session this viewer held is no longer listed. Answered
+            // from the daemon's own evidence, so absence from the registry
+            // stops being the only thing a resuming viewer can observe.
+            ConnectionMessage::SessionStatus {
+                request_id,
+                session_id,
+            } => {
+                let status = session_status_for(&services, &session_id);
+                control
+                    .write_message(
+                        &ConnectionMessage::SessionStatusResult { request_id, status },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
             _ => {
                 control
                     .write_message(
@@ -4949,14 +5126,44 @@ async fn serve_connection(
     Ok(())
 }
 
+/// Answer a tombstone lookup. A host with no status source says `Unknown`,
+/// which is the honest reading of "this host cannot say" — never an upgrade to
+/// a specific end reason, and never a downgrade of one it does have.
+fn session_status_for(services: &HostServices, session_id: &str) -> SessionStatusKind {
+    services
+        .session_status
+        .as_ref()
+        .map_or(SessionStatusKind::Unknown, |source| {
+            source.session_status(session_id).into()
+        })
+}
+
 /// Answer liveness probes for as long as the stream lives. A host has nothing
 /// outstanding of its own here — `Pong` is only ever an answer, and the
 /// shutdown announcement travels the other way.
-async fn serve_heartbeat(mut control: ProtocolStream) -> Result<()> {
-    while let Some(message) = control
-        .read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES)
-        .await?
-    {
+async fn serve_heartbeat(
+    mut control: ProtocolStream,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    // A stream that opens after the announcement has to see it too, which is
+    // why the watch is read before waiting for a change rather than after.
+    if *shutdown.borrow_and_update() {
+        return announce_shutdown(&mut control).await;
+    }
+    loop {
+        let message = tokio::select! {
+            biased;
+            announced = shutdown.changed() => {
+                if announced.is_err() || !*shutdown.borrow_and_update() {
+                    continue;
+                }
+                return announce_shutdown(&mut control).await;
+            }
+            message = control.read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES) => message?,
+        };
+        let Some(message) = message else {
+            return Ok(());
+        };
         if let HeartbeatMessage::Ping { nonce } = message {
             control
                 .write_message(
@@ -4966,7 +5173,17 @@ async fn serve_heartbeat(mut control: ProtocolStream) -> Result<()> {
                 .await?;
         }
     }
-    Ok(())
+}
+
+/// Tell this viewer the host is going away, then stop: there is nothing
+/// further to say on a connection whose host has announced its own exit.
+async fn announce_shutdown(control: &mut ProtocolStream) -> Result<()> {
+    control
+        .write_message(
+            &HeartbeatMessage::HostShutdown {},
+            MAX_HEARTBEAT_MESSAGE_BYTES,
+        )
+        .await
 }
 
 async fn handle_application_stream(
@@ -4977,6 +5194,7 @@ async fn handle_application_stream(
     let IncomingSessionContext {
         registry,
         config,
+        services,
         client_id,
         state_codec,
         protocol_minor,
@@ -4996,7 +5214,7 @@ async fn handle_application_stream(
         // viewer's own contact clock do the deciding. The connection scope
         // stays held for as long as the stream lives, which is correct — an
         // open heartbeat stream is a connection that can still deliver work.
-        StreamKind::Heartbeat => return serve_heartbeat(control).await,
+        StreamKind::Heartbeat => return serve_heartbeat(control, services.shutdown.watch()).await,
         _ => bail!("peer-opened stream kind is not supported"),
     }
     let session_id = preface
@@ -6061,6 +6279,14 @@ impl TerminalMesh for TruffleTerminalMesh {
         Arc::new(self.runtime())
     }
 
+    fn set_session_status_source(&mut self, source: Arc<dyn SessionStatusSource>) {
+        TruffleTerminalMesh::set_session_status_source(self, source);
+    }
+
+    fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        TruffleTerminalMesh::shutdown_announcer(self)
+    }
+
     async fn serve(
         self: Box<Self>,
         registry: Registry,
@@ -6177,6 +6403,7 @@ mod tests {
             server_io,
             registry,
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "desktop-instance".into(),
             Some("ios-device".into()),
             "truffle:peer:1".into(),
@@ -6257,6 +6484,7 @@ mod tests {
             server_io,
             Registry::default(),
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "desktop-instance".into(),
             Some("expected-device".into()),
             "truffle:peer:1".into(),
@@ -6844,7 +7072,13 @@ mod tests {
         registry: &Registry,
         host_instance_id: &str,
     ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
-        connect_loopback_at(registry, host_instance_id, PROTOCOL_MINOR).await
+        connect_loopback_at(
+            registry,
+            host_instance_id,
+            PROTOCOL_MINOR,
+            HostServices::default(),
+        )
+        .await
     }
 
     /// `offered_minor` is what the viewer asks for; the host answers with the
@@ -6854,6 +7088,7 @@ mod tests {
         registry: &Registry,
         host_instance_id: &str,
         offered_minor: u16,
+        services: HostServices,
     ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
         let (client, server) = loopback_pair();
         let (presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
@@ -6869,6 +7104,7 @@ mod tests {
                 allow_tailnet_write: true,
                 ..TruffleTerminalConfig::default()
             },
+            services,
             host_instance_id.to_owned(),
             Arc::new(StaticClientResolver("truffle:peer:1")) as Arc<dyn ClientResolver>,
             None,
@@ -6949,6 +7185,7 @@ mod tests {
         runtime: MeshRuntime,
         transport: Arc<TestTransport>,
         registry: Registry,
+        services: HostServices,
         remote_session_id: String,
         session_id: String,
         hosts: Vec<LoopbackHost>,
@@ -6972,6 +7209,16 @@ mod tests {
         }
 
         async fn attached_at(config: MeshReconnectConfig, offered_minor: u16) -> Result<Self> {
+            Self::attached_serving(config, offered_minor, HostServices::default()).await
+        }
+
+        /// The full form: the daemon-side services the host serves with are
+        /// what a test drives when it is the seam under test.
+        async fn attached_serving(
+            config: MeshReconnectConfig,
+            offered_minor: u16,
+            services: HostServices,
+        ) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = spawn_host_session(&registry)?;
             let transport = TestTransport::new("host-1");
@@ -6981,7 +7228,7 @@ mod tests {
                 .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
                 .await;
             let (connection, host) =
-                connect_loopback_at(&registry, "host-1", offered_minor).await?;
+                connect_loopback_at(&registry, "host-1", offered_minor, services.clone()).await?;
             transport.queue(connection);
 
             let summary = runtime
@@ -7001,6 +7248,7 @@ mod tests {
                 runtime,
                 transport,
                 registry,
+                services,
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![host],
@@ -7071,6 +7319,7 @@ mod tests {
                 runtime,
                 transport,
                 registry,
+                services: HostServices::default(),
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![LoopbackHost {
@@ -7135,6 +7384,7 @@ mod tests {
                 runtime,
                 transport,
                 registry,
+                services: HostServices::default(),
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![LoopbackHost {
@@ -7190,8 +7440,13 @@ mod tests {
 
         /// Queue a fresh host connection for the next dial.
         async fn arm_host(&mut self, host_instance_id: &str) -> Result<()> {
-            let (connection, host) =
-                connect_loopback_at(&self.registry, host_instance_id, self.offered_minor).await?;
+            let (connection, host) = connect_loopback_at(
+                &self.registry,
+                host_instance_id,
+                self.offered_minor,
+                self.services.clone(),
+            )
+            .await?;
             self.transport.queue(connection);
             self.hosts.push(host);
             Ok(())
@@ -7697,6 +7952,126 @@ mod tests {
             broadcast::channel(8).0,
             broadcast::channel(8).0,
         )
+    }
+
+    /// A daemon that always gives the same answer. The real one reads its
+    /// registry and its tombstones; what crosses the seam is only the verdict.
+    struct StaticSessionStatus(ghosttea::SessionStatus);
+
+    impl SessionStatusSource for StaticSessionStatus {
+        fn session_status(&self, _session_id: &str) -> ghosttea::SessionStatus {
+            self.0
+        }
+    }
+
+    fn serving_status(status: ghosttea::SessionStatus) -> HostServices {
+        HostServices {
+            session_status: Some(Arc::new(StaticSessionStatus(status))),
+            shutdown: HostShutdownAnnouncer::new(),
+        }
+    }
+
+    /// The kill-during-outage story: a session that ends while the viewer is
+    /// away is gone from the listing when it comes back, and absence alone
+    /// cannot say why. Without the consult every such session reads as
+    /// "unavailable", which tells a user nothing about what happened to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_killed_during_an_outage_reports_why_not_just_absence() -> Result<()> {
+        let mut fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Ended {
+                cause: ghosttea::SessionEndCause::Exited { code: Some(0) },
+            }),
+        )
+        .await?;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        // The host outlives the session: it comes back as the same instance,
+        // so nothing here can be mistaken for a restart.
+        fixture
+            .registry
+            .write()
+            .unwrap()
+            .remove(&fixture.remote_session_id);
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        let lifecycle = fixture.lifecycle().await;
+        assert_eq!(lifecycle.state, RemoteLifecycleState::Ended);
+        assert_eq!(
+            lifecycle.reason,
+            Some(RemoteEndedReason::SessionExited),
+            "absence was reported without the host's own account of it"
+        );
+        Ok(())
+    }
+
+    /// `Unknown` is the honest answer for a tombstone that expired or was
+    /// never written, and it must never be sharpened into a specific end.
+    ///
+    /// Scope: this pins the no-upgrade rule, not the consult — it passes with
+    /// the consult disabled too, because falling back to the listing's own
+    /// verdict is the same answer arrived at without asking.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unknown_answer_leaves_absence_where_it_was() -> Result<()> {
+        let mut fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Unknown),
+        )
+        .await?;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture
+            .registry
+            .write()
+            .unwrap()
+            .remove(&fixture.remote_session_id);
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::SessionUnavailable),
+            "an unknown fate was upgraded to a specific one"
+        );
+        Ok(())
+    }
+
+    /// The drain's first act, seen from the other end. A viewer that is told
+    /// the host is going away stops waiting for it, instead of spending the
+    /// probe window discovering the same thing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_announced_shutdown_reaches_a_connected_viewer() -> Result<()> {
+        let fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Live),
+        )
+        .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        fixture.services.shutdown.announce();
+
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::HostShutdown)
+        );
+        Ok(())
     }
 
     /// Heartbeat timings small enough to test, in the same proportion as the
@@ -8737,6 +9112,7 @@ mod tests {
             Arc::clone(&server) as Arc<dyn MeshConnection>,
             Registry::default(),
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "host-1".into(),
             Arc::new(RefusingClientResolver) as Arc<dyn ClientResolver>,
             None,
