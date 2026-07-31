@@ -35,7 +35,9 @@ public enum GhostteaTerminalLayout {
   public static func gridSize(
     width: Float,
     height: Float,
-    contentInsets: GhostteaTerminalContentInsets = .zero
+    contentInsets: GhostteaTerminalContentInsets = .zero,
+    cellWidth: Float = GhostteaTerminalLayout.cellWidth,
+    lineHeight: Float = GhostteaTerminalLayout.lineHeight
   ) -> GhostteaTerminalGridSize {
     let usableWidth = width - contentInsets.left - contentInsets.right - horizontalPadding * 2
     let usableHeight = height - contentInsets.top - contentInsets.bottom - verticalPadding * 2
@@ -46,7 +48,7 @@ public enum GhostteaTerminalLayout {
   }
 
   private static func terminalDimension(_ available: Float, step: Float) -> UInt16 {
-    guard available.isFinite, available > 0 else { return 1 }
+    guard available.isFinite, available > 0, step.isFinite, step > 0 else { return 1 }
     let cells = floor(Double(available) / Double(step) + 0.000_001)
     return UInt16(Int(max(1, min(Double(UInt16.max), cells))))
   }

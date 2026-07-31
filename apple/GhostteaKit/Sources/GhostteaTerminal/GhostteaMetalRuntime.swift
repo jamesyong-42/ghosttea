@@ -11,6 +11,7 @@ enum GhostteaMetalError: Error, Equatable, CustomStringConvertible {
   case renderTargetUnavailable
   case commandBufferFailed(String)
   case invalidViewport
+  case invalidTextMetrics(cellWidth: Float, lineHeight: Float)
   case invalidGeometry(UInt32)
   case textureUnavailable(String)
   case invalidAtlasSize(String, Int)
@@ -36,6 +37,8 @@ enum GhostteaMetalError: Error, Equatable, CustomStringConvertible {
       "Metal command buffer failed: \(reason)"
     case .invalidViewport:
       "Metal viewport dimensions or scale are invalid"
+    case .invalidTextMetrics(let cellWidth, let lineHeight):
+      "Metal text metrics are invalid: cell \(cellWidth), line \(lineHeight)"
     case .invalidGeometry(let id):
       "glyph \(id) has invalid render geometry"
     case .textureUnavailable(let label):
@@ -337,11 +340,11 @@ public enum GhostteaMetalProof {
     let renderer = try GhostteaMetalRenderer(runtime: runtime)
     let width = Int(
       ceil(
-        GhostteaMetalRenderer.originX * 2 + Float(frame.columns) * GhostteaMetalRenderer.cellWidth
+        GhostteaMetalRenderer.originX * 2 + Float(frame.columns) * renderer.cellWidth
       ))
     let height = Int(
       ceil(
-        GhostteaMetalRenderer.originY * 2 + Float(frame.rows) * GhostteaMetalRenderer.lineHeight
+        GhostteaMetalRenderer.originY * 2 + Float(frame.rows) * renderer.lineHeight
       ))
     let first = try renderer.render(state: state, width: width, height: height)
     let cached = try renderer.render(state: state, width: width, height: height)

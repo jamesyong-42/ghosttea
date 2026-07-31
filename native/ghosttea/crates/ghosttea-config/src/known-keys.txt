@@ -98,6 +98,7 @@ input
 key-remap
 keybind
 language
+link
 link-previews
 link-url
 linux-cgroup
@@ -140,6 +141,7 @@ quick-terminal-autohide
 quick-terminal-keyboard-interactivity
 quick-terminal-position
 quick-terminal-screen
+quick-terminal-size
 quick-terminal-space-behavior
 quit-after-last-window-closed
 quit-after-last-window-closed-delay

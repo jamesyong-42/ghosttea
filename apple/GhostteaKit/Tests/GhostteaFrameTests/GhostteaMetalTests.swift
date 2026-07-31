@@ -558,6 +558,14 @@ private func productionFrame() async throws -> Data {
       contentInsets: .init(left: 59, bottom: 21, right: 59)
     ) == GhostteaTerminalGridSize(columns: 92, rows: 19)
   )
+  #expect(
+    GhostteaTerminalLayout.gridSize(
+      width: 160,
+      height: 200,
+      cellWidth: 16,
+      lineHeight: 20
+    ) == GhostteaTerminalGridSize(columns: 9, rows: 9)
+  )
 }
 
 @Test func terminalLayoutClampsDegenerateAndUnboundedViewports() {
@@ -569,6 +577,11 @@ private func productionFrame() async throws -> Data {
     GhostteaTerminalLayout.gridSize(
       width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
       == GhostteaTerminalGridSize(columns: .max, rows: .max)
+  )
+  #expect(
+    GhostteaTerminalLayout.gridSize(
+      width: 100, height: 100, cellWidth: 0, lineHeight: .nan)
+      == GhostteaTerminalGridSize(columns: 1, rows: 1)
   )
 }
 
@@ -749,6 +762,30 @@ private func productionFrame() async throws -> Data {
         "ghosttea_color_glyph_fragment",
       ]
   )
+}
+
+@Test func metalRendererAcceptsConfiguredMetricsAndRejectsInvalidGeometry() throws {
+  let runtime = try GhostteaMetalRuntime()
+  let configured = try GhostteaMetalRenderer(
+    runtime: runtime,
+    alphaAtlasSize: 8,
+    colorAtlasSize: 8,
+    cellWidth: 12,
+    lineHeight: 24
+  )
+  #expect(configured.cellWidth == 12)
+  #expect(configured.lineHeight == 24)
+  #expect(
+    throws: GhostteaMetalError.invalidTextMetrics(cellWidth: 0, lineHeight: -1)
+  ) {
+    try GhostteaMetalRenderer(
+      runtime: runtime,
+      alphaAtlasSize: 8,
+      colorAtlasSize: 8,
+      cellWidth: 0,
+      lineHeight: -1
+    )
+  }
 }
 
 @Test func productionMetalScreenshotMatchesTheBundledVisualGolden() async throws {

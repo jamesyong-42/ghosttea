@@ -12,7 +12,7 @@ public enum GhostteaTruffleContract {
   public static let compactTerminalPort: UInt16 = 9421
 
   public static let protocolMajor: UInt16 = 1
-  public static let protocolMinor: UInt16 = 4
+  public static let protocolMinor: UInt16 = 5
   public static let maximumControlMessageBytes = 1 * 1024 * 1024
   public static let maximumStateMessageBytes = 16 * 1024 * 1024
   public static let maximumPrefaceMetadataBytes = 4 * 1024
@@ -94,7 +94,8 @@ public actor GhostteaTrufflePeerDirectory {
         confirmed.append(peer)
       }
     }
-    return confirmed
+    return
+      confirmed
       .map(GhostteaTruffleHostCandidate.init(peer:))
       .sorted {
         $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending

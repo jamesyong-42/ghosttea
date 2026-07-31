@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use ghosttea_config::{ConfigLoadOptions, ConfigManager, ConfigSnapshot};
+use ghosttea_config::{
+    ConfigDocument, ConfigDocumentError, ConfigLoadOptions, ConfigManager, ConfigSnapshot,
+    TerminalPresentationConfig,
+};
 use ghosttea_text::{FontMode, TextEngine};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -39,15 +42,17 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 10;
+const CONTROL_PROTOCOL_MINOR: u16 = 11;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
 const CONFIG_EVENT_PROTOCOL_MINOR: u16 = 10;
+const CONFIG_DOCUMENT_PROTOCOL_MINOR: u16 = 11;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(CONFIG_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(CONFIG_DOCUMENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
@@ -195,6 +200,14 @@ enum Command {
     },
     GetConfig,
     ReloadConfig,
+    GetConfigDocument,
+    ValidateConfigDocument {
+        contents: String,
+    },
+    ReplaceConfigDocument {
+        expected_revision: String,
+        contents: String,
+    },
     ListSessions,
     ListRemoteHosts,
     ListRemoteSessions {
@@ -356,6 +369,20 @@ enum ResponseBody {
     Config {
         config: ConfigSnapshot,
     },
+    ConfigDocument {
+        document: ConfigDocument,
+    },
+    ConfigDocumentValidation {
+        document_revision: String,
+        config: ConfigSnapshot,
+    },
+    ConfigDocumentUpdated {
+        document: ConfigDocument,
+        config: ConfigSnapshot,
+    },
+    ConfigDocumentConflict {
+        document: ConfigDocument,
+    },
     SessionCreated {
         session: session::SessionSummary,
     },
@@ -418,6 +445,8 @@ struct ControlContext {
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
     config: ConfigManager,
+    config_update_lock: Arc<Mutex<()>>,
+    host_config_tx: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
     shutdown: Arc<ShutdownState>,
 }
 
@@ -710,6 +739,8 @@ impl TerminalService {
     ) -> Result<()> {
         let configured_text_engine = self.text_engine;
         let config = ConfigManager::load(self.config_load_options);
+        let initial_presentation = Arc::new(config.snapshot().terminal_presentation());
+        let (host_config_tx, host_config_rx) = tokio::sync::watch::channel(initial_presentation);
         let ready = self.ready;
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
@@ -798,7 +829,7 @@ impl TerminalService {
         let _mesh_task = self.mesh.map(|mesh| {
             let mesh_registry = Arc::clone(&registry);
             TaskGuard(tokio::spawn(async move {
-                if let Err(error) = mesh.serve(mesh_registry).await {
+                if let Err(error) = mesh.serve(mesh_registry, host_config_rx).await {
                     eprintln!("[terminal-mesh] stopped: {error:#}");
                 }
             }))
@@ -812,6 +843,8 @@ impl TerminalService {
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
             config,
+            config_update_lock: Arc::new(Mutex::new(())),
+            host_config_tx,
             shutdown: Arc::clone(&shutdown),
         };
         // Spawned rather than joined in place: the drain has to run *while*
@@ -1270,29 +1303,54 @@ async fn handle_command(
                 config: context.config.snapshot().as_ref().clone(),
             }),
             Command::ReloadConfig => {
+                let _update = context
+                    .config_update_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let (config, changed) = context.config.reload();
-                if changed {
-                    let colors = &config.terminal;
-                    let sessions = registry
-                        .read()
-                        .unwrap()
-                        .values()
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    for session in sessions {
-                        session.set_colors(colors.foreground, colors.background, colors.cursor)?;
-                    }
-                    let config_value = serde_json::to_value(config.as_ref())
-                        .context("serialize reloaded configuration")?;
-                    let _ = event_tx.send(json!({
-                        "requestId": 0,
-                        "type": "config-changed",
-                        "config": config_value,
-                    }));
-                }
+                publish_reloaded_config(context, &config, changed)?;
                 Ok(ResponseBody::Config {
                     config: config.as_ref().clone(),
                 })
+            }
+            Command::GetConfigDocument => Ok(ResponseBody::ConfigDocument {
+                document: context.config.document()?,
+            }),
+            Command::ValidateConfigDocument { contents } => {
+                let validation = context.config.validate_document(&contents)?;
+                Ok(ResponseBody::ConfigDocumentValidation {
+                    document_revision: validation.document_revision,
+                    config: validation.config,
+                })
+            }
+            Command::ReplaceConfigDocument {
+                expected_revision,
+                contents,
+            } => {
+                let _update = context
+                    .config_update_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match context
+                    .config
+                    .replace_document(&expected_revision, &contents)
+                {
+                    Ok(update) => {
+                        publish_reloaded_config(
+                            context,
+                            &update.config,
+                            update.effective_changed,
+                        )?;
+                        Ok(ResponseBody::ConfigDocumentUpdated {
+                            document: update.document,
+                            config: update.config.as_ref().clone(),
+                        })
+                    }
+                    Err(ConfigDocumentError::Conflict { current }) => {
+                        Ok(ResponseBody::ConfigDocumentConflict { document: current })
+                    }
+                    Err(error) => Err(error.into()),
+                }
             }
             Command::CreateSession { options } => {
                 validate_grid(options.cols, options.rows)?;
@@ -2139,6 +2197,49 @@ async fn handle_command(
             message: error.to_string(),
         }),
     }
+}
+
+fn publish_reloaded_config(
+    context: &ControlContext,
+    config: &Arc<ConfigSnapshot>,
+    changed: bool,
+) -> Result<()> {
+    if !changed {
+        return Ok(());
+    }
+    let presentation = config.terminal_presentation();
+    let presentation_changed = {
+        let current = context.host_config_tx.borrow();
+        current.as_ref() != &presentation
+    };
+    if presentation_changed {
+        context.host_config_tx.send_replace(Arc::new(presentation));
+    }
+    let colors = &config.terminal;
+    let sessions = context
+        .registry
+        .read()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for session in sessions {
+        if let Err(error) = session.set_colors(colors.foreground, colors.background, colors.cursor)
+        {
+            eprintln!(
+                "[ghosttea] failed to refresh colors for session {} after configuration reload: {error:#}",
+                session.id()
+            );
+        }
+    }
+    let config_value =
+        serde_json::to_value(config.as_ref()).context("serialize reloaded configuration")?;
+    let _ = context.event_tx.send(json!({
+        "requestId": 0,
+        "type": "config-changed",
+        "config": config_value,
+    }));
+    Ok(())
 }
 
 fn validate_grid(cols: u16, rows: u16) -> Result<()> {
@@ -3081,6 +3182,57 @@ mod protocol_tests {
             } => assert_eq!((start_row, end_row), (120, 124)),
             _ => panic!("expected selection-text command"),
         }
+    }
+
+    #[test]
+    fn config_document_commands_preserve_contents_and_expected_revision() {
+        let validate: Envelope = serde_json::from_value(json!({
+            "requestId": 41,
+            "type": "validate-config-document",
+            "contents": "# comment\nbackground = 112233\n"
+        }))
+        .unwrap();
+        assert!(matches!(
+            validate.command,
+            Command::ValidateConfigDocument { contents }
+                if contents == "# comment\nbackground = 112233\n"
+        ));
+
+        let replace: Envelope = serde_json::from_value(json!({
+            "requestId": 42,
+            "type": "replace-config-document",
+            "expectedRevision": "raw-revision",
+            "contents": "font-size = 14\r\n"
+        }))
+        .unwrap();
+        assert!(matches!(
+            replace.command,
+            Command::ReplaceConfigDocument {
+                expected_revision,
+                contents,
+            } if expected_revision == "raw-revision" && contents == "font-size = 14\r\n"
+        ));
+    }
+
+    #[test]
+    fn serializes_typed_config_document_conflicts() {
+        let value = serde_json::to_value(ResponseEnvelope {
+            request_id: 42,
+            body: ResponseBody::ConfigDocumentConflict {
+                document: ConfigDocument {
+                    schema_version: 1,
+                    revision: "current-revision".to_owned(),
+                    path: "/tmp/config.ghostty".to_owned(),
+                    exists: true,
+                    contents: "# current\n".to_owned(),
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(value["requestId"], 42);
+        assert_eq!(value["type"], "config-document-conflict");
+        assert_eq!(value["document"]["revision"], "current-revision");
+        assert_eq!(value["document"]["contents"], "# current\n");
     }
 
     #[test]

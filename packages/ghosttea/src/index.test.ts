@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ControlClient } from "./index";
 
+const privilegedRendererCommand: Parameters<ControlClient["request"]>[0] = {
+  // @ts-expect-error Exact config documents are privileged and never renderer commands.
+  type: "get-config-document",
+};
+void privilegedRendererCommand;
+
 describe("ControlClient", () => {
   it("uses request id zero for notifications and does not allocate a pending response", async () => {
     const channel = new MessageChannel();

@@ -562,6 +562,7 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
             }
             StateMessage::ControlChanged { control_epoch, .. } => control_epoch,
             StateMessage::ActivityChanged { activity } => activity.observed_at_ms,
+            StateMessage::ConfigurationChanged { .. } => 0,
         };
         result.apply += apply_started.elapsed();
         if rendered {

@@ -1,9 +1,10 @@
 # Ghostty configuration compatibility
 
 Ghosttea uses one versioned Rust configuration engine on the daemon, Electron,
-and Apple FFI paths. The compatibility target is the repository's pinned
-Ghostty 1.3.1 source at commit
-`f8041e849b36efbbb9736b6ecf0ccfcb01d94e69`.
+and Apple FFI paths. The compatibility target is released Ghostty 1.3.1 at
+commit `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`. This config pin is
+deliberately separate from the unreleased Ghostty source used to build the VT
+library.
 
 The goal is safe migration, not optimistic parsing. Every configured key is
 reported as `applied`, `parsed`, or `unsupported`, and malformed or unknown
@@ -12,7 +13,7 @@ values remain visible in structured diagnostics.
 ## Sources and precedence
 
 Ghosttea follows the
-[pinned Ghostty 1.3.1 source order](https://github.com/ghostty-org/ghostty/blob/f8041e849b36efbbb9736b6ecf0ccfcb01d94e69/src/config/Config.zig#L4057-L4120):
+[pinned Ghostty 1.3.1 source order](https://github.com/ghostty-org/ghostty/blob/332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28/src/config/Config.zig#L4064-L4130):
 
 1. `$XDG_CONFIG_HOME/ghostty/config` (legacy)
 2. `$XDG_CONFIG_HOME/ghostty/config.ghostty`
@@ -20,37 +21,45 @@ Ghosttea follows the
 4. On macOS, `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`
 5. An optional Ghosttea-owned `config.ghostty` overlay
 
-If `XDG_CONFIG_HOME` is unset, `~/.config` is used. Missing standard files are
-ignored. `config-file` includes are relative to their containing file, are
+On Windows, `LOCALAPPDATA` is Ghostty's fallback when `XDG_CONFIG_HOME` is
+unset; elsewhere `~/.config` is used. Missing standard files are ignored.
+`config-file` includes are relative to their containing file, are
 processed through the same
-[breadth-first queue](https://github.com/ghostty-org/ghostty/blob/f8041e849b36efbbb9736b6ecf0ccfcb01d94e69/src/config/Config.zig#L4252-L4338)
+[breadth-first queue](https://github.com/ghostty-org/ghostty/blob/332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28/src/config/Config.zig#L4210-L4300)
 as Ghostty, expand `~/`, support both `?optional/path` and
 `?"optional path"`, and reject repeated recursive targets. An unquoted empty
 `config-file` value clears the pending include queue. Includes from the
 standard Ghostty files are fully resolved before the Ghosttea overlay, keeping
 that app-owned file as the final layer. Empty values reset a key. Keys are
 case-sensitive and comments are valid only on their own line, matching
-Ghostty.
+Ghostty. UTF-8 byte-order marks and bare CLI-style boolean options are
+accepted.
 
 The desktop overlay lives in Electron's profile-specific user-data directory.
-`open_config` creates and opens that file. Existing Ghostty files are read
+`open_config` asks the managed daemon to create that exact file through the
+configuration document API, then opens it. Existing Ghostty files are read
 automatically before it, so users do not need to copy their configuration just
 to try Ghosttea.
 
 ## Current behavior
 
-| Area                                             | Daemon / Electron                                                                                                                                    | Swift / Metal                                                                                                                                                        |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foreground, background, cursor, selection colors | Applied live                                                                                                                                         | Available through the same snapshot; `GhostteaTerminal.apply(config:)` and `GhostteaTerminalMetalView.applyConfiguration(_:)` apply them                             |
-| `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                       | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget |
-| `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                      |
-| `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                              | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                        |
-| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                               | Parsed; callers must select metrics while constructing `GhostteaRuntime`                                                                                             |
-| `custom-shader`                                  | `ghosttea:better-crt` is applied by WebGPU; Canvas fallback and arbitrary Ghostty GLSL are unsupported                                               | Diagnosed/preserved; Metal post-processing is not implemented                                                                                                        |
+| Area                                             | Daemon / Electron                                                                                                                                     | Swift / Metal                                                                                                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Device config applies to local SSH; shared desktop sessions use the host's presentation projection and update live over Truffle                                                 |
+| `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                        | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget |
+| `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied  | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                      |
+| `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                               | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                        |
+| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                                | `font-size` scales runtime shaping and grid metrics at app startup; arbitrary `font-family` values remain diagnosed because Apple currently uses the bundled font set         |
+| `custom-shader`                                  | `ghosttea:better-crt` is applied by WebGPU; Canvas fallback and arbitrary Ghostty GLSL are unsupported                                                | Diagnosed/preserved; Metal post-processing is not implemented                                                                                                        |
 
 Other recognized keys—including `theme`, `palette`, background opacity,
 shell integration, and most window/application behavior—are currently reported
 as `unsupported`; importing them never creates a false success signal.
+
+Color parsing uses Ghostty's full X11 catalog. It also accepts Ghostty's newer
+9- and 12-digit precision and `rgb:`/`rgbi:` forms as a forward-compatible
+syntax extension to the 1.3.1 config release. `transparent` is not a Ghostty
+color and is rejected instead of being silently converted to black.
 
 The CRT effect is off by default. Ghosttea's bundled approximation is opt-in
 with the Ghostty key and a namespaced value:
@@ -83,17 +92,68 @@ The JSON object is `ghosttea-config` schema version 1 and is represented by
 loads it through `ghosttea_config_load_json`, the same Rust implementation used
 by `ghosttead`.
 
+Protocol 1.11 adds a separate, lossless `ghosttea-config-document` schema:
+
+- `get-config-document` returns the exact UTF-8 app overlay, its path,
+  existence state, and a raw-content revision.
+- `validate-config-document` projects candidate contents through the same
+  layered loader without touching disk or changing the live snapshot.
+- `replace-config-document` requires the revision returned by the last read.
+  It either installs the exact candidate with an atomic same-directory
+  replacement and reloads configuration, or returns
+  `config-document-conflict` with the current document.
+
+The document API never reconstructs source text from `ConfigSnapshot`, so
+comments, ordering, unknown Ghostty keys, includes, line endings, and reset
+expressions survive unchanged. Missing and existing-empty files have different
+revisions. Writes use a private same-directory temporary file and replace the
+destination only after a second revision check; on Unix the resulting overlay
+is mode `0600`. Documents are capped at 64 KiB so requests and worst-case JSON
+escaping stay within the authenticated control protocol's packet quota.
+This is an optimistic concurrency contract: strict compare-and-swap requires
+all writers to use the API, because unrelated editors do not honor its lock.
+
+This is deliberately a privileged local API. It can address only the daemon's
+explicit final overlay, never imported Ghostty roots or included files, and it
+is not exposed over Truffle. The Electron utility bridge uses an explicit
+command allowlist that rejects these operations from renderers. Electron also
+refuses open/reload actions when attached to an externally managed daemon.
+Node hosts use `GhostteaAutomationClient`; Swift embedders continue to load a
+user-selected overlay URL through `GhostteaConfiguration.load`.
+
+Truffle terminal protocol 1.5 adds a host-authoritative
+`TerminalPresentationConfig` at view attachment and a
+`configuration-changed` state message. The projection contains only colors,
+font size and family names, padding, and the supported post-process mode. It
+never exposes host configuration paths, diagnostics, keybindings, scrollback
+policy, or custom shader paths; only a count is retained so Apple can surface
+that those shaders are unavailable. A configuration change is followed by a
+full logical snapshot so a client can rebuild its shaping runtime before
+accepting more patches. Clients connected to pre-1.5 hosts retain their
+device-local presentation.
+
 Reload immediately updates model colors and desktop presentation. Scrollback
 limits apply only to new sessions. Parsed startup-only settings remain visible
 so a settings UI can explain that a restart or future implementation is
 required.
 
+The iOS app loads one immutable device snapshot at launch from
+`Library/Application Support/Ghosttea/config.ghostty` inside its container,
+after the standard Ghostty-compatible layers. That revision configures every
+local SSH pane. Shared desktop sessions instead adopt the desktop host's
+redacted presentation at attach and on reload, while their input bindings and
+retention policy remain local to the appropriate owner. The configured
+scrollback limit is honored up to the app's device-specific memory cap. iOS
+reload and a document-picker import flow remain future work.
+
 ## Upgrade discipline
 
-`known-keys.txt` is derived from
-`bench/ghostty-ux/ground-truth/config-macos-default.txt`. The Ghostty upgrade
-gate compares those files and verifies the config engine's pinned commit against
-`native/ghostty.lock.json`; a vendor upgrade cannot silently drift the schema.
+`native/ghostty-config.lock.json` pins the released config commit, relevant
+source hashes, projected defaults, generated key catalog, and X11 color table.
+`scripts/sync-ghostty-config-schema.mjs` regenerates those files from the clean
+pinned checkout. The offline upgrade gate verifies their hashes independently
+from `native/ghostty.lock.json`, so a VT vendor upgrade cannot silently redefine
+the migration contract.
 
 The canonical syntax and source behavior are documented by
 [Ghostty configuration](https://ghostty.org/docs/config), and individual option

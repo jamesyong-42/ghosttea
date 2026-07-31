@@ -1,11 +1,28 @@
 # Ghostty upgrade procedure
 
-This is the mandatory procedure for changing the Ghostty revision used by the
-desktop runtime, GhostteaKit, and the production iOS app. A Ghostty upgrade is
+This is the mandatory procedure for changing the Ghostty VT revision used by
+the desktop runtime, GhostteaKit, and the production iOS app. A VT upgrade is
 one atomic compatibility change: source pin, native artifacts, fonts, terminal
 fixtures, release metadata, and device evidence move together. Never merge a
-new source pin with an old binary or regenerate a golden merely to make a test
-green.
+new VT source pin with an old binary or regenerate a golden merely to make a
+test green.
+
+Ghosttea's import schema has a separate released-source pin in
+`native/ghostty-config.lock.json`. It intentionally does not follow an
+unreleased VT snapshot: users migrate from released Ghostty configuration
+files. Upgrade that pin only to an immutable release commit, review the config
+source independently, and regenerate the source-derived files from a clean
+checkout:
+
+```sh
+npm run sync:ghostty-config -- --source /path/to/released/ghostty --check
+```
+
+The generated compatibility inputs are
+`native/ghosttea/crates/ghosttea-config/src/known-keys.txt`,
+`native/ghosttea/crates/ghosttea-config/src/x11-rgb.txt`, and
+`scripts/sync-ghostty-config-schema.mjs`. A config-pin change may be reviewed
+separately from a VT upgrade, but each pin must remain internally consistent.
 
 The offline drift gate is:
 

@@ -10,6 +10,27 @@ private struct ConnectionControlFixture: Decodable {
   let sessions: GhostteaConnectionMessage
 }
 
+private func presentation(
+  revision: String = "presentation-1",
+  fontSize: Float = 17
+) -> GhostteaTerminalPresentationConfig {
+  GhostteaTerminalPresentationConfig(
+    schemaVersion: 1,
+    revision: revision,
+    foreground: [0xee, 0xee, 0xee],
+    background: [0x11, 0x22, 0x33],
+    cursor: [0xaa, 0xbb, 0xcc],
+    selectionBackground: [0x44, 0x55, 0x66],
+    selectionForeground: [0xff, 0xff, 0xff],
+    fontSize: fontSize,
+    fontFamilies: ["JetBrains Mono"],
+    paddingX: [3, 4],
+    paddingY: [5, 6],
+    postProcess: .none,
+    customShaderCount: 0
+  )
+}
+
 @Test func connectionControlFixtureIsSharedWithDesktopRust() throws {
   let url = try #require(
     Bundle.module.url(
@@ -127,7 +148,8 @@ private struct ConnectionControlFixture: Decodable {
   #expect(value.rows.first?.cells.last?.style.strikethrough == true)
   #expect(value.rows.first?.cells.last?.span == 2)
   #expect(value.rows.first?.cells.last?.text == "界́")
-  #expect(value.cursor == GhostteaLogicalCursor(x: 1, y: 0, visible: true, style: 2, blinking: true))
+  #expect(
+    value.cursor == GhostteaLogicalCursor(x: 1, y: 0, visible: true, style: 2, blinking: true))
   #expect(value.scrollbar == GhostteaLogicalScrollbar(total: 20, offset: 10, len: 1))
   #expect(value.title == "title")
   #expect(value.cwd == "/cwd")
@@ -144,13 +166,15 @@ private struct ConnectionControlFixture: Decodable {
 
   let control = try GhostteaTerminalStateCodec.decode(
     payload("controlChanged"), codec: .compactJSONV1)
-  #expect(control == .controlChanged(
-    controllerViewID: "view",
-    controlEpoch: 9,
-    cols: 2,
-    rows: 1,
-    layoutEpoch: 3
-  ))
+  #expect(
+    control
+      == .controlChanged(
+        controllerViewID: "view",
+        controlEpoch: 9,
+        cols: 2,
+        rows: 1,
+        layoutEpoch: 3
+      ))
 }
 
 @Test func compactStateDecoderRejectsExtensionsFlagsAndMalformedColors() {
@@ -233,6 +257,48 @@ private struct ConnectionControlFixture: Decodable {
     codec: .compactJSONV1
   )
   #expect(compactActivity == activityMessage)
+
+  let configuration = GhostteaTerminalStateMessage.configurationChanged(presentation())
+  let configurationObject = try #require(
+    JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as? [String: Any]
+  )
+  #expect(configurationObject["type"] as? String == "configuration-changed")
+  #expect(
+    (configurationObject["presentation"] as? [String: Any])?["revision"] as? String
+      == "presentation-1")
+  #expect(
+    try GhostteaTerminalStateCodec.decode(
+      JSONEncoder().encode(["g": presentation()]),
+      codec: .compactJSONV1
+    ) == configuration
+  )
+}
+
+@Test func presentationDecoderRejectsInvalidRemotePresentation() throws {
+  let invalid = """
+    {
+      "type": "configuration-changed",
+      "presentation": {
+        "schemaVersion": 1,
+        "revision": "",
+        "foreground": [1, 2, 3],
+        "background": [4, 5, 6],
+        "cursor": [7, 8, 9],
+        "selectionBackground": [10, 11, 12],
+        "selectionForeground": [13, 14, 15],
+        "fontSize": 17,
+        "fontFamilies": [],
+        "paddingX": [2, 2],
+        "paddingY": [2, 2],
+        "postProcess": "none",
+        "customShaderCount": 0
+      }
+    }
+    """
+  #expect(throws: GhostteaTruffleError.self) {
+    try GhostteaTerminalStateCodec.decode(Data(invalid.utf8), codec: .json)
+  }
+  #expect(!presentation(fontSize: -1).isValid)
 }
 
 @Test func streamPrefaceMatchesTSP1HeaderAndDesktopMetadata() throws {
@@ -246,7 +312,7 @@ private struct ConnectionControlFixture: Decodable {
 
   #expect(Data(data.prefix(4)) == Data("TSP1".utf8))
   #expect(data[4] == 0 && data[5] == 1)
-  #expect(data[6] == 0 && data[7] == 4)
+  #expect(data[6] == 0 && data[7] == 5)
   #expect(data[8] == 2)
   #expect(data[9] == 0 && data[10] == 0 && data[11] == 0)
 
@@ -287,7 +353,7 @@ private struct ConnectionControlFixture: Decodable {
       GhostteaTerminalProtocolCodec.encodeFrame(
         GhostteaConnectionMessage.serverHello(
           protocolMajor: 1,
-          protocolMinor: 3,
+          protocolMinor: 5,
           hostInstanceID: "desktop-instance",
           nonce: nonce,
           stateCodec: .compactJSONV1
@@ -481,7 +547,8 @@ private struct ConnectionControlFixture: Decodable {
           attachmentEpoch: 11,
           cols: 100,
           rows: 30,
-          readWrite: true
+          readWrite: true,
+          presentation: nil
         )
       )
     )
@@ -606,7 +673,7 @@ private struct ConnectionControlFixture: Decodable {
           rows: 40,
           layoutEpoch: 4
         )
-    )
+      )
   )
   let runtime = try GhostteaRuntime()
   let pump = try GhostteaTruffleReplicaPump(
@@ -671,9 +738,19 @@ private struct ConnectionControlFixture: Decodable {
           attachmentEpoch: 11,
           cols: 100,
           rows: 30,
-          readWrite: true
+          readWrite: true,
+          presentation: presentation(revision: "initial", fontSize: 13)
         )
       )
+    )
+    try await writeCompactJSON(
+      String(
+        decoding: try JSONEncoder().encode([
+          "g": presentation(revision: "live", fontSize: 19)
+        ]),
+        as: UTF8.self),
+      channel: .state,
+      to: serverConnection
     )
     try await writeCompactJSON(
       #"{"c":["desktop-view",12,120,40,4]}"#,
@@ -694,18 +771,33 @@ private struct ConnectionControlFixture: Decodable {
     requestID: "compact-request"
   )
   #expect(await attachment.stateCodec == .compactJSONV1)
-  #expect(
-    try await attachment.nextEvent()
-      == .state(
-        .controlChanged(
-          controllerViewID: "desktop-view",
-          controlEpoch: 12,
-          cols: 120,
-          rows: 40,
-          layoutEpoch: 4
-        )
-      )
+  let initial = presentation(revision: "initial", fontSize: 13)
+  let live = presentation(revision: "live", fontSize: 19)
+  #expect(await attachment.info.presentation == initial)
+  let pump = try GhostteaTruffleReplicaPump(
+    attachment: attachment,
+    runtime: GhostteaRuntime(presentation: initial),
+    sessionHandle: 92,
+    presentation: initial
   )
+  let previousReplica = await pump.replica
+  if case .configurationChanged(let received) = try await pump.next() {
+    #expect(received == live)
+  } else {
+    Issue.record("expected live presentation update")
+  }
+  let currentReplica = await pump.replica
+  #expect(currentReplica !== previousReplica)
+  switch try await pump.next() {
+  case .controlChanged(let viewID, let epoch, let cols, let rows, let layout):
+    #expect(viewID == "desktop-view")
+    #expect(epoch == 12)
+    #expect(cols == 120)
+    #expect(rows == 40)
+    #expect(layout == 4)
+  default:
+    Issue.record("expected compact control update")
+  }
   await attachment.detach()
   try await server.value
 }

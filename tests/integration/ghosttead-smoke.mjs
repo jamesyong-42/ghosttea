@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { GhostteaAutomationClient } from "@vibecook/ghosttea-client";
+import { GhostteaAutomationClient, GhostteaConfigDocumentConflictError } from "@vibecook/ghosttea-client";
 import { localEndpoints } from "../../bench/lib/ipc-endpoints.mjs";
 
 if (process.platform === "win32") {
@@ -224,10 +224,43 @@ try {
   ) {
     throw new Error(`shared configuration was not projected: ${JSON.stringify(initialConfig)}`);
   }
+  const initialDocument = await automationClient.getConfigDocument();
+  if (!initialDocument.exists || !initialDocument.contents.includes("custom-shader = ghosttea:better-crt")) {
+    throw new Error(`raw configuration document was not preserved: ${JSON.stringify(initialDocument)}`);
+  }
+  const replacementContents = [
+    "# This comment and the CRLF line endings must survive exactly.",
+    "future-ghostty-option = preserved",
+    "scrollback-limit = 654321",
+    "",
+  ].join("\r\n");
+  const validation = await automationClient.validateConfigDocument(replacementContents);
+  if (
+    validation.config.terminal.scrollbackBytes !== 654_321 ||
+    !validation.config.diagnostics.some((diagnostic) => diagnostic.code === "unknown-key") ||
+    validation.documentRevision === initialDocument.revision
+  ) {
+    throw new Error(`configuration candidate was not validated: ${JSON.stringify(validation)}`);
+  }
+
+  const externalContents = "# changed outside the API\nscrollback-limit = 222222\n";
+  writeFileSync(configPath, externalContents, "utf8");
+  let conflictDocument;
+  try {
+    await automationClient.replaceConfigDocument(initialDocument.revision, "scrollback-limit = 999999\n");
+    throw new Error("stale configuration replacement unexpectedly succeeded");
+  } catch (error) {
+    if (!(error instanceof GhostteaConfigDocumentConflictError)) throw error;
+    conflictDocument = error.document;
+  }
+  if (conflictDocument.contents !== externalContents) {
+    throw new Error(`configuration conflict did not return current contents: ${JSON.stringify(conflictDocument)}`);
+  }
+
   const configChanged = new Promise((resolveChanged) => {
     automationClient.once("config-changed", resolveChanged);
   });
-  writeFileSync(configPath, "scrollback-limit = 654321\n", "utf8");
+  const update = await automationClient.replaceConfigDocument(conflictDocument.revision, replacementContents);
   const reloadedConfig = await automationClient.reloadConfig();
   const pushedConfig = await withTimeout(configChanged, "config-changed event");
   if (
@@ -236,9 +269,18 @@ try {
     reloadedConfig.renderer.postProcess !== "none" ||
     reloadedConfig.workspace.clearKeybindings ||
     reloadedConfig.workspace.keybindings.length !== 0 ||
-    pushedConfig.config.revision !== reloadedConfig.revision
+    pushedConfig.config.revision !== reloadedConfig.revision ||
+    update.config.revision !== reloadedConfig.revision ||
+    update.document.contents !== replacementContents ||
+    (await automationClient.getConfigDocument()).contents !== replacementContents
   ) {
-    throw new Error(`shared configuration did not reload: ${JSON.stringify({ reloadedConfig, pushedConfig })}`);
+    throw new Error(
+      `shared configuration document did not replace and reload: ${JSON.stringify({
+        reloadedConfig,
+        pushedConfig,
+        update,
+      })}`,
+    );
   }
   const automatedSession = await automationClient.createSession({
     executable: "/bin/sh",

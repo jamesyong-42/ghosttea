@@ -7,7 +7,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::{
-    FrameHub,
+    FrameHub, TerminalPresentationConfig,
     service::Registry,
     session::{SessionActivity, SessionSummary},
     tunnel_protocol::{SharedSessionSummary, TunnelInput},
@@ -123,7 +123,11 @@ pub trait RemoteTerminalRuntime: Send + Sync {
 #[async_trait]
 pub trait TerminalMesh: Send {
     fn runtime(&self) -> Arc<dyn RemoteTerminalRuntime>;
-    async fn serve(self: Box<Self>, registry: Registry) -> Result<()>;
+    async fn serve(
+        self: Box<Self>,
+        registry: Registry,
+        host_config: tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>,
+    ) -> Result<()>;
 }
 
 #[derive(Default)]

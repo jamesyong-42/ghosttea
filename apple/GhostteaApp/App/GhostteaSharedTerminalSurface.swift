@@ -1,9 +1,11 @@
+import GhostteaCore
 import GhostteaTerminal
 import SwiftUI
 
 struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   let frame: Data
   let visible: Bool
+  let configuration: GhostteaTerminalPresentationConfig
   var controlsGridSize = true
   var accessibilityTitle = "Shared terminal"
   var accessibilityConnectionState = "Connected through Truffle"
@@ -18,6 +20,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
 
   final class Coordinator {
     var appliedFrame: Data?
+    var appliedConfigurationRevision: String?
   }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -26,6 +29,8 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
     do {
       let view = try GhostteaTerminalMetalView(terminalFrame: .zero)
       configure(view)
+      view.applyConfiguration(configuration)
+      context.coordinator.appliedConfigurationRevision = configuration.revision
       return view
     } catch {
       preconditionFailure("Metal terminal unavailable")
@@ -35,6 +40,10 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   func updateUIView(_ view: GhostteaTerminalMetalView, context: Context) {
     configure(view)
     view.setTerminalVisible(visible)
+    if context.coordinator.appliedConfigurationRevision != configuration.revision {
+      view.applyConfiguration(configuration)
+      context.coordinator.appliedConfigurationRevision = configuration.revision
+    }
     guard context.coordinator.appliedFrame != frame else { return }
     do {
       try view.apply(frame: frame)
@@ -61,5 +70,24 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
     view.onSelectAll = onSelectAll
     view.accessibilityTerminalTitle = accessibilityTitle
     view.accessibilityConnectionState = accessibilityConnectionState
+  }
+}
+
+extension GhostteaTerminalPresentationConfig {
+  var terminalBackgroundColor: Color {
+    color(background, fallback: [0x28, 0x2c, 0x34])
+  }
+
+  var terminalForegroundColor: Color {
+    color(foreground, fallback: [0xff, 0xff, 0xff])
+  }
+
+  private func color(_ components: [UInt8], fallback: [UInt8]) -> Color {
+    let resolved = components.count == 3 ? components : fallback
+    return Color(
+      red: Double(resolved[0]) / 255,
+      green: Double(resolved[1]) / 255,
+      blue: Double(resolved[2]) / 255
+    )
   }
 }

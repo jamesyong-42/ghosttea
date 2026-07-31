@@ -91,6 +91,8 @@
       let scale: CGFloat
       let contentInsets: GhostteaTerminalContentInsets
       let gridSize: GhostteaTerminalGridSize
+      let cellWidth: Float
+      let lineHeight: Float
     }
 
     private struct PressedHardwareKey {
@@ -172,6 +174,7 @@
         geometryDidChange()
       }
     }
+    public private(set) var terminalTextMetrics = GhostteaTextMetrics()
     public private(set) var configurationWarnings: [String] = []
     public private(set) var diagnostics = GhostteaTerminalMetalDiagnostics()
     public private(set) var currentGridSize: GhostteaTerminalGridSize?
@@ -203,6 +206,12 @@
     private var pointerInteraction = PointerInteraction.none
     private var absoluteSelection: GhostteaTerminalSelection?
     private var wheelAccumulator = GhostteaWheelAccumulator()
+    private var terminalCellWidth: CGFloat {
+      CGFloat(terminalTextMetrics.cellWidthPixels)
+    }
+    private var terminalLineHeight: CGFloat {
+      CGFloat(terminalTextMetrics.lineHeightPixels)
+    }
     private var previousScrollTranslation: CGFloat = 0
     private var selectionAutoScrollDirection = 0
     private var selectionAutoScrollColumn: UInt16 = 0
@@ -382,11 +391,11 @@
       let maximumRow = max(0, Int(currentGridSize?.rows ?? UInt16(retainedState.rows.count)) - 1)
       let column = max(
         0,
-        min(maximumColumn, Int(floor(x / CGFloat(GhostteaTerminalLayout.cellWidth))))
+        min(maximumColumn, Int(floor(x / terminalCellWidth)))
       )
       let row = max(
         0,
-        min(maximumRow, Int(floor(y / CGFloat(GhostteaTerminalLayout.lineHeight))))
+        min(maximumRow, Int(floor(y / terminalLineHeight)))
       )
       return GhostteaViewportCellPoint(column: UInt16(column), row: UInt16(row))
     }
@@ -406,8 +415,8 @@
         y: Float(max(0, min(bounds.height, location.y))),
         screenWidth: Self.boundedGeometry(bounds.width),
         screenHeight: Self.boundedGeometry(bounds.height),
-        cellWidth: Self.boundedGeometry(CGFloat(GhostteaTerminalLayout.cellWidth)),
-        cellHeight: Self.boundedGeometry(CGFloat(GhostteaTerminalLayout.lineHeight)),
+        cellWidth: Self.boundedGeometry(terminalCellWidth),
+        cellHeight: Self.boundedGeometry(terminalLineHeight),
         paddingLeft: Self.boundedGeometry(
           CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding)),
         paddingTop: Self.boundedGeometry(
@@ -657,13 +666,13 @@
         element.accessibilityFrameInContainerSpace = CGRect(
           x: CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding),
           y: CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding)
-            + CGFloat(row.viewportRow) * CGFloat(GhostteaTerminalLayout.lineHeight),
+            + CGFloat(row.viewportRow) * terminalLineHeight,
           width: max(
             0,
             bounds.width
               - CGFloat(insets.left + insets.right + 2 * GhostteaTerminalLayout.horizontalPadding)
           ),
-          height: CGFloat(GhostteaTerminalLayout.lineHeight)
+          height: terminalLineHeight
         )
         element.accessibilityCustomActions = rowActions
         return element
@@ -919,7 +928,7 @@
       previousScrollTranslation = translation
       let rows = wheelAccumulator.consume(
         deltaPoints: Double(delta),
-        lineHeight: Double(GhostteaTerminalLayout.lineHeight)
+        lineHeight: Double(terminalLineHeight)
       )
       guard rows != 0 else { return }
       let modifiers = currentPointerModifiers
@@ -1095,10 +1104,32 @@
     }
 
     /// Applies the renderer-owned portion of the shared Ghostty configuration.
-    /// Font metrics belong to `GhostteaRuntime` and must be chosen before
-    /// terminal creation; unsupported post-process shaders are surfaced rather
-    /// than silently approximated on Metal.
+    /// The runtime must be built from the same snapshot before terminal
+    /// creation so shaping and this view's interactive geometry stay aligned.
+    /// Unsupported post-process shaders are surfaced rather than silently
+    /// approximated on Metal.
     public func applyConfiguration(_ config: GhostteaConfigSnapshot) {
+      applyConfiguration(config.terminalPresentation)
+    }
+
+    public func applyConfiguration(_ config: GhostteaTerminalPresentationConfig) {
+      guard config.isValid else {
+        configurationWarnings = ["remote terminal presentation configuration is invalid"]
+        return
+      }
+      let nextMetrics = GhostteaTextMetrics(presentation: config)
+      let metricsChanged =
+        nextMetrics.cellWidthPixels != terminalTextMetrics.cellWidthPixels
+        || nextMetrics.lineHeightPixels != terminalTextMetrics.lineHeightPixels
+      terminalTextMetrics = nextMetrics
+      if metricsChanged {
+        evictRendererResources()
+        effectiveGeometry = nil
+      }
+      markedTextLabel.font = .monospacedSystemFont(
+        ofSize: CGFloat(terminalTextMetrics.fontSizePixels),
+        weight: .regular
+      )
       let color = { (components: [UInt8]) -> GhostteaMetalColor? in
         guard components.count == 3 else { return nil }
         return GhostteaMetalColor(
@@ -1108,11 +1139,11 @@
           alpha: 1
         )
       }
-      if let background = color(config.renderer.background),
-        let foreground = color(config.renderer.foreground),
-        let cursor = color(config.renderer.cursor),
-        let selection = color(config.renderer.selectionBackground),
-        let selectionForeground = color(config.renderer.selectionForeground)
+      if let background = color(config.background),
+        let foreground = color(config.foreground),
+        let cursor = color(config.cursor),
+        let selection = color(config.selectionBackground),
+        let selectionForeground = color(config.selectionForeground)
       {
         terminalTheme = GhostteaMetalTheme(
           background: background,
@@ -1133,24 +1164,35 @@
           blue: CGFloat(background.blue),
           alpha: CGFloat(background.alpha)
         )
+        markedTextLabel.textColor = UIColor(
+          red: CGFloat(foreground.red),
+          green: CGFloat(foreground.green),
+          blue: CGFloat(foreground.blue),
+          alpha: CGFloat(foreground.alpha)
+        )
       }
-      if config.renderer.paddingX.count == 2, config.renderer.paddingY.count == 2 {
+      if config.paddingX.count == 2, config.paddingY.count == 2 {
         terminalContentInsets = UIEdgeInsets(
-          top: CGFloat(config.renderer.paddingY[0]),
-          left: CGFloat(config.renderer.paddingX[0]),
-          bottom: CGFloat(config.renderer.paddingY[1]),
-          right: CGFloat(config.renderer.paddingX[1])
+          top: CGFloat(config.paddingY[0]),
+          left: CGFloat(config.paddingX[0]),
+          bottom: CGFloat(config.paddingY[1]),
+          right: CGFloat(config.paddingX[1])
         )
       }
       configurationWarnings = []
-      if config.renderer.postProcess != .none {
+      if config.postProcess != .none {
         configurationWarnings.append(
           "custom-shader post-processing is not available in the Swift Metal renderer")
       }
-      if config.renderer.fontSize != 13 || !config.renderer.fontFamilies.isEmpty {
+      if config.customShaderCount > 0 {
         configurationWarnings.append(
-          "font-family and font-size must be applied when constructing GhostteaRuntime")
+          "host-local custom-shader paths are not available in the Swift Metal renderer")
       }
+      if !config.fontFamilies.isEmpty {
+        configurationWarnings.append(
+          "font-family is not available in the bundled-font Apple runtime")
+      }
+      geometryDidChange()
       requestEventDrivenDraw(damage: .full)
     }
 
@@ -1243,6 +1285,8 @@
       if let terminalRenderer { return terminalRenderer }
       let renderer = try GhostteaMetalRenderer(
         runtime: metalRuntime,
+        cellWidth: terminalTextMetrics.cellWidthPixels,
+        lineHeight: terminalTextMetrics.lineHeightPixels,
         encodedGeometryReuseEnabled: encodedGeometryReuseEnabled,
         instancedSubmissionEnabled: instancedSubmissionEnabled,
         rowGeometryReuseEnabled: rowGeometryReuseEnabled,
@@ -1272,7 +1316,9 @@
       let grid = GhostteaTerminalLayout.gridSize(
         width: Float(bounds.width),
         height: Float(bounds.height),
-        contentInsets: effectiveContentInsets()
+        contentInsets: effectiveContentInsets(),
+        cellWidth: terminalTextMetrics.cellWidthPixels,
+        lineHeight: terminalTextMetrics.lineHeightPixels
       )
       let next = EffectiveGeometry(
         drawableSize: CGSize(
@@ -1281,7 +1327,9 @@
         ),
         scale: contentScaleFactor,
         contentInsets: effectiveContentInsets(),
-        gridSize: grid
+        gridSize: grid,
+        cellWidth: terminalTextMetrics.cellWidthPixels,
+        lineHeight: terminalTextMetrics.lineHeightPixels
       )
       guard next != effectiveGeometry else { return }
       effectiveGeometry = next
@@ -1299,7 +1347,9 @@
       let next = GhostteaTerminalLayout.gridSize(
         width: Float(bounds.width),
         height: Float(bounds.height),
-        contentInsets: effectiveContentInsets()
+        contentInsets: effectiveContentInsets(),
+        cellWidth: terminalTextMetrics.cellWidthPixels,
+        lineHeight: terminalTextMetrics.lineHeightPixels
       )
       guard next != currentGridSize else {
         if notifyUnchanged { onGridSizeChange?(next) }
@@ -1672,16 +1722,16 @@
       markedTextLabel.isHidden = false
       let origin = terminalInputCaretRect().origin
       let availableWidth = max(
-        CGFloat(GhostteaTerminalLayout.cellWidth),
+        terminalCellWidth,
         bounds.width - origin.x - CGFloat(effectiveContentInsets().right)
       )
       let measured = markedTextLabel.sizeThatFits(
-        CGSize(width: availableWidth, height: CGFloat(GhostteaTerminalLayout.lineHeight)))
+        CGSize(width: availableWidth, height: terminalLineHeight))
       markedTextLabel.frame = CGRect(
         x: origin.x,
         y: origin.y,
-        width: min(availableWidth, max(CGFloat(GhostteaTerminalLayout.cellWidth), measured.width)),
-        height: CGFloat(GhostteaTerminalLayout.lineHeight)
+        width: min(availableWidth, max(terminalCellWidth, measured.width)),
+        height: terminalLineHeight
       )
     }
 
@@ -1690,10 +1740,10 @@
       let cursor = retainedState.cursor
       var x =
         CGFloat(insets.left + GhostteaTerminalLayout.horizontalPadding)
-        + CGFloat(cursor?.x ?? 0) * CGFloat(GhostteaTerminalLayout.cellWidth)
+        + CGFloat(cursor?.x ?? 0) * terminalCellWidth
       let y =
         CGFloat(insets.top + GhostteaTerminalLayout.verticalPadding)
-        + CGFloat(cursor?.y ?? 0) * CGFloat(GhostteaTerminalLayout.lineHeight)
+        + CGFloat(cursor?.y ?? 0) * terminalLineHeight
       if let textOffset, textOffset > 0, !compositionBuffer.text.isEmpty {
         let prefix = compositionBuffer.text(
           in: NSRange(location: 0, length: clampTextOffset(textOffset)))
@@ -1702,8 +1752,8 @@
       return CGRect(
         x: x,
         y: y,
-        width: max(1, CGFloat(GhostteaTerminalLayout.cellWidth)),
-        height: CGFloat(GhostteaTerminalLayout.lineHeight)
+        width: max(1, terminalCellWidth),
+        height: terminalLineHeight
       )
     }
   }

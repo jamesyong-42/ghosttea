@@ -1,6 +1,7 @@
 import type { Socket } from "node:net";
 import { connectSocket, packet } from "./bridge-socket.js";
 import { FrameFlowControl, requestedFrameBridgeCapabilities } from "./frame-flow.js";
+import { rendererCommandRejection } from "./renderer-control.js";
 import { isMainToBridgeMessage } from "./types.js";
 
 const parentPort = process.parentPort;
@@ -98,6 +99,11 @@ async function attachRenderer(rawData: unknown, ports: Electron.MessagePortMain[
 
   controlPort.on("message", ({ data: command }) => {
     try {
+      const rejection = rendererCommandRejection(command);
+      if (rejection) {
+        controlPort.postMessage(rejection);
+        return;
+      }
       const encoded = Buffer.from(JSON.stringify(command));
       if (encoded.byteLength > MAX_CONTROL_BYTES) throw new Error("control packet exceeds quota");
       controlSocket.write(packet(encoded));

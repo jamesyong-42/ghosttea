@@ -7,6 +7,13 @@ external mode when the Electron application already owns a Rust composition
 service and only wants Ghosttea to attach its authenticated control and frame
 channels.
 
+Managed main processes may use the automation client's protocol 1.11
+configuration document methods. Keep those exact-source read/write operations
+out of preload APIs; the utility bridge enforces a reviewed command allowlist
+and rejects raw document operations from renderers. Ghosttea's desktop host
+exposes only open/reload intents and refuses them entirely for externally
+managed daemons.
+
 Frame payloads travel directly from the utility process to renderer
 MessagePorts. They are not routed through Electron main.
 

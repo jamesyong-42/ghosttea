@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const runbookPath = "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md";
 const lock = readJSON("native/ghostty.lock.json");
+const configLock = readJSON("native/ghostty-config.lock.json");
 const fonts = readJSON("native/fonts.lock.json");
 const artifacts = readJSON("native/ghosttea/crates/ghosttea-vt-sys/artifacts.json");
 const packageManifest = readJSON("package.json");
@@ -13,6 +15,7 @@ const workflow = read(".github/workflows/ghostty-vt-artifact.yml");
 const runbook = read(runbookPath);
 const configCompatibilitySource = read("native/ghosttea/crates/ghosttea-config/src/lib.rs");
 const configKnownKeys = read("native/ghosttea/crates/ghosttea-config/src/known-keys.txt").trim().split("\n").sort();
+const configX11Colors = read("native/ghosttea/crates/ghosttea-config/src/x11-rgb.txt");
 const groundTruthConfig = read("bench/ghostty-ux/ground-truth/config-macos-default.txt");
 const groundTruthVersion = read("bench/ghostty-ux/ground-truth/ghostty-version.txt");
 const groundTruthCommit = read("bench/ghostty-ux/ground-truth/vendor-commit.txt").split("\n", 1)[0];
@@ -27,23 +30,70 @@ const expectedRelease = `ghostty-vt-${revision}`;
 const expectedFilename = `${expectedRelease}-${target}.tar`;
 const artifact = artifacts.targets?.[target];
 
-if (!configCompatibilitySource.includes(`GHOSTTY_COMPAT_COMMIT: &str = "${commit}"`)) {
-  throw new Error("ghosttea-config compatibility commit does not match native/ghostty.lock.json.");
+const configCommit = configLock.ghostty?.commit;
+if (!/^[0-9a-f]{40}$/.test(configCommit ?? "")) {
+  throw new Error("native/ghostty-config.lock.json must pin a full lowercase 40-character commit.");
 }
 requireEqual(groundTruthCommit, commit, "Ghostty UX ground-truth commit");
 const version = groundTruthVersion.match(/^\s*-\s+version:\s+(\S+)\s*$/m)?.[1];
-if (!version || !configCompatibilitySource.includes(`GHOSTTY_COMPAT_VERSION: &str = "${version}"`)) {
-  throw new Error("ghosttea-config compatibility version does not match the Ghostty UX ground truth.");
+if (!version) throw new Error("Ghostty UX ground truth does not report a version.");
+requireEqual(version, configLock.ghostty?.version, "Ghostty config ground-truth version");
+requireEqual(configLock.ghostty?.tag, `v${version}`, "Ghostty config release tag");
+if (
+  !configCompatibilitySource.includes(`GHOSTTY_CONFIG_COMPAT_COMMIT: &str = "${configCommit}"`) ||
+  !configCompatibilitySource.includes(`GHOSTTY_CONFIG_COMPAT_VERSION: &str = "${configLock.ghostty?.version}"`)
+) {
+  throw new Error("ghosttea-config compatibility constants do not match native/ghostty-config.lock.json.");
 }
-const groundTruthKeys = [
-  ...new Set(
-    groundTruthConfig
-      .split("\n")
-      .filter((line) => /^[a-z0-9-]+ = /.test(line))
-      .map((line) => line.slice(0, line.indexOf(" = "))),
-  ),
-].sort();
-requireEqual(configKnownKeys, groundTruthKeys, "ghosttea-config known-key schema");
+requireEqual(configKnownKeys.length, configLock.generated?.knownKeys?.count, "ghosttea-config known-key count");
+requireEqual(
+  sha256(`${configKnownKeys.join("\n")}\n`),
+  configLock.generated?.knownKeys?.sha256,
+  "ghosttea-config known-key schema digest",
+);
+requireEqual(sha256(configX11Colors), configLock.generated?.x11Colors?.sha256, "ghosttea-config X11 color digest");
+requireEqual(
+  configLock.sources?.x11Colors?.sha256,
+  configLock.generated?.x11Colors?.sha256,
+  "Ghostty source/generated X11 digest",
+);
+for (const [name, source] of Object.entries(configLock.sources ?? {})) {
+  if (!source?.path || !/^[0-9a-f]{64}$/.test(source.sha256 ?? "")) {
+    throw new Error(`Ghostty config source ${name} must have a path and SHA-256 digest.`);
+  }
+}
+
+const groundTruthValue = (key) => groundTruthConfig.match(new RegExp(`^${key} = (.*)$`, "m"))?.[1]?.trim();
+requireEqual(
+  Number(groundTruthValue("scrollback-limit")),
+  configLock.defaults?.scrollbackBytes,
+  "Ghostty config scrollback default",
+);
+requireEqual(
+  Number(groundTruthValue("font-size")),
+  configLock.defaults?.fontSize?.macos,
+  "Ghostty config macOS font-size default",
+);
+requireEqual(
+  parseHexColor(groundTruthValue("foreground")),
+  configLock.defaults?.foreground,
+  "Ghostty config foreground default",
+);
+requireEqual(
+  parseHexColor(groundTruthValue("background")),
+  configLock.defaults?.background,
+  "Ghostty config background default",
+);
+requireEqual(
+  [Number(groundTruthValue("window-padding-x")), Number(groundTruthValue("window-padding-x"))],
+  configLock.defaults?.paddingX,
+  "Ghostty config horizontal padding default",
+);
+requireEqual(
+  [Number(groundTruthValue("window-padding-y")), Number(groundTruthValue("window-padding-y"))],
+  configLock.defaults?.paddingY,
+  "Ghostty config vertical padding default",
+);
 
 requireEqual(artifacts.source, lock.ghostty, "native artifact source pin");
 requireEqual(fonts.source, lock.ghostty, "font source pin");
@@ -80,6 +130,7 @@ const requiredScripts = [
   "check:ghostty-vt:apple",
   "test:ghostty-vt:apple",
   "sync:fonts",
+  "sync:ghostty-config",
   "check:font-parity",
   "package:ghostty-vt",
   "check:ios-release-bom",
@@ -94,9 +145,13 @@ for (const name of requiredScripts) {
 
 const requiredInputs = [
   "native/ghostty.lock.json",
+  "native/ghostty-config.lock.json",
   "native/fonts.lock.json",
   "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json",
   "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.c",
+  "native/ghosttea/crates/ghosttea-config/src/known-keys.txt",
+  "native/ghosttea/crates/ghosttea-config/src/x11-rgb.txt",
+  "scripts/sync-ghostty-config-schema.mjs",
   "native/ghosttea/fixtures/phase1/ansi-baseline.json",
   "native/ghosttea/fixtures/phase2/font-parity.json",
   "apple/GhostteaKit/Sources/GhostteaTerminal/Resources/terminal-visual-golden.json",
@@ -174,7 +229,7 @@ for (const [path, requiredText] of [
 }
 
 console.log(
-  `Verified Ghostty upgrade procedure for ${commit}: exact source/font/BOM locks, ${requiredInputs.length} inputs, and dynamic artifact attestation.`,
+  `Verified Ghostty VT ${commit} and config ${configLock.ghostty.version} ${configCommit}: exact source/font/BOM locks, ${requiredInputs.length} inputs, and dynamic artifact attestation.`,
 );
 
 function read(path) {
@@ -183,6 +238,17 @@ function read(path) {
 
 function readJSON(path) {
   return JSON.parse(read(path));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function parseHexColor(value) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(value ?? "")) {
+    throw new Error(`Expected a six-digit Ghostty color, got ${JSON.stringify(value)}.`);
+  }
+  return [1, 3, 5].map((index) => Number.parseInt(value.slice(index, index + 2), 16));
 }
 
 function requireEqual(actual, expected, description) {

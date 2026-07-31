@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
   GhostteaElectronBackend,
+  GhostteaConfigDocumentConflictError,
   installGhostteaClipboardHost,
   installGhostteaEditShortcuts,
   type GhostteaElectronBackendOptions,
@@ -30,6 +31,13 @@ if (profile.name !== "default") {
   process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
 }
 const terminalConfigPath = join(app.getPath("userData"), "config.ghostty");
+const DEFAULT_TERMINAL_CONFIG = [
+  "# Ghosttea application overrides (Ghostty-compatible syntax).",
+  "# Your existing Ghostty config files are imported before this file.",
+  "# Enable Ghosttea's bundled CRT approximation with:",
+  "# custom-shader = ghosttea:better-crt",
+  "",
+].join("\n");
 
 // Electron keys this lock from the configured user-data directory. Different
 // profiles coexist; launching the same profile again activates its window.
@@ -74,30 +82,19 @@ ipcMain.on("terminal-close-all-windows", () => {
   for (const window of BrowserWindow.getAllWindows()) window.close();
 });
 
-ipcMain.on("terminal-open-config", () => {
-  if (!existsSync(terminalConfigPath)) {
-    mkdirSync(app.getPath("userData"), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      terminalConfigPath,
-      [
-        "# Ghosttea application overrides (Ghostty-compatible syntax).",
-        "# Your existing Ghostty config files are imported before this file.",
-        "# Enable Ghosttea's bundled CRT approximation with:",
-        "# custom-shader = ghosttea:better-crt",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o600 },
-    );
+ipcMain.on("terminal-open-config", (event) => {
+  if (externalBackendConfigured()) {
+    void showExternalConfigOwnershipMessage(event.sender, "open");
+    return;
   }
-  void shell
-    .openPath(terminalConfigPath)
-    .then((message) => {
-      if (message) console.error("failed to open terminal config", message);
-    })
-    .catch((error) => console.error("failed to open terminal config", error));
+  void openManagedTerminalConfig().catch((error) => console.error("failed to open terminal config", error));
 });
 
-ipcMain.on("terminal-reload-config", () => {
+ipcMain.on("terminal-reload-config", (event) => {
+  if (externalBackendConfigured()) {
+    void showExternalConfigOwnershipMessage(event.sender, "reload");
+    return;
+  }
   void ensureBackend()
     .then(() => backend!.automation.reloadConfig())
     .catch((error) => console.error("failed to reload terminal config", error));
@@ -161,6 +158,49 @@ const QUIT_CLEANUP_TIMEOUT_MS = 5_000;
 const closingSessionOwners = new Set<Promise<void>>();
 let recoveringBackend: Promise<void> | undefined;
 let lastFocusedWindow: BrowserWindow | undefined;
+
+function externalBackendConfigured(): boolean {
+  return Boolean(
+    process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET &&
+    process.env.GHOSTTEA_EXTERNAL_FRAME_SOCKET &&
+    process.env.GHOSTTEA_EXTERNAL_AUTH_TOKEN,
+  );
+}
+
+async function showExternalConfigOwnershipMessage(
+  sender: Electron.WebContents,
+  action: "open" | "reload",
+): Promise<void> {
+  const owner = BrowserWindow.fromWebContents(sender);
+  const options = {
+    type: "info" as const,
+    title: "Configuration managed externally",
+    message: `Ghosttea cannot ${action} this configuration`,
+    detail:
+      "This window is connected to an externally managed daemon. Open or reload the configuration from the process that started that daemon.",
+    buttons: ["OK"],
+  };
+  if (owner) await dialog.showMessageBox(owner, options);
+  else await dialog.showMessageBox(options);
+}
+
+async function openManagedTerminalConfig(): Promise<void> {
+  await ensureBackend();
+  let document = await backend!.automation.getConfigDocument();
+  if (!document.exists) {
+    try {
+      document = (await backend!.automation.replaceConfigDocument(document.revision, DEFAULT_TERMINAL_CONFIG)).document;
+    } catch (error) {
+      if (!(error instanceof GhostteaConfigDocumentConflictError) || !error.document.exists) throw error;
+      document = error.document;
+    }
+  }
+  if (resolve(document.path) !== resolve(terminalConfigPath)) {
+    throw new Error("ghosttead returned a configuration path outside this Electron profile");
+  }
+  const message = await shell.openPath(document.path);
+  if (message) throw new Error(message);
+}
 
 function backendOptions(): GhostteaElectronBackendOptions {
   const externalControl = process.env.GHOSTTEA_EXTERNAL_CONTROL_SOCKET;

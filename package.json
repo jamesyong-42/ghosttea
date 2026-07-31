@@ -89,6 +89,7 @@
     "normalize:ghostty-vt": "node scripts/normalize-ghostty-vt.mjs",
     "fetch:ghostty-vt": "node scripts/fetch-ghostty-vt-artifact.mjs",
     "sync:fonts": "node scripts/sync-ghosttea-fonts.mjs",
+    "sync:ghostty-config": "node scripts/sync-ghostty-config-schema.mjs",
     "package:ghostty-vt": "node scripts/package-ghostty-vt.mjs",
     "package:ghosttea-apple-native": "node scripts/package-ghosttea-apple-native.mjs",
     "verify:ghosttea-apple-native-package": "node scripts/verify-ghosttea-apple-native-package.mjs",

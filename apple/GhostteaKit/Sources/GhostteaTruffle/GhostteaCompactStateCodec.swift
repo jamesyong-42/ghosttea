@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCore
 
 public enum GhostteaTerminalStateCodec {
   public static func decode(
@@ -100,6 +101,11 @@ private struct CompactStateMessage: Decodable {
       try requireEnd(tuple)
     case "a":
       message = try .activityChanged(values.decode(GhostteaSessionActivity.self, forKey: key))
+    case "g":
+      let presentation = try values.decode(
+        GhostteaTerminalPresentationConfig.self, forKey: key)
+      guard presentation.isValid else { throw GhostteaTruffleError.malformedMessage }
+      message = .configurationChanged(presentation)
     default:
       throw GhostteaTruffleError.malformedMessage
     }

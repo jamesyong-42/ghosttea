@@ -1,7 +1,7 @@
-import type { ClientCommand, ServerEvent } from "@vibecook/ghosttea-protocol";
+import type { RendererClientCommand, ServerEvent } from "@vibecook/ghosttea-protocol";
 import { isServerEvent } from "@vibecook/ghosttea-protocol";
 
-type CommandPayload = ClientCommand extends infer Command
+type CommandPayload = RendererClientCommand extends infer Command
   ? Command extends { requestId: number }
     ? Omit<Command, "requestId">
     : never
@@ -27,7 +27,7 @@ export class ControlClient extends EventTarget {
 
   request(command: CommandPayload, timeoutMs = 10_000): Promise<ServerEvent> {
     const requestId = this.#nextRequestId++;
-    const envelope = { ...command, requestId } as ClientCommand;
+    const envelope = { ...command, requestId } as RendererClientCommand;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(requestId);

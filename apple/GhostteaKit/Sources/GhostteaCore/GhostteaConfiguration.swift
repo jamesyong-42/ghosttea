@@ -86,6 +86,68 @@ public struct GhostteaResolvedRendererConfig: Codable, Equatable, Sendable {
   public let customShaderPaths: [String]
 }
 
+/// Renderer-owned settings safe to synchronize with a remote terminal view.
+///
+/// Host file paths, diagnostics, keybindings, and retention policy are
+/// deliberately excluded from this projection.
+public struct GhostteaTerminalPresentationConfig: Codable, Equatable, Sendable {
+  public let schemaVersion: UInt32
+  public let revision: String
+  public let foreground: [UInt8]
+  public let background: [UInt8]
+  public let cursor: [UInt8]
+  public let selectionBackground: [UInt8]
+  public let selectionForeground: [UInt8]
+  public let fontSize: Float
+  public let fontFamilies: [String]
+  public let paddingX: [Float]
+  public let paddingY: [Float]
+  public let postProcess: GhostteaRendererPostProcess
+  /// Number of host-local shader paths omitted from this projection.
+  public let customShaderCount: UInt32
+
+  public init(
+    schemaVersion: UInt32,
+    revision: String,
+    foreground: [UInt8],
+    background: [UInt8],
+    cursor: [UInt8],
+    selectionBackground: [UInt8],
+    selectionForeground: [UInt8],
+    fontSize: Float,
+    fontFamilies: [String],
+    paddingX: [Float],
+    paddingY: [Float],
+    postProcess: GhostteaRendererPostProcess,
+    customShaderCount: UInt32
+  ) {
+    self.schemaVersion = schemaVersion
+    self.revision = revision
+    self.foreground = foreground
+    self.background = background
+    self.cursor = cursor
+    self.selectionBackground = selectionBackground
+    self.selectionForeground = selectionForeground
+    self.fontSize = fontSize
+    self.fontFamilies = fontFamilies
+    self.paddingX = paddingX
+    self.paddingY = paddingY
+    self.postProcess = postProcess
+    self.customShaderCount = customShaderCount
+  }
+
+  public var isValid: Bool {
+    schemaVersion == 1
+      && !revision.isEmpty
+      && [foreground, background, cursor, selectionBackground, selectionForeground]
+        .allSatisfy { $0.count == 3 }
+      && fontSize.isFinite && fontSize > 0
+      && paddingX.count == 2 && paddingY.count == 2
+      && paddingX.allSatisfy { $0.isFinite && $0 >= 0 }
+      && paddingY.allSatisfy { $0.isFinite && $0 >= 0 }
+  }
+}
+
 public struct GhostteaConfigKeybinding: Codable, Equatable, Sendable {
   public let trigger: String
   public let action: String
@@ -112,6 +174,24 @@ public struct GhostteaConfigSnapshot: Codable, Equatable, Sendable {
   public var hasErrors: Bool {
     diagnostics.contains { $0.severity == .error }
   }
+
+  public var terminalPresentation: GhostteaTerminalPresentationConfig {
+    GhostteaTerminalPresentationConfig(
+      schemaVersion: schemaVersion,
+      revision: revision,
+      foreground: renderer.foreground,
+      background: renderer.background,
+      cursor: renderer.cursor,
+      selectionBackground: renderer.selectionBackground,
+      selectionForeground: renderer.selectionForeground,
+      fontSize: renderer.fontSize,
+      fontFamilies: renderer.fontFamilies,
+      paddingX: renderer.paddingX,
+      paddingY: renderer.paddingY,
+      postProcess: renderer.postProcess,
+      customShaderCount: UInt32(clamping: renderer.customShaderPaths.count)
+    )
+  }
 }
 
 public enum GhostteaConfiguration {
@@ -131,6 +211,63 @@ public enum GhostteaConfiguration {
     defer { ghosttea_owned_bytes_free(output) }
     let data = output.data.map { Data(bytes: $0, count: output.len) } ?? Data()
     return try JSONDecoder().decode(GhostteaConfigSnapshot.self, from: data)
+  }
+}
+
+extension GhostteaTextMetrics {
+  /// Scales the bundled-font geometry to the resolved Ghostty font size.
+  ///
+  /// Ghosttea does not yet load arbitrary `font-family` values on Apple
+  /// platforms, but applying the size here keeps shaping, grid calculation,
+  /// and Metal presentation on one set of metrics.
+  public init(
+    config: GhostteaConfigSnapshot,
+    base: GhostteaTextMetrics = .init()
+  ) {
+    self.init(presentation: config.terminalPresentation, base: base)
+  }
+
+  public init(
+    presentation: GhostteaTerminalPresentationConfig,
+    base: GhostteaTextMetrics = .init()
+  ) {
+    let configuredSize = presentation.fontSize
+    guard configuredSize.isFinite, configuredSize > 0,
+      base.fontSizePixels.isFinite, base.fontSizePixels > 0
+    else {
+      self = base
+      return
+    }
+    let scale = configuredSize / base.fontSizePixels
+    let cellWidth = base.cellWidthPixels * scale
+    let lineHeight = base.lineHeightPixels * scale
+    let baseline = base.baselinePixels * scale
+    guard scale.isFinite, scale > 0,
+      cellWidth.isFinite, cellWidth > 0,
+      lineHeight.isFinite, lineHeight > 0,
+      baseline.isFinite, baseline >= 0
+    else {
+      self = base
+      return
+    }
+    self.init(
+      fontSizePixels: configuredSize,
+      cellWidthPixels: cellWidth,
+      lineHeightPixels: lineHeight,
+      baselinePixels: baseline,
+      rasterScale: base.rasterScale
+    )
+  }
+}
+
+extension GhostteaRuntime {
+  /// Creates the shared native runtime with the resolved Ghostty font size.
+  public convenience init(config: GhostteaConfigSnapshot) throws {
+    try self.init(presentation: config.terminalPresentation)
+  }
+
+  public convenience init(presentation: GhostteaTerminalPresentationConfig) throws {
+    try self.init(metrics: GhostteaTextMetrics(presentation: presentation))
   }
 }
 
