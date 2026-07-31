@@ -954,7 +954,10 @@ New server events (same JSON envelope as `control-changed`):
 { "type": "remote-session-state-changed",
   "sessionId": "…", "lifecycleSeq": 7,
   "deviceId": "…", "deviceName": "studio-mac",
-  "state": "reconnecting",            // live | synchronizing | reconnecting | suspended | ended
+  "state": "reconnecting",            // opening | live | synchronizing | reconnecting | suspended | ended
+                                       // "opening" is the §3 initial state and IS on the wire —
+                                       // clients render no banner for it; implementations split
+                                       // once because this list omitted it
   "reason": null,                      // ended: session-closed | session-exited | session-unavailable | host-restarted | host-shutdown | closed-locally
   "exit": null,                        // for session-exited: { "code": 1 } when known
   "attempt": 3, "nextRetryMs": 4000, "lastContactMs": 12000 }

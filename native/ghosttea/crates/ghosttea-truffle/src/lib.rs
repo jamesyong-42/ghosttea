@@ -82,6 +82,9 @@ pub struct MeshRuntime {
     activity_tx: broadcast::Sender<RemoteActivityChanged>,
     lifecycle_tx: broadcast::Sender<RemoteLifecycleChanged>,
     view_state_tx: broadcast::Sender<RemoteViewStateChanged>,
+    /// How long a synchronizing session waits for its feed's first snapshot
+    /// before abandoning the attempt.
+    synchronize_timeout: Arc<SyncMutex<Duration>>,
 }
 
 impl Default for MeshRuntime {
@@ -100,6 +103,7 @@ impl Default for MeshRuntime {
             activity_tx,
             lifecycle_tx,
             view_state_tx,
+            synchronize_timeout: Arc::new(SyncMutex::new(HANDSHAKE_TIMEOUT)),
         }
     }
 }
@@ -144,6 +148,10 @@ struct RemoteView {
     wire_view_id: String,
     state_generation: u64,
     incarnation: u64,
+    /// Whether this view's stream feeds the shared replica. Secondary streams
+    /// are drained and discarded: two feeds would interleave per-stream patch
+    /// sequences into one replica.
+    feed: bool,
 }
 
 struct RemoteHostConnection {
@@ -245,6 +253,9 @@ struct LifecycleState {
     host_instance_id: Option<String>,
     session_epoch: Option<u64>,
     views: HashMap<String, ViewRecord>,
+    /// The one view whose state stream feeds the shared replica. Every view
+    /// publishing into it would interleave independent patch sequences.
+    feed_view_id: Option<String>,
 }
 
 /// The serialized owner of one open remote session's lifecycle. Every
@@ -285,6 +296,7 @@ impl SessionLifecycle {
                 host_instance_id,
                 session_epoch: None,
                 views: HashMap::new(),
+                feed_view_id: None,
             }),
             attempts: tokio::sync::Mutex::new(()),
             lifecycle_tx,
@@ -446,6 +458,44 @@ impl SessionLifecycle {
         ids
     }
 
+    fn feed_view_id(&self) -> Option<String> {
+        self.state.lock().unwrap().feed_view_id.clone()
+    }
+
+    /// Elect the replica's feed. Election happens only at generation
+    /// activation and picks the lexicographically smallest recorded view, so
+    /// both ends of a resume agree on which stream owns session state without
+    /// coordinating. It is sticky: a smaller id mounted later never re-elects.
+    fn elect_feed(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        let elected = state.views.keys().min().cloned();
+        state.feed_view_id.clone_from(&elected);
+        elected
+    }
+
+    /// Give up the feed designation if `local_view_id` held it, reporting
+    /// whether a promotion is now owed.
+    fn release_feed(&self, local_view_id: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.feed_view_id.as_deref() != Some(local_view_id) {
+            return false;
+        }
+        state.feed_view_id = None;
+        !state.views.is_empty()
+    }
+
+    fn mark_views_pending(&self) {
+        let mut state = self.state.lock().unwrap();
+        let view_ids = state.views.keys().cloned().collect::<Vec<_>>();
+        for local_view_id in view_ids {
+            self.set_view(&mut state, &local_view_id, |record| {
+                record.state = RemoteViewState::Pending;
+                record.attachment_epoch = None;
+                record.read_write = None;
+            });
+        }
+    }
+
     /// Retire the current generation. Activation is early and Live is late
     /// (§4.2.2): once this returns, every in-flight reader is stale and its
     /// late publishes drop, before any replacement reads a byte.
@@ -457,6 +507,17 @@ impl SessionLifecycle {
 
     fn bind_connection(&self, incarnation: u64) {
         self.state.lock().unwrap().incarnation = incarnation;
+    }
+
+    /// Register a view so it is visible to feed election and to resume,
+    /// without yet claiming an attach attempt.
+    fn record_view(&self, local_view_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .views
+            .entry(local_view_id.to_owned())
+            .or_insert_with(ViewRecord::pending);
     }
 
     /// Rotate one view's wire identity for an attach attempt that is about to
@@ -656,11 +717,14 @@ impl From<AttachFailure> for anyhow::Error {
 
 /// The host sends `ViewAttached` before it opens the state stream, so attach
 /// completion is not recovery. Resume waits here, bounded, for the snapshot.
-async fn await_first_snapshot(mut synchronized: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+async fn await_first_snapshot(
+    mut synchronized: tokio::sync::watch::Receiver<bool>,
+    bound: Duration,
+) -> Result<()> {
     if *synchronized.borrow_and_update() {
         return Ok(());
     }
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+    tokio::time::timeout(bound, async {
         loop {
             synchronized
                 .changed()
@@ -943,8 +1007,18 @@ impl MeshRuntime {
             lifecycle.advance_generation();
             lifecycle.commit_reconnecting();
         }
+        // The first view to arrive owns the replica feed; later panes are
+        // secondaries whose streams are drained.
+        lifecycle.record_view(view_id);
+        let feed = lifecycle.feed_view_id().unwrap_or_else(|| {
+            lifecycle.elect_feed();
+            lifecycle
+                .feed_view_id()
+                .unwrap_or_else(|| view_id.to_owned())
+        });
+        let is_feed = feed == view_id;
 
-        let outcome = match self.attach_view_attempt(&remote, view_id).await {
+        let outcome = match self.attach_view_attempt(&remote, view_id, is_feed).await {
             Ok(outcome) => Ok(outcome),
             Err(AttachFailure::Ended(reason)) => {
                 lifecycle.commit_ended(reason);
@@ -955,7 +1029,7 @@ impl MeshRuntime {
             // rotates to a fresh wire identity.
             Err(AttachFailure::Failed(first_error)) => {
                 self.invalidate_connection(&remote.device_id, None).await;
-                match self.attach_view_attempt(&remote, view_id).await {
+                match self.attach_view_attempt(&remote, view_id, is_feed).await {
                     Ok(outcome) => Ok(outcome),
                     Err(AttachFailure::Ended(reason)) => {
                         lifecycle.commit_ended(reason);
@@ -980,11 +1054,19 @@ impl MeshRuntime {
         };
 
         lifecycle.commit_view_attached(view_id, outcome.attachment_epoch, outcome.read_write);
-        if resuming && lifecycle.state_kind() != RemoteLifecycleState::Opening {
+        // Live means the feed is attached *and* its snapshot has been applied
+        // — an initial open included. Reporting live at ViewAttached would
+        // hand the renderer an epoch, and the user an input-ready pane, before
+        // the authoritative screen exists.
+        if is_feed && resuming {
             lifecycle.commit_synchronizing();
-            await_first_snapshot(outcome.synchronized).await?;
+            if let Err(error) =
+                await_first_snapshot(outcome.synchronized, self.synchronize_bound()).await
+            {
+                return Err(self.abandon_attempt(&remote, error).await);
+            }
         }
-        if lifecycle.state_kind() != RemoteLifecycleState::Live {
+        if is_feed && lifecycle.state_kind() != RemoteLifecycleState::Live {
             lifecycle.commit_live();
         }
         remote.replica.set_read_write(outcome.read_write);
@@ -994,6 +1076,18 @@ impl MeshRuntime {
         })
     }
 
+    /// Abandon an attempt that never synchronized. Leaving its readers alive
+    /// under the current generation would let them mutate a replica the user
+    /// has already been told is frozen.
+    async fn abandon_attempt(&self, remote: &RemoteSession, error: anyhow::Error) -> anyhow::Error {
+        let session_id = remote.replica.summary().id;
+        self.retire_session_views(&session_id).await;
+        remote.lifecycle.advance_generation();
+        remote.lifecycle.mark_views_pending();
+        remote.lifecycle.commit_suspended();
+        error
+    }
+
     /// One `AttachView` write, its response, and the state stream it opens.
     /// Every attempt rotates the wire identity, so the host treats it as a
     /// brand-new view: fresh epoch, and no zombie cleanup can collide with it.
@@ -1001,6 +1095,7 @@ impl MeshRuntime {
         &self,
         remote: &RemoteSession,
         local_view_id: &str,
+        feed: bool,
     ) -> Result<AttachOutcome, AttachFailure> {
         let summary = remote.replica.summary();
         let host = self.remote_connection(&remote.device_id).await?;
@@ -1106,6 +1201,7 @@ impl MeshRuntime {
             wire_view_id,
             state_generation,
             incarnation: host.incarnation,
+            feed,
         });
         let key = (remote.replica.summary().id, local_view_id.to_owned());
         let local_view_key = key.clone();
@@ -1148,6 +1244,13 @@ impl MeshRuntime {
                 // after recovery, or refresh the current connection's contact
                 // clock on its behalf.
                 if !lifecycle.admit_state(state_generation) {
+                    continue;
+                }
+                // Contact is refreshed above for any traffic on the current
+                // incarnation, but only the feed publishes: a secondary's
+                // stream is drained so its independent patch sequence can
+                // never interleave with the feed's in the shared replica.
+                if !remote_view.feed {
                     continue;
                 }
                 match message {
@@ -1227,11 +1330,16 @@ impl MeshRuntime {
                     current_connections.remove(&remote_device_id);
                 }
                 drop(current_connections);
+                // Only a genuine transport failure is a disconnect. A
+                // deliberate cancellation — a detach, an unmount, a retirement
+                // ahead of a resume — is the caller's intent, and suspending a
+                // healthy session on it would also strand its sibling views.
+                //
+                // Carries the incarnation and generation it acted for; the
+                // owner compares both at commit and drops a verdict from a
+                // connection that has already been replaced.
+                lifecycle.commit_disconnect(state_generation, incarnation);
             }
-            // Carries the incarnation and generation it acted for; the owner
-            // compares both at commit and drops a verdict from a connection
-            // that has already been replaced.
-            lifecycle.commit_disconnect(state_generation, incarnation);
         });
         Ok(AttachOutcome {
             attachment_epoch,
@@ -1363,49 +1471,83 @@ impl MeshRuntime {
             return Err(AttachFailure::Ended(reason));
         }
 
-        let local_view_ids = lifecycle.local_view_ids();
-        if local_view_ids.is_empty() {
+        self.establish_feed(remote).await
+    }
+
+    /// Bring a session back to Live around exactly one publishing stream: the
+    /// elected feed attaches and synchronizes alone, and only once Live do the
+    /// remaining views attach, in the background, so a stalled pane can never
+    /// hold up recovery.
+    async fn establish_feed(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
+        let lifecycle = &remote.lifecycle;
+        let Some(feed_view_id) = lifecycle.elect_feed() else {
             lifecycle.commit_suspended();
             return Ok(());
+        };
+        let outcome = match self.attach_view_attempt(remote, &feed_view_id, true).await {
+            Ok(outcome) => outcome,
+            Err(AttachFailure::Ended(reason)) => return Err(AttachFailure::Ended(reason)),
+            Err(AttachFailure::Failed(error)) => {
+                lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                return Err(AttachFailure::Failed(error));
+            }
+        };
+        lifecycle.commit_view_attached(&feed_view_id, outcome.attachment_epoch, outcome.read_write);
+        remote.replica.set_read_write(outcome.read_write);
+
+        lifecycle.commit_synchronizing();
+        if let Err(error) =
+            await_first_snapshot(outcome.synchronized, self.synchronize_bound()).await
+        {
+            return Err(AttachFailure::Failed(
+                self.abandon_attempt(remote, error).await,
+            ));
         }
-        let mut synchronized = None;
-        let mut attached = 0_usize;
-        let mut last_error = None;
-        for local_view_id in &local_view_ids {
-            match self.attach_view_attempt(remote, local_view_id).await {
-                Ok(outcome) => {
-                    lifecycle.commit_view_attached(
-                        local_view_id,
-                        outcome.attachment_epoch,
-                        outcome.read_write,
-                    );
-                    remote.replica.set_read_write(outcome.read_write);
-                    if synchronized.is_none() {
-                        synchronized = Some(outcome.synchronized);
-                    }
-                    attached += 1;
-                }
+        lifecycle.commit_live();
+
+        let secondaries = lifecycle
+            .local_view_ids()
+            .into_iter()
+            .filter(|local_view_id| local_view_id != &feed_view_id)
+            .collect::<Vec<_>>();
+        if !secondaries.is_empty() {
+            let runtime = self.clone();
+            let remote = remote.clone();
+            tokio::spawn(async move {
+                runtime.attach_secondaries(&remote, secondaries).await;
+            });
+        }
+        Ok(())
+    }
+
+    /// Attach non-feed views. Each is independent: one failing marks only its
+    /// own pane, leaving the rest of the session Live.
+    async fn attach_secondaries(&self, remote: &RemoteSession, local_view_ids: Vec<String>) {
+        let _attempt = remote.lifecycle.attempts.lock().await;
+        for local_view_id in local_view_ids {
+            if remote.lifecycle.state_kind() != RemoteLifecycleState::Live {
+                return;
+            }
+            match self
+                .attach_view_attempt(remote, &local_view_id, false)
+                .await
+            {
+                Ok(outcome) => remote.lifecycle.commit_view_attached(
+                    &local_view_id,
+                    outcome.attachment_epoch,
+                    outcome.read_write,
+                ),
                 Err(AttachFailure::Ended(reason)) => {
-                    return Err(AttachFailure::Ended(reason));
+                    remote.lifecycle.commit_ended(reason);
+                    return;
                 }
                 Err(AttachFailure::Failed(error)) => {
-                    lifecycle.commit_view_failed(local_view_id, format!("{error:#}"), true);
-                    last_error = Some(error);
+                    remote
+                        .lifecycle
+                        .commit_view_failed(&local_view_id, format!("{error:#}"), true)
                 }
             }
         }
-        if attached == 0 {
-            return Err(AttachFailure::Failed(last_error.unwrap_or_else(|| {
-                anyhow::anyhow!("no remote view could be attached")
-            })));
-        }
-
-        lifecycle.commit_synchronizing();
-        if let Some(synchronized) = synchronized {
-            await_first_snapshot(synchronized).await?;
-        }
-        lifecycle.commit_live();
-        Ok(())
     }
 
     /// Tear down one connection and every view riding it, then tell each
@@ -1628,11 +1770,32 @@ impl MeshRuntime {
                 .await;
         }
         view.state_cancel.send_replace(true);
-        if let Some(remote) = self.replicas.read().await.get(session_id) {
-            // An explicit detach retires the view for good: leaving a record
-            // behind would have a later resume re-attach a pane the user closed.
-            remote.lifecycle.commit_view_pending(view_id);
-            remote.lifecycle.forget_view(view_id);
+        let remote = self.replicas.read().await.get(session_id).cloned();
+        let Some(remote) = remote else {
+            return;
+        };
+        // An explicit detach retires the view for good: leaving a record
+        // behind would have a later resume re-attach a pane the user closed.
+        remote.lifecycle.commit_view_pending(view_id);
+        remote.lifecycle.forget_view(view_id);
+        if !remote.lifecycle.release_feed(view_id) || remote.lifecycle.is_ended() {
+            return;
+        }
+        // The replica just lost its feed while other panes are still showing
+        // this session. Promotion is a generation-advanced re-attach, not an
+        // in-place stream switch: attach semantics are what guarantee the
+        // survivor a fresh stream, a full snapshot, and reset sequencing.
+        let _attempt = remote.lifecycle.attempts.lock().await;
+        self.retire_session_views(session_id).await;
+        remote.lifecycle.advance_generation();
+        if let Err(failure) = self.establish_feed(&remote).await {
+            match failure {
+                AttachFailure::Ended(reason) => remote.lifecycle.commit_ended(reason),
+                AttachFailure::Failed(error) => {
+                    eprintln!("[terminal-mesh] feed promotion failed: {error:#}");
+                    remote.lifecycle.commit_suspended();
+                }
+            }
         }
     }
 
@@ -1643,6 +1806,11 @@ impl MeshRuntime {
             .await
             .get(session_id)
             .map(|remote| Arc::clone(&remote.lifecycle));
+        // End the session before detaching: these detaches are teardown, not
+        // pane closures, and must not each promote a new feed on the way out.
+        if let Some(lifecycle) = lifecycle {
+            lifecycle.commit_ended(RemoteEndedReason::ClosedLocally);
+        }
         let views = self
             .views
             .lock()
@@ -1653,9 +1821,6 @@ impl MeshRuntime {
             .collect::<Vec<_>>();
         for (view_id, epoch) in views {
             self.detach_view(session_id, &view_id, epoch).await;
-        }
-        if let Some(lifecycle) = lifecycle {
-            lifecycle.commit_ended(RemoteEndedReason::ClosedLocally);
         }
         self.replicas.write().await.remove(session_id).is_some()
     }
@@ -1756,6 +1921,50 @@ impl MeshRuntime {
         })
     }
 
+    async fn devices_with_live_sessions(&self) -> Vec<String> {
+        let mut devices = self
+            .replicas
+            .read()
+            .await
+            .values()
+            .filter(|remote| {
+                !matches!(
+                    remote.lifecycle.state_kind(),
+                    RemoteLifecycleState::Ended | RemoteLifecycleState::Suspended
+                )
+            })
+            .map(|remote| remote.device_id.clone())
+            .collect::<Vec<_>>();
+        devices.sort();
+        devices.dedup();
+        devices
+    }
+
+    /// Devices carrying live sessions whose advertisement has lapsed. No
+    /// discovery event reports this: a host process can stall while its device
+    /// stays online, so nothing is republished and nothing is removed — the
+    /// advertisement simply ages out against the wall clock.
+    async fn lapsed_advertisement_devices(&self) -> Vec<String> {
+        let Ok(transport) = self.transport().await else {
+            return Vec::new();
+        };
+        let mut lapsed = Vec::new();
+        for device_id in self.devices_with_live_sessions().await {
+            if transport.host_instance_id(&device_id).await.is_err() {
+                lapsed.push(device_id);
+            }
+        }
+        lapsed
+    }
+
+    async fn probe_lapsed_advertisements(&self) {
+        for device_id in self.lapsed_advertisement_devices().await {
+            if let Err(error) = self.probe_connection(&device_id).await {
+                eprintln!("[terminal-mesh] liveness probe of {device_id} failed: {error:#}");
+            }
+        }
+    }
+
     async fn transport(&self) -> Result<Arc<dyn HostTransport>> {
         self.transport
             .read()
@@ -1764,9 +1973,18 @@ impl MeshRuntime {
             .context("Truffle terminal networking is disabled or still starting")
     }
 
+    fn synchronize_bound(&self) -> Duration {
+        *self.synchronize_timeout.lock().unwrap()
+    }
+
     #[cfg(test)]
     async fn install_transport(&self, transport: Arc<dyn HostTransport>) {
         *self.transport.write().await = Some(transport);
+    }
+
+    #[cfg(test)]
+    fn set_synchronize_timeout(&self, bound: Duration) {
+        *self.synchronize_timeout.lock().unwrap() = bound;
     }
 
     async fn invalidate_connection(
@@ -2114,6 +2332,8 @@ async fn probe_trigger_loop(
 ) {
     let mut peers = node.on_peer_change();
     let mut advertisements = store.subscribe();
+    let mut expiry = tokio::time::interval(ADVERTISEMENT_INTERVAL);
+    expiry.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         let device_id = tokio::select! {
             event = peers.recv() => match event {
@@ -2125,6 +2345,10 @@ async fn probe_trigger_loop(
                 Ok(event) => advertisement_probe_candidate(&event, now_ms()),
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
+            },
+            _ = expiry.tick() => {
+                runtime.probe_lapsed_advertisements().await;
+                continue;
             },
         };
         let Some(device_id) = device_id else {
@@ -4282,6 +4506,174 @@ mod tests {
         }
     }
 
+    /// A host that completes the attach handshake but releases each view's
+    /// first snapshot only on command, so tests can hold a session inside the
+    /// window between `ViewAttached` and synchronization.
+    #[derive(Clone, Default)]
+    struct SnapshotGate {
+        held: Arc<SyncMutex<std::collections::HashSet<String>>>,
+        released: Arc<tokio::sync::Notify>,
+    }
+
+    impl SnapshotGate {
+        fn hold(&self, local_view_id: &str) {
+            self.held.lock().unwrap().insert(local_view_id.to_owned());
+        }
+
+        fn release(&self, local_view_id: &str) {
+            self.held.lock().unwrap().remove(local_view_id);
+            self.released.notify_waiters();
+        }
+
+        async fn wait(&self, wire_view_id: &str) {
+            let Some(local) = local_view_id_from_wire(wire_view_id) else {
+                return;
+            };
+            loop {
+                let waiter = self.released.notified();
+                if !self.held.lock().unwrap().contains(&local) {
+                    return;
+                }
+                waiter.await;
+            }
+        }
+    }
+
+    async fn serve_scripted_host(
+        connection: Arc<dyn MeshConnection>,
+        host_instance_id: String,
+        remote_session_id: String,
+        gate: SnapshotGate,
+    ) -> Result<()> {
+        let control_stream = connection
+            .accept_stream()
+            .await?
+            .context("scripted host got no control stream")?;
+        let mut control = ProtocolStream::new(control_stream);
+        let preface = control.read_preface().await?;
+        if preface.stream_kind != StreamKind::ConnectionControl {
+            bail!("scripted host expected a connection-control stream");
+        }
+        let nonce = match control
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await?
+            .context("scripted host got no client hello")?
+        {
+            ConnectionMessage::ClientHello { nonce, .. } => nonce,
+            _ => bail!("scripted host expected a client hello"),
+        };
+        control
+            .write_message(
+                &ConnectionMessage::ServerHello {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: PROTOCOL_MINOR,
+                    host_instance_id,
+                    nonce,
+                    state_codec: Some(StateCodec::CompactJsonV1),
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await?;
+
+        let session = remote_session_id.clone();
+        let streams_connection = Arc::clone(&connection);
+        let streams = tokio::spawn(async move {
+            let mut epoch = 0_u64;
+            while let Some(stream) = streams_connection.accept_stream().await? {
+                let mut view_control = ProtocolStream::new(stream);
+                let preface = view_control.read_preface().await?;
+                if preface.stream_kind != StreamKind::SessionControl {
+                    continue;
+                }
+                let (request_id, wire_view_id) = match view_control
+                    .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                    .await?
+                    .context("scripted host got no attach")?
+                {
+                    SessionControlMessage::AttachView {
+                        request_id,
+                        view_id,
+                        ..
+                    } => (request_id, view_id),
+                    _ => bail!("scripted host expected an attach"),
+                };
+                epoch += 1;
+                view_control
+                    .write_message(
+                        &SessionControlMessage::ViewAttached {
+                            request_id,
+                            session_epoch: 1,
+                            layout_epoch: 1,
+                            attachment_epoch: epoch,
+                            cols: 80,
+                            rows: 24,
+                            read_write: true,
+                            presentation: None,
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+                let mut state = ProtocolStream::new(streams_connection.open_stream().await?);
+                state
+                    .write_preface(&StreamPreface {
+                        stream_kind: StreamKind::LiveState,
+                        session_id: Some(session.clone()),
+                        view_id: Some(wire_view_id.clone()),
+                    })
+                    .await?;
+                let gate = gate.clone();
+                tokio::spawn(async move {
+                    gate.wait(&wire_view_id).await;
+                    let _ = state
+                        .write_state_message(
+                            &StateMessage::Snapshot(logical_snapshot(1, "scripted")),
+                            StateCodec::CompactJsonV1,
+                        )
+                        .await;
+                    // Hold the stream open; a dropped stream would read as a
+                    // disconnect rather than a quiet host.
+                    std::future::pending::<()>().await;
+                });
+                tokio::spawn(async move {
+                    while view_control
+                        .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                        .await
+                        .is_ok_and(|message| message.is_some())
+                    {}
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        while let Some(message) = control
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await?
+        {
+            if let ConnectionMessage::ListSessions { request_id } = message {
+                control
+                    .write_message(
+                        &ConnectionMessage::Sessions {
+                            request_id,
+                            sessions: vec![SharedSessionSummary {
+                                session_id: remote_session_id.clone(),
+                                title: "scripted".into(),
+                                cwd_label: None,
+                                running: true,
+                                attachable: true,
+                                read_write: true,
+                                created_at_ms: 0,
+                                activity: ghosttea::SessionActivity::default(),
+                            }],
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
+        }
+        streams.abort();
+        Ok(())
+    }
+
     struct LoopbackHost {
         server: Arc<LoopbackConnection>,
         task: tokio::task::JoinHandle<Result<()>>,
@@ -4336,10 +4728,24 @@ mod tests {
         ))
     }
 
+    /// A quiet, long-lived PTY child for the harness to attach to. `cat` idles
+    /// reading stdin on Unix; the Windows integration fixtures already prove
+    /// the command shell is spawnable there, and it idles the same way.
+    fn idle_child_executable() -> String {
+        #[cfg(unix)]
+        {
+            "/bin/cat".to_owned()
+        }
+        #[cfg(windows)]
+        {
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned())
+        }
+    }
+
     fn spawn_host_session(registry: &Registry) -> Result<String> {
         let session = Session::spawn(
             ghosttea::session::SpawnOptions {
-                executable: "/bin/cat".into(),
+                executable: idle_child_executable(),
                 args: Vec::new(),
                 cwd: None,
                 env: std::collections::HashMap::new(),
@@ -4409,6 +4815,103 @@ mod tests {
                 .attach_view(&fixture.session_id, "pane-1")
                 .await?;
             Ok(fixture)
+        }
+
+        /// An open remote session whose host withholds snapshots until told.
+        /// Returns before the first view has attached.
+        async fn scripted(gate: SnapshotGate) -> Result<Self> {
+            let registry = Registry::default();
+            let remote_session_id = "scripted-session".to_owned();
+            let transport = TestTransport::new("host-1");
+            let runtime = MeshRuntime::new();
+            runtime
+                .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
+                .await;
+
+            let (client, server) = loopback_pair();
+            let (presentation, _presentation_rx) = tokio::sync::watch::channel(Arc::new(
+                ghosttea::ConfigSnapshot::default().terminal_presentation(),
+            ));
+            let task = tokio::spawn(serve_scripted_host(
+                Arc::clone(&server) as Arc<dyn MeshConnection>,
+                "host-1".into(),
+                remote_session_id.clone(),
+                gate,
+            ));
+            let connection = client_handshake(
+                client as Arc<dyn MeshConnection>,
+                "viewer-device",
+                "viewer-instance",
+                "host-1",
+            )
+            .await?;
+            transport.queue(connection);
+
+            let summary = runtime
+                .open_session(RemoteSessionOpen {
+                    device_id: TEST_DEVICE.into(),
+                    remote_session_id: remote_session_id.clone(),
+                    cols: 80,
+                    rows: 24,
+                    owner_id: None,
+                    frames: ghosttea::FrameHub::new(8),
+                    text_engine: Arc::new(std::sync::Mutex::new(
+                        ghosttea::TextEngine::discover().context("discover text engine")?,
+                    )),
+                })
+                .await?;
+            Ok(Self {
+                runtime,
+                transport,
+                registry,
+                remote_session_id,
+                session_id: summary.id,
+                hosts: vec![LoopbackHost {
+                    server,
+                    task,
+                    _presentation: presentation,
+                }],
+            })
+        }
+
+        async fn feed_view_id(&self) -> Option<String> {
+            self.runtime
+                .replicas
+                .read()
+                .await
+                .get(&self.session_id)?
+                .lifecycle
+                .feed_view_id()
+        }
+
+        /// How many of this session's live readers publish into the replica.
+        async fn feed_reader_count(&self) -> usize {
+            self.runtime
+                .views
+                .lock()
+                .await
+                .iter()
+                .filter(|((session, _), view)| session == &self.session_id && view.feed)
+                .count()
+        }
+
+        async fn view_state(&self, local_view_id: &str) -> Option<RemoteViewState> {
+            self.lifecycle()
+                .await
+                .views
+                .into_iter()
+                .find(|view| view.local_view_id == local_view_id)
+                .map(|view| view.view_state)
+        }
+
+        async fn wait_for_view(&self, local_view_id: &str, state: RemoteViewState) -> Result<()> {
+            for _ in 0..200 {
+                if self.view_state(local_view_id).await == Some(state) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            bail!("view {local_view_id} never reached {state:?}")
         }
 
         /// Queue a fresh host connection for the next dial.
@@ -4877,6 +5380,306 @@ mod tests {
                 2,
                 TunnelInput::Text("ok".into()),
             )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_initial_open_stays_synchronizing_until_its_first_snapshot() -> Result<()> {
+        let gate = SnapshotGate::default();
+        gate.hold("pane-1");
+        let fixture = Fixture::scripted(gate.clone()).await?;
+
+        let session_id = fixture.session_id.clone();
+        let runtime = fixture.runtime.clone();
+        let attaching =
+            tokio::spawn(async move { runtime.attach_view(&session_id, "pane-1").await });
+
+        // The host answered ViewAttached, but the authoritative screen does not
+        // exist yet — the session must not claim to be live.
+        fixture
+            .wait_for_state(RemoteLifecycleState::Synchronizing)
+            .await?;
+        assert!(
+            fixture
+                .runtime
+                .send_input(
+                    &fixture.session_id,
+                    "pane-1",
+                    1,
+                    1,
+                    TunnelInput::Text("rm -rf tmp\n".into()),
+                )
+                .await
+                .is_err(),
+            "input was accepted before the first snapshot"
+        );
+
+        gate.release("pane-1");
+        let attachment = attaching.await??;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+        assert!(fixture.retained_snapshot().await.is_some());
+        fixture
+            .runtime
+            .send_input(
+                &fixture.session_id,
+                "pane-1",
+                attachment.attachment_epoch,
+                1,
+                TunnelInput::Text("ok".into()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_feed_that_never_synchronizes_leaves_nothing_attached() -> Result<()> {
+        let gate = SnapshotGate::default();
+        gate.hold("pane-1");
+        let fixture = Fixture::scripted(gate.clone()).await?;
+        fixture
+            .runtime
+            .set_synchronize_timeout(Duration::from_millis(150));
+
+        assert!(
+            fixture
+                .runtime
+                .attach_view(&fixture.session_id, "pane-1")
+                .await
+                .is_err()
+        );
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        // The abandoned attempt must leave no attachment behind and no reader
+        // able to touch the replica the user has been told is frozen.
+        assert_eq!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-1")
+                .await,
+            None
+        );
+        assert_eq!(fixture.feed_reader_count().await, 0);
+
+        gate.release("pane-1");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            fixture.retained_snapshot().await.is_none(),
+            "a late snapshot mutated the frozen replica"
+        );
+        assert_eq!(
+            fixture.view_state("pane-1").await,
+            Some(RemoteViewState::Pending)
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn detaching_a_secondary_leaves_the_session_and_its_feed_alone() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(fixture.feed_view_id().await.as_deref(), Some("pane-1"));
+        let feed_epoch = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-1")
+            .await
+            .expect("feed attachment");
+        let secondary_epoch = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-2")
+            .await
+            .expect("secondary attachment")
+            .0;
+
+        fixture
+            .runtime
+            .detach_view(&fixture.session_id, "pane-2", secondary_epoch)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // A deliberate detach is the caller's intent, not a disconnect.
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
+        assert_eq!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-1")
+                .await,
+            Some(feed_epoch)
+        );
+        assert_eq!(fixture.feed_reader_count().await, 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_resumed_multi_view_session_publishes_from_exactly_one_stream() -> Result<()> {
+        let mut fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        fixture.await_first_snapshot().await?;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture.arm_host("host-1").await?;
+
+        let resumed = fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+        assert_eq!(resumed.state, RemoteLifecycleState::Live);
+        // Live is gated on the feed alone; secondaries attach behind it.
+        assert_eq!(fixture.feed_view_id().await.as_deref(), Some("pane-1"));
+        assert_eq!(
+            fixture.view_state("pane-1").await,
+            Some(RemoteViewState::Attached)
+        );
+        fixture
+            .wait_for_view("pane-2", RemoteViewState::Attached)
+            .await?;
+
+        // Two publishing readers would interleave independent patch sequences
+        // into the one replica.
+        assert_eq!(fixture.feed_reader_count().await, 1);
+
+        // The surviving feed still tracks the host, and nothing corrupted it.
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+        let feed_wire = fixture
+            .runtime
+            .views
+            .lock()
+            .await
+            .get(&(fixture.session_id.clone(), "pane-1".to_owned()))
+            .map(|view| view.wire_view_id.clone())
+            .expect("feed view");
+        session.claim_control(&feed_wire, "truffle:peer:1", 100, 30)?;
+        for _ in 0..200 {
+            let summary = fixture
+                .runtime
+                .replicas
+                .read()
+                .await
+                .get(&fixture.session_id)
+                .map(|remote| remote.replica.summary())
+                .expect("session");
+            if (summary.cols, summary.rows) == (100, 30) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        bail!("the resumed feed never applied the host's resize")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stalled_secondary_never_gates_the_session() -> Result<()> {
+        let gate = SnapshotGate::default();
+        let fixture = Fixture::scripted(gate.clone()).await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        // This pane's stream will never produce a snapshot.
+        gate.hold("pane-2");
+        let mut lifecycles = fixture.runtime.subscribe_lifecycle();
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+
+        // A secondary is not the feed, so it neither waits for a snapshot nor
+        // pulls the session back through Synchronizing.
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
+        assert_eq!(
+            fixture.view_state("pane-2").await,
+            Some(RemoteViewState::Attached)
+        );
+        assert_eq!(fixture.feed_reader_count().await, 1);
+        while let Ok(event) = lifecycles.try_recv() {
+            assert_ne!(
+                event.state,
+                RemoteLifecycleState::Synchronizing,
+                "a secondary pulled the session back into synchronizing"
+            );
+        }
+        gate.release("pane-2");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn detaching_the_feed_promotes_a_survivor_and_resynchronizes() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(fixture.feed_view_id().await.as_deref(), Some("pane-1"));
+        let feed_epoch = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-1")
+            .await
+            .expect("feed attachment")
+            .0;
+
+        fixture
+            .runtime
+            .detach_view(&fixture.session_id, "pane-1", feed_epoch)
+            .await;
+
+        // Promotion is a generation-advanced re-attach, so the survivor gets a
+        // fresh stream and a full snapshot rather than an in-place switch.
+        assert_eq!(fixture.feed_view_id().await.as_deref(), Some("pane-2"));
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
+        assert_eq!(fixture.feed_reader_count().await, 1);
+        assert!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-2")
+                .await
+                .is_some()
+        );
+        assert!(fixture.retained_snapshot().await.is_some());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lapsed_advertisement_probes_without_any_discovery_event() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        // A fresh advertisement is not a probe trigger.
+        fixture.runtime.probe_lapsed_advertisements().await;
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
+        assert!(
+            fixture
+                .runtime
+                .lapsed_advertisement_devices()
+                .await
+                .is_empty()
+        );
+
+        // A host process can stall while its device stays online: no store
+        // event ever fires, the advertisement just ages out.
+        fixture.transport.advertise(None);
+        assert_eq!(
+            fixture.runtime.lapsed_advertisement_devices().await,
+            vec![TEST_DEVICE.to_owned()]
+        );
+        fixture.kill_host();
+        fixture.runtime.probe_lapsed_advertisements().await;
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
             .await?;
         Ok(())
     }
