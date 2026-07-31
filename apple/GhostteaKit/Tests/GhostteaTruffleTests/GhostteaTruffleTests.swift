@@ -274,19 +274,19 @@ private func presentation(
   )
 }
 
-@Test func presentationDecoderRejectsInvalidRemoteMetrics() throws {
+@Test func presentationDecoderRejectsInvalidRemotePresentation() throws {
   let invalid = """
     {
       "type": "configuration-changed",
       "presentation": {
         "schemaVersion": 1,
-        "revision": "bad",
+        "revision": "",
         "foreground": [1, 2, 3],
         "background": [4, 5, 6],
         "cursor": [7, 8, 9],
         "selectionBackground": [10, 11, 12],
         "selectionForeground": [13, 14, 15],
-        "fontSize": -1,
+        "fontSize": 17,
         "fontFamilies": [],
         "paddingX": [2, 2],
         "paddingY": [2, 2],
@@ -298,6 +298,7 @@ private func presentation(
   #expect(throws: GhostteaTruffleError.self) {
     try GhostteaTerminalStateCodec.decode(Data(invalid.utf8), codec: .json)
   }
+  #expect(!presentation(fontSize: -1).isValid)
 }
 
 @Test func streamPrefaceMatchesTSP1HeaderAndDesktopMetadata() throws {

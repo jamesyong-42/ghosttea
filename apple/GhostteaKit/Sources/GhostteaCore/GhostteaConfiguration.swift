@@ -138,6 +138,7 @@ public struct GhostteaTerminalPresentationConfig: Codable, Equatable, Sendable {
 
   public var isValid: Bool {
     schemaVersion == 1
+      && !revision.isEmpty
       && [foreground, background, cursor, selectionBackground, selectionForeground]
         .allSatisfy { $0.count == 3 }
       && fontSize.isFinite && fontSize > 0
