@@ -3680,7 +3680,11 @@ async fn advertise_loop(
                     title: summary.title.unwrap_or_else(|| summary.executable.clone()),
                     cwd_label: summary.cwd,
                     running: !summary.exited,
-                    attachable: true,
+                    // A concluded session is gone as far as attaching goes.
+                    // Exited-but-not-concluded still is: the viewer resumes it
+                    // and shows the final screen, so exitedness belongs in
+                    // `running`, not here.
+                    attachable: !session.has_concluded(),
                     read_write: config.advertises_write(),
                     created_at_ms: session.created_at_ms(),
                     activity: summary.activity,
@@ -5152,7 +5156,7 @@ fn shared_sessions(
                 title: summary.title.unwrap_or_else(|| summary.executable.clone()),
                 cwd_label: summary.cwd,
                 running: !summary.exited,
-                attachable: true,
+                attachable: !session.has_concluded(),
                 read_write: config.advertises_write(),
                 created_at_ms: session.created_at_ms(),
                 activity: summary.activity,
