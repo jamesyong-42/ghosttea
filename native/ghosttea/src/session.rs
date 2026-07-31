@@ -1747,6 +1747,15 @@ impl Session {
             .gc_attach_watermarks(client_id, terminated_through_conn_id)
     }
 
+    /// Outstanding attach watermarks held for a client. See
+    /// `ViewAuthority::attach_watermark_count`.
+    pub fn attach_watermark_count(&self, client_id: &str) -> usize {
+        self.authority
+            .lock()
+            .unwrap()
+            .attach_watermark_count(client_id)
+    }
+
     pub fn view_attachment_epoch(&self, view_id: &str) -> Option<u64> {
         self.authority.lock().unwrap().attachment_epoch(view_id)
     }
