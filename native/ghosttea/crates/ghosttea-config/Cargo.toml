@@ -1,18 +1,17 @@
 [package]
-name = "ghosttea-ffi"
+name = "ghosttea-config"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Ghostty-compatible configuration loading and Ghosttea runtime projections"
 publish = false
 
-[lib]
-crate-type = ["rlib"]
-
 [dependencies]
-ghosttea-config = { path = "../ghosttea-config" }
-ghosttea-core = { path = "../ghosttea-core" }
-ghosttea-text = { path = "../ghosttea-text" }
+serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

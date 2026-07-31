@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,6 +18,12 @@ if (process.platform === "win32") {
 const root = resolve(import.meta.dirname, "../..");
 const runtimeDir = mkdtempSync(join(tmpdir(), "ghosttead-smoke-"));
 const { controlSocket, frameSocket } = localEndpoints(runtimeDir);
+const configPath = join(runtimeDir, "config.ghostty");
+writeFileSync(
+  configPath,
+  "scrollback-limit = 123456\ncustom-shader = ghosttea:better-crt\nkeybind = clear\nkeybind = super+t=previous_tab\n",
+  "utf8",
+);
 const token = "smoke-test-token";
 const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghosttead/Cargo.toml"], {
   cwd: root,
@@ -26,6 +32,7 @@ const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghost
     GHOSTTEA_CONTROL_SOCKET: controlSocket,
     GHOSTTEA_FRAME_SOCKET: frameSocket,
     GHOSTTEA_AUTH_TOKEN: token,
+    GHOSTTEA_CONFIG_PATH: configPath,
     GHOSTTEA_TRUFFLE_ENABLED: "0",
   },
   stdio: ["ignore", "pipe", "inherit"],
@@ -206,6 +213,33 @@ try {
   );
 
   automationClient = new GhostteaAutomationClient({ controlSocket, authToken: token });
+  const initialConfig = await automationClient.getConfig();
+  if (
+    initialConfig.schemaVersion !== 1 ||
+    initialConfig.compatibility.ghosttyVersion !== "1.3.1" ||
+    initialConfig.terminal.scrollbackBytes !== 123_456 ||
+    initialConfig.renderer.postProcess !== "better-crt" ||
+    !initialConfig.workspace.clearKeybindings ||
+    initialConfig.workspace.keybindings[0]?.action !== "previous_tab"
+  ) {
+    throw new Error(`shared configuration was not projected: ${JSON.stringify(initialConfig)}`);
+  }
+  const configChanged = new Promise((resolveChanged) => {
+    automationClient.once("config-changed", resolveChanged);
+  });
+  writeFileSync(configPath, "scrollback-limit = 654321\n", "utf8");
+  const reloadedConfig = await automationClient.reloadConfig();
+  const pushedConfig = await withTimeout(configChanged, "config-changed event");
+  if (
+    reloadedConfig.revision === initialConfig.revision ||
+    reloadedConfig.terminal.scrollbackBytes !== 654_321 ||
+    reloadedConfig.renderer.postProcess !== "none" ||
+    reloadedConfig.workspace.clearKeybindings ||
+    reloadedConfig.workspace.keybindings.length !== 0 ||
+    pushedConfig.config.revision !== reloadedConfig.revision
+  ) {
+    throw new Error(`shared configuration did not reload: ${JSON.stringify({ reloadedConfig, pushedConfig })}`);
+  }
   const automatedSession = await automationClient.createSession({
     executable: "/bin/sh",
     args: [],

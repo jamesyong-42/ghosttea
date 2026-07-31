@@ -653,6 +653,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "ghosttea-config",
  "ghosttea-core",
  "ghosttea-text",
  "ghosttea-vt",
@@ -676,6 +677,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosttea-config"
+version = "0.6.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ghosttea-core"
 version = "0.6.2"
 dependencies = [
@@ -691,6 +701,7 @@ dependencies = [
 name = "ghosttea-ffi"
 version = "0.6.2"
 dependencies = [
+ "ghosttea-config",
  "ghosttea-core",
  "ghosttea-text",
  "serde_json",

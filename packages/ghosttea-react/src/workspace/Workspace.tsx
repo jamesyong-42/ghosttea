@@ -8,10 +8,11 @@ import {
   type ComponentType,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { SessionSummary } from "@vibecook/ghosttea-protocol";
+import type { ConfigSnapshot, SessionSummary } from "@vibecook/ghosttea-protocol";
 import { TerminalSurface, type TerminalMenuAction } from "../TerminalSurface.js";
-import type { TerminalTheme } from "../renderers/types.js";
+import type { TerminalEffects, TerminalTheme } from "../renderers/types.js";
 import { useGhostteaRuntime } from "../context.js";
+import { terminalEffectsFromConfig, terminalThemeFromConfig } from "../config.js";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette.js";
 import { TERMINAL_THEMES } from "./themes.js";
 import {
@@ -33,6 +34,7 @@ import {
   type SplitAxis,
 } from "./pane-layout.js";
 import { resolveKeyEvent, routeConsumesInput } from "../bindings/action-route.js";
+import { configuredBindingsForPlatform, type GhosttyBindingEntry } from "../bindings/ghostty-bindings.js";
 import type { WorkspaceEffect } from "./hotkeys.js";
 import { PendingPromiseCache } from "./pending-cache.js";
 import { sessionsToClaim } from "./session-scope.js";
@@ -203,6 +205,8 @@ interface SplitViewProps {
   zoomedPaneId: string | null;
   platform: GhostteaWorkspacePlatform;
   theme: TerminalTheme;
+  effects: TerminalEffects;
+  bindings: readonly GhosttyBindingEntry[];
   onActivate: (paneId: string) => void;
   decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   onRatio: (splitId: string, ratio: number) => void;
@@ -215,6 +219,8 @@ function SplitView({
   zoomedPaneId,
   platform,
   theme,
+  effects,
+  bindings,
   onActivate,
   decoratePane,
   onRatio,
@@ -238,6 +244,8 @@ function SplitView({
         <TerminalSurface
           session={node.session}
           theme={theme}
+          effects={effects}
+          bindings={bindings}
           active={active}
           {...(platform.platform ? { platform: platform.platform } : {})}
           visible={workspaceActive}
@@ -281,6 +289,8 @@ function SplitView({
           zoomedPaneId,
           platform,
           theme,
+          effects,
+          bindings,
           onActivate,
           decoratePane,
           onRatio,
@@ -312,6 +322,8 @@ function SplitView({
           zoomedPaneId,
           platform,
           theme,
+          effects,
+          bindings,
           onActivate,
           decoratePane,
           onRatio,
@@ -325,7 +337,7 @@ export function GhostteaWorkspace({
   platform,
   storageKey = DEFAULT_STORAGE_KEY,
   sidebar,
-  theme = TERMINAL_THEMES.midnight,
+  theme,
   decoratePane,
   onActiveSessionChange,
   createSplitSession,
@@ -338,6 +350,7 @@ export function GhostteaWorkspace({
 }: GhostteaWorkspaceProps) {
   const Sidebar = sidebar;
   const terminalRuntime = useGhostteaRuntime();
+  const [config, setConfig] = useState<ConfigSnapshot | undefined>(terminalRuntime.configSnapshot);
   const [layout, setLayout] = useState<PaneNode>();
   const [activePaneId, setActivePaneId] = useState<string>();
   const [zoomedPaneId, setZoomedPaneId] = useState<string | null>(null);
@@ -360,6 +373,29 @@ export function GhostteaWorkspace({
   );
   const sessions = useMemo(() => panes.map((leaf) => leaf.session), [panes]);
   const title = useMemo(() => windowTitle(activePane?.session), [activePane?.session]);
+  const resolvedTheme = useMemo(
+    () => theme ?? (config ? terminalThemeFromConfig(config) : TERMINAL_THEMES.midnight),
+    [config, theme],
+  );
+  const effects = useMemo<TerminalEffects>(
+    () => (config ? terminalEffectsFromConfig(config) : { postProcess: "none" }),
+    [config],
+  );
+  const bindings = useMemo(
+    () => configuredBindingsForPlatform(config?.workspace, platform.platform),
+    [config?.workspace, platform.platform],
+  );
+
+  useEffect(() => {
+    const update = (event: Event): void => {
+      setConfig((event as CustomEvent<ConfigSnapshot>).detail);
+    };
+    terminalRuntime.addEventListener("config-changed", update);
+    void terminalRuntime.getConfig().then((snapshot) => {
+      if (snapshot) setConfig(snapshot);
+    });
+    return () => terminalRuntime.removeEventListener("config-changed", update);
+  }, [terminalRuntime]);
 
   useEffect(() => {
     let mounted = true;
@@ -696,6 +732,7 @@ export function GhostteaWorkspace({
       const routed = resolveKeyEvent(event, {
         extensions: true,
         ...(platform.platform !== undefined ? { platform: platform.platform } : {}),
+        bindings,
         scopes: ["workspace", "platform", "unhandled"],
       });
       if (!routed) return;
@@ -740,7 +777,10 @@ export function GhostteaWorkspace({
         } else if (routed.effect.type === "open_config") {
           platform.openConfig?.();
         } else if (routed.effect.type === "reload_config") {
-          platform.reloadConfig?.();
+          void terminalRuntime.reloadConfig().catch((cause: unknown) => {
+            console.error("[terminal-runtime] configuration reload failed", cause);
+            platform.reloadConfig?.();
+          });
         }
       }
       // unhandled: consume only (prevent PTY leakage for non-performable app binds)
@@ -749,7 +789,16 @@ export function GhostteaWorkspace({
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [active, activePane?.session.cwd, enableRemoteSessions, executeWorkspaceCommand, platform, remotePaletteOpen]);
+  }, [
+    active,
+    activePane?.session.cwd,
+    bindings,
+    enableRemoteSessions,
+    executeWorkspaceCommand,
+    platform,
+    remotePaletteOpen,
+    terminalRuntime,
+  ]);
 
   const workspaceContext = useMemo<GhostteaWorkspaceContext>(
     () => ({
@@ -799,7 +848,9 @@ export function GhostteaWorkspace({
               workspaceActive={active}
               zoomedPaneId={null}
               platform={platform}
-              theme={theme}
+              theme={resolvedTheme}
+              effects={effects}
+              bindings={bindings}
               onActivate={activatePane}
               decoratePane={decoratePane}
               onRatio={(splitId, ratio) =>

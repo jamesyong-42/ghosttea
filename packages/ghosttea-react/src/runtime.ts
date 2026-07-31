@@ -2,6 +2,7 @@ import { ControlClient } from "@vibecook/ghosttea";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
+  type ConfigSnapshot,
   type CreateSessionOptions,
   type RemoteHostSummary,
   type SessionActivity,
@@ -14,7 +15,7 @@ import {
   type TerminationSource,
 } from "@vibecook/ghosttea-protocol";
 import { FRAME_MAGIC, FrameFlag } from "@vibecook/ghosttea-frame";
-import type { CellSelection, TerminalTheme } from "./renderers/types.js";
+import type { CellSelection, TerminalEffects, TerminalTheme } from "./renderers/types.js";
 import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 import { FrameResyncController } from "./frame-resync.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
@@ -89,6 +90,7 @@ type FrameChannelMessage =
 const FRAME_SUBSCRIPTION_ACK_TIMEOUT_MS = 10_000;
 const FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR = 7;
 const FRAME_BRIDGE_CAPABILITY_VERSION = 1;
+const CONFIG_PROTOCOL_MINOR = 10;
 const DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS = 1_000;
 
 export function waitForGhostteaRendererPorts(timeoutMs = 10_000): Promise<GhostteaRendererPorts> {
@@ -142,6 +144,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #focusByView = new Map<string, boolean>();
   readonly #views = new Map<string, ViewRuntimeState>();
   #rendererBackend = "starting";
+  #configSnapshot: ConfigSnapshot | undefined;
   readonly #metadataTimers = new Map<string, number>();
   readonly #resync: FrameResyncController;
   #performanceRequestId = 1;
@@ -345,6 +348,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
         }
       }
     });
+    this.#control.addEventListener("config-changed", (event) => {
+      const detail = (event as CustomEvent<Extract<ServerEvent, { type: "config-changed" }>>).detail;
+      this.#installConfig(detail.config);
+    });
     this.#frames = ports.frames;
     this.#frames.onmessage = ({ data }: MessageEvent<FrameChannelMessage>) => {
       if (!(data instanceof ArrayBuffer)) {
@@ -391,8 +398,36 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR)
       throw new Error("ghosttead protocol mismatch");
     this.#frameSubscriptionAcksSupported = hello.protocolMinor >= FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR;
+    if (hello.protocolMinor >= CONFIG_PROTOCOL_MINOR && hello.configRevision !== undefined) {
+      const response = await this.#control.request({ type: "get-config" });
+      if (response.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
+      this.#installConfig(response.config);
+    }
     await this.#queueFrameSubscriptionSync();
     console.info("[terminal-runtime] authenticated ghosttead protocol");
+  }
+
+  get configSnapshot(): ConfigSnapshot | undefined {
+    return this.#configSnapshot;
+  }
+
+  async getConfig(): Promise<ConfigSnapshot | undefined> {
+    await this.connect();
+    return this.#configSnapshot;
+  }
+
+  async reloadConfig(): Promise<ConfigSnapshot> {
+    await this.connect();
+    const response = await this.#control!.request({ type: "reload-config" });
+    if (response.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
+    this.#installConfig(response.config);
+    return response.config;
+  }
+
+  #installConfig(config: ConfigSnapshot): void {
+    if (this.#configSnapshot?.revision === config.revision) return;
+    this.#configSnapshot = config;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: config }));
   }
 
   #handleFrameChannelControl(message: unknown): boolean {
@@ -979,6 +1014,10 @@ export class GhostteaTerminalRuntime extends EventTarget {
       background: rgb(theme.background),
       cursor: rgb(theme.cursor),
     });
+  }
+
+  setEffects(sessionHandle: string, effects: TerminalEffects, surfaceId?: string): void {
+    this.#postWorker({ type: "effects", sessionHandle, ...(surfaceId ? { surfaceId } : {}), effects });
   }
 
   setSelection(sessionHandle: string, selection: CellSelection | null, surfaceId?: string): void {

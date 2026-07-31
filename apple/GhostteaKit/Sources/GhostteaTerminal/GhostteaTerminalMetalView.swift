@@ -1,5 +1,6 @@
 #if os(iOS)
   import Foundation
+  import GhostteaCore
   import GhostteaPerformance
   import MetalKit
   import UIKit
@@ -171,6 +172,7 @@
         geometryDidChange()
       }
     }
+    public private(set) var configurationWarnings: [String] = []
     public private(set) var diagnostics = GhostteaTerminalMetalDiagnostics()
     public private(set) var currentGridSize: GhostteaTerminalGridSize?
     public private(set) var accessibilitySnapshot = GhostteaTerminalAccessibilitySnapshot(
@@ -186,6 +188,7 @@
     private let rowGeometryReuseEnabled: Bool
     private let lazyColorAtlasEnabled: Bool
     private var terminalRenderer: GhostteaMetalRenderer?
+    private var terminalTheme = GhostteaMetalTheme()
     private var pendingDamage = GhostteaTerminalRenderDamage.full
     private var effectiveGeometry: EffectiveGeometry?
     private var awaitingMemoryPressureRefresh = false
@@ -1091,6 +1094,66 @@
       _ = try renderer()
     }
 
+    /// Applies the renderer-owned portion of the shared Ghostty configuration.
+    /// Font metrics belong to `GhostteaRuntime` and must be chosen before
+    /// terminal creation; unsupported post-process shaders are surfaced rather
+    /// than silently approximated on Metal.
+    public func applyConfiguration(_ config: GhostteaConfigSnapshot) {
+      let color = { (components: [UInt8]) -> GhostteaMetalColor? in
+        guard components.count == 3 else { return nil }
+        return GhostteaMetalColor(
+          red: Float(components[0]) / 255,
+          green: Float(components[1]) / 255,
+          blue: Float(components[2]) / 255,
+          alpha: 1
+        )
+      }
+      if let background = color(config.renderer.background),
+        let foreground = color(config.renderer.foreground),
+        let cursor = color(config.renderer.cursor),
+        let selection = color(config.renderer.selectionBackground),
+        let selectionForeground = color(config.renderer.selectionForeground)
+      {
+        terminalTheme = GhostteaMetalTheme(
+          background: background,
+          foreground: foreground,
+          cursor: cursor,
+          selection: selection,
+          selectionForeground: selectionForeground
+        )
+        clearColor = MTLClearColor(
+          red: Double(background.red),
+          green: Double(background.green),
+          blue: Double(background.blue),
+          alpha: Double(background.alpha)
+        )
+        markedTextLabel.backgroundColor = UIColor(
+          red: CGFloat(background.red),
+          green: CGFloat(background.green),
+          blue: CGFloat(background.blue),
+          alpha: CGFloat(background.alpha)
+        )
+      }
+      if config.renderer.paddingX.count == 2, config.renderer.paddingY.count == 2 {
+        terminalContentInsets = UIEdgeInsets(
+          top: CGFloat(config.renderer.paddingY[0]),
+          left: CGFloat(config.renderer.paddingX[0]),
+          bottom: CGFloat(config.renderer.paddingY[1]),
+          right: CGFloat(config.renderer.paddingX[1])
+        )
+      }
+      configurationWarnings = []
+      if config.renderer.postProcess != .none {
+        configurationWarnings.append(
+          "custom-shader post-processing is not available in the Swift Metal renderer")
+      }
+      if config.renderer.fontSize != 13 || !config.renderer.fontFamilies.isEmpty {
+        configurationWarnings.append(
+          "font-family and font-size must be applied when constructing GhostteaRuntime")
+      }
+      requestEventDrivenDraw(damage: .full)
+    }
+
     public func bindResizeCoordinator(_ coordinator: GhostteaResizeCoordinator) {
       onGridSizeChange = { size in
         Task { await coordinator.request(size) }
@@ -1128,6 +1191,7 @@
             state: retainedState,
             target: drawable.texture,
             scale: Float(contentScaleFactor),
+            theme: terminalTheme,
             contentInsets: effectiveContentInsets(),
             selection: terminalSelection,
             focused: terminalFocused,

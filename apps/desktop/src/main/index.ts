@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
@@ -29,6 +29,7 @@ if (profile.name !== "default") {
 } else if (!process.env.GHOSTTEA_TRUFFLE_STATE_DIR?.trim() && !process.env.TERMINALD_TRUFFLE_STATE_DIR?.trim()) {
   process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
 }
+const terminalConfigPath = join(app.getPath("userData"), "config.ghostty");
 
 // Electron keys this lock from the configured user-data directory. Different
 // profiles coexist; launching the same profile again activates its window.
@@ -74,11 +75,32 @@ ipcMain.on("terminal-close-all-windows", () => {
 });
 
 ipcMain.on("terminal-open-config", () => {
-  void shell.openPath(app.getPath("userData")).catch((error) => console.error("failed to open config path", error));
+  if (!existsSync(terminalConfigPath)) {
+    mkdirSync(app.getPath("userData"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      terminalConfigPath,
+      [
+        "# Ghosttea application overrides (Ghostty-compatible syntax).",
+        "# Your existing Ghostty config files are imported before this file.",
+        "# Enable Ghosttea's bundled CRT approximation with:",
+        "# custom-shader = ghosttea:better-crt",
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+  }
+  void shell
+    .openPath(terminalConfigPath)
+    .then((message) => {
+      if (message) console.error("failed to open terminal config", message);
+    })
+    .catch((error) => console.error("failed to open terminal config", error));
 });
 
 ipcMain.on("terminal-reload-config", () => {
-  for (const window of BrowserWindow.getAllWindows()) window.webContents.reload();
+  void ensureBackend()
+    .then(() => backend!.automation.reloadConfig())
+    .catch((error) => console.error("failed to reload terminal config", error));
 });
 
 ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
@@ -163,10 +185,12 @@ function backendOptions(): GhostteaElectronBackendOptions {
     (app.isPackaged
       ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ghosttead.exe" : "ghosttead")
       : undefined);
-  const environment =
-    !process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
+  const environment = {
+    GHOSTTEA_CONFIG_PATH: terminalConfigPath,
+    ...(!process.env.TRUFFLE_SIDECAR_PATH && !app.isPackaged && existsSync(developmentSidecar)
       ? { TRUFFLE_SIDECAR_PATH: developmentSidecar }
-      : undefined;
+      : {}),
+  };
   return {
     mode: "managed",
     daemon: {
@@ -177,7 +201,7 @@ function backendOptions(): GhostteaElectronBackendOptions {
             manifestPath: join(repositoryRoot, "native/ghosttead/Cargo.toml"),
             release: (process.env.GHOSTTEA_DEV_PROFILE ?? process.env.TERMINALD_DEV_PROFILE) !== "debug",
           },
-      ...(environment ? { environment } : {}),
+      environment,
     },
   };
 }

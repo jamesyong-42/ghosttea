@@ -1,5 +1,81 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 9;
+export const PROTOCOL_MINOR = 10;
+export const CONFIG_SCHEMA_VERSION = 1;
+
+export type ConfigDiagnosticSeverity = "info" | "warning" | "error";
+export type ConfigSupport = "applied" | "parsed" | "unsupported";
+export type ConfigSourceKind = "ghostty-default" | "included" | "ghosttea-overlay";
+export type RendererPostProcess = "none" | "better-crt";
+
+export interface ConfigCompatibility {
+  ghosttyVersion: string;
+  ghosttyCommit: string;
+  knownKeyCount: number;
+}
+
+export interface ConfigSource {
+  path: string;
+  kind: ConfigSourceKind;
+}
+
+export interface ConfigDiagnostic {
+  severity: ConfigDiagnosticSeverity;
+  code: string;
+  message: string;
+  source?: string;
+  line?: number;
+  key?: string;
+}
+
+export interface ConfiguredKey {
+  key: string;
+  support: ConfigSupport;
+  occurrences: number;
+}
+
+export interface TerminalConfig {
+  scrollbackBytes: number;
+  foreground: [number, number, number];
+  background: [number, number, number];
+  cursor: [number, number, number];
+}
+
+export interface RendererConfig {
+  foreground: [number, number, number];
+  background: [number, number, number];
+  cursor: [number, number, number];
+  selectionBackground: [number, number, number];
+  selectionForeground: [number, number, number];
+  fontSize: number;
+  fontFamilies: string[];
+  paddingX: [number, number];
+  paddingY: [number, number];
+  postProcess: RendererPostProcess;
+  customShaderPaths: string[];
+}
+
+export interface ConfigKeybinding {
+  trigger: string;
+  action: string;
+}
+
+export interface WorkspaceConfig {
+  keybindings: ConfigKeybinding[];
+  clearKeybindings: boolean;
+}
+
+/** Versioned, platform-neutral projection of a Ghostty-syntax configuration. */
+export interface ConfigSnapshot {
+  schemaVersion: number;
+  revision: string;
+  compatibility: ConfigCompatibility;
+  sources: ConfigSource[];
+  diagnostics: ConfigDiagnostic[];
+  configuredKeys: ConfiguredKey[];
+  terminal: TerminalConfig;
+  renderer: RendererConfig;
+  workspace: WorkspaceConfig;
+}
 
 /** How long a session outlives the thing that asked for it. */
 export type SessionPersistence = "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
@@ -66,6 +142,8 @@ export interface CreateSessionOptions {
 
 export type ClientCommand =
   | { requestId: number; type: "hello"; protocolMajor: number; protocolMinor: number; clientBuild: string }
+  | { requestId: number; type: "get-config" }
+  | { requestId: number; type: "reload-config" }
   | { requestId: number; type: "create-session"; options: CreateSessionOptions }
   | { requestId: number; type: "list-sessions" }
   | { requestId: number; type: "list-remote-hosts" }
@@ -199,7 +277,16 @@ export interface RemoteHostSummary {
 }
 
 export type ServerEvent =
-  | { requestId: number; type: "hello"; protocolMajor: number; protocolMinor: number; serverBuild: string }
+  | {
+      requestId: number;
+      type: "hello";
+      protocolMajor: number;
+      protocolMinor: number;
+      serverBuild: string;
+      /** Absent on daemons before protocol 1.10. */
+      configRevision?: string;
+    }
+  | { requestId: number; type: "config"; config: ConfigSnapshot }
   | { requestId: number; type: "session-created"; session: SessionSummary }
   | { requestId: number; type: "session"; session: SessionSummary }
   | { requestId: number; type: "sessions"; sessions: SessionSummary[] }
@@ -257,6 +344,7 @@ export type ServerEvent =
       layoutEpoch: number;
     }
   | { requestId: 0; type: "session-activity-changed"; sessionId: string; activity: SessionActivity }
+  | { requestId: 0; type: "config-changed"; config: ConfigSnapshot }
   /**
    * The daemon produced events faster than this client drained them and the
    * overflow was dropped. Any of the lost events could have been a
@@ -389,13 +477,108 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       normalizeActivity(summary)
     );
   };
+  const validByteColor = (color: unknown): boolean =>
+    Array.isArray(color) &&
+    color.length === 3 &&
+    color.every((component) => Number.isSafeInteger(component) && component >= 0 && component <= 255);
+  const validPair = (pair: unknown): boolean =>
+    Array.isArray(pair) &&
+    pair.length === 2 &&
+    pair.every((component) => typeof component === "number" && Number.isFinite(component) && component >= 0);
+  const validConfig = (config: unknown): config is ConfigSnapshot => {
+    if (!config || typeof config !== "object") return false;
+    const snapshot = config as Record<string, unknown>;
+    if (!snapshot.compatibility || typeof snapshot.compatibility !== "object") return false;
+    const compatibility = snapshot.compatibility as Record<string, unknown>;
+    if (!snapshot.terminal || typeof snapshot.terminal !== "object") return false;
+    const terminal = snapshot.terminal as Record<string, unknown>;
+    if (!snapshot.renderer || typeof snapshot.renderer !== "object") return false;
+    const renderer = snapshot.renderer as Record<string, unknown>;
+    if (!snapshot.workspace || typeof snapshot.workspace !== "object") return false;
+    const workspace = snapshot.workspace as Record<string, unknown>;
+    return (
+      snapshot.schemaVersion === CONFIG_SCHEMA_VERSION &&
+      typeof snapshot.revision === "string" &&
+      typeof compatibility.ghosttyVersion === "string" &&
+      typeof compatibility.ghosttyCommit === "string" &&
+      Number.isSafeInteger(compatibility.knownKeyCount) &&
+      Number(compatibility.knownKeyCount) >= 0 &&
+      Array.isArray(snapshot.sources) &&
+      snapshot.sources.every(
+        (source) =>
+          Boolean(source) &&
+          typeof source === "object" &&
+          typeof (source as Record<string, unknown>).path === "string" &&
+          ["ghostty-default", "included", "ghosttea-overlay"].includes(
+            String((source as Record<string, unknown>).kind),
+          ),
+      ) &&
+      Array.isArray(snapshot.diagnostics) &&
+      snapshot.diagnostics.every(
+        (diagnostic) =>
+          Boolean(diagnostic) &&
+          typeof diagnostic === "object" &&
+          ["info", "warning", "error"].includes(String((diagnostic as Record<string, unknown>).severity)) &&
+          typeof (diagnostic as Record<string, unknown>).code === "string" &&
+          typeof (diagnostic as Record<string, unknown>).message === "string" &&
+          ((diagnostic as Record<string, unknown>).source === undefined ||
+            typeof (diagnostic as Record<string, unknown>).source === "string") &&
+          ((diagnostic as Record<string, unknown>).line === undefined ||
+            Number.isSafeInteger((diagnostic as Record<string, unknown>).line)) &&
+          ((diagnostic as Record<string, unknown>).key === undefined ||
+            typeof (diagnostic as Record<string, unknown>).key === "string"),
+      ) &&
+      Array.isArray(snapshot.configuredKeys) &&
+      snapshot.configuredKeys.every(
+        (key) =>
+          Boolean(key) &&
+          typeof key === "object" &&
+          typeof (key as Record<string, unknown>).key === "string" &&
+          ["applied", "parsed", "unsupported"].includes(String((key as Record<string, unknown>).support)) &&
+          Number.isSafeInteger((key as Record<string, unknown>).occurrences) &&
+          Number((key as Record<string, unknown>).occurrences) >= 0,
+      ) &&
+      Number.isSafeInteger(terminal.scrollbackBytes) &&
+      Number(terminal.scrollbackBytes) >= 0 &&
+      validByteColor(terminal.foreground) &&
+      validByteColor(terminal.background) &&
+      validByteColor(terminal.cursor) &&
+      validByteColor(renderer.foreground) &&
+      validByteColor(renderer.background) &&
+      validByteColor(renderer.cursor) &&
+      validByteColor(renderer.selectionBackground) &&
+      validByteColor(renderer.selectionForeground) &&
+      typeof renderer.fontSize === "number" &&
+      Number.isFinite(renderer.fontSize) &&
+      renderer.fontSize > 0 &&
+      Array.isArray(renderer.fontFamilies) &&
+      renderer.fontFamilies.every((family) => typeof family === "string") &&
+      validPair(renderer.paddingX) &&
+      validPair(renderer.paddingY) &&
+      (renderer.postProcess === "none" || renderer.postProcess === "better-crt") &&
+      Array.isArray(renderer.customShaderPaths) &&
+      renderer.customShaderPaths.every((path) => typeof path === "string") &&
+      Array.isArray(workspace.keybindings) &&
+      workspace.keybindings.every(
+        (binding) =>
+          Boolean(binding) &&
+          typeof binding === "object" &&
+          typeof (binding as Record<string, unknown>).trigger === "string" &&
+          typeof (binding as Record<string, unknown>).action === "string",
+      ) &&
+      typeof workspace.clearKeybindings === "boolean"
+    );
+  };
   switch (candidate.type) {
     case "hello":
       return (
         typeof candidate.protocolMajor === "number" &&
         typeof candidate.protocolMinor === "number" &&
-        typeof candidate.serverBuild === "string"
+        typeof candidate.serverBuild === "string" &&
+        (candidate.configRevision === undefined || typeof candidate.configRevision === "string")
       );
+    case "config":
+      return validConfig(candidate.config);
     case "session-created":
     case "session":
       return validSession(candidate.session);
@@ -480,6 +663,8 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       );
     case "session-activity-changed":
       return candidate.requestId === 0 && typeof candidate.sessionId === "string" && validActivity(candidate.activity);
+    case "config-changed":
+      return candidate.requestId === 0 && validConfig(candidate.config);
     case "events-lost":
       return candidate.requestId === 0 && Number.isSafeInteger(candidate.skipped);
     default:

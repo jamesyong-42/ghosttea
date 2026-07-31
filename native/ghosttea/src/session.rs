@@ -18,6 +18,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 mod process_tree;
 
 use anyhow::{Context, Result};
+use ghosttea_config::DEFAULT_SCROLLBACK_BYTES;
 use ghosttea_core::{
     ClipboardRequest, ControlChanged, ControllerState, InputOrderState, LogicalTerminalSnapshot,
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
@@ -883,6 +884,24 @@ impl Session {
         extra_private_prefixes: &[String],
         on_exit: ExitCallback,
     ) -> Result<Arc<Self>> {
+        Self::spawn_configured(
+            options,
+            frames,
+            text_engine,
+            extra_private_prefixes,
+            DEFAULT_SCROLLBACK_BYTES as usize,
+            on_exit,
+        )
+    }
+
+    pub(crate) fn spawn_configured(
+        options: SpawnOptions,
+        frames: FrameHub,
+        text_engine: Arc<Mutex<TextEngine>>,
+        extra_private_prefixes: &[String],
+        scrollback_bytes: usize,
+        on_exit: ExitCallback,
+    ) -> Result<Arc<Self>> {
         let SpawnOptions {
             executable,
             args,
@@ -958,7 +977,7 @@ impl Session {
                 layout_epoch: 1,
                 cols,
                 rows,
-                scrollback_bytes: 10_000,
+                scrollback_bytes,
             },
         )?;
         let session = Arc::new(Self {

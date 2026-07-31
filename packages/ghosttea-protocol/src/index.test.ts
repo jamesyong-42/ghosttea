@@ -2,6 +2,42 @@ import { describe, expect, it } from "vitest";
 import { isServerEvent, unknownSessionActivity } from "./index";
 
 describe("isServerEvent", () => {
+  const config = {
+    schemaVersion: 1,
+    revision: "abc123",
+    compatibility: {
+      ghosttyVersion: "1.3.1",
+      ghosttyCommit: "f8041e7",
+      knownKeyCount: 200,
+    },
+    sources: [{ path: "/tmp/config.ghostty", kind: "ghosttea-overlay" }],
+    diagnostics: [],
+    configuredKeys: [{ key: "background", support: "applied", occurrences: 1 }],
+    terminal: {
+      scrollbackBytes: 10_000_000,
+      foreground: [255, 255, 255],
+      background: [40, 44, 52],
+      cursor: [255, 255, 255],
+    },
+    renderer: {
+      foreground: [255, 255, 255],
+      background: [40, 44, 52],
+      cursor: [255, 255, 255],
+      selectionBackground: [255, 255, 255],
+      selectionForeground: [40, 44, 52],
+      fontSize: 13,
+      fontFamilies: [],
+      paddingX: [2, 2],
+      paddingY: [2, 2],
+      postProcess: "none",
+      customShaderPaths: [],
+    },
+    workspace: {
+      keybindings: [],
+      clearKeybindings: false,
+    },
+  };
+
   it("accepts validated responses and unsolicited lifecycle events", () => {
     expect(
       isServerEvent({ requestId: 1, type: "hello", protocolMajor: 1, protocolMinor: 0, serverBuild: "test" }),
@@ -17,6 +53,8 @@ describe("isServerEvent", () => {
         exitOutcome: "completed",
       }),
     ).toBe(true);
+    expect(isServerEvent({ requestId: 4, type: "config", config })).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "config-changed", config })).toBe(true);
     expect(
       isServerEvent({
         requestId: 0,
@@ -122,6 +160,14 @@ describe("isServerEvent", () => {
     expect(isServerEvent({ requestId: 1, type: "session", session: { id: "missing-fields" } })).toBe(false);
     expect(isServerEvent({ requestId: 0, type: "session-exited", sessionId: 3, exitCode: null })).toBe(false);
     expect(isServerEvent({ requestId: 2, type: "remote-sessions", deviceId: "device-a", sessions: [{}] })).toBe(false);
+    expect(
+      isServerEvent({
+        requestId: 0,
+        type: "config-changed",
+        config: { ...config, renderer: { ...config.renderer, postProcess: "mystery" } },
+      }),
+    ).toBe(false);
+    expect(isServerEvent({ requestId: 4, type: "config", config: { ...config, schemaVersion: 2 } })).toBe(false);
     expect(
       isServerEvent({
         requestId: 0,

@@ -57,7 +57,7 @@ Captured under [`ground-truth/`](./ground-truth/):
 
 - **85** bindable actions
 - **93** default keybind entries (includes digit_N physical + unicode aliases)
-- **~199** non-keybind config keys with defaults
+- **200** non-keybind config keys with defaults
 
 ## Refresh procedure
 
@@ -142,6 +142,7 @@ Keybinds are only one plane. Parity work should track all of these:
 | Route                    | `bindings/action-route.ts`              | workspace / terminal / platform / unhandled                   |
 | Workspace execute        | `workspace/Workspace.tsx`               | tabs/splits/zoom + platform hooks; always consume after match |
 | Terminal execute         | `TerminalSurface.tsx`                   | paste/text/copy/select/clear/scroll/adjust_selection          |
+| Shared config            | `ghosttea-config` + protocol/Swift FFI  | versioned schema, exact source/include rules, honest support  |
 | Product extension        | `extensions.json`                       | **⌘⇧O** remote sessions — **keep**                            |
 | Open / deferred features | **[OPEN-ITEMS.md](./OPEN-ITEMS.md)**    | font-size protocol, search, undo, jump_to_prompt, …           |
 
@@ -197,5 +198,7 @@ suite can skip or soft-fail intentionally.
 - [x] `goto_tab` clamps high indexes to last tab (Ghostty semantics)
 - [x] Linux default binding table + platform-aware match (`darwin` vs `linux`/`win32`)
 - [x] Platform open_config / reload_config / close_all_windows
+- [x] Shared Ghostty-syntax config schema, standard-file import, diagnostics, and live reload
+- [x] Imported single-stroke keybind mutations + config-driven colors, scrollback, and opt-in CRT
 - [ ] Remaining features — tracked in **[OPEN-ITEMS.md](./OPEN-ITEMS.md)** (font-size protocol deferred)
 - [ ] Mouse / selection / clipboard policy goldens

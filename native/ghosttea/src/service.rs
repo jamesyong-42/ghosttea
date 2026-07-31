@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use ghosttea_config::{ConfigLoadOptions, ConfigManager, ConfigSnapshot};
 use ghosttea_text::{FontMode, TextEngine};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,13 +39,15 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 9;
+const CONTROL_PROTOCOL_MINOR: u16 = 10;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
+const CONFIG_EVENT_PROTOCOL_MINOR: u16 = 10;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(CONFIG_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
@@ -62,6 +65,7 @@ fn client_accepts_event(event: &Value, protocol_minor: u16) -> bool {
     match event.get("type").and_then(Value::as_str) {
         Some("session-activity-changed") => protocol_minor >= ACTIVITY_EVENT_PROTOCOL_MINOR,
         Some("session-created") => protocol_minor >= SESSION_CREATED_PROTOCOL_MINOR,
+        Some("config-changed") => protocol_minor >= CONFIG_EVENT_PROTOCOL_MINOR,
         _ => true,
     }
 }
@@ -189,6 +193,8 @@ enum Command {
     CreateSession {
         options: SpawnOptions,
     },
+    GetConfig,
+    ReloadConfig,
     ListSessions,
     ListRemoteHosts,
     ListRemoteSessions {
@@ -345,6 +351,10 @@ enum ResponseBody {
         protocol_major: u16,
         protocol_minor: u16,
         server_build: String,
+        config_revision: String,
+    },
+    Config {
+        config: ConfigSnapshot,
     },
     SessionCreated {
         session: session::SessionSummary,
@@ -407,6 +417,7 @@ struct ControlContext {
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
+    config: ConfigManager,
     shutdown: Arc<ShutdownState>,
 }
 
@@ -558,6 +569,7 @@ pub struct ReadyInfo {
 /// an injected remote transport.
 pub struct TerminalService {
     config: TerminalServiceConfig,
+    config_load_options: ConfigLoadOptions,
     mesh: Option<Box<dyn mesh::TerminalMesh>>,
     text_engine: Option<TextEngine>,
     private_env_prefixes: Vec<String>,
@@ -568,11 +580,26 @@ impl TerminalService {
     pub fn new(config: TerminalServiceConfig) -> Self {
         Self {
             config,
+            config_load_options: ConfigLoadOptions::default(),
             mesh: None,
             text_engine: None,
             private_env_prefixes: Vec::new(),
             ready: None,
         }
+    }
+
+    /// Load an application-owned Ghostty-syntax overlay after Ghostty's
+    /// standard user configuration files.
+    pub fn with_config_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.config_load_options.explicit_path = Some(path.into());
+        self
+    }
+
+    /// Replace configuration source discovery. Embedders and tests can use
+    /// this to opt out of standard files or provide isolated roots.
+    pub fn with_config_load_options(mut self, options: ConfigLoadOptions) -> Self {
+        self.config_load_options = options;
+        self
     }
 
     /// Observe the moment the service has resolved its text engine and is
@@ -682,6 +709,7 @@ impl TerminalService {
         shutdown: Arc<ShutdownState>,
     ) -> Result<()> {
         let configured_text_engine = self.text_engine;
+        let config = ConfigManager::load(self.config_load_options);
         let ready = self.ready;
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
@@ -783,6 +811,7 @@ impl TerminalService {
             mesh_runtime,
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
+            config,
             shutdown: Arc::clone(&shutdown),
         };
         // Spawned rather than joined in place: the drain has to run *while*
@@ -1223,6 +1252,35 @@ async fn handle_command(
                     protocol_major: CONTROL_PROTOCOL_MAJOR,
                     protocol_minor: CONTROL_PROTOCOL_MINOR,
                     server_build: env!("CARGO_PKG_VERSION").to_owned(),
+                    config_revision: context.config.snapshot().revision.clone(),
+                })
+            }
+            Command::GetConfig => Ok(ResponseBody::Config {
+                config: context.config.snapshot().as_ref().clone(),
+            }),
+            Command::ReloadConfig => {
+                let (config, changed) = context.config.reload();
+                if changed {
+                    let colors = &config.terminal;
+                    let sessions = registry
+                        .read()
+                        .unwrap()
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for session in sessions {
+                        session.set_colors(colors.foreground, colors.background, colors.cursor)?;
+                    }
+                    let config_value = serde_json::to_value(config.as_ref())
+                        .context("serialize reloaded configuration")?;
+                    let _ = event_tx.send(json!({
+                        "requestId": 0,
+                        "type": "config-changed",
+                        "config": config_value,
+                    }));
+                }
+                Ok(ResponseBody::Config {
+                    config: config.as_ref().clone(),
                 })
             }
             Command::CreateSession { options } => {
@@ -1281,14 +1339,24 @@ async fn handle_command(
                     let frames = context.frames.clone();
                     let text_engine = Arc::clone(&context.text_engine);
                     let private_env_prefixes = Arc::clone(&context.private_env_prefixes);
+                    let terminal_config = context.config.snapshot().terminal.clone();
+                    let scrollback_bytes = usize::try_from(terminal_config.scrollback_bytes)
+                        .context("configured scrollback-limit does not fit this platform")?;
                     tokio::task::spawn_blocking(move || {
-                        Session::spawn_with_private_env_prefixes(
+                        let session = Session::spawn_configured(
                             options,
                             frames,
                             text_engine,
                             &private_env_prefixes,
+                            scrollback_bytes,
                             on_exit,
-                        )
+                        )?;
+                        session.set_colors(
+                            terminal_config.foreground,
+                            terminal_config.background,
+                            terminal_config.cursor,
+                        )?;
+                        Ok::<_, anyhow::Error>(session)
                     })
                     .await
                     .context("session spawn task stopped")??
@@ -2952,6 +3020,7 @@ mod protocol_tests {
                 protocol_major: CONTROL_PROTOCOL_MAJOR,
                 protocol_minor: CONTROL_PROTOCOL_MINOR,
                 server_build: "test".to_owned(),
+                config_revision: "test-revision".to_owned(),
             },
         })
         .unwrap();
@@ -2988,6 +3057,16 @@ mod protocol_tests {
             &created,
             SESSION_CREATED_PROTOCOL_MINOR
         ));
+    }
+
+    #[test]
+    fn config_events_reach_only_clients_that_negotiated_them() {
+        let changed = json!({ "type": "config-changed" });
+        assert!(!client_accepts_event(
+            &changed,
+            CONFIG_EVENT_PROTOCOL_MINOR - 1
+        ));
+        assert!(client_accepts_event(&changed, CONFIG_EVENT_PROTOCOL_MINOR));
     }
 
     /// The pushed birth reuses the create response's `session` key, so one

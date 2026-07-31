@@ -4,6 +4,7 @@ members = [
   "native/ghosttead",
   "native/ghosttea",
   "native/ghosttea/crates/ghosttea-apple-ffi",
+  "native/ghosttea/crates/ghosttea-config",
   "native/ghosttea/crates/ghosttea-core",
   "native/ghosttea/crates/ghosttea-ffi",
   "native/ghosttea/crates/ghosttea-font-fixture-ffi",

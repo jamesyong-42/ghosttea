@@ -11,6 +11,11 @@ const sourceBom = readJSON("apple/GhostteaKit/Compatibility/ios-release.cdx.json
 const bundledBom = readJSON("apple/GhostteaApp/Resources/Ghosttea-iOS.cdx.json");
 const workflow = read(".github/workflows/ghostty-vt-artifact.yml");
 const runbook = read(runbookPath);
+const configCompatibilitySource = read("native/ghosttea/crates/ghosttea-config/src/lib.rs");
+const configKnownKeys = read("native/ghosttea/crates/ghosttea-config/src/known-keys.txt").trim().split("\n").sort();
+const groundTruthConfig = read("bench/ghostty-ux/ground-truth/config-macos-default.txt");
+const groundTruthVersion = read("bench/ghostty-ux/ground-truth/ghostty-version.txt");
+const groundTruthCommit = read("bench/ghostty-ux/ground-truth/vendor-commit.txt").split("\n", 1)[0];
 
 const commit = lock.ghostty?.commit;
 if (!/^[0-9a-f]{40}$/.test(commit ?? "")) {
@@ -21,6 +26,24 @@ const target = "aarch64-apple-darwin";
 const expectedRelease = `ghostty-vt-${revision}`;
 const expectedFilename = `${expectedRelease}-${target}.tar`;
 const artifact = artifacts.targets?.[target];
+
+if (!configCompatibilitySource.includes(`GHOSTTY_COMPAT_COMMIT: &str = "${commit}"`)) {
+  throw new Error("ghosttea-config compatibility commit does not match native/ghostty.lock.json.");
+}
+requireEqual(groundTruthCommit, commit, "Ghostty UX ground-truth commit");
+const version = groundTruthVersion.match(/^\s*-\s+version:\s+(\S+)\s*$/m)?.[1];
+if (!version || !configCompatibilitySource.includes(`GHOSTTY_COMPAT_VERSION: &str = "${version}"`)) {
+  throw new Error("ghosttea-config compatibility version does not match the Ghostty UX ground truth.");
+}
+const groundTruthKeys = [
+  ...new Set(
+    groundTruthConfig
+      .split("\n")
+      .filter((line) => /^[a-z0-9-]+ = /.test(line))
+      .map((line) => line.slice(0, line.indexOf(" = "))),
+  ),
+].sort();
+requireEqual(configKnownKeys, groundTruthKeys, "ghosttea-config known-key schema");
 
 requireEqual(artifacts.source, lock.ghostty, "native artifact source pin");
 requireEqual(fonts.source, lock.ghostty, "font source pin");

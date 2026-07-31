@@ -255,6 +255,7 @@ export function resolveKeyEvent(event: KeyEventLike, options: ResolveKeyEventOpt
  * Callers that no-op an effect (missing hooks) should still consume.
  */
 export function routeConsumesInput(route: RoutedAction): boolean {
+  if (route.flags.unconsumed) return false;
   if (route.kind === "unhandled") return route.consume;
   return true;
 }
@@ -268,6 +269,7 @@ export function terminalEffectShouldConsume(
   applied: boolean,
   flags: GhosttyBindingFlags,
 ): boolean {
+  if (flags.unconsumed) return false;
   if (flags.performable) return applied;
   return true;
 }

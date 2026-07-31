@@ -1,5 +1,5 @@
 import { resolveKeyEvent, type TerminalEffect } from "./bindings/action-route.js";
-import type { GhosttyBindingFlags } from "./bindings/ghostty-bindings.js";
+import type { GhosttyBindingEntry, GhosttyBindingFlags } from "./bindings/ghostty-bindings.js";
 import type { KeyEventLike } from "./bindings/ghostty-triggers.js";
 
 /**
@@ -22,10 +22,12 @@ export type ResolvedTerminalBinding = {
 export function resolveTerminalBinding(
   event: KeyEventLike,
   platform: string | undefined,
+  bindings?: readonly GhosttyBindingEntry[],
 ): ResolvedTerminalBinding | null {
   const routed = resolveKeyEvent(event, {
     extensions: true,
     ...(platform !== undefined ? { platform } : {}),
+    ...(bindings !== undefined ? { bindings } : {}),
     scopes: ["terminal"],
   });
   if (routed?.kind !== "terminal") return null;
