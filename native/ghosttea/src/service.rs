@@ -807,6 +807,23 @@ impl From<&mesh::RemoteViewRecord> for ViewStateRecord {
 
 pub type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
 
+/// What the host answers when a resuming viewer asks after a session id.
+///
+/// Only the verdict crosses the seam — live, ended with a cause, or unknown.
+/// Handing the mesh the tombstone store itself would export bookkeeping it has
+/// no business writing to, and `unknown` is load-bearing: an expired or
+/// never-written record must never be upgraded into a specific ending.
+struct RegistrySessionStatus {
+    registry: Registry,
+    tombstones: Arc<session::SessionTombstones>,
+}
+
+impl mesh::SessionStatusSource for RegistrySessionStatus {
+    fn session_status(&self, session_id: &str) -> session::SessionStatus {
+        self.tombstones.session_status(&self.registry, session_id)
+    }
+}
+
 #[derive(Clone)]
 struct ControlContext {
     registry: Registry,
@@ -815,8 +832,10 @@ struct ControlContext {
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
     /// Why each session left, for the viewers that were not watching when it
-    /// did. Every removal goes through this — see `remove_session`.
+    /// did. Every removal goes through this.
     tombstones: Arc<session::SessionTombstones>,
+    /// The drain's one chance to tell viewers this host is leaving.
+    shutdown_announcer: mesh::HostShutdownAnnouncer,
     reconnects: Arc<Mutex<HashSet<String>>>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
@@ -1235,8 +1254,20 @@ impl TerminalService {
             };
             ready(info);
         }
-        let _mesh_task = self.mesh.map(|mesh| {
+        let tombstones = Arc::new(session::SessionTombstones::new());
+        // Taken before `serve` consumes the mesh: the drain needs a way to say
+        // goodbye that outlives the value it would otherwise have to borrow.
+        let shutdown_announcer = self
+            .mesh
+            .as_ref()
+            .map(|mesh| mesh.shutdown_announcer())
+            .unwrap_or_default();
+        let _mesh_task = self.mesh.map(|mut mesh| {
             let mesh_registry = Arc::clone(&registry);
+            mesh.set_session_status_source(Arc::new(RegistrySessionStatus {
+                registry: Arc::clone(&registry),
+                tombstones: Arc::clone(&tombstones),
+            }));
             TaskGuard(tokio::spawn(async move {
                 if let Err(error) = mesh.serve(mesh_registry, host_config_rx).await {
                     eprintln!("[terminal-mesh] stopped: {error:#}");
@@ -1249,7 +1280,8 @@ impl TerminalService {
             event_tx,
             text_engine,
             mesh_runtime,
-            tombstones: Arc::new(session::SessionTombstones::new()),
+            tombstones,
+            shutdown_announcer,
             reconnects: Arc::default(),
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
@@ -1311,6 +1343,11 @@ pub struct DrainReport {
     /// a PTY may have been born that this drain could not wait for.
     pub pending_creates: usize,
     pub spent: Duration,
+    /// Whether connected viewers were told this host was leaving, rather than
+    /// left to discover it as an outage. False means the goodbye never went
+    /// out — no mesh to say it through — and a viewer will have to infer the
+    /// ending from silence.
+    pub announced_shutdown: bool,
 }
 
 struct ShutdownRequest {
@@ -1673,6 +1710,12 @@ const EVENT_FLUSH: Duration = Duration::from_millis(100);
 /// 4. only then start looking at what is live.
 async fn drain(context: &ControlContext, budget: Duration) -> DrainReport {
     let started = Instant::now();
+    // The first act, before admissions close and before a single session is
+    // asked to end. Ordering is the whole of it: terminate first and a viewer
+    // watches its streams die and calls it an outage; tear the mesh down first
+    // and there is nothing left to say goodbye through. Announcing returns
+    // immediately and is idempotent, so it costs the drain no budget.
+    context.shutdown_announcer.announce();
     // Saturating rather than `+`: an absurd budget from a caller must not
     // panic the task that owns the reply channel.
     let budget_ends = started
@@ -1757,6 +1800,10 @@ async fn drain(context: &ControlContext, budget: Duration) -> DrainReport {
             .shutdown
             .creates_in_flight
             .load(atomic::Ordering::SeqCst),
+        // Read back rather than assumed from having called it: a mesh with no
+        // way to announce answers false, and the report's job is to say which
+        // of the two happened.
+        announced_shutdown: context.shutdown_announcer.announced(),
         ..DrainReport::default()
     };
     for (session_id, concluded) in concluded_at {
@@ -4648,12 +4695,17 @@ mod protocol_tests {
 
     struct TestMesh {
         runtime: Arc<TestRuntime>,
+        announcer: mesh::HostShutdownAnnouncer,
     }
 
     #[async_trait::async_trait]
     impl mesh::TerminalMesh for TestMesh {
         fn runtime(&self) -> Arc<dyn mesh::RemoteTerminalRuntime> {
             Arc::clone(&self.runtime) as Arc<dyn mesh::RemoteTerminalRuntime>
+        }
+
+        fn shutdown_announcer(&self) -> mesh::HostShutdownAnnouncer {
+            self.announcer.clone()
         }
 
         async fn serve(
@@ -4723,11 +4775,26 @@ mod protocol_tests {
 
     /// Start a service over a fixture mesh and hand back both ends of it.
     fn start_remote_service(label: &str) -> (TestService, Arc<TestRuntime>) {
+        let (service, runtime, _announcer) = start_remote_service_parts(label);
+        (service, runtime)
+    }
+
+    /// The same fixture, plus the announcer handle the drain will use — the
+    /// only way to watch the goodbye from outside.
+    fn start_remote_service_parts(
+        label: &str,
+    ) -> (TestService, Arc<TestRuntime>, mesh::HostShutdownAnnouncer) {
         let runtime = Arc::new(TestRuntime::default());
+        let announcer = mesh::HostShutdownAnnouncer::new();
         let mesh = TestMesh {
             runtime: Arc::clone(&runtime),
+            announcer: announcer.clone(),
         };
-        (start_test_service_with_mesh(label, Some(mesh)), runtime)
+        (
+            start_test_service_with_mesh(label, Some(mesh)),
+            runtime,
+            announcer,
+        )
     }
 
     /// Say hello at a chosen minor and return the negotiated response.
@@ -5602,6 +5669,75 @@ mod protocol_tests {
         .await
         .expect("the daemon dropped a connection that only sent a fragmented command");
         assert_eq!(response["type"], "sessions");
+
+        service.serving.abort();
+    }
+
+    /// A drain says goodbye before it takes anything apart.
+    ///
+    /// The ordering is the whole point: end the sessions first and a viewer
+    /// watches its streams die and calls it an outage, which is the wrong
+    /// ending and an unrecoverable one — it would wait for a host that is
+    /// never coming back. The report says whether the goodbye went out,
+    /// because "we told them" and "we ran out of time" are different claims.
+    #[tokio::test]
+    async fn a_drain_announces_the_shutdown_before_ending_anything() {
+        let (service, _runtime, announcer) = start_remote_service_parts("drain-goodbye");
+        assert!(
+            !announcer.announced(),
+            "nothing should have been announced before a drain starts"
+        );
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        // Stubborn, so its exit is something the drain causes rather than
+        // something that happened on its own beforehand.
+        let created = request(&mut client, stubborn_session(1)).await;
+        assert_eq!(created["type"], "session-created");
+        tokio::time::sleep(CHILD_SETTLE).await;
+
+        // Both observers run concurrently and stamp the moment their own event
+        // arrives. Reading them in sequence after the drain would only ever
+        // record the order they were read in — which is how an earlier version
+        // of this test passed while the goodbye sat at the very end.
+        let mut announcements = announcer.watch();
+        let announced_at = tokio::spawn(async move {
+            announcements
+                .wait_for(|announced| *announced)
+                .await
+                .expect("the announcer outlives the drain");
+            Instant::now()
+        });
+        let exited_at = tokio::spawn(async move {
+            loop {
+                let packet = read_packet(&mut client, MAX_CONTROL_BYTES).await.unwrap();
+                let message: Value = serde_json::from_slice(&packet).unwrap();
+                if message["type"] == "session-exited" {
+                    return Instant::now();
+                }
+            }
+        });
+
+        let report = service
+            .handle
+            .shutdown(Duration::from_secs(10))
+            .await
+            .unwrap();
+        let announced_at = announced_at.await.unwrap();
+        let exited_at = tokio::time::timeout(Duration::from_secs(5), exited_at)
+            .await
+            .expect("the drain ends the session it announced over")
+            .unwrap();
+
+        assert!(
+            announced_at <= exited_at,
+            "the goodbye has to leave before the sessions do, or a viewer reads the \
+             dying streams as an outage and waits for a host that is never coming back"
+        );
+        assert!(
+            report.announced_shutdown,
+            "and the report must say so, rather than leaving it to be assumed"
+        );
 
         service.serving.abort();
     }

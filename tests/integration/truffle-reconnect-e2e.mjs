@@ -92,20 +92,16 @@ const isState = (sessionId, state) => (event) =>
  * in seconds rather than waiting out an advertisement, a goodbye on shutdown,
  * and a tombstone that can still answer for a session that died unobserved.
  *
- * They are written now and run on request. Until the host implements them a
- * viewer cannot produce any of these outcomes, so running them by default would
- * make this suite fail for something nobody has built yet — and a suite that is
- * expected to be red teaches everyone to ignore it. `GHOSTTEA_E2E_PHASE3=1`
- * turns them on; that is the switch integration flips once the host lands.
+ * All three now pass against a real tailnet, so they run as part of the suite
+ * rather than behind a switch.
  */
-const PHASE3 = process.env.GHOSTTEA_E2E_PHASE3 === "1";
 
 /** Open a fresh remote session and attach one view to it. */
-async function openAndAttach(state, viewer, viewId) {
+async function openAndAttach(state, viewer, viewId, remoteSessionId) {
   const opened = await viewer.request({
     type: "open-remote-session",
     deviceId: state.host.deviceId,
-    remoteSessionId: state.host.sessionId,
+    remoteSessionId,
     cols: 120,
     rows: 40,
   });
@@ -117,25 +113,13 @@ async function openAndAttach(state, viewer, viewId) {
 }
 
 async function phase3Scenarios(state, viewer) {
-  const pending = [
-    "heartbeat outage detection (seconds, not an advertisement TTL)",
-    "SIGTERM the host -> ended{host-shutdown}",
-    "session killed during an outage -> ended{session-exited} from the tombstone",
-  ];
-  if (!PHASE3) {
-    console.log(
-      ["", "phase 3 scenarios (set GHOSTTEA_E2E_PHASE3=1 once the minor-6 host behaviours land):"]
-        .concat(pending.map((name) => `  PENDING  ${name}`))
-        .join("\n"),
-    );
-    return;
-  }
-
   // The session killed while nobody could see it. The viewer must learn how it
   // ended from what the host recorded, not guess from the silence.
   log("phase 3: a session that dies during an outage");
-  await newSession();
-  const exitedSessionId = await openAndAttach(state, viewer, "phase3-exit-view");
+  // Use the id newSession reports rather than the one this run started with:
+  // the fixture's state file has moved on, and the object held here has not.
+  const exitedRemote = await newSession();
+  const exitedSessionId = await openAndAttach(state, viewer, "phase3-exit-view", exitedRemote.sessionId);
   const beforeOutage = viewer.events.length;
   freeze();
   await viewer.waitForEvent(
@@ -164,8 +148,8 @@ async function phase3Scenarios(state, viewer) {
   // A host that gets to say goodbye is distinguishable from one that vanishes;
   // that difference is the whole point of the shutdown frame.
   log("phase 3: a host that shuts down cleanly");
-  await newSession();
-  const shutdownSessionId = await openAndAttach(state, viewer, "phase3-shutdown-view");
+  const shutdownRemote = await newSession();
+  const shutdownSessionId = await openAndAttach(state, viewer, "phase3-shutdown-view", shutdownRemote.sessionId);
   const beforeShutdown = viewer.events.length;
   const stopped = await stopHost();
   if (!stopped.exitedOnSigterm) {
@@ -273,18 +257,16 @@ async function main() {
     );
     const detectionMs = Date.now() - frozenAt;
     log(`viewer noticed the outage after ${(detectionMs / 1000).toFixed(1)}s`);
-    if (PHASE3) {
-      // Without a heartbeat this costs an advertisement TTL plus a probe —
-      // roughly 25s, measured. A heartbeat that pings at 3s idle and gives up
-      // at 6s should land far below that. The bound is deliberately loose: the
-      // claim worth defending is "seconds, not tens of seconds", and pinning
-      // the exact number would make a slow CI machine look like a regression.
-      if (detectionMs > 15_000) {
-        fail(
-          `the outage took ${(detectionMs / 1000).toFixed(1)}s to notice; ` +
-            "with a heartbeat this should be seconds, not an advertisement TTL",
-        );
-      }
+    // Without a heartbeat this cost an advertisement TTL plus a probe — 24.0s,
+    // measured before the heartbeat landed. It now runs at ~3.5s. The bound is
+    // deliberately loose: the claim worth defending is "seconds, not tens of
+    // seconds", and pinning the exact number would make a slow machine look
+    // like a regression.
+    if (detectionMs > 15_000) {
+      fail(
+        `the outage took ${(detectionMs / 1000).toFixed(1)}s to notice; ` +
+          "with a heartbeat this should be seconds, not an advertisement TTL",
+      );
     }
 
     const backoff = await viewer.waitForEvent(

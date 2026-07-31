@@ -674,10 +674,20 @@ export async function newSession({ cols = 120, rows = 40 } = {}) {
     state.host.sessionId = created.session.id;
     state.host.sessionPid = created.session.pid;
     writeState(state);
-    return { sessionId: created.session.id, pid: created.session.pid };
   } finally {
     hostControl.close();
   }
+  // Wait for the viewer to actually see it. Advertisements republish on an
+  // interval, so a session that exists on the host is not yet a session the
+  // viewer can open — and "not in the advertisement I hold" surfaces as "no
+  // longer attachable", which reads like a defect rather than a race.
+  await until("the viewer discovering the new session", BUDGETS.discoveryMs, async () => {
+    const seen = await advertisedHost(state);
+    return seen?.sessions?.some((session) => session.sessionId === state.host.sessionId && session.attachable)
+      ? true
+      : undefined;
+  });
+  return { sessionId: state.host.sessionId, pid: state.host.sessionPid };
 }
 
 /**
@@ -712,9 +722,21 @@ export function killSession() {
 export async function restartHost() {
   const state = requireState();
   const before = state.host.hostInstanceId ?? (await advertisedHost(state))?.hostInstanceId;
-  stopDaemon(state.host.pid);
+  // Killed outright, never asked to leave. Since the daemon learned to say
+  // goodbye on SIGTERM, a polite restart is a *shutdown* followed by a start,
+  // and the viewer rightly reports host-shutdown — it was told. `host-restarted`
+  // is the conclusion for a host that vanished without a word and came back
+  // wearing a new instance id, so that is what this has to stage: a crash.
+  if (state.frozen) process.kill(state.host.pid, "SIGCONT");
+  try {
+    process.kill(state.host.pid, "SIGKILL");
+  } catch {
+    // Already gone; the restart below still gives the viewer a new instance.
+  }
+  while (alive(state.host.pid)) await sleep(50);
   state.frozen = false;
   state.host.sessionId = undefined;
+  state.host.sessionPid = undefined;
   await startDaemon("host", state);
   const host = await until("the restarted host re-advertising", BUDGETS.restartMs, async () => {
     const seen = await advertisedHost(state);

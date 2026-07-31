@@ -115,8 +115,12 @@ async fn serve_until_signal(service: TerminalService) -> Result<()> {
             // is written to: "stopped" and "stopped in time" are different
             // claims, and a supervisor reading logs deserves the difference.
             eprintln!(
-                "[ghosttead] drained {} session(s), killed {}, unresponsive {:?}, in {:?}",
-                report.drained, report.killed, report.unresponsive, report.spent
+                "[ghosttead] drained {} session(s), killed {}, unresponsive {:?}, viewers told: {}, in {:?}",
+                report.drained,
+                report.killed,
+                report.unresponsive,
+                report.announced_shutdown,
+                report.spent
             );
             Ok(())
         }
