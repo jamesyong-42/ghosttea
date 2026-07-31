@@ -6,6 +6,7 @@ use std::{
     ffi::{CString, c_char},
     mem::{align_of, size_of},
     panic::AssertUnwindSafe,
+    path::PathBuf,
     ptr, slice, str,
     sync::{
         Arc, Mutex,
@@ -13,6 +14,7 @@ use std::{
     },
 };
 
+use ghosttea_config::{ConfigLoadOptions, load_config};
 use ghosttea_core::{
     ClipboardRequest, LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
@@ -513,6 +515,50 @@ pub extern "C" fn ghosttea_abi_version() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn ghosttea_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
+}
+
+/// Resolve Ghostty-compatible configuration and return the versioned snapshot
+/// as UTF-8 JSON. An empty overlay path loads only standard Ghostty files when
+/// `load_default_files` is true.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_load_json(
+    overlay_path_utf8: GhostteaBytesView,
+    load_default_files: bool,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    clear_error();
+    if out_json.is_null() {
+        set_error("configuration JSON output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer was validated and is writable by contract.
+    unsafe { out_json.write(GhostteaOwnedBytes::EMPTY) };
+    let overlay = match unsafe { view_utf8(overlay_path_utf8, "configuration overlay path") } {
+        Ok(value) => value,
+        Err((status, message)) => {
+            set_error(message);
+            return status;
+        }
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let options = ConfigLoadOptions {
+            load_default_files,
+            explicit_path: (!overlay.is_empty()).then(|| PathBuf::from(overlay)),
+            ..ConfigLoadOptions::default()
+        };
+        serde_json::to_vec(&load_config(&options))
+    }));
+    match result {
+        Ok(Ok(bytes)) => write_bytes(out_json, bytes),
+        Ok(Err(error)) => {
+            set_error(format!("serialize configuration snapshot: {error}"));
+            GHOSTTEA_STATUS_INTERNAL
+        }
+        Err(_) => {
+            set_error("panic caught while loading Ghosttea configuration");
+            GHOSTTEA_STATUS_PANIC
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1301,6 +1347,29 @@ mod tests {
         assert_eq!(align_of::<GhostteaEffect>(), 4);
         assert_eq!(size_of::<GhostteaTextEnginePerformance>(), 32);
         assert_eq!(ghosttea_abi_version(), 1);
+    }
+
+    #[test]
+    fn configuration_snapshot_is_available_through_the_stable_byte_abi() {
+        let mut output = GhostteaOwnedBytes::EMPTY;
+        assert_eq!(
+            ghosttea_config_load_json(
+                GhostteaBytesView {
+                    data: ptr::null(),
+                    len: 0,
+                },
+                false,
+                &mut output,
+            ),
+            GHOSTTEA_STATUS_OK
+        );
+        let json = unsafe { slice::from_raw_parts(output.data, output.len) };
+        let value: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["compatibility"]["ghosttyVersion"], "1.3.1");
+        assert_eq!(value["terminal"]["scrollbackBytes"], 10_000_000);
+        assert_eq!(value["renderer"]["postProcess"], "none");
+        ghosttea_owned_bytes_free(output);
     }
 
     #[test]

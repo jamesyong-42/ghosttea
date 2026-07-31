@@ -1,4 +1,4 @@
-import type { CellSelection, TerminalTheme } from "./renderers/types.js";
+import type { CellSelection, TerminalEffects, TerminalTheme } from "./renderers/types.js";
 import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
 
@@ -13,6 +13,7 @@ export type RendererToWorkerMessage =
   | { type: "frame-gap"; sessionHandles: string[] }
   | { type: "expect-full"; sessionHandle: string }
   | { type: "theme"; sessionHandle: string; surfaceId?: string; theme: TerminalTheme }
+  | { type: "effects"; sessionHandle: string; surfaceId?: string; effects: TerminalEffects }
   | { type: "selection"; sessionHandle: string; surfaceId?: string; selection: CellSelection | null }
   | { type: "visibility"; sessionHandle: string; surfaceId?: string; visible: boolean }
   | { type: "focus"; surfaceId: string; sessionHandle: string; focused: boolean }

@@ -13,6 +13,7 @@ export {
   GHOSTTY_LINUX_DEFAULT_BINDINGS,
   GHOSTTY_MACOS_DEFAULT_BINDINGS,
   defaultBindingsForPlatform,
+  configuredBindingsForPlatform,
   keyboardDefaultBindings,
   matchGhostteaBinding,
   matchGhostteaBindingEntry,

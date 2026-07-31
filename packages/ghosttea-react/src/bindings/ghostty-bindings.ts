@@ -13,6 +13,7 @@
  */
 
 import type { GhostteaBindingAction, GhosttyAction } from "./ghostty-actions.js";
+import type { WorkspaceConfig } from "@vibecook/ghosttea-protocol";
 import { parseGhostteaBindingAction, parseGhosttyAction } from "./ghostty-actions.js";
 import {
   formatGhosttyTrigger,
@@ -32,6 +33,12 @@ export type GhosttyBindingFlags = {
    * (e.g. Escape=end_search only while search is open).
    */
   performable: boolean;
+  /** Ghostty's `unconsumed:` prefix: run the action and still forward input. */
+  unconsumed?: boolean;
+  /** Parsed for compatibility; OS-global registration is host-owned. */
+  global?: boolean;
+  /** Parsed for compatibility; multi-surface execution is not implemented. */
+  all?: boolean;
 };
 
 export type GhosttyBindingEntry = {
@@ -115,6 +122,70 @@ export function defaultBindingsForPlatform(platform: BindingPlatform | undefined
   if (platform === "linux" || platform === "win32") return GHOSTTY_LINUX_DEFAULT_BINDINGS;
   // darwin / macos / undefined → macOS defaults (primary desktop target).
   return GHOSTTY_MACOS_DEFAULT_BINDINGS;
+}
+
+const CONFIG_BINDING_PREFIX = /^(all|global|unconsumed|performable):/;
+
+function parseConfiguredTrigger(raw: string): {
+  raw: string;
+  trigger: GhosttyTrigger;
+  flags: GhosttyBindingFlags;
+} {
+  let triggerRaw = raw.trim();
+  const flags: GhosttyBindingFlags = { performable: false };
+  while (true) {
+    const match = triggerRaw.match(CONFIG_BINDING_PREFIX);
+    if (!match) break;
+    const prefix = match[1]!;
+    if (prefix === "all") flags.all = true;
+    else if (prefix === "global") flags.global = true;
+    else if (prefix === "unconsumed") flags.unconsumed = true;
+    else if (prefix === "performable") flags.performable = true;
+    triggerRaw = triggerRaw.slice(match[0].length);
+  }
+  return { raw: triggerRaw, trigger: parseGhosttyTrigger(triggerRaw), flags };
+}
+
+/**
+ * Apply imported Ghostty `keybind` mutations over the pinned platform
+ * defaults. Invalid or not-yet-known actions are ignored here; the config
+ * snapshot retains the raw mutation for hosts to inspect.
+ */
+export function configuredBindingsForPlatform(
+  config: WorkspaceConfig | undefined,
+  platform: BindingPlatform | undefined,
+): readonly GhosttyBindingEntry[] {
+  const table = new Map(
+    (config?.clearKeybindings ? [] : defaultBindingsForPlatform(platform)).map(
+      (entry) => [formatGhosttyTrigger(entry.trigger), entry] as const,
+    ),
+  );
+  for (const mutation of config?.keybindings ?? []) {
+    let parsed: ReturnType<typeof parseConfiguredTrigger>;
+    try {
+      parsed = parseConfiguredTrigger(mutation.trigger);
+    } catch {
+      continue;
+    }
+    const canonical = formatGhosttyTrigger(parsed.trigger);
+    if (mutation.action === "unbind") {
+      table.delete(canonical);
+      continue;
+    }
+    try {
+      table.set(canonical, {
+        triggerRaw: parsed.raw,
+        actionRaw: mutation.action,
+        trigger: parsed.trigger,
+        action: parseGhosttyAction(mutation.action),
+        flags: parsed.flags,
+      });
+    } catch {
+      // The compatibility layer deliberately leaves unsupported action text
+      // visible in ConfigSnapshot rather than turning it into a wrong action.
+    }
+  }
+  return [...table.values()];
 }
 
 export function isKeyboardBinding(entry: { trigger: GhosttyTrigger }): boolean {

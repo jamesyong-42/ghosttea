@@ -141,6 +141,13 @@ typedef struct ghosttea_mouse_event {
 uint32_t ghosttea_abi_version(void);
 const char *ghosttea_last_error_message(void);
 
+/* Resolves Ghostty's standard config sources followed by an optional
+ * Ghosttea-owned overlay and returns a ghosttea-config/v1 JSON snapshot.
+ * Pass an empty byte view for no overlay. */
+ghosttea_status_t ghosttea_config_load_json(
+    ghosttea_bytes_view_t overlay_path_utf8, bool load_default_files,
+    ghosttea_owned_bytes_t *out_json);
+
 ghosttea_status_t ghosttea_runtime_create(const ghosttea_runtime_config_t *config,
                                           ghosttea_runtime_t **out_runtime);
 void ghosttea_runtime_destroy(ghosttea_runtime_t *runtime);

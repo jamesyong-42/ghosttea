@@ -20,11 +20,13 @@ import {
 import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { CanvasTerminalRenderer } from "./renderers/canvas-renderer.js";
 import {
+  DEFAULT_EFFECTS,
   DEFAULT_THEME,
   type CellSelection,
   type PixelSize,
   type RenderView,
   type TerminalRenderer,
+  type TerminalEffects,
   type TerminalTheme,
   renderedSizeChanged,
 } from "./renderers/types.js";
@@ -58,6 +60,7 @@ interface SurfaceSnapshot {
   cursorBlinkVisible: boolean;
   selection: CellSelection | null;
   theme: TerminalTheme;
+  effects: TerminalEffects;
   damage: { full: boolean; rows: Set<number>; geometryChanged: boolean };
 }
 
@@ -69,6 +72,7 @@ interface MountedCanvas {
 
 interface SessionPresentationDefaults {
   theme: TerminalTheme;
+  effects: TerminalEffects;
   selection: CellSelection | null;
   visible: boolean;
 }
@@ -342,7 +346,7 @@ function dropSessionSnapshot(sessionHandle: string): void {
 function defaults(sessionHandle: string): SessionPresentationDefaults {
   let value = presentationDefaults.get(sessionHandle);
   if (!value) {
-    value = { theme: DEFAULT_THEME, selection: null, visible: true };
+    value = { theme: DEFAULT_THEME, effects: DEFAULT_EFFECTS, selection: null, visible: true };
     presentationDefaults.set(sessionHandle, value);
   }
   return value;
@@ -361,6 +365,7 @@ function surface(surfaceId: string, sessionHandle: string): SurfaceSnapshot {
     cursorBlinkVisible: true,
     selection: initial.selection,
     theme: initial.theme,
+    effects: initial.effects,
     damage: { full: true, rows: new Set(), geometryChanged: true },
   };
   surfaces.set(surfaceId, value);
@@ -403,6 +408,7 @@ function renderView(session: SessionSnapshot, presentation: SurfaceSnapshot): Re
     cursorBlinkVisible: presentation.cursorBlinkVisible,
     selection: presentation.selection,
     theme: presentation.theme,
+    effects: presentation.effects,
     damage: presentation.damage,
   };
 }
@@ -904,6 +910,17 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
         defaults(message.sessionHandle).theme = message.theme;
         for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
           surfaces.get(surfaceId)!.theme = message.theme;
+          invalidateFull(surfaceId);
+        }
+      }
+    } else if (message.type === "effects") {
+      if (message.surfaceId) {
+        surface(message.surfaceId, message.sessionHandle).effects = message.effects;
+        invalidateFull(message.surfaceId);
+      } else {
+        defaults(message.sessionHandle).effects = message.effects;
+        for (const surfaceId of surfaceIdsForSession(message.sessionHandle)) {
+          surfaces.get(surfaceId)!.effects = message.effects;
           invalidateFull(surfaceId);
         }
       }

@@ -98,7 +98,7 @@ public struct GhostteaTerminalConfiguration: Sendable {
     sessionHandle: UInt64,
     sessionEpoch: UInt64 = 1,
     layoutEpoch: UInt64 = 1,
-    scrollbackBytes: UInt64 = 5_000_000,
+    scrollbackBytes: UInt64 = 10_000_000,
     columns: UInt16 = 80,
     rows: UInt16 = 24
   ) {
@@ -703,7 +703,7 @@ private func decodeUpdate(_ native: ghosttea_update_t) throws -> GhostteaUpdate 
   return GhostteaUpdate(effects: effects)
 }
 
-private func withUTF8<T>(
+func withUTF8<T>(
   _ string: String,
   _ body: (ghosttea_bytes_view_t) throws -> T
 ) rethrows -> T {
@@ -713,7 +713,7 @@ private func withUTF8<T>(
   }
 }
 
-private func check(_ status: ghosttea_status_t) throws {
+func check(_ status: ghosttea_status_t) throws {
   guard status == GHOSTTEA_STATUS_OK else {
     let message = ghosttea_last_error_message().map(String.init(cString:)) ?? "unknown native error"
     throw GhostteaCoreError.native(status: status.rawValue, message: message)

@@ -69,6 +69,7 @@ The [API guide](https://vibecook-dev.github.io/ghosttea/api.html) is the shortes
 - Local PTYs and direct SSH
 - WebGPU desktop and Metal iOS rendering
 - Sandboxed Electron transport and a complete React workspace
+- Versioned [Ghostty configuration compatibility](docs/ghostty-config-compatibility.md) across desktop and Apple APIs
 - Human-safe automation and logical session sharing
 
 Local frames skip Electron main and React state. Shared sessions move terminal state—not screenshots—so each device renders sharp pixels locally.

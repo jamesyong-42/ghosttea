@@ -7,6 +7,7 @@ import {
   isServerEvent,
   type AutomationInputOperation,
   type ClientCommand,
+  type ConfigSnapshot,
   type CreateSessionOptions,
   type ServerEvent,
   type SessionSummary,
@@ -162,6 +163,18 @@ export class GhostteaAutomationClient extends EventEmitter {
     const event = await this.request({ type: "create-session", options });
     if (event.type !== "session-created") throw new Error("ghosttead returned an unexpected response");
     return event.session;
+  }
+
+  async getConfig(): Promise<ConfigSnapshot> {
+    const event = await this.request({ type: "get-config" });
+    if (event.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
+    return event.config;
+  }
+
+  async reloadConfig(): Promise<ConfigSnapshot> {
+    const event = await this.request({ type: "reload-config" });
+    if (event.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
+    return event.config;
   }
 
   async listSessions(): Promise<SessionSummary[]> {

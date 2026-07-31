@@ -14,6 +14,14 @@ lifecycle ordering.
 The raw Ghostty, Rust, and libssh2 APIs are explicitly not application
 contracts.
 
+`GhostteaConfiguration.load` exposes the same versioned Ghostty-syntax
+configuration snapshot as the desktop daemon. It can import Ghostty's standard
+files plus an app-owned overlay; `GhostteaTerminalConfiguration(config:)`,
+`GhostteaTerminal.apply(config:)`, and
+`GhostteaTerminalMetalView.applyConfiguration(_:)` apply the currently
+supported terminal and presentation fields. The exact support matrix is in
+[`docs/ghostty-config-compatibility.md`](../../docs/ghostty-config-compatibility.md).
+
 `GhostteaCredentials` defines the first persistent-secret boundary. It stores
 opaque credential references in Apple's device-only, non-synchronizing
 data-protection Keychain. The SSH adapter resolves password, private-key, and

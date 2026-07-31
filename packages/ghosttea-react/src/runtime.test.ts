@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
+import { unknownSessionActivity, type ConfigSnapshot, type SessionSummary } from "@vibecook/ghosttea-protocol";
 import { GhostteaTerminalRuntime } from "./runtime";
 
 class FakeWorker extends EventTarget {
@@ -36,6 +36,7 @@ class FakePort extends EventTarget {
   subscriptionAcknowledgements = true;
   subscriptionControlAsArrayBuffer = false;
   helloProtocolMinor: number | undefined;
+  configSnapshot: ConfigSnapshot | undefined;
   closed = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
 
@@ -51,9 +52,18 @@ class FakePort extends EventTarget {
             protocolMajor: message.protocolMajor,
             protocolMinor: this.helloProtocolMinor ?? message.protocolMinor,
             serverBuild: "test",
+            ...(this.configSnapshot ? { configRevision: this.configSnapshot.revision } : {}),
           },
         }),
       );
+    } else if (message.type === "get-config" || message.type === "reload-config") {
+      if (this.configSnapshot) {
+        this.dispatchEvent(
+          new MessageEvent("message", {
+            data: { requestId, type: "config", config: this.configSnapshot },
+          }),
+        );
+      }
     } else if (message.type === "subscribe") {
       if (this.bridgeCapabilities && message.bridgeCapabilities === 1) {
         this.onmessage?.(
@@ -146,6 +156,42 @@ const session = {
   activity: unknownSessionActivity(),
 } as const;
 
+const configSnapshot: ConfigSnapshot = {
+  schemaVersion: 1,
+  revision: "config-1",
+  compatibility: {
+    ghosttyVersion: "1.3.1",
+    ghosttyCommit: "f8041e7",
+    knownKeyCount: 200,
+  },
+  sources: [],
+  diagnostics: [],
+  configuredKeys: [],
+  terminal: {
+    scrollbackBytes: 10_000_000,
+    foreground: [255, 255, 255],
+    background: [40, 44, 52],
+    cursor: [255, 255, 255],
+  },
+  renderer: {
+    foreground: [255, 255, 255],
+    background: [40, 44, 52],
+    cursor: [255, 255, 255],
+    selectionBackground: [255, 255, 255],
+    selectionForeground: [40, 44, 52],
+    fontSize: 13,
+    fontFamilies: [],
+    paddingX: [2, 2],
+    paddingY: [2, 2],
+    postProcess: "none",
+    customShaderPaths: [],
+  },
+  workspace: {
+    keybindings: [],
+    clearKeybindings: false,
+  },
+};
+
 function controlChanged(control: FakePort, controllerViewId: string, cols: number, rows: number): void {
   control.dispatchEvent(
     new MessageEvent("message", {
@@ -169,6 +215,41 @@ afterEach(() => {
 });
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
+  it("negotiates, caches, and reloads the shared configuration snapshot", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.configSnapshot = configSnapshot;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    const changes: ConfigSnapshot[] = [];
+    runtime.addEventListener("config-changed", (event) => {
+      changes.push((event as CustomEvent<ConfigSnapshot>).detail);
+    });
+
+    await runtime.connect();
+    expect(runtime.configSnapshot).toEqual(configSnapshot);
+    expect(control.messages.map((message) => message.type)).toContain("get-config");
+    expect(changes).toEqual([configSnapshot]);
+
+    control.configSnapshot = {
+      ...configSnapshot,
+      revision: "config-2",
+      renderer: { ...configSnapshot.renderer, postProcess: "better-crt" },
+    };
+    await expect(runtime.reloadConfig()).resolves.toEqual(control.configSnapshot);
+    expect(runtime.configSnapshot?.renderer.postProcess).toBe("better-crt");
+    expect(changes).toHaveLength(2);
+    runtime.dispose();
+  });
+
   it("round-trips isolated performance measurements through the render worker", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();

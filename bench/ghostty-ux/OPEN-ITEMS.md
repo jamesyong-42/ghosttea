@@ -4,7 +4,7 @@ Living backlog for work **not** done yet (or deliberately deferred).
 Implemented spine: ground-truth fixtures → pure match → pure route → scoped executors.  
 See [README.md](./README.md) for architecture and refresh procedure.
 
-**Last updated:** 2026-07-22 (session: binding dispatch + performable + Linux table)
+**Last updated:** 2026-07-30 (shared Ghostty config schema/import)
 
 ---
 
@@ -98,22 +98,24 @@ These are smaller or host-only; still incomplete:
 
 ## Implemented spine (do not regress)
 
-| Area                                                                        | Status                                  |
-| --------------------------------------------------------------------------- | --------------------------------------- |
-| Ground truth extract + fixtures                                             | macOS dump + Linux derived + extensions |
-| Action parse/format (85 actions)                                            | done                                    |
-| Trigger match + synthesize                                                  | done                                    |
-| Router: workspace / terminal / platform / unhandled                         | done                                    |
-| **Performable** pass-through for unhandled                                  | Escape, search, undo, …                 |
-| Terminal consume only if applied when performable                           | copy, adjust_selection, …               |
-| Workspace always consume after match                                        | no fail-open PTY leak                   |
-| Tabs / splits / zoom / equalize / close pane                                | done                                    |
-| Scroll family + adjust_selection + scroll-into-view                         | done                                    |
-| Natural text editing + paste                                                | done                                    |
-| Platform: fullscreen, new/close window, quit, open/reload config, close all | done (desktop)                          |
-| `last_tab` + `goto_tab` clamp to last                                       | done (TS + Swift + Electron)            |
-| Platform-aware macOS vs Linux tables                                        | done                                    |
-| ⌘⇧O remote sessions extension                                               | **keep** (product)                      |
+| Area                                                                        | Status                                           |
+| --------------------------------------------------------------------------- | ------------------------------------------------ |
+| Ground truth extract + fixtures                                             | macOS dump + Linux derived + extensions          |
+| Action parse/format (85 actions)                                            | done                                             |
+| Trigger match + synthesize                                                  | done                                             |
+| Router: workspace / terminal / platform / unhandled                         | done                                             |
+| **Performable** pass-through for unhandled                                  | Escape, search, undo, …                          |
+| Terminal consume only if applied when performable                           | copy, adjust_selection, …                        |
+| Workspace always consume after match                                        | no fail-open PTY leak                            |
+| Tabs / splits / zoom / equalize / close pane                                | done                                             |
+| Scroll family + adjust_selection + scroll-into-view                         | done                                             |
+| Natural text editing + paste                                                | done                                             |
+| Platform: fullscreen, new/close window, quit, open/reload config, close all | done (desktop)                                   |
+| `last_tab` + `goto_tab` clamp to last                                       | done (TS + Swift + Electron)                     |
+| Platform-aware macOS vs Linux tables                                        | done                                             |
+| ⌘⇧O remote sessions extension                                               | **keep** (product)                               |
+| Versioned Rust config schema + daemon/Electron/Swift APIs                   | done; see `docs/ghostty-config-compatibility.md` |
+| Existing Ghostty config import + live desktop reload                        | colors, scrollback, simple keybinds, opt-in CRT  |
 
 ---
 

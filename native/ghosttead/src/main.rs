@@ -26,6 +26,9 @@ async fn main() -> Result<()> {
         frame_socket: required_env("GHOSTTEA_FRAME_SOCKET", "TERMINALD_FRAME_SOCKET")?,
         auth_token: required_env("GHOSTTEA_AUTH_TOKEN", "TERMINALD_AUTH_TOKEN")?,
     });
+    if let Some(path) = nonempty_env("GHOSTTEA_CONFIG_PATH") {
+        service = service.with_config_path(path);
+    }
     if let Some(text_engine) = configured_text_engine()? {
         service = service.with_text_engine(text_engine);
     }

@@ -261,6 +261,13 @@ jobs:
         run: scripts/publish-crate-if-missing.sh ghosttea-vt
 
       - uses: rust-lang/crates-io-auth-action@v1
+        id: auth-config
+      - name: Publish ghosttea-config
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth-config.outputs.token }}
+        run: scripts/publish-crate-if-missing.sh ghosttea-config
+
+      - uses: rust-lang/crates-io-auth-action@v1
         id: auth-core
       - name: Publish ghosttea-core
         env:

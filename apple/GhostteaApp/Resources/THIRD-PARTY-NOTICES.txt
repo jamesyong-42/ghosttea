@@ -2,8 +2,8 @@ GHOSTTEA iOS THIRD-PARTY NOTICES
 ================================
 
 This file is generated from the reviewed iOS release dependency graph.
-CycloneDX SHA-256: 4f1acaacdd053a683a6cfc80bed9239ebbea1dabff7a70ff5590d4d2194a5233
-Components: 96
+CycloneDX SHA-256: 7dd68696372a06cf165cf399563b05c6e5bb41ed91397d8e5cb92ed30f9ac8ec
+Components: 97
 Unique license documents: 93
 
 COMPONENT INDEX
@@ -140,6 +140,10 @@ generic-array 0.14.7
 getrandom 0.2.17
   License: MIT OR Apache-2.0
   Documents: LICENSE-024, LICENSE-062
+
+ghosttea-config 0.6.2
+  License: MIT
+  Documents: LICENSE-078
 
 ghosttea-core 0.6.2
   License: MIT
@@ -5300,7 +5304,7 @@ in this Software without prior written authorization of the copyright holder.
 ================================================================================
 LICENSE-078 · LICENSE, TRUFFLE-LICENSE
 SHA-256: d5988fd09ab1f97d46de9b2678a4fd2950286601f0a5995e739ac926c5a8eae0
-Used by: Truffle Swift 8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7, ghosttea-apple-ffi 0.6.2, ghosttea-core 0.6.2, ghosttea-ffi 0.6.2, ghosttea-font-fixture-ffi 0.6.2, ghosttea-text 0.6.2, ghosttea-vt 0.6.2, ghosttea-vt-sys 0.6.2
+Used by: Truffle Swift 8d6271ef9b8869b49a886e0cfb6eb95d03e89eb7, ghosttea-apple-ffi 0.6.2, ghosttea-config 0.6.2, ghosttea-core 0.6.2, ghosttea-ffi 0.6.2, ghosttea-font-fixture-ffi 0.6.2, ghosttea-text 0.6.2, ghosttea-vt 0.6.2, ghosttea-vt-sys 0.6.2
 --------------------------------------------------------------------------------
 MIT License
 

@@ -157,6 +157,11 @@ struct VertexOutput {
 const BETTER_CRT_SHADER = /* wgsl */ `
 @group(0) @binding(0) var terminal_image: texture_2d<f32>;
 @group(0) @binding(1) var terminal_sampler: sampler;
+struct PostProcessConfig {
+  // A vec4 keeps the WGSL uniform layout equal to the host's 16-byte buffer.
+  enabled: vec4u,
+}
+@group(0) @binding(2) var<uniform> post_process: PostProcessConfig;
 
 @vertex fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f {
   let positions = array<vec2f, 3>(
@@ -170,6 +175,9 @@ const BETTER_CRT_SHADER = /* wgsl */ `
 @fragment fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let dimensions = vec2f(textureDimensions(terminal_image));
   var uv = position.xy / dimensions;
+  if (post_process.enabled.x == 0u) {
+    return textureSample(terminal_image, terminal_sampler, uv);
+  }
   var dc = abs(vec2f(0.5) - uv);
   dc *= dc;
 
@@ -491,7 +499,9 @@ interface WebGpuSurface extends PixelSize {
   canvas: OffscreenCanvas;
   context: GPUCanvasContext;
   sceneTexture: GPUTexture;
+  postProcessConfigBuffer: GPUBuffer;
   postProcessBindGroup: GPUBindGroup;
+  postProcessEnabled: boolean | undefined;
   rectangleBuffer: DynamicVertexBuffer;
   glyphBuffer: DynamicVertexBuffer;
   colorGlyphBuffer: DynamicVertexBuffer;
@@ -1173,11 +1183,18 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) throw new Error("WebGPU canvas context unavailable");
     const sceneTexture = this.#createSceneTexture(canvas.width, canvas.height);
+    const postProcessConfigBuffer = this.device.createBuffer({
+      label: `Ghostty custom shader configuration ${id}`,
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     const surface: WebGpuSurface = {
       canvas,
       context,
       sceneTexture,
-      postProcessBindGroup: this.#createPostProcessBindGroup(sceneTexture),
+      postProcessConfigBuffer,
+      postProcessBindGroup: this.#createPostProcessBindGroup(sceneTexture, postProcessConfigBuffer),
+      postProcessEnabled: undefined,
       width: 1,
       height: 1,
       dpr: 1,
@@ -1199,6 +1216,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (!surface) return;
     surface.context.unconfigure();
     surface.sceneTexture.destroy();
+    surface.postProcessConfigBuffer.destroy();
     surface.rectangleBuffer.destroy();
     surface.glyphBuffer.destroy();
     surface.colorGlyphBuffer.destroy();
@@ -1223,7 +1241,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     surface.context.configure({ device: this.device, format: this.format, alphaMode: "premultiplied" });
     surface.sceneTexture.destroy();
     surface.sceneTexture = this.#createSceneTexture(surface.canvas.width, surface.canvas.height);
-    surface.postProcessBindGroup = this.#createPostProcessBindGroup(surface.sceneTexture);
+    surface.postProcessBindGroup = this.#createPostProcessBindGroup(
+      surface.sceneTexture,
+      surface.postProcessConfigBuffer,
+    );
     clearGeometryCache(surface);
     surface.sceneValid = false;
   }
@@ -1237,19 +1258,30 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     });
   }
 
-  #createPostProcessBindGroup(texture: GPUTexture): GPUBindGroup {
+  #createPostProcessBindGroup(texture: GPUTexture, configBuffer: GPUBuffer): GPUBindGroup {
     return this.device.createBindGroup({
       label: "Ghostty custom shader bindings",
       layout: this.#postProcessPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: texture.createView() },
         { binding: 1, resource: this.#postProcessSampler },
+        { binding: 2, resource: { buffer: configBuffer } },
       ],
     });
   }
 
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
-    if (!this.#surfaces.has(id)) return;
+    const surface = this.#surfaces.get(id);
+    if (!surface) return;
+    const postProcessEnabled = view.effects?.postProcess === "better-crt";
+    if (surface.postProcessEnabled !== postProcessEnabled) {
+      surface.postProcessEnabled = postProcessEnabled;
+      this.device.queue.writeBuffer(
+        surface.postProcessConfigBuffer,
+        0,
+        new Uint32Array([Number(postProcessEnabled), 0, 0, 0]),
+      );
+    }
     const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
     const metrics =
       view.damage?.geometryChanged === false
@@ -1266,6 +1298,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const encoder = this.device.createCommandEncoder({ label: `terminal frame batch (${active.length} panes)` });
     const byId = new Map<string, TerminalRenderMetrics | undefined>();
     for (const { id, view } of active) {
+      const surface = this.#surfaces.get(id)!;
+      const postProcessEnabled = view.effects?.postProcess === "better-crt";
+      if (surface.postProcessEnabled !== postProcessEnabled) {
+        surface.postProcessEnabled = postProcessEnabled;
+        this.device.queue.writeBuffer(
+          surface.postProcessConfigBuffer,
+          0,
+          new Uint32Array([Number(postProcessEnabled), 0, 0, 0]),
+        );
+      }
       byId.set(
         id,
         view.damage?.geometryChanged === false

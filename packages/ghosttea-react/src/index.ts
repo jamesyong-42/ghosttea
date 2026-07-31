@@ -1,5 +1,6 @@
 export { GhostteaProvider, useGhostteaRuntime, type GhostteaProviderProps } from "./context.js";
 export { TerminalSurface, type TerminalMenuAction, type TerminalSurfaceProps } from "./TerminalSurface.js";
+export { rendererTheme, terminalEffectsFromConfig, terminalThemeFromConfig } from "./config.js";
 export {
   GhostteaTerminalRuntime,
   createGhostteaTerminalRuntime,

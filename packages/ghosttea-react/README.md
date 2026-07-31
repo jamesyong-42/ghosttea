@@ -31,6 +31,14 @@ Default macOS keybinds are table-driven from the Ghostty ground-truth dump
 (`src/bindings/fixtures/keybinds-macos-default.json`, refreshed via
 `npm run extract:ghostty-ux`).
 
+Protocol 1.10 supplies the shared versioned Ghostty configuration snapshot.
+The daemon applies scrollback and model colors, while `GhostteaWorkspace`
+applies presentation colors, single-stroke keybind mutations, and the opt-in
+post-process effect automatically. Lower-level hosts can use
+`terminalThemeFromConfig` and `terminalEffectsFromConfig`. See the repository's
+[`Ghostty configuration compatibility`](../../docs/ghostty-config-compatibility.md)
+matrix for deliberate gaps.
+
 Architecture:
 
 1. **Match** — `matchGhostteaBinding` (Ghostty defaults + extensions)

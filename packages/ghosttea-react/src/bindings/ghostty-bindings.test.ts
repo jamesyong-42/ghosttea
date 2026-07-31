@@ -3,7 +3,9 @@ import { formatGhosttyAction, parseGhosttyAction } from "./ghostty-actions";
 import {
   GHOSTTEA_BINDING_EXTENSIONS,
   GHOSTTY_MACOS_DEFAULT_BINDINGS,
+  configuredBindingsForPlatform,
   keyboardDefaultBindings,
+  matchGhosttyBindingEntry,
   matchGhostteaBinding,
   matchGhosttyBinding,
   synthesizeEventForBinding,
@@ -123,5 +125,63 @@ describe("ghosttea binding extensions", () => {
     expect(matchGhosttyBinding(event)).toBeNull();
     expect(matchGhostteaBinding(event)).toEqual({ type: "ghosttea.remote_sessions" });
     expect(matchGhostteaBinding(event, { extensions: false })).toBeNull();
+  });
+});
+
+describe("imported Ghostty keybinds", () => {
+  it("overrides and unbinds platform defaults in source order", () => {
+    const bindings = configuredBindingsForPlatform(
+      {
+        clearKeybindings: false,
+        keybindings: [
+          { trigger: "super+t", action: "previous_tab" },
+          { trigger: "super+w", action: "unbind" },
+          { trigger: "unconsumed:super+shift+x", action: "new_tab" },
+        ],
+      },
+      "darwin",
+    );
+
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+t"))!, bindings)).toEqual({
+      type: "previous_tab",
+    });
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+w"))!, bindings)).toBeNull();
+    expect(
+      matchGhosttyBindingEntry(synthesizeKeyEvent(parseGhosttyTrigger("super+shift+x"))!, bindings)?.flags,
+    ).toEqual({ performable: false, unconsumed: true });
+  });
+
+  it("ignores an unsupported action without replacing a working default", () => {
+    const bindings = configuredBindingsForPlatform(
+      {
+        clearKeybindings: false,
+        keybindings: [
+          { trigger: "super+t", action: "not_a_real_action" },
+          { trigger: "super+w", action: "" },
+        ],
+      },
+      "darwin",
+    );
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+t"))!, bindings)).toEqual({
+      type: "new_tab",
+    });
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+w"))!, bindings)).toEqual({
+      type: "close_surface",
+    });
+  });
+
+  it("honors keybind=clear before applying later mutations", () => {
+    const bindings = configuredBindingsForPlatform(
+      {
+        clearKeybindings: true,
+        keybindings: [{ trigger: "super+t", action: "previous_tab" }],
+      },
+      "darwin",
+    );
+
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+t"))!, bindings)).toEqual({
+      type: "previous_tab",
+    });
+    expect(matchGhosttyBinding(synthesizeKeyEvent(parseGhosttyTrigger("super+w"))!, bindings)).toBeNull();
   });
 });

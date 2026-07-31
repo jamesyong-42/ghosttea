@@ -18,6 +18,12 @@ export interface TerminalTheme {
   selectionForeground: Rgba;
 }
 
+export type TerminalPostProcess = "none" | "better-crt";
+
+export interface TerminalEffects {
+  postProcess: TerminalPostProcess;
+}
+
 export interface CellPoint {
   column: number;
   row: number;
@@ -42,6 +48,7 @@ export interface RenderView {
   cursorBlinkVisible: boolean;
   selection: CellSelection | null;
   theme: TerminalTheme;
+  effects?: TerminalEffects;
   damage?: RenderDamage;
 }
 
@@ -93,6 +100,10 @@ export const DEFAULT_THEME: TerminalTheme = {
   cursor: [1, 1, 1, 1],
   selection: [1, 1, 1, 1],
   selectionForeground: [40 / 255, 44 / 255, 52 / 255, 1],
+};
+
+export const DEFAULT_EFFECTS: TerminalEffects = {
+  postProcess: "none",
 };
 
 export const CELL_WIDTH = 7.83;

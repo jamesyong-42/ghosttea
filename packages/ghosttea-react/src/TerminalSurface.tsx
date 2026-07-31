@@ -5,7 +5,17 @@ import { useGhostteaRuntime } from "./context.js";
 import { terminalKeyboardLayout, terminalKeyDown, terminalKeyUp } from "./keyboard-input.js";
 import { terminalEffectShouldConsume, type TerminalEffect } from "./bindings/action-route.js";
 import { resolveTerminalBinding } from "./terminal-bindings.js";
-import { CELL_WIDTH, LINE_HEIGHT, ORIGIN_X, ORIGIN_Y, type CellPoint, type TerminalTheme } from "./renderers/types.js";
+import type { GhosttyBindingEntry } from "./bindings/ghostty-bindings.js";
+import {
+  CELL_WIDTH,
+  DEFAULT_EFFECTS,
+  LINE_HEIGHT,
+  ORIGIN_X,
+  ORIGIN_Y,
+  type CellPoint,
+  type TerminalEffects,
+  type TerminalTheme,
+} from "./renderers/types.js";
 import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
 import { adjustSelectionFocus, usesLocalSelection } from "./selection-input.js";
 
@@ -14,6 +24,8 @@ export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen
 export interface TerminalSurfaceProps {
   session: SessionSummary;
   theme: TerminalTheme;
+  effects?: TerminalEffects;
+  bindings?: readonly GhosttyBindingEntry[];
   active?: boolean;
   /** Host platform used for Ghostty-compatible application keybindings. */
   platform?: string;
@@ -63,6 +75,8 @@ export function TerminalSurface(props: TerminalSurfaceProps) {
 function TerminalSurfaceSession({
   session,
   theme,
+  effects = DEFAULT_EFFECTS,
+  bindings,
   active = true,
   platform,
   visible = true,
@@ -145,6 +159,10 @@ function TerminalSurfaceSession({
   useEffect(() => {
     terminalRuntime.setTheme(session.handle, theme, viewId);
   }, [session.handle, terminalRuntime, theme, viewId]);
+
+  useEffect(() => {
+    terminalRuntime.setEffects(session.handle, effects, viewId);
+  }, [effects, session.handle, terminalRuntime, viewId]);
 
   useEffect(() => {
     void terminalKeyboardLayout.refresh();
@@ -395,7 +413,7 @@ function TerminalSurfaceSession({
     if (event.nativeEvent.isComposing) return;
 
     // Terminal-scoped Ghostty binds only (workspace/platform/unhandled owned by Workspace).
-    const terminalMatch = resolveTerminalBinding(event.nativeEvent, platform);
+    const terminalMatch = resolveTerminalBinding(event.nativeEvent, platform, bindings);
     if (terminalMatch) {
       const applied = executeTerminalEffect(terminalMatch.effect);
       // Performable binds only consume when applied (Ghostty Binding.Flags.performable).
