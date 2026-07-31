@@ -17,15 +17,22 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
-pub const GHOSTTY_COMPAT_VERSION: &str = "1.3.1";
-pub const GHOSTTY_COMPAT_COMMIT: &str = "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69";
+pub const GHOSTTY_CONFIG_COMPAT_VERSION: &str = "1.3.1";
+pub const GHOSTTY_CONFIG_COMPAT_COMMIT: &str = "332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28";
+// Retain the original public names as source-compatible aliases. These refer
+// to the independently pinned config release, not the Ghostty VT build.
+pub const GHOSTTY_COMPAT_VERSION: &str = GHOSTTY_CONFIG_COMPAT_VERSION;
+pub const GHOSTTY_COMPAT_COMMIT: &str = GHOSTTY_CONFIG_COMPAT_COMMIT;
 pub const DEFAULT_SCROLLBACK_BYTES: u64 = 10_000_000;
 pub const GHOSTTEA_BETTER_CRT_SHADER: &str = "ghosttea:better-crt";
 
 const DEFAULT_BACKGROUND: [u8; 3] = [0x28, 0x2c, 0x34];
 const DEFAULT_FOREGROUND: [u8; 3] = [0xff, 0xff, 0xff];
+const DEFAULT_FONT_SIZE_MACOS: f32 = 13.0;
+const DEFAULT_FONT_SIZE_OTHER: f32 = 12.0;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const KNOWN_KEYS_TEXT: &str = include_str!("known-keys.txt");
+const X11_COLORS_TEXT: &str = include_str!("x11-rgb.txt");
 
 #[derive(Clone, Debug)]
 pub struct ConfigLoadOptions {
@@ -210,7 +217,7 @@ impl Default for ConfigSnapshot {
             cursor: DEFAULT_FOREGROUND,
             selection_background: DEFAULT_FOREGROUND,
             selection_foreground: DEFAULT_BACKGROUND,
-            font_size: 13.0,
+            font_size: platform_default_font_size(),
             font_families: Vec::new(),
             padding_x: [2.0, 2.0],
             padding_y: [2.0, 2.0],
@@ -288,11 +295,17 @@ struct LoadState {
     configured: BTreeMap<String, usize>,
     loaded_includes: HashSet<PathBuf>,
     home_dir: Option<PathBuf>,
+    default_font_size: f32,
 }
 
 pub fn load_config(options: &ConfigLoadOptions) -> ConfigSnapshot {
     let mut state = LoadState {
         home_dir: resolved_home(options),
+        default_font_size: if options.macos {
+            DEFAULT_FONT_SIZE_MACOS
+        } else {
+            DEFAULT_FONT_SIZE_OTHER
+        },
         ..LoadState::default()
     };
     let mut includes = VecDeque::new();
@@ -578,6 +591,7 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         sources: state.sources,
         ..ConfigSnapshot::default()
     };
+    snapshot.renderer.font_size = state.default_font_size;
     let mut scalars = Vec::<Setting>::new();
     let mut font_families = Vec::<Setting>::new();
     let mut custom_shaders = Vec::<Setting>::new();
@@ -704,7 +718,7 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
     }
     for setting in scalars.iter().filter(|setting| setting.key == "font-size") {
         if setting.value.is_empty() {
-            snapshot.renderer.font_size = 13.0;
+            snapshot.renderer.font_size = state.default_font_size;
             continue;
         }
         match setting.value.parse::<f32>() {
@@ -983,43 +997,95 @@ fn apply_padding(
 }
 
 pub fn parse_color(value: &str) -> Option<[u8; 3]> {
-    let value = value.trim();
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let value = value.trim_matches([' ', '\t']);
+    if let Some(hex) = value.strip_prefix('#') {
+        return parse_hash_hex_color(hex);
+    }
+    if let Some(named) = parse_x11_color(value) {
+        return Some(named);
+    }
+    if matches!(value.len(), 3 | 6) {
+        return parse_equal_width_hex_color(value);
+    }
+    if let Some(components) = value.strip_prefix("rgb:") {
+        return parse_function_color(components, parse_scaled_hex_component);
+    }
+    if let Some(components) = value.strip_prefix("rgbi:") {
+        return parse_function_color(components, parse_intensity_component);
+    }
+    None
+}
+
+fn parse_hash_hex_color(value: &str) -> Option<[u8; 3]> {
+    if !matches!(value.len(), 3 | 6 | 9 | 12) {
+        return None;
+    }
+    parse_equal_width_hex_color(value)
+}
+
+fn parse_equal_width_hex_color(value: &str) -> Option<[u8; 3]> {
+    let width = value.len().checked_div(3)?;
+    if !(1..=4).contains(&width)
+        || width * 3 != value.len()
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some([
+        parse_scaled_hex_component(&value[0..width])?,
+        parse_scaled_hex_component(&value[width..width * 2])?,
+        parse_scaled_hex_component(&value[width * 2..])?,
+    ])
+}
+
+fn parse_function_color(value: &str, parse_component: fn(&str) -> Option<u8>) -> Option<[u8; 3]> {
+    let mut components = value.split('/');
+    let result = [
+        parse_component(components.next()?)?,
+        parse_component(components.next()?)?,
+        parse_component(components.next()?)?,
+    ];
+    components.next().is_none().then_some(result)
+}
+
+fn parse_scaled_hex_component(value: &str) -> Option<u8> {
+    if value.is_empty() || value.len() > 4 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let component = u32::from_str_radix(value, 16).ok()?;
+    let divisor = (1_u32 << (value.len() * 4)) - 1;
+    Some((component * u32::from(u8::MAX) / divisor) as u8)
+}
+
+fn parse_intensity_component(value: &str) -> Option<u8> {
+    let component = value.parse::<f64>().ok()?;
+    if !component.is_finite() || !(0.0..=1.0).contains(&component) {
+        return None;
+    }
+    Some((component * f64::from(u8::MAX)) as u8)
+}
+
+fn parse_x11_color(value: &str) -> Option<[u8; 3]> {
+    for line in X11_COLORS_TEXT.lines() {
+        let name = line.get(12..)?.trim_matches([' ', '\t']);
+        if !name.eq_ignore_ascii_case(value) {
+            continue;
+        }
         return Some([
-            u8::from_str_radix(&hex[0..2], 16).ok()?,
-            u8::from_str_radix(&hex[2..4], 16).ok()?,
-            u8::from_str_radix(&hex[4..6], 16).ok()?,
+            line.get(0..3)?.trim().parse().ok()?,
+            line.get(4..7)?.trim().parse().ok()?,
+            line.get(8..11)?.trim().parse().ok()?,
         ]);
     }
-    if hex.len() == 3 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        let mut bytes = [0; 3];
-        for (index, digit) in hex.bytes().enumerate() {
-            let digit = (digit as char).to_digit(16)? as u8;
-            bytes[index] = (digit << 4) | digit;
-        }
-        return Some(bytes);
+    None
+}
+
+const fn platform_default_font_size() -> f32 {
+    if cfg!(target_os = "macos") {
+        DEFAULT_FONT_SIZE_MACOS
+    } else {
+        DEFAULT_FONT_SIZE_OTHER
     }
-    let named = match value.to_ascii_lowercase().replace([' ', '_'], "").as_str() {
-        "black" => [0x00, 0x00, 0x00],
-        "white" => [0xff, 0xff, 0xff],
-        "red" => [0xff, 0x00, 0x00],
-        "green" => [0x00, 0x80, 0x00],
-        "blue" => [0x00, 0x00, 0xff],
-        "yellow" => [0xff, 0xff, 0x00],
-        "magenta" | "fuchsia" => [0xff, 0x00, 0xff],
-        "cyan" | "aqua" => [0x00, 0xff, 0xff],
-        "gray" | "grey" => [0x80, 0x80, 0x80],
-        "darkgray" | "darkgrey" => [0xa9, 0xa9, 0xa9],
-        "lightgray" | "lightgrey" => [0xd3, 0xd3, 0xd3],
-        "orange" => [0xff, 0xa5, 0x00],
-        "purple" => [0x80, 0x00, 0x80],
-        "pink" => [0xff, 0xc0, 0xcb],
-        "brown" => [0xa5, 0x2a, 0x2a],
-        "transparent" => [0x00, 0x00, 0x00],
-        _ => return None,
-    };
-    Some(named)
 }
 
 fn known_keys() -> BTreeSet<&'static str> {
@@ -1107,11 +1173,25 @@ mod tests {
             ..ConfigLoadOptions::default()
         });
         assert_eq!(snapshot.terminal.scrollback_bytes, 10_000_000);
-        assert_eq!(snapshot.renderer.font_size, 13.0);
+        assert_eq!(snapshot.renderer.font_size, platform_default_font_size());
         assert_eq!(snapshot.renderer.padding_x, [2.0, 2.0]);
         assert_eq!(snapshot.renderer.post_process, RendererPostProcess::None);
-        assert_eq!(snapshot.compatibility.known_key_count, 200);
+        assert_eq!(snapshot.compatibility.known_key_count, 202);
         assert!(!snapshot.has_errors());
+    }
+
+    #[test]
+    fn defaults_follow_the_selected_ghostty_platform() {
+        let mut options = ConfigLoadOptions {
+            load_default_files: false,
+            macos: true,
+            windows: false,
+            ..ConfigLoadOptions::default()
+        };
+        assert_eq!(load_config(&options).renderer.font_size, 13.0);
+
+        options.macos = false;
+        assert_eq!(load_config(&options).renderer.font_size, 12.0);
     }
 
     #[test]
@@ -1514,6 +1594,37 @@ mod tests {
             );
         }
         assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics);
+    }
+
+    #[test]
+    fn parses_ghostty_color_grammar_and_full_x11_catalog() {
+        for (input, expected) in [
+            ("#345", [0x33, 0x44, 0x55]),
+            ("345", [0x33, 0x44, 0x55]),
+            ("#123456789", [0x12, 0x45, 0x78]),
+            ("#123456789abc", [0x12, 0x56, 0x9a]),
+            ("rgb:7f/a0a0/0", [127, 160, 0]),
+            ("rgbi:1.0/0.5/0", [255, 127, 0]),
+            ("LawnGreen", [124, 252, 0]),
+            ("medium spring green", [0, 250, 154]),
+            (" Forest Green ", [34, 139, 34]),
+            ("green", [0, 255, 0]),
+        ] {
+            assert_eq!(parse_color(input), Some(expected), "{input}");
+        }
+        for input in [
+            "transparent",
+            "forest_green",
+            "rgb:0.5/0/1",
+            "rgbi:NaN/0/1",
+            "rgbi:1.1/0/1",
+            "rgb:f/f/f/0",
+            "#ffff",
+            "#€",
+            "123456789",
+        ] {
+            assert_eq!(parse_color(input), None, "{input}");
+        }
     }
 
     #[test]

@@ -12,8 +12,9 @@ pub use frame_hub::{FrameHub, FramePacket};
 pub use ghosttea_config::{
     ConfigCompatibility, ConfigDiagnostic, ConfigLoadOptions, ConfigManager, ConfigSnapshot,
     ConfigSource, ConfigSourceKind, ConfigSupport, ConfiguredKey, DiagnosticSeverity,
-    GHOSTTEA_BETTER_CRT_SHADER, GHOSTTY_COMPAT_COMMIT, GHOSTTY_COMPAT_VERSION, KeybindingConfig,
-    RendererConfig, RendererPostProcess, TerminalConfig, WorkspaceConfig,
+    GHOSTTEA_BETTER_CRT_SHADER, GHOSTTY_COMPAT_COMMIT, GHOSTTY_COMPAT_VERSION,
+    GHOSTTY_CONFIG_COMPAT_COMMIT, GHOSTTY_CONFIG_COMPAT_VERSION, KeybindingConfig, RendererConfig,
+    RendererPostProcess, TerminalConfig, WorkspaceConfig,
 };
 pub use ghosttea_core::ViewAccess;
 pub use ghosttea_text::{
