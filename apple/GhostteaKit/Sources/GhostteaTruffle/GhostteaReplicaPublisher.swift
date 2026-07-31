@@ -50,7 +50,8 @@ actor GhostteaReplicaPublisher {
         try await replica.publishPatchJSON(encoder.encode(patch))
       }
     } catch {
-      throw error
+      if await replica.isPoisoned { throw error }
+      throw GhostteaAttachmentApplyFailure.needsSnapshot
     }
   }
 
