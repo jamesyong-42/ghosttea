@@ -1071,10 +1071,20 @@ export class GhostteaTerminalRuntime extends EventTarget {
     revision = 0,
   ): void {
     const previous = this.#controlBySession.get(sessionId);
+    // A revisioned announcement older than what is cached is a queued view of
+    // the past, and must be dropped whole. Keeping its payload while raising
+    // the revision would manufacture a state that never existed — "nobody
+    // holds control, as of the newest revision" — and that reads as an empty
+    // seat the funnel may claim. The compare-and-swap would not catch it
+    // either: the expectation would be genuinely current, so the host would
+    // accept a claim that takes control from the real holder.
+    if (revision >= 1 && previous !== undefined && revision < previous.revision) return;
     this.#controlBySession.set(sessionId, {
       controller,
       // A legacy `control-changed` carries no revision; keep the last one so a
       // downgrade never looks like the controller was cleared at a newer one.
+      // Unrevisioned announcements cannot be ordered against each other, so
+      // they stay last-write-wins — the only semantics available for them.
       revision: Math.max(revision, previous?.revision ?? 0),
     });
     for (const [viewId, view] of this.#views) {

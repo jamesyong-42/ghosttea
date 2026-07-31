@@ -1510,6 +1510,71 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.dispose();
   });
 
+  it("drops a stale controller announcement whole rather than relabelling it", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const announce = (controller: unknown, controlRevision: number): void => {
+      control.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            requestId: 0,
+            type: "control-state",
+            sessionId: session.id,
+            controller,
+            controlRevision,
+            cols: 80,
+            rows: 24,
+            layoutEpoch: 2,
+          },
+        }),
+      );
+    };
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    const before = claims().length;
+    announce({ viewId: "other-pane", controlEpoch: 4 }, 31);
+
+    // A clear from before that claim, delivered after it. Combining its payload
+    // with the newer revision would invent "nobody holds control at 31" — an
+    // empty seat whose expectation is genuinely current, so the host would
+    // accept the claim and hand this pane control the other one still holds.
+    announce(null, 30);
+    expect(claims()).toHaveLength(before);
+
+    // The cached view is still the newer one, so the seat stays taken: a later
+    // clear at a revision that really is newer is what releases it.
+    announce(null, 32);
+    expect(claims()).toHaveLength(before + 1);
+    expect(claims().at(-1)).toMatchObject({ expectedControlRevision: 32 });
+
+    // The ordering rule covers revisioned announcements only. An unrevisioned
+    // one carries no position to compare, so it stays last-write-wins — the
+    // downgrade case where a revisioned daemon reports a session on a host
+    // that has none. Ordering these by their 0 would drop every one of them:
+    // this legacy event has to land, or the seat still looks empty and the
+    // fresh epoch below takes control the other pane is holding.
+    controlChanged(control, "other-pane", 80, 24);
+    control.emitViewState({ viewStateSeq: 21, attachmentEpoch: 44 });
+    expect(claims()).toHaveLength(before + 1);
+    runtime.dispose();
+  });
+
   it("ignores a controller announcement that repeats a revision it already acted on", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();
