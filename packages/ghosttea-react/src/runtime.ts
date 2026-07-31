@@ -859,12 +859,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (response.type !== "session-created") throw new Error("ghosttead could not open the remote session");
     this.registerSession(response.session);
     // The session counts as remote from here, before any daemon event, so its
-    // input is never queued. A completed open is the daemon's own evidence
-    // that it dialed and attached, so the honest starting state is live; the
-    // sequence below is under every real event, which therefore wins.
+    // input is never queued. A daemon on this minor reports `opening` until
+    // the first snapshot lands, so start there and let its events take over;
+    // an older daemon reports nothing at all, and seeding `opening` against it
+    // would block input forever. The sequence below is under every real event.
     this.#remoteSessions.set(response.session.id, {
       sessionId: response.session.id,
-      state: "live",
+      state: this.#remoteLifecycleSupported ? "opening" : "live",
       reason: null,
       exit: null,
       lifecycleSeq: -1,

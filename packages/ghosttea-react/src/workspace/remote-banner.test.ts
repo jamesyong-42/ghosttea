@@ -28,8 +28,10 @@ function lifecycle(overrides: Partial<RemoteSessionRuntimeState> = {}): RemoteSe
 }
 
 describe("remoteBannerContent", () => {
-  it("shows nothing while the session is live", () => {
+  it("shows nothing while the session is live or still opening", () => {
     expect(remoteBannerContent(lifecycle({ state: "live" }), null)).toBeNull();
+    // Opening is the normal path to a first frame, not a fault to announce.
+    expect(remoteBannerContent(lifecycle({ state: "opening" }), null)).toBeNull();
   });
 
   it("offers a manual retry and a close while the host is away", () => {
@@ -91,9 +93,10 @@ describe("contactElapsedMs", () => {
 });
 
 describe("paneIsFrozen", () => {
-  it("cools every pane whose session is not live", () => {
+  it("cools every pane whose session is not live, once it has something to show", () => {
     expect(paneIsFrozen(undefined)).toBe(false);
     expect(paneIsFrozen(lifecycle({ state: "live" }))).toBe(false);
+    expect(paneIsFrozen(lifecycle({ state: "opening" }))).toBe(false);
     for (const state of ["reconnecting", "synchronizing", "suspended", "ended"] as const) {
       expect(paneIsFrozen(lifecycle({ state }))).toBe(true);
     }
@@ -106,7 +109,7 @@ describe("inputSuppressionHint", () => {
     expect(inputSuppressionHint("synchronizing")).toBe("Keystrokes are not delivered while reconnecting");
     expect(inputSuppressionHint("suspended")).toBe("Keystrokes are not delivered while the session is offline");
     expect(inputSuppressionHint("ended")).toBe("Keystrokes are not delivered while the session is offline");
-    expect(inputSuppressionHint("live")).toBe("Keystrokes are not delivered while the session is offline");
+    expect(inputSuppressionHint("opening")).toBe("Keystrokes are not delivered while the session is offline");
   });
 });
 

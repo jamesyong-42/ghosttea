@@ -1056,7 +1056,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.paste(remote.id, "view-1", "pasted while suspended");
     await flushMicrotasks();
     expect(control.messages.some((message) => message.type === "send-text" || message.type === "paste")).toBe(false);
-    expect(suppressed).toEqual(["live", "reconnecting", "suspended"]);
+    expect(suppressed).toEqual(["opening", "reconnecting", "suspended"]);
 
     control.emitLifecycle({ lifecycleSeq: 3, state: "live" });
     control.emitViewState({ viewStateSeq: 4, attachmentEpoch: 9 });
@@ -1066,6 +1066,39 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const delivered = control.messages.filter((message) => message.type === "send-text");
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toMatchObject({ text: "typed after recovery", attachmentEpoch: 9, inputSequence: 1 });
+    runtime.dispose();
+  });
+
+  it("learns a session is remote from an opening event and holds its input", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    // A session restored into a pane was never opened through this runtime, so
+    // the lifecycle event is the only thing that can mark it remote.
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    control.emitLifecycle({ lifecycleSeq: 0, state: "opening" });
+
+    expect(runtime.remoteSession(session.id)).toMatchObject({ state: "opening", deviceName: "studio-mac" });
+    runtime.sendText(session.id, "view-1", "typed while opening");
+    expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "live" });
+    runtime.sendText(session.id, "view-1", "typed once live");
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
+      { text: "typed once live" },
+    ]);
     runtime.dispose();
   });
 

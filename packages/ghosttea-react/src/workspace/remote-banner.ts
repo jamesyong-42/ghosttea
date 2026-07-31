@@ -40,16 +40,21 @@ function endedMessage(state: RemoteSessionRuntimeState): string {
   }
 }
 
-/** Whether the pane shows state the host has stopped updating. */
+/**
+ * Whether the pane shows state the host has stopped updating. `opening` is the
+ * normal path to a first frame, not a stalled one, so it is left alone.
+ */
 export function paneIsFrozen(lifecycle: RemoteSessionRuntimeState | undefined): boolean {
-  return lifecycle !== undefined && lifecycle.state !== "live";
+  return lifecycle !== undefined && lifecycle.state !== "live" && lifecycle.state !== "opening";
 }
 
 export function remoteBannerContent(
   state: RemoteSessionRuntimeState,
   elapsedMs: number | null,
 ): RemoteBannerContent | null {
-  if (state.state === "live") return null;
+  // Opening gets the same grace as the first seconds of reconnecting: opening
+  // a session is not news, and announcing it would train the banner away.
+  if (state.state === "live" || state.state === "opening") return null;
   if (state.state === "reconnecting") {
     const contact = elapsedMs === null ? "" : ` · last contact ${Math.round(elapsedMs / 1000)} s ago`;
     return {

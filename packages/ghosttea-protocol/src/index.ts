@@ -125,7 +125,7 @@ export function unknownSessionActivity(): SessionActivity {
 }
 
 /** Viewer-side lifecycle of a session replicated from a remote host. */
-export type RemoteSessionState = "live" | "synchronizing" | "reconnecting" | "suspended" | "ended";
+export type RemoteSessionState = "opening" | "live" | "synchronizing" | "reconnecting" | "suspended" | "ended";
 
 /** Why a remote session reached its terminal state. Claimed only on evidence. */
 export type RemoteSessionEndReason =
@@ -681,7 +681,7 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     Number.isSafeInteger(candidate.lifecycleSeq) &&
     typeof candidate.deviceId === "string" &&
     typeof candidate.deviceName === "string" &&
-    ["live", "synchronizing", "reconnecting", "suspended", "ended"].includes(String(candidate.state)) &&
+    ["opening", "live", "synchronizing", "reconnecting", "suspended", "ended"].includes(String(candidate.state)) &&
     (candidate.reason === null ||
       [
         "session-closed",

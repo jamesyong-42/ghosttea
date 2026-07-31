@@ -129,6 +129,13 @@ describe("isServerEvent", () => {
     ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "bridge-error", message: "disconnected" })).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle })).toBe(true);
+    // A fresh remote open is reported as `opening` until its first snapshot.
+    expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, state: "opening" })).toBe(
+      true,
+    );
+    expect(
+      isServerEvent({ requestId: 12, type: "remote-session-state", ...remoteSessionState, state: "opening" }),
+    ).toBe(true);
     expect(
       isServerEvent({
         requestId: 0,
