@@ -35,3 +35,8 @@ tempfile = "3.20"
 tokio = { version = "1.45", features = ["full"] }
 uuid = { version = "1.16", features = ["v4"] }
 truffle-core = "=0.7.11"
+
+[patch.crates-io]
+# Keep a newly introduced workspace crate packageable before its first
+# crates.io release. Published consumers resolve the versioned dependency.
+ghosttea-config = { path = "native/ghosttea/crates/ghosttea-config" }

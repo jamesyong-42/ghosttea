@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Ghostty-compatible configuration loading and Ghosttea runtime projections"
-publish = false
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true
