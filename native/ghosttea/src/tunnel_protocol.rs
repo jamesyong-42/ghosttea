@@ -7,18 +7,28 @@ pub use ghosttea_core::{
 use serde::{
     Deserialize, Serialize,
     de::DeserializeOwned,
-    ser::{SerializeSeq, SerializeTuple},
+    ser::{SerializeSeq, SerializeTuple, SerializeTupleVariant},
 };
 
 use crate::session::{KeyInput, MouseInput, SessionActivity};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 5;
+pub const PROTOCOL_MINOR: u16 = 6;
 pub const SESSION_ACTIVITY_PROTOCOL_MINOR: u16 = 4;
 pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
+/// Gates every remote-reconnect behaviour: resume takeover, heartbeats,
+/// `ControlState`, `SessionEnded`/`HostShutdown`, and tombstone lookups.
+///
+/// The design doc calls this family "1.5"; minor 5 was spent by terminal
+/// presentation sync before this work landed, so it ships as minor 6.
+pub const REMOTE_RECONNECT_PROTOCOL_MINOR: u16 = 6;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Heartbeat frames are fixed-shape and tiny; the stream never carries
+/// anything else, so it gets a limit of its own rather than borrowing the
+/// control-stream budget.
+pub const MAX_HEARTBEAT_MESSAGE_BYTES: usize = 1024;
 
 const MAGIC: [u8; 4] = *b"TSP1";
 const PREFACE_HEADER_BYTES: usize = 16;
@@ -54,6 +64,11 @@ pub enum StreamKind {
     LiveState,
     Scrollback,
     Asset,
+    /// One per QUIC connection, viewer-opened, gated on
+    /// [`REMOTE_RECONNECT_PROTOCOL_MINOR`]. Carries [`HeartbeatMessage`] only:
+    /// the connection-control stream is lockstep request/response, so
+    /// unsolicited liveness traffic cannot ride on it.
+    Heartbeat,
 }
 
 impl StreamKind {
@@ -64,6 +79,7 @@ impl StreamKind {
             Self::LiveState => 3,
             Self::Scrollback => 4,
             Self::Asset => 5,
+            Self::Heartbeat => 6,
         }
     }
 
@@ -74,6 +90,7 @@ impl StreamKind {
             3 => Ok(Self::LiveState),
             4 => Ok(Self::Scrollback),
             5 => Ok(Self::Asset),
+            6 => Ok(Self::Heartbeat),
             _ => bail!("unknown terminal stream kind"),
         }
     }
@@ -229,6 +246,31 @@ pub fn decode_compact_message<T: DeserializeOwned>(
     Ok((message, total))
 }
 
+/// The whole vocabulary of the QUIC heartbeat stream ([`StreamKind::Heartbeat`]).
+///
+/// Deliberately not part of [`ConnectionMessage`]: the connection-control
+/// stream is a lockstep request/response channel under a mutex, and pushing
+/// unsolicited frames onto it would desynchronize every in-flight request.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum HeartbeatMessage {
+    Ping { nonce: u64 },
+    Pong { nonce: u64 },
+    HostShutdown {},
+}
+
+pub fn encode_heartbeat_message(message: &HeartbeatMessage) -> Result<Vec<u8>> {
+    encode_message(message, MAX_HEARTBEAT_MESSAGE_BYTES)
+}
+
+pub fn decode_heartbeat_message(bytes: &[u8]) -> Result<(HeartbeatMessage, usize)> {
+    decode_message(bytes, MAX_HEARTBEAT_MESSAGE_BYTES)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
@@ -260,11 +302,71 @@ pub enum ConnectionMessage {
         request_id: String,
         sessions: Vec<SharedSessionSummary>,
     },
+    /// Tombstone lookup: why is a session we used to hold no longer listed?
+    /// Gated on [`REMOTE_RECONNECT_PROTOCOL_MINOR`].
+    SessionStatus {
+        request_id: String,
+        session_id: String,
+    },
+    SessionStatusResult {
+        request_id: String,
+        status: SessionStatusKind,
+    },
     Error {
         request_id: Option<String>,
         code: String,
         message: String,
     },
+}
+
+/// The evidence a host can offer about a session's fate. `Unknown` is the
+/// honest answer for a session whose tombstone expired or was never written —
+/// viewers must never upgrade it to `closed` or `exited`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SessionStatusKind {
+    Live,
+    Ended { reason: SessionEndReason },
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SessionEndReason {
+    Exited {
+        #[serde(default)]
+        code: Option<i32>,
+    },
+    Closed,
+}
+
+impl From<crate::session::SessionEndCause> for SessionEndReason {
+    fn from(cause: crate::session::SessionEndCause) -> Self {
+        match cause {
+            crate::session::SessionEndCause::Exited { code } => Self::Exited { code },
+            crate::session::SessionEndCause::Closed => Self::Closed,
+        }
+    }
+}
+
+impl From<crate::session::SessionStatus> for SessionStatusKind {
+    fn from(status: crate::session::SessionStatus) -> Self {
+        match status {
+            crate::session::SessionStatus::Live => Self::Live,
+            crate::session::SessionStatus::Ended { cause } => Self::Ended {
+                reason: cause.into(),
+            },
+            crate::session::SessionStatus::Unknown => Self::Unknown,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -281,6 +383,17 @@ pub enum SessionControlMessage {
         access_token: Option<String>,
         cols: u16,
         rows: u16,
+        /// Monotonic per wire-view lineage across **every** attempt, initial
+        /// retries included — the ordering mechanism the host fences takeover
+        /// with. `0` means a pre-reconnect client that never orders attempts.
+        #[serde(default)]
+        attach_generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<ResumeHint>,
+        /// Secondary views decline the live-state stream: a `false` attach
+        /// creates no stream and no snapshot.
+        #[serde(default = "default_true")]
+        wants_state: bool,
     },
     ViewAttached {
         request_id: String,
@@ -292,6 +405,16 @@ pub enum SessionControlMessage {
         read_write: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         presentation: Option<TerminalPresentationConfig>,
+        /// Whether this attach replaced a live attachment of the same view.
+        #[serde(default)]
+        resumed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<ControllerInfo>,
+        /// `0` is unreachable for a revisioned host (they initialize at 1) and
+        /// therefore means "legacy host, controller state unknown" — never
+        /// a CAS-able observation.
+        #[serde(default)]
+        control_revision: u64,
     },
     FocusAndResize {
         view_id: String,
@@ -299,6 +422,20 @@ pub enum SessionControlMessage {
         cols: u16,
         rows: u16,
         client_sequence: u64,
+        /// `None` = legacy last-write-wins claim. `Some(rev)` compares against
+        /// the host's current control revision and loses to any intervening
+        /// claim *or* clear.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_control_revision: Option<u64>,
+    },
+    /// A definitive attach failure. Hosts that predate this variant can only
+    /// close the stream, which reads as an ambiguous transport fault.
+    AttachRejected {
+        request_id: String,
+        code: AttachRejectCode,
+        /// Advisory telemetry only. The code's action table governs; a host
+        /// that contradicts it does not change what the viewer does.
+        retryable: bool,
     },
     ControlChanged {
         controller_view_id: String,
@@ -352,6 +489,94 @@ pub enum SessionControlMessage {
         view_id: String,
         attachment_epoch: u64,
     },
+    /// Compact-transport liveness. A compact connection carries exactly one
+    /// view on one control channel, so heartbeats ride it directly; QUIC uses
+    /// [`StreamKind::Heartbeat`] and [`HeartbeatMessage`] instead.
+    Ping {
+        nonce: u64,
+    },
+    Pong {
+        nonce: u64,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Resume evidence. Ordering does *not* live here — that is
+/// `AttachView::attach_generation`, which every attempt carries.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeHint {
+    pub previous_session_epoch: u64,
+    pub previous_attachment_epoch: u64,
+    pub previous_terminal_revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ControllerInfo {
+    pub controller_view_id: String,
+    pub control_epoch: u64,
+}
+
+/// Closed set, enforced by the decoder: an unrecognized code decodes to
+/// [`AttachRejectCode::Unknown`], which viewers must treat as an ambiguous
+/// failure (close the connection, advance the generation) rather than guessing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttachRejectCode {
+    StaleResume,
+    ViewInvalid,
+    ViewLimit,
+    UnknownSession,
+    SessionEpochMismatch,
+    AccessDenied,
+    #[default]
+    Unknown,
+}
+
+impl AttachRejectCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StaleResume => "stale-resume",
+            Self::ViewInvalid => "view-invalid",
+            Self::ViewLimit => "view-limit",
+            Self::UnknownSession => "unknown-session",
+            Self::SessionEpochMismatch => "session-epoch-mismatch",
+            Self::AccessDenied => "access-denied",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl Serialize for AttachRejectCode {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+// Hand-written because serde's `#[serde(other)]` is unavailable on an
+// externally tagged enum; the closed-set guarantee is worth the impl.
+impl<'de> Deserialize<'de> for AttachRejectCode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "stale-resume" => Self::StaleResume,
+            "view-invalid" => Self::ViewInvalid,
+            "view-limit" => Self::ViewLimit,
+            "unknown-session" => Self::UnknownSession,
+            "session-epoch-mismatch" => Self::SessionEpochMismatch,
+            "access-denied" => Self::AccessDenied,
+            _ => Self::Unknown,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -394,6 +619,22 @@ pub enum StateMessage {
     ConfigurationChanged {
         presentation: TerminalPresentationConfig,
     },
+    /// The revisioned replacement for `ControlChanged`, which structurally
+    /// cannot say "no controller" — its `controller_view_id` is required.
+    /// Hosts send this to viewers at [`REMOTE_RECONNECT_PROTOCOL_MINOR`] or
+    /// above, clears included; those viewers still accept `ControlChanged`
+    /// from legacy hosts.
+    ControlState {
+        controller: Option<ControllerInfo>,
+        control_revision: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
+    SessionEnded {
+        reason: SessionEndReason,
+    },
+    HostShutdown {},
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -448,6 +689,33 @@ impl Serialize for CompactStateMessageRef<'_> {
             StateMessage::ConfigurationChanged { presentation } => {
                 serializer.serialize_newtype_variant("CompactStateMessage", 4, "g", presentation)
             }
+            StateMessage::ControlState {
+                controller,
+                control_revision,
+                cols,
+                rows,
+                layout_epoch,
+            } => serializer.serialize_newtype_variant(
+                "CompactStateMessage",
+                5,
+                "cs",
+                &CompactControlStateRef {
+                    controller: controller.as_ref(),
+                    control_revision: *control_revision,
+                    cols: *cols,
+                    rows: *rows,
+                    layout_epoch: *layout_epoch,
+                },
+            ),
+            StateMessage::SessionEnded { reason } => serializer.serialize_newtype_variant(
+                "CompactStateMessage",
+                6,
+                "se",
+                &CompactSessionEndedRef(*reason),
+            ),
+            StateMessage::HostShutdown {} => serializer
+                .serialize_tuple_variant("CompactStateMessage", 7, "hs", 0)?
+                .end(),
         }
     }
 }
@@ -612,6 +880,64 @@ impl Serialize for CompactControlChangedRef<'_> {
     }
 }
 
+struct CompactControlStateRef<'a> {
+    controller: Option<&'a ControllerInfo>,
+    control_revision: u64,
+    cols: u16,
+    rows: u16,
+    layout_epoch: u64,
+}
+
+impl Serialize for CompactControlStateRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut tuple = serializer.serialize_tuple(5)?;
+        tuple.serialize_element(&self.controller.map(CompactControllerRef))?;
+        tuple.serialize_element(&self.control_revision)?;
+        tuple.serialize_element(&self.cols)?;
+        tuple.serialize_element(&self.rows)?;
+        tuple.serialize_element(&self.layout_epoch)?;
+        tuple.end()
+    }
+}
+
+struct CompactControllerRef<'a>(&'a ControllerInfo);
+
+impl Serialize for CompactControllerRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut tuple = serializer.serialize_tuple(2)?;
+        tuple.serialize_element(&self.0.controller_view_id)?;
+        tuple.serialize_element(&self.0.control_epoch)?;
+        tuple.end()
+    }
+}
+
+struct CompactSessionEndedRef(SessionEndReason);
+
+impl Serialize for CompactSessionEndedRef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (reason, exit_code) = match self.0 {
+            SessionEndReason::Exited { code } => ("exited", code),
+            SessionEndReason::Closed => ("closed", None),
+        };
+        let mut tuple = serializer.serialize_tuple(2)?;
+        tuple.serialize_element(reason)?;
+        tuple.serialize_element(&exit_code)?;
+        tuple.end()
+    }
+}
+
+/// Compact tuples are **never widened** — an appended element is a decode
+/// error on the peer, not a default — so new semantics get a new tag. `"c"`
+/// stays byte-identical for legacy hosts; `"cs"` carries the revisioned shape.
 #[derive(Deserialize)]
 enum CompactStateMessage {
     #[serde(rename = "s")]
@@ -624,6 +950,12 @@ enum CompactStateMessage {
     ActivityChanged(SessionActivity),
     #[serde(rename = "g")]
     ConfigurationChanged(TerminalPresentationConfig),
+    #[serde(rename = "cs")]
+    ControlState(CompactControlState),
+    #[serde(rename = "se")]
+    SessionEnded(CompactSessionEnded),
+    #[serde(rename = "hs")]
+    HostShutdown(),
 }
 
 #[derive(Deserialize)]
@@ -748,6 +1080,28 @@ impl From<CompactScrollbar> for LogicalScrollbar {
 #[derive(Deserialize)]
 struct CompactControlChanged(String, u64, u16, u16, u64);
 
+#[derive(Deserialize)]
+struct CompactControlState(Option<CompactController>, u64, u16, u16, u64);
+
+#[derive(Deserialize)]
+struct CompactController(String, u64);
+
+#[derive(Deserialize)]
+struct CompactSessionEnded(String, Option<i32>);
+
+impl TryFrom<CompactSessionEnded> for SessionEndReason {
+    type Error = anyhow::Error;
+
+    fn try_from(ended: CompactSessionEnded) -> Result<Self> {
+        match ended.0.as_str() {
+            "exited" => Ok(Self::Exited { code: ended.1 }),
+            "closed" if ended.1.is_none() => Ok(Self::Closed),
+            "closed" => bail!("compact session end carries an exit code for a closed session"),
+            other => bail!("unknown compact session end reason {other}"),
+        }
+    }
+}
+
 impl TryFrom<CompactStateMessage> for StateMessage {
     type Error = anyhow::Error;
 
@@ -766,6 +1120,20 @@ impl TryFrom<CompactStateMessage> for StateMessage {
             CompactStateMessage::ConfigurationChanged(presentation) => {
                 Self::ConfigurationChanged { presentation }
             }
+            CompactStateMessage::ControlState(control) => Self::ControlState {
+                controller: control.0.map(|controller| ControllerInfo {
+                    controller_view_id: controller.0,
+                    control_epoch: controller.1,
+                }),
+                control_revision: control.1,
+                cols: control.2,
+                rows: control.3,
+                layout_epoch: control.4,
+            },
+            CompactStateMessage::SessionEnded(ended) => Self::SessionEnded {
+                reason: ended.try_into()?,
+            },
+            CompactStateMessage::HostShutdown() => Self::HostShutdown {},
         })
     }
 }
@@ -1216,6 +1584,431 @@ mod tests {
             let encoded = encode_state_message(&state, StateCodec::CompactJsonV1, 4096).unwrap();
             let encoded_value: serde_json::Value = serde_json::from_slice(&encoded[4..]).unwrap();
             assert_eq!(encoded_value, fixture[key], "fixture mismatch for {key}");
+        }
+    }
+
+    /// The four framed forms a compact state message can take, minus the
+    /// length prefix: what a peer actually parses.
+    fn compact_state_json(message: &StateMessage) -> serde_json::Value {
+        let encoded = encode_state_message(message, StateCodec::CompactJsonV1, 4096).unwrap();
+        serde_json::from_slice(&encoded[4..]).unwrap()
+    }
+
+    fn round_trips_in_both_state_codecs(message: &StateMessage) {
+        for codec in [StateCodec::Json, StateCodec::CompactJsonV1] {
+            let encoded = encode_state_message(message, codec, 4096).unwrap();
+            let (decoded, consumed) = decode_state_message(&encoded, codec, 4096).unwrap();
+            assert_eq!(&decoded, message);
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+
+    #[test]
+    fn heartbeat_messages_round_trip_on_a_stream_of_their_own() {
+        let preface = StreamPreface {
+            stream_kind: StreamKind::Heartbeat,
+            session_id: None,
+            view_id: None,
+        };
+        let encoded = encode_preface(&preface).unwrap();
+        assert_eq!(decode_preface(&encoded).unwrap().0, preface);
+
+        for message in [
+            HeartbeatMessage::Ping { nonce: 7 },
+            HeartbeatMessage::Pong { nonce: 7 },
+            HeartbeatMessage::HostShutdown {},
+        ] {
+            let encoded = encode_heartbeat_message(&message).unwrap();
+            let (decoded, consumed) = decode_heartbeat_message(&encoded).unwrap();
+            assert_eq!(decoded, message);
+            assert_eq!(consumed, encoded.len());
+        }
+
+        // The shutdown push must be a bare tagged object, so a Swift or TS
+        // decoder needs no payload handling for it.
+        assert_eq!(
+            serde_json::to_value(HeartbeatMessage::HostShutdown {}).unwrap(),
+            serde_json::json!({ "type": "host-shutdown" })
+        );
+    }
+
+    #[test]
+    fn compact_transport_heartbeats_ride_the_control_channel() {
+        for message in [
+            SessionControlMessage::Ping { nonce: 3 },
+            SessionControlMessage::Pong { nonce: 3 },
+        ] {
+            let encoded = encode_compact_message(CompactChannel::Control, &message, 1024).unwrap();
+            let (decoded, _) = decode_compact_message::<SessionControlMessage>(
+                &encoded,
+                CompactChannel::Control,
+                1024,
+            )
+            .unwrap();
+            assert!(matches!(
+                decoded,
+                SessionControlMessage::Ping { nonce: 3 } | SessionControlMessage::Pong { nonce: 3 }
+            ));
+        }
+    }
+
+    #[test]
+    fn attach_view_carries_ordering_resume_evidence_and_state_intent() {
+        let message = SessionControlMessage::AttachView {
+            request_id: "request".into(),
+            session_id: "session".into(),
+            view_id: "view".into(),
+            access_token: None,
+            cols: 80,
+            rows: 24,
+            attach_generation: 4,
+            resume: Some(ResumeHint {
+                previous_session_epoch: 11,
+                previous_attachment_epoch: 12,
+                previous_terminal_revision: 13,
+            }),
+            wants_state: false,
+        };
+        let encoded = encode_message(&message, 1024).unwrap();
+        let (decoded, _) = decode_message::<SessionControlMessage>(&encoded, 1024).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::AttachView {
+                attach_generation: 4,
+                wants_state: false,
+                resume: Some(ResumeHint {
+                    previous_session_epoch: 11,
+                    previous_attachment_epoch: 12,
+                    previous_terminal_revision: 13,
+                }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pre_reconnect_attach_view_decodes_with_reconnect_defaults() {
+        let legacy = serde_json::json!({
+            "type": "attach-view",
+            "requestId": "request",
+            "sessionId": "session",
+            "viewId": "view",
+            "accessToken": null,
+            "cols": 80,
+            "rows": 24
+        });
+        let decoded: SessionControlMessage = serde_json::from_value(legacy).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::AttachView {
+                attach_generation: 0,
+                resume: None,
+                // Absent means "this client predates secondary-view opt-out",
+                // so it must still get its snapshot.
+                wants_state: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pre_reconnect_view_attached_decodes_with_reconnect_defaults() {
+        let legacy = serde_json::json!({
+            "type": "view-attached",
+            "requestId": "request",
+            "sessionEpoch": 2,
+            "layoutEpoch": 3,
+            "attachmentEpoch": 4,
+            "cols": 80,
+            "rows": 24,
+            "readWrite": true
+        });
+        let decoded: SessionControlMessage = serde_json::from_value(legacy).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::ViewAttached {
+                resumed: false,
+                controller: None,
+                // 0 is the legacy sentinel: never a CAS-able observation.
+                control_revision: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn view_attached_reports_the_controller_and_its_revision() {
+        let message = SessionControlMessage::ViewAttached {
+            request_id: "request".into(),
+            session_epoch: 2,
+            layout_epoch: 3,
+            attachment_epoch: 4,
+            cols: 80,
+            rows: 24,
+            read_write: true,
+            presentation: None,
+            resumed: true,
+            controller: Some(ControllerInfo {
+                controller_view_id: "other".into(),
+                control_epoch: 9,
+            }),
+            control_revision: 17,
+        };
+        let encoded = encode_message(&message, 1024).unwrap();
+        let (decoded, _) = decode_message::<SessionControlMessage>(&encoded, 1024).unwrap();
+        let SessionControlMessage::ViewAttached {
+            resumed,
+            controller,
+            control_revision,
+            ..
+        } = decoded
+        else {
+            panic!("view-attached decoded as the wrong control variant");
+        };
+        assert!(resumed);
+        assert_eq!(control_revision, 17);
+        assert_eq!(
+            controller,
+            Some(ControllerInfo {
+                controller_view_id: "other".into(),
+                control_epoch: 9,
+            })
+        );
+    }
+
+    #[test]
+    fn focus_and_resize_defaults_to_legacy_last_write_wins() {
+        let legacy = serde_json::json!({
+            "type": "focus-and-resize",
+            "viewId": "view",
+            "attachmentEpoch": 4,
+            "cols": 80,
+            "rows": 24,
+            "clientSequence": 1
+        });
+        let decoded: SessionControlMessage = serde_json::from_value(legacy).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::FocusAndResize {
+                expected_control_revision: None,
+                ..
+            }
+        ));
+
+        let cas = SessionControlMessage::FocusAndResize {
+            view_id: "view".into(),
+            attachment_epoch: 4,
+            cols: 80,
+            rows: 24,
+            client_sequence: 1,
+            expected_control_revision: Some(17),
+        };
+        let encoded = encode_message(&cas, 1024).unwrap();
+        let (decoded, _) = decode_message::<SessionControlMessage>(&encoded, 1024).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::FocusAndResize {
+                expected_control_revision: Some(17),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn attach_rejections_are_a_closed_set_that_decodes_unknown_codes() {
+        for code in [
+            AttachRejectCode::StaleResume,
+            AttachRejectCode::ViewInvalid,
+            AttachRejectCode::ViewLimit,
+            AttachRejectCode::UnknownSession,
+            AttachRejectCode::SessionEpochMismatch,
+            AttachRejectCode::AccessDenied,
+        ] {
+            let message = SessionControlMessage::AttachRejected {
+                request_id: "request".into(),
+                code,
+                retryable: false,
+            };
+            let encoded = encode_message(&message, 1024).unwrap();
+            let (decoded, _) = decode_message::<SessionControlMessage>(&encoded, 1024).unwrap();
+            let SessionControlMessage::AttachRejected {
+                code: decoded_code, ..
+            } = decoded
+            else {
+                panic!("attach-rejected decoded as the wrong control variant");
+            };
+            assert_eq!(decoded_code, code);
+        }
+
+        assert_eq!(
+            serde_json::to_value(AttachRejectCode::SessionEpochMismatch).unwrap(),
+            serde_json::json!("session-epoch-mismatch")
+        );
+
+        // A code minted after this viewer shipped must not fail the frame; it
+        // takes the ambiguous-failure path instead.
+        let future = serde_json::json!({
+            "type": "attach-rejected",
+            "requestId": "request",
+            "code": "quota-exhausted",
+            "retryable": true
+        });
+        let decoded: SessionControlMessage = serde_json::from_value(future).unwrap();
+        assert!(matches!(
+            decoded,
+            SessionControlMessage::AttachRejected {
+                code: AttachRejectCode::Unknown,
+                retryable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn session_status_lookups_round_trip() {
+        for status in [
+            SessionStatusKind::Live,
+            SessionStatusKind::Ended {
+                reason: SessionEndReason::Exited { code: Some(3) },
+            },
+            SessionStatusKind::Ended {
+                reason: SessionEndReason::Exited { code: None },
+            },
+            SessionStatusKind::Ended {
+                reason: SessionEndReason::Closed,
+            },
+            SessionStatusKind::Unknown,
+        ] {
+            let message = ConnectionMessage::SessionStatusResult {
+                request_id: "request".into(),
+                status,
+            };
+            let encoded = encode_message(&message, 1024).unwrap();
+            let (decoded, _) = decode_message::<ConnectionMessage>(&encoded, 1024).unwrap();
+            let ConnectionMessage::SessionStatusResult {
+                status: decoded_status,
+                ..
+            } = decoded
+            else {
+                panic!("session-status-result decoded as the wrong connection variant");
+            };
+            assert_eq!(decoded_status, status);
+        }
+
+        let request = ConnectionMessage::SessionStatus {
+            request_id: "request".into(),
+            session_id: "session".into(),
+        };
+        let encoded = encode_message(&request, 1024).unwrap();
+        let (decoded, _) = decode_message::<ConnectionMessage>(&encoded, 1024).unwrap();
+        assert!(matches!(
+            decoded,
+            ConnectionMessage::SessionStatus { ref session_id, .. } if session_id == "session"
+        ));
+    }
+
+    #[test]
+    fn control_state_round_trips_with_and_without_a_controller() {
+        round_trips_in_both_state_codecs(&StateMessage::ControlState {
+            controller: Some(ControllerInfo {
+                controller_view_id: "view".into(),
+                control_epoch: 9,
+            }),
+            control_revision: 17,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 5,
+        });
+        // "No controller at revision 17" — the observation `ControlChanged`
+        // structurally cannot express.
+        round_trips_in_both_state_codecs(&StateMessage::ControlState {
+            controller: None,
+            control_revision: 17,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 5,
+        });
+    }
+
+    #[test]
+    fn session_end_and_host_shutdown_round_trip_in_both_state_codecs() {
+        for reason in [
+            SessionEndReason::Exited { code: Some(130) },
+            SessionEndReason::Exited { code: None },
+            SessionEndReason::Closed,
+        ] {
+            round_trips_in_both_state_codecs(&StateMessage::SessionEnded { reason });
+        }
+        round_trips_in_both_state_codecs(&StateMessage::HostShutdown {});
+    }
+
+    #[test]
+    fn new_compact_state_tags_match_the_specified_shapes() {
+        assert_eq!(
+            compact_state_json(&StateMessage::ControlState {
+                controller: Some(ControllerInfo {
+                    controller_view_id: "view".into(),
+                    control_epoch: 9,
+                }),
+                control_revision: 17,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 5,
+            }),
+            serde_json::json!({ "cs": [["view", 9], 17, 120, 40, 5] })
+        );
+        assert_eq!(
+            compact_state_json(&StateMessage::ControlState {
+                controller: None,
+                control_revision: 17,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 5,
+            }),
+            serde_json::json!({ "cs": [null, 17, 120, 40, 5] })
+        );
+        assert_eq!(
+            compact_state_json(&StateMessage::SessionEnded {
+                reason: SessionEndReason::Exited { code: Some(130) },
+            }),
+            serde_json::json!({ "se": ["exited", 130] })
+        );
+        assert_eq!(
+            compact_state_json(&StateMessage::SessionEnded {
+                reason: SessionEndReason::Closed,
+            }),
+            serde_json::json!({ "se": ["closed", null] })
+        );
+        assert_eq!(
+            compact_state_json(&StateMessage::HostShutdown {}),
+            serde_json::json!({ "hs": [] })
+        );
+    }
+
+    #[test]
+    fn compact_control_changed_stays_byte_identical_for_legacy_peers() {
+        // Widening this tuple would be a decode error on every peer that
+        // predates the change, which is why `ControlState` got its own tag.
+        assert_eq!(
+            compact_state_json(&StateMessage::ControlChanged {
+                controller_view_id: "view".into(),
+                control_epoch: 9,
+                cols: 2,
+                rows: 1,
+                layout_epoch: 3,
+            }),
+            serde_json::json!({ "c": ["view", 9, 2, 1, 3] })
+        );
+    }
+
+    #[test]
+    fn compact_session_end_rejects_contradictory_and_unknown_reasons() {
+        for malformed in [
+            serde_json::json!({ "se": ["closed", 3] }),
+            serde_json::json!({ "se": ["vanished", null] }),
+        ] {
+            let compact: CompactStateMessage = serde_json::from_value(malformed).unwrap();
+            assert!(StateMessage::try_from(compact).is_err());
         }
     }
 

@@ -701,6 +701,13 @@ Following the `SESSION_ACTIVITY_PROTOCOL_MINOR` gating pattern
 (`tunnel_protocol.rs:14–16`), bump `PROTOCOL_MINOR` to 5. The negotiated
 minor is **persisted per connection** on both sides (§4.2 step 3).
 
+> **Implementation-time renumbering (Phase 3 start, 2026-07-31):** minor 5
+> was spent by terminal-presentation sync (commit 612af6d) between design
+> freeze and Phase 3 start. Everything this document calls "1.5" ships as
+> **minor 6**, gated by a new `REMOTE_RECONNECT_PROTOCOL_MINOR: u16 = 6`;
+> read "1.4 peers/hosts" as "negotiated minor < 6". Prose below is left
+> unrenumbered — this note governs.
+
 ### 6.1 Liveness
 
 ```rust

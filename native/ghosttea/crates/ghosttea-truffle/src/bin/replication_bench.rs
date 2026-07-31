@@ -561,8 +561,14 @@ async fn receive(stream: DuplexStream, config: ReceiverConfig) -> Result<Receive
                 revision
             }
             StateMessage::ControlChanged { control_epoch, .. } => control_epoch,
+            StateMessage::ControlState {
+                control_revision, ..
+            } => control_revision,
             StateMessage::ActivityChanged { activity } => activity.observed_at_ms,
             StateMessage::ConfigurationChanged { .. } => 0,
+            // Lifecycle notices end a session rather than advancing it; no
+            // replication workload emits them.
+            StateMessage::SessionEnded { .. } | StateMessage::HostShutdown {} => 0,
         };
         result.apply += apply_started.elapsed();
         if rendered {

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::IpAddr,
     sync::{
         Arc, Mutex as SyncMutex,
@@ -20,7 +20,9 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 use truffle_core as truffle;
 use truffle_core::{
-    Node, StoreEvent, network::tailscale::TailscaleProvider, session::PeerEvent,
+    Node, NodeError, Peer, StoreEvent,
+    network::{NetworkError, TailscalePeerIdentity, tailscale::TailscaleProvider},
+    session::PeerEvent,
     transport::quic::QuicStream,
 };
 use uuid::Uuid;
@@ -35,7 +37,7 @@ use ghosttea::{
     tunnel_protocol::{
         CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-        RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage,
+        RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
         SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
         TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
         decode_compact_message, decode_message, decode_preface, decode_state_message,
@@ -61,6 +63,10 @@ struct IncomingSessionContext {
     state_codec: StateCodec,
     protocol_minor: u16,
     host_config: HostConfigReceiver,
+    /// The connection this stream arrived on: its id orders attach attempts
+    /// for the stage-2 fence, and holding the scope keeps the connection
+    /// counted as live for exactly as long as this handler could still act.
+    connection: ConnectionScope,
 }
 
 /// Samples a delay from a backoff window. Injectable so scheduling tests can
@@ -133,6 +139,11 @@ struct MeshReady {
 /// host gives up on it. A peer that has just re-joined is briefly absent.
 const PEER_RESOLVE_WAIT_MS: u64 = 3_000;
 
+/// How long the tailnet's WhoIs answer may take. WhoIs is a local
+/// control-plane query, so this only trips when the sidecar is wedged — and
+/// then the connection is refused rather than admitted unauthenticated.
+const WHOIS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Resolves the device identity a client asserts in its hello into the
 /// `client_id` that owns its view attachments.
 #[async_trait]
@@ -146,27 +157,81 @@ struct NodeClientResolver {
 
 #[async_trait]
 impl ClientResolver for NodeClientResolver {
-    /// Identity comes from the hello, corroborated by discovery.
+    /// Identity comes from the tailnet, not from the hello.
     ///
-    /// The source address cannot carry it: an inbound QUIC connection arrives
-    /// from whatever path the tailnet chose, which stops matching the address
-    /// discovery recorded as soon as a node re-joins or a path rotates — and a
-    /// host that matched on the address then rejected every legitimate client
-    /// (the observed failure).
+    /// [`Node::whois`] answers who owns the address a connection arrived from
+    /// — a control-plane fact no peer can assert — and the `client_id` is
+    /// derived from the peer that answer resolves to. The hello's
+    /// `local_device_id` is demoted to corroboration: it must *agree* with what
+    /// the registry publishes for that peer, and can no longer grant an
+    /// identity. This closes the Phase 2 caveat (§9.1) — asserting another
+    /// device's id now fails the comparison instead of inheriting its
+    /// `client_id`, its attachments, and (under `allow_tailnet_write`) its
+    /// input.
     ///
-    /// AUTHORIZATION CAVEAT: with the address no longer binding a connection to
-    /// a device, one peer inside the tailnet can assert another's device id and
-    /// inherit its `client_id`, which owns view attachments and epochs — and,
-    /// under `allow_tailnet_write` or a shared capability, its input. The
-    /// tailnet remains the outer gate (authenticated, same-app, ALPN-scoped),
-    /// so this is impersonation within an already-trusted set rather than open
-    /// access. Closing it properly needs a transport-level identity for QUIC
-    /// connections, the way the compact path already gets one from WhoIs; that
-    /// is tracked for the next protocol phase.
+    /// Transports whose provider has no WhoIs at all keep the Phase 2 path
+    /// below: in-process transports, and — measured, not hypothetical — a
+    /// Truffle sidecar older than protocol v3, which is where `tsnet:whois`
+    /// shipped. Those hosts keep working with the §9.1 caveat still open, and
+    /// [`warn_whois_unsupported`] says so out loud. A WhoIs that exists and
+    /// declines to answer is *not* that case: it is refused.
     async fn resolve(&self, device_id: &str, remote_ip: Option<IpAddr>) -> Result<String> {
         if device_id.trim().is_empty() {
             bail!("client hello carries no device id");
         }
+        let node_id = match authenticated_node_id(self.whois(remote_ip).await) {
+            Ok(Some(node_id)) => node_id,
+            Ok(None) => return self.resolve_from_hello(device_id, remote_ip).await,
+            Err(error) => return Err(reject_connection(remote_ip, error)),
+        };
+        let peer = self
+            .node
+            .peer(&node_id, Some(PEER_RESOLVE_WAIT_MS))
+            .await
+            .context("resolve the tailnet identity that opened the connection")?;
+        bind_authenticated_peer(
+            &node_id,
+            peer.as_ref().map(PeerBinding::from).as_ref(),
+            device_id,
+        )
+        .map_err(|error| reject_connection(remote_ip, error))
+    }
+}
+
+impl NodeClientResolver {
+    /// The tailnet's WhoIs answer for the address a connection arrived from.
+    /// The port is irrelevant to WhoIs, so the address alone is asked about.
+    async fn whois(&self, remote_ip: Option<IpAddr>) -> TailnetWhoIs {
+        let Some(remote_ip) = remote_ip else {
+            return TailnetWhoIs::Unavailable("connection carries no source address".into());
+        };
+        match tokio::time::timeout(WHOIS_TIMEOUT, self.node.whois(&remote_ip.to_string())).await {
+            Ok(Ok(Some(identity))) => TailnetWhoIs::Identity(Box::new(identity)),
+            Ok(Ok(None)) => TailnetWhoIs::Anonymous,
+            Ok(Err(NodeError::Network(NetworkError::Unsupported(cause)))) => {
+                warn_whois_unsupported(&cause);
+                TailnetWhoIs::Unsupported
+            }
+            Ok(Err(error)) => TailnetWhoIs::Unavailable(error.to_string()),
+            Err(_) => TailnetWhoIs::Unavailable(format!("no answer within {WHOIS_TIMEOUT:?}")),
+        }
+    }
+
+    /// The pre-WhoIs binding, kept for transports that have no tailnet behind
+    /// them: the hello's device id, validated against the live registry.
+    ///
+    /// The source address cannot carry identity here — an inbound connection
+    /// arrives from whatever path the tailnet chose, which stops matching the
+    /// address discovery recorded as soon as a node re-joins or a path rotates,
+    /// and a host that matched on the address rejected every legitimate client
+    /// (the Phase 2 failure). Reachable only when the provider has no WhoIs at
+    /// all, so the device-id assertion carries the weight it once did
+    /// everywhere.
+    async fn resolve_from_hello(
+        &self,
+        device_id: &str,
+        remote_ip: Option<IpAddr>,
+    ) -> Result<String> {
         let peer = self
             .node
             .peer(device_id, Some(PEER_RESOLVE_WAIT_MS))
@@ -191,6 +256,118 @@ impl ClientResolver for NodeClientResolver {
         }
         Ok(format!("truffle:{}", peer.peer_ref))
     }
+}
+
+/// The tailnet's answer about the address a connection arrived from.
+enum TailnetWhoIs {
+    /// The control plane authenticated the address to this identity.
+    Identity(Box<TailscalePeerIdentity>),
+    /// The tailnet has no identity for the address: the caller is anonymous —
+    /// absent, not fabricated.
+    Anonymous,
+    /// The provider has no WhoIs at all: an in-process transport, or a sidecar
+    /// predating protocol v3. Distinct from a failed query — nothing was
+    /// withheld, there is simply nothing to ask.
+    Unsupported,
+    /// The provider has WhoIs and the query failed or timed out.
+    Unavailable(String),
+}
+
+/// The registry facts a connection is bound against, projected out of
+/// [`Peer`] so the binding policy is exercisable without a tailnet.
+struct PeerBinding {
+    tailscale_id: String,
+    device_id: Option<String>,
+    peer_ref: String,
+}
+
+impl From<&Peer> for PeerBinding {
+    fn from(peer: &Peer) -> Self {
+        Self {
+            tailscale_id: peer.tailscale_id.clone(),
+            device_id: peer.device_id.clone(),
+            peer_ref: peer.peer_ref.clone(),
+        }
+    }
+}
+
+/// The stable node id a WhoIs answer authenticates. `Ok(None)` means the
+/// transport has no WhoIs to authenticate with — the only verdict that may
+/// fall back to hello-asserted identity.
+fn authenticated_node_id(whois: TailnetWhoIs) -> Result<Option<String>> {
+    match whois {
+        // A stable node ID is the only WhoIs field that maps to the peer
+        // registry; an identity carrying none authenticates nothing, however
+        // much else it says.
+        TailnetWhoIs::Identity(identity) => match identity.node_id {
+            Some(node_id) if !node_id.trim().is_empty() => Ok(Some(node_id)),
+            _ => bail!("tailnet identity carries no stable node id"),
+        },
+        TailnetWhoIs::Anonymous => {
+            bail!("the tailnet claims no identity for the address this connection arrived from")
+        }
+        TailnetWhoIs::Unsupported => Ok(None),
+        TailnetWhoIs::Unavailable(cause) => bail!("tailnet identity is unavailable: {cause}"),
+    }
+}
+
+/// The `client_id` an authenticated connection owns.
+///
+/// The identity is the peer the authenticated stable node id resolves to, so
+/// the `client_id` is never derived from anything the hello asserted. The
+/// asserted device id only has to agree with the durable id the registry
+/// publishes for that peer. A peer whose durable id discovery has not learned
+/// yet still binds: the `client_id` comes from the authenticated peer either
+/// way, so an assertion has nothing left to steal.
+fn bind_authenticated_peer(
+    node_id: &str,
+    peer: Option<&PeerBinding>,
+    asserted_device_id: &str,
+) -> Result<String> {
+    let peer = peer.context(
+        "the tailnet identity that opened this connection is not a current Truffle peer",
+    )?;
+    // `Node::peer` accepts several identifier forms — names and device-id
+    // prefixes among them — so only an exact stable-id match may stand in for
+    // the authenticated identity.
+    if peer.tailscale_id != node_id {
+        bail!("tailnet identity did not resolve to itself in the peer registry");
+    }
+    if let Some(published) = peer.device_id.as_deref()
+        && published != asserted_device_id
+    {
+        bail!("client hello asserts a device id the tailnet identity does not own");
+    }
+    Ok(format!("truffle:{}", peer.peer_ref))
+}
+
+/// Say once per process that this host cannot authenticate who is connecting.
+///
+/// A provider without WhoIs is unremarkable in-process, but on a real tailnet
+/// it means the Truffle sidecar predates `tsnet:whois` (protocol v3) and the
+/// host is running with the Phase 2 identity caveat (§9.1) still open. The
+/// fallback keeps those hosts working; staying silent about it would make a
+/// security-relevant downgrade invisible.
+fn warn_whois_unsupported(cause: &str) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[terminal-mesh][diag] tailnet WhoIs is unavailable ({cause}); connections fall back \
+             to hello-asserted identity, so a peer inside the tailnet can assert another device's \
+             id. Upgrade the Truffle sidecar to protocol v3 to close this."
+        );
+    }
+}
+
+/// One diagnostic line per refused connection. Carries the address and the
+/// reason only — never a hello payload, a token, or an owner's tailnet login.
+fn reject_connection(remote_ip: Option<IpAddr>, error: anyhow::Error) -> anyhow::Error {
+    let source = remote_ip.map_or_else(
+        || "an unaddressed connection".to_owned(),
+        |ip| ip.to_string(),
+    );
+    eprintln!("[terminal-mesh][diag] refused connection from {source}: {error:#}");
+    error
 }
 
 /// Everything the viewer needs from discovery to reach one host. Isolating it
@@ -1141,6 +1318,11 @@ async fn purge_attachment(
                 access_token: remote.access_token.clone(),
                 cols,
                 rows,
+                attach_generation: 0,
+                resume: None,
+                // The purge wants the host's existing attachment back so it can
+                // detach it; a state stream would only have to be drained.
+                wants_state: true,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1574,6 +1756,13 @@ impl MeshRuntime {
                     access_token: remote.access_token.clone(),
                     cols: summary.cols,
                     rows: summary.rows,
+                    // Zero declares the 1.4 path: this viewer still fences by
+                    // rotating the wire id per attempt rather than by ordered
+                    // takeover, so it must not claim a generation lineage the
+                    // host would enforce against.
+                    attach_generation: 0,
+                    resume: None,
+                    wants_state: true,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -1711,6 +1900,24 @@ impl MeshRuntime {
                 // incarnation, but only the feed publishes: a secondary's
                 // stream is drained so its independent patch sequence can
                 // never interleave with the feed's in the shared replica.
+                // A session ending is a session-level fact, not replica state,
+                // so it counts whichever of this session's streams reported it
+                // — but only from the current generation and incarnation, which
+                // the gate above has already established.
+                match &message {
+                    StateMessage::SessionEnded { reason } => {
+                        lifecycle.commit_ended(match reason {
+                            SessionEndReason::Exited { .. } => RemoteEndedReason::SessionExited,
+                            SessionEndReason::Closed => RemoteEndedReason::SessionClosed,
+                        });
+                        break;
+                    }
+                    StateMessage::HostShutdown {} => {
+                        lifecycle.commit_ended(RemoteEndedReason::HostShutdown);
+                        break;
+                    }
+                    _ => {}
+                }
                 if !remote_view.feed {
                     continue;
                 }
@@ -1769,6 +1976,13 @@ impl MeshRuntime {
                     // this projection directly; desktop per-pane presentation
                     // is a separate UI boundary.
                     StateMessage::ConfigurationChanged { .. } => {}
+                    // Carrying a nullable controller through to the mesh API
+                    // needs a shape that can say "no controller", which the
+                    // current RemoteControlClaim cannot. No host emits this
+                    // until the minor-6 host behaviors land alongside it.
+                    StateMessage::ControlState { .. } => {}
+                    // Handled above, before the feed check.
+                    StateMessage::SessionEnded { .. } | StateMessage::HostShutdown {} => {}
                 }
             }
             // A stream that ended because we asked to be detached is not a
@@ -2273,6 +2487,9 @@ impl MeshRuntime {
                     cols,
                     rows,
                     client_sequence: 0,
+                    // None is legacy last-write-wins; the CAS reclaim belongs
+                    // with the controller work, not here.
+                    expected_control_revision: None,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -2964,6 +3181,7 @@ pub struct TruffleTerminalMesh {
     node: Arc<Node<TailscaleProvider>>,
     config: TruffleTerminalConfig,
     runtime: MeshRuntime,
+    connections: ConnectionLedger,
 }
 
 impl TruffleTerminalMesh {
@@ -2975,6 +3193,7 @@ impl TruffleTerminalMesh {
             node,
             config,
             runtime,
+            connections: ConnectionLedger::default(),
         })
     }
 
@@ -2982,11 +3201,18 @@ impl TruffleTerminalMesh {
         self.runtime.clone()
     }
 
+    /// Every connection this host has accepted, and which of them are fully
+    /// terminated. Both listeners number their connections from it.
+    pub fn connections(&self) -> ConnectionLedger {
+        self.connections.clone()
+    }
+
     pub async fn serve(self, registry: Registry, host_config: HostConfigReceiver) -> Result<()> {
         let Self {
             node,
             config,
             runtime,
+            connections,
         } = self;
         let host_instance_id = Uuid::new_v4().to_string();
         let listener = Arc::new(
@@ -3045,6 +3271,7 @@ impl TruffleTerminalMesh {
             config.clone(),
             host_instance_id.clone(),
             host_config.clone(),
+            connections.clone(),
         );
         let compact_accept = compact_accept_loop(
             Arc::clone(&node),
@@ -3053,6 +3280,7 @@ impl TruffleTerminalMesh {
             config.clone(),
             host_instance_id,
             host_config,
+            connections,
         );
         let result = tokio::select! {
             result = advertise => result,
@@ -3212,8 +3440,12 @@ async fn compact_accept_loop(
     config: TruffleTerminalConfig,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    connections: ConnectionLedger,
 ) -> Result<()> {
     while let Some(incoming) = listener.accept().await {
+        // Same invariant as the QUIC loop: the id is the connection's place in
+        // the accept order, so it is taken here and nowhere later.
+        let scope = connections.accept();
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
@@ -3227,6 +3459,7 @@ async fn compact_accept_loop(
                 config,
                 host_instance_id,
                 host_config,
+                scope,
             )
             .await
             {
@@ -3237,6 +3470,7 @@ async fn compact_accept_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_compact_connection(
     node: Arc<Node<TailscaleProvider>>,
     incoming: truffle::transport::RawIncoming,
@@ -3244,6 +3478,7 @@ async fn handle_compact_connection(
     config: TruffleTerminalConfig,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let authenticated_node_id = incoming
         .remote_identity
@@ -3257,6 +3492,7 @@ async fn handle_compact_connection(
         .find(|peer| peer.tailscale_id == authenticated_node_id)
         .context("compact-stream source is not a current Truffle peer")?;
     let client_id = format!("truffle:{}", peer.peer_ref);
+    scope.identify(&client_id);
     handle_compact_protocol(
         incoming.stream,
         registry,
@@ -3265,10 +3501,12 @@ async fn handle_compact_connection(
         peer.device_id,
         client_id,
         host_config,
+        scope,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_compact_protocol<S>(
     stream: S,
     registry: Registry,
@@ -3277,6 +3515,7 @@ async fn handle_compact_protocol<S>(
     expected_device_id: Option<String>,
     client_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -3377,6 +3616,7 @@ where
                     state_codec,
                     protocol_minor,
                     host_config,
+                    connection: scope,
                 },
             )
             .await?;
@@ -3401,6 +3641,7 @@ where
         state_codec,
         protocol_minor,
         mut host_config,
+        connection: _connection_scope,
     } = context;
     let session_id = preface
         .session_id
@@ -3452,6 +3693,13 @@ where
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
+                // The authority does not yet mint fresh epochs on takeover or
+                // report controller state at attach, so these stay at their
+                // pre-takeover values rather than asserting a capability the
+                // host does not have. Revision 0 is the "unknown" sentinel.
+                resumed: false,
+                controller: None,
+                control_revision: 0,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -3716,6 +3964,125 @@ where
     result
 }
 
+/// Connection ids are handed out from one process-wide sequence. A client's
+/// own connections are a subsequence of it, which is all the attach fence
+/// needs: monotonic per client.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+struct ConnectionLedgerState {
+    /// Accepted connections that are not yet fully terminated, in id order.
+    /// The value is the client its hello bound, once one has.
+    live: BTreeMap<u64, Option<String>>,
+    /// The highest id handed out, so a ledger with nothing in flight answers
+    /// "everything accepted so far is gone" rather than "nothing is".
+    highest_accepted: u64,
+}
+
+/// Every accepted transport connection, from raw acceptance until it is
+/// **fully terminated** — the transport closed *and* every handler it spawned
+/// finished, not merely orphaned.
+///
+/// This is the observability the stage-2 attach fence runs on (§4.2.1). A
+/// watermark stamped `fence_conn_id` for a client may be collected once that
+/// client's view is detached **and** `terminated_through(client_id) >=
+/// fence_conn_id`: at that point no connection able to carry a lower attach
+/// generation can still deliver one.
+#[derive(Clone, Default)]
+pub struct ConnectionLedger {
+    state: Arc<SyncMutex<ConnectionLedgerState>>,
+}
+
+impl ConnectionLedger {
+    /// Stamp the next connection id and begin tracking it.
+    ///
+    /// Called at raw transport acceptance, before any handler runs — §4.2.1
+    /// invariant (a). An id minted later (at hello, say) could rank a
+    /// slow-handshaking older connection *above* the fence recorded for a
+    /// newer one, and the fence's soundness proof depends on it not.
+    pub fn accept(&self) -> ConnectionScope {
+        let id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.live.insert(id, None);
+            state.highest_accepted = state.highest_accepted.max(id);
+        }
+        ConnectionScope(Arc::new(ConnectionScopeInner {
+            id,
+            ledger: self.clone(),
+        }))
+    }
+
+    /// The greatest connection id `n` for which every connection with id ≤ `n`
+    /// that could belong to `client_id` is fully terminated.
+    ///
+    /// A connection that has not yet completed its hello belongs to no client
+    /// yet, so it counts against every client: nothing may be excluded from a
+    /// client's fence before it has said who it is.
+    pub fn terminated_through(&self, client_id: &str) -> u64 {
+        let state = self.state.lock().unwrap();
+        state
+            .live
+            .iter()
+            .find(|(_, owner)| owner.as_deref().is_none_or(|owner| owner == client_id))
+            .map_or(state.highest_accepted, |(id, _)| id - 1)
+    }
+
+    /// Whether one connection is fully terminated. The per-connection form of
+    /// [`terminated_through`](Self::terminated_through), for callers holding a
+    /// single id rather than a fence.
+    pub fn fully_terminated(&self, connection_id: u64) -> bool {
+        !self.state.lock().unwrap().live.contains_key(&connection_id)
+    }
+
+    fn identify(&self, connection_id: u64, client_id: &str) {
+        if let Some(owner) = self.state.lock().unwrap().live.get_mut(&connection_id) {
+            *owner = Some(client_id.to_owned());
+        }
+    }
+
+    fn finish(&self, connection_id: u64) {
+        self.state.lock().unwrap().live.remove(&connection_id);
+    }
+}
+
+/// One connection's place in the ledger. Every task that could still act for
+/// the connection holds a clone; the connection is recorded as fully
+/// terminated when the last clone drops. That is exactly "transport closed and
+/// all spawned handlers completed" — an aborted handler drops its clone the
+/// same as one that ran to the end.
+#[derive(Clone)]
+pub struct ConnectionScope(Arc<ConnectionScopeInner>);
+
+struct ConnectionScopeInner {
+    id: u64,
+    ledger: ConnectionLedger,
+}
+
+impl ConnectionScope {
+    /// This connection's id, ordered against every other accepted connection.
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    /// The ledger this connection is tracked in, for asking about others.
+    pub fn ledger(&self) -> &ConnectionLedger {
+        &self.0.ledger
+    }
+
+    /// Record which client the connection turned out to belong to, once its
+    /// hello has been authenticated.
+    pub fn identify(&self, client_id: &str) {
+        self.0.ledger.identify(self.0.id, client_id);
+    }
+}
+
+impl Drop for ConnectionScopeInner {
+    fn drop(&mut self) {
+        self.ledger.finish(self.id);
+    }
+}
+
 async fn accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     listener: Arc<truffle::transport::quic::QuicListener>,
@@ -3723,8 +4090,12 @@ async fn accept_loop(
     config: TruffleTerminalConfig,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    connections: ConnectionLedger,
 ) -> Result<()> {
     while let Some(connection) = listener.accept().await {
+        // Stamped on the raw transport, before the handler that will
+        // handshake — at whatever pace the client sets — exists.
+        let scope = connections.accept();
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
@@ -3738,6 +4109,7 @@ async fn accept_loop(
                 config,
                 host_instance_id,
                 host_config,
+                scope,
             )
             .await
             {
@@ -3748,6 +4120,7 @@ async fn accept_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     node: Arc<Node<TailscaleProvider>>,
     connection: Arc<truffle::transport::quic::QuicConnection>,
@@ -3755,6 +4128,7 @@ async fn handle_connection(
     config: TruffleTerminalConfig,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let remote_ip = connection.remote_address().ip();
     serve_connection(
@@ -3765,10 +4139,12 @@ async fn handle_connection(
         Arc::new(NodeClientResolver { node }),
         Some(remote_ip),
         host_config,
+        scope,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_connection(
     connection: Arc<dyn MeshConnection>,
     registry: Registry,
@@ -3777,6 +4153,7 @@ async fn serve_connection(
     resolver: Arc<dyn ClientResolver>,
     remote_ip: Option<IpAddr>,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
         .await
@@ -3820,6 +4197,10 @@ async fn serve_connection(
         _ => bail!("expected client hello"),
     };
     let client_id = resolver.resolve(&asserted_device_id, remote_ip).await?;
+    // Until this lands the connection counts against every client's fence,
+    // because a connection that has not said who it is could still turn out to
+    // be theirs.
+    scope.identify(&client_id);
     control
         .write_message(
             &ConnectionMessage::ServerHello {
@@ -3834,6 +4215,10 @@ async fn serve_connection(
         .await?;
 
     let streams_connection = Arc::clone(&connection);
+    // Every handler spawned below carries its own clone of the scope, so the
+    // ledger reports this connection terminated only once the last of them has
+    // finished — the difference between a handler completing and merely being
+    // orphaned, which is what the fence needs to distinguish.
     let streams_context = IncomingSessionContext {
         registry: registry.clone(),
         config: config.clone(),
@@ -3841,6 +4226,7 @@ async fn serve_connection(
         state_codec,
         protocol_minor,
         host_config,
+        connection: scope.clone(),
     };
     let streams = tokio::spawn(async move {
         while let Some(stream) = streams_connection.accept_stream().await? {
@@ -3903,6 +4289,9 @@ async fn handle_application_stream(
         state_codec,
         protocol_minor,
         host_config,
+        // Held for the life of the handler: the fence may not treat this
+        // connection as dead while a stream on it can still deliver an attach.
+        connection: _connection_scope,
     } = context;
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
@@ -3927,6 +4316,7 @@ async fn handle_application_stream(
             access_token,
             cols,
             rows,
+            ..
         } if requested_session == session_id => (request_id, view_id, access_token, cols, rows),
         _ => bail!("expected matching attach-view message"),
     };
@@ -3953,6 +4343,13 @@ async fn handle_application_stream(
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
+                // The authority does not yet mint fresh epochs on takeover or
+                // report controller state at attach, so these stay at their
+                // pre-takeover values rather than asserting a capability the
+                // host does not have. Revision 0 is the "unknown" sentinel.
+                resumed: false,
+                controller: None,
+                control_revision: 0,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -4969,6 +5366,7 @@ mod tests {
                 ghosttea::ConfigSnapshot::default().terminal_presentation(),
             ))
             .1,
+            ConnectionLedger::default().accept(),
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client
@@ -5048,6 +5446,7 @@ mod tests {
                 ghosttea::ConfigSnapshot::default().terminal_presentation(),
             ))
             .1,
+            ConnectionLedger::default().accept(),
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client
@@ -5380,6 +5779,9 @@ mod tests {
                             rows: 24,
                             read_write: true,
                             presentation: None,
+                            resumed: false,
+                            controller: None,
+                            control_revision: 0,
                         },
                         MAX_CONTROL_MESSAGE_BYTES,
                     )
@@ -5460,6 +5862,10 @@ mod tests {
         server: Arc<LoopbackConnection>,
         task: tokio::task::JoinHandle<Result<()>>,
         _presentation: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
+        /// The host's view of its own connections, so a test can ask whether
+        /// this one is fully terminated.
+        connections: ConnectionLedger,
+        connection_id: u64,
     }
 
     impl LoopbackHost {
@@ -5481,6 +5887,9 @@ mod tests {
         let (presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
             ghosttea::ConfigSnapshot::default().terminal_presentation(),
         ));
+        let connections = ConnectionLedger::default();
+        let scope = connections.accept();
+        let connection_id = scope.id();
         let task = tokio::spawn(serve_connection(
             Arc::clone(&server) as Arc<dyn MeshConnection>,
             registry.clone(),
@@ -5492,6 +5901,7 @@ mod tests {
             Arc::new(StaticClientResolver("truffle:peer:1")) as Arc<dyn ClientResolver>,
             None,
             presentation_rx,
+            scope,
         ));
         let connection = client_handshake(
             client as Arc<dyn MeshConnection>,
@@ -5506,6 +5916,8 @@ mod tests {
                 server,
                 task,
                 _presentation: presentation,
+                connections,
+                connection_id,
             },
         ))
     }
@@ -5669,6 +6081,10 @@ mod tests {
                     server,
                     task,
                     _presentation: presentation,
+                    // The scripted host speaks the protocol itself instead of
+                    // going through `serve_connection`, so it keeps no ledger.
+                    connections: ConnectionLedger::default(),
+                    connection_id: 0,
                 }],
             })
         }
@@ -6575,6 +6991,7 @@ mod tests {
             Arc::new(RefusingClientResolver) as Arc<dyn ClientResolver>,
             None,
             presentation_rx,
+            ConnectionLedger::default().accept(),
         ));
         // Identity now rides the hello, so an unresolvable device must be
         // refused there rather than being handed a session surface.
@@ -7706,6 +8123,210 @@ mod tests {
         Ok(())
     }
 
+    // ── Tailnet identity binding (§9.1) ──────────────────────────────
+
+    /// A WhoIs answer as the sidecar produces one: an owner, a name, and the
+    /// stable node id that is the only part the peer registry can be matched
+    /// against.
+    fn tailnet_identity(node_id: Option<&str>) -> TailnetWhoIs {
+        TailnetWhoIs::Identity(Box::new(TailscalePeerIdentity {
+            dns_name: Some("viewer.tailnet.ts.net".into()),
+            login_name: Some("owner@example.com".into()),
+            display_name: Some("Owner".into()),
+            node_id: node_id.map(str::to_owned),
+            ..TailscalePeerIdentity::default()
+        }))
+    }
+
+    fn registry_peer(tailscale_id: &str, device_id: Option<&str>) -> PeerBinding {
+        PeerBinding {
+            tailscale_id: tailscale_id.into(),
+            device_id: device_id.map(str::to_owned),
+            peer_ref: format!("{tailscale_id}:3"),
+        }
+    }
+
+    /// The client id is derived from the peer the tailnet authenticated, so a
+    /// peer whose durable id discovery has not published yet still binds:
+    /// there was never anything in the hello for an assertion to steal.
+    #[test]
+    fn a_tailnet_identity_binds_the_client_to_the_peer_it_authenticates() -> Result<()> {
+        let node_id = authenticated_node_id(tailnet_identity(Some("nodeAAAA")))?
+            .context("a WhoIs identity authenticates a node id")?;
+        assert_eq!(node_id, "nodeAAAA");
+        assert_eq!(
+            bind_authenticated_peer(
+                &node_id,
+                Some(&registry_peer("nodeAAAA", Some("device-1"))),
+                "device-1",
+            )?,
+            "truffle:nodeAAAA:3"
+        );
+        assert_eq!(
+            bind_authenticated_peer(&node_id, Some(&registry_peer("nodeAAAA", None)), "device-1")?,
+            "truffle:nodeAAAA:3"
+        );
+        Ok(())
+    }
+
+    /// The Phase 2 caveat, closed: a peer inside the tailnet that asserts
+    /// another device's id is refused instead of inheriting its client id.
+    #[test]
+    fn a_hello_asserting_another_devices_id_is_refused() {
+        assert!(
+            bind_authenticated_peer(
+                "nodeAAAA",
+                Some(&registry_peer("nodeAAAA", Some("device-1"))),
+                "device-2",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_unauthenticated_source_is_refused_rather_than_admitted() {
+        // The tailnet claims no identity for the address at all.
+        assert!(authenticated_node_id(TailnetWhoIs::Anonymous).is_err());
+        // An identity with no stable node id matches no peer, however much
+        // else it carries.
+        assert!(authenticated_node_id(tailnet_identity(None)).is_err());
+        assert!(authenticated_node_id(tailnet_identity(Some("   "))).is_err());
+        // A WhoIs that exists and did not answer is an outage, not licence to
+        // trust the hello.
+        assert!(
+            authenticated_node_id(TailnetWhoIs::Unavailable("sidecar is wedged".into())).is_err()
+        );
+    }
+
+    /// Only a provider with no WhoIs at all — the in-process transports these
+    /// tests run on — falls back to hello-asserted identity.
+    #[test]
+    fn only_a_provider_without_whois_falls_back_to_the_hello() -> Result<()> {
+        assert!(authenticated_node_id(TailnetWhoIs::Unsupported)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn an_authenticated_identity_the_registry_cannot_place_is_refused() {
+        assert!(bind_authenticated_peer("nodeAAAA", None, "device-1").is_err());
+        // `Node::peer` resolves names and device-id prefixes too, so the
+        // resolved peer has to answer to the authenticated stable id itself.
+        assert!(
+            bind_authenticated_peer(
+                "nodeAAAA",
+                Some(&registry_peer("nodeBBBB", Some("device-1"))),
+                "device-1",
+            )
+            .is_err()
+        );
+    }
+
+    // ── Connection ids and termination (§4.2.1) ──────────────────────
+
+    #[test]
+    fn connection_ids_are_stamped_in_acceptance_order() {
+        let ledger = ConnectionLedger::default();
+        let first = ledger.accept();
+        let second = ledger.accept();
+        assert!(second.id() > first.id());
+    }
+
+    /// A fence may only advance past connections that can no longer deliver an
+    /// attach — and a connection that has not yet said whose it is could still
+    /// turn out to be anyone's.
+    #[test]
+    fn a_fence_waits_for_every_connection_that_could_still_attach() {
+        let ledger = ConnectionLedger::default();
+        let older = ledger.accept();
+        older.identify("client-a");
+        let newer = ledger.accept();
+        newer.identify("client-b");
+        let unidentified = ledger.accept();
+        // Ids come from one process-wide sequence, so nothing here may assume
+        // they are consecutive — only that they ascend.
+        let (older_id, newer_id, unidentified_id) = (older.id(), newer.id(), unidentified.id());
+
+        assert_eq!(ledger.terminated_through("client-a"), older_id - 1);
+        assert_eq!(ledger.terminated_through("client-b"), newer_id - 1);
+
+        drop(older);
+        // A's own connection is gone, but the unidentified one might be A's.
+        assert_eq!(ledger.terminated_through("client-a"), unidentified_id - 1);
+        assert_eq!(ledger.terminated_through("client-b"), newer_id - 1);
+
+        drop(newer);
+        assert_eq!(ledger.terminated_through("client-b"), unidentified_id - 1);
+
+        drop(unidentified);
+        // Nothing is in flight, so everything accepted so far is provably gone.
+        assert_eq!(ledger.terminated_through("client-a"), unidentified_id);
+        assert_eq!(ledger.terminated_through("client-b"), unidentified_id);
+    }
+
+    /// "Fully terminated" is transport closed **and** every handler finished:
+    /// an orphaned handler keeps the connection live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_terminates_only_after_its_last_handler_finishes() {
+        let ledger = ConnectionLedger::default();
+        let scope = ledger.accept();
+        let id = scope.id();
+        scope.identify("client-a");
+        let handler = scope.clone();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _handler = handler;
+            let _ = released.await;
+        });
+        // The transport is gone; its handler is not.
+        drop(scope);
+        assert!(!ledger.fully_terminated(id));
+        assert_eq!(ledger.terminated_through("client-a"), id - 1);
+
+        let _ = release.send(());
+        task.await.unwrap();
+        assert!(ledger.fully_terminated(id));
+        assert_eq!(ledger.terminated_through("client-a"), id);
+    }
+
+    /// The same over the real host accept path, and the case the fence turns
+    /// on: the task that owns the transport dies while the view handler it
+    /// spawned keeps running. An orphaned handler can still act on the
+    /// session, so the connection is not terminated until it too unwinds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_served_connection_terminates_only_after_its_view_handler_unwinds() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let host = &fixture.hosts[0];
+        let id = host.connection_id;
+        assert!(!host.connections.fully_terminated(id));
+        assert_eq!(
+            host.connections.terminated_through("truffle:peer:1"),
+            id - 1
+        );
+
+        // The connection's own task is gone; the handlers it spawned are not.
+        host.task.abort();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !host.connections.fully_terminated(id),
+            "an orphaned handler was counted as a terminated connection"
+        );
+
+        // Now the transport dies too, and everything reading it unwinds.
+        host.server.close();
+        for _ in 0..400 {
+            if host.connections.fully_terminated(id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            host.connections.fully_terminated(id),
+            "a dead connection never reported its handlers finished"
+        );
+        assert_eq!(host.connections.terminated_through("truffle:peer:1"), id);
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires TRUFFLE_TEST_AUTHKEY and a reachable Tailscale control plane"]
     async fn latest_truffle_quic_round_trip() -> Result<()> {
@@ -7768,6 +8389,115 @@ mod tests {
             server_stream.read(64).await?.as_deref(),
             Some(b"truffle-0.7.1".as_slice())
         );
+        client.close();
+        server.close();
+        listener.close();
+        tokio::time::timeout(Duration::from_secs(10), node_a.stop())
+            .await
+            .context("timed out stopping Truffle node A")?;
+        tokio::time::timeout(Duration::from_secs(10), node_b.stop())
+            .await
+            .context("timed out stopping Truffle node B")?;
+        Ok(())
+    }
+
+    /// The identity binding on a real tailnet, which is the only place it can
+    /// be proven: WhoIs on the accepted connection's address resolves to the
+    /// dialing node, the resolver derives that peer's client id, and a hello
+    /// asserting a different device id is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires TRUFFLE_TEST_AUTHKEY and a reachable Tailscale control plane"]
+    async fn whois_binds_a_real_quic_connection_to_the_peer_that_dialed_it() -> Result<()> {
+        let _ = dotenvy::dotenv();
+        let auth_key = env::var("TRUFFLE_TEST_AUTHKEY")
+            .context("TRUFFLE_TEST_AUTHKEY is required for this ignored test")?;
+        let sidecar_path = env::var("TRUFFLE_SIDECAR_PATH")
+            .context("TRUFFLE_SIDECAR_PATH is required for this ignored test")?;
+        let a_state = tempfile::tempdir()?;
+        let b_state = tempfile::tempdir()?;
+        let suffix = &Uuid::new_v4().simple().to_string()[..8];
+        let build_a = Node::<TailscaleProvider>::builder()
+            .app_id("ghosttea-test")?
+            .device_name(format!("identity-a-{suffix}"))
+            .state_dir(a_state.path().to_string_lossy().as_ref())
+            .sidecar_path(&sidecar_path)
+            .auth_key(&auth_key)
+            .ephemeral(true)
+            .build();
+        let build_b = Node::<TailscaleProvider>::builder()
+            .app_id("ghosttea-test")?
+            .device_name(format!("identity-b-{suffix}"))
+            .state_dir(b_state.path().to_string_lossy().as_ref())
+            .sidecar_path(&sidecar_path)
+            .auth_key(&auth_key)
+            .ephemeral(true)
+            .build();
+        let (node_a, node_b) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::try_join!(build_a, build_b)
+        })
+        .await
+        .context("timed out starting the two Truffle nodes")??;
+        let node_a = Arc::new(node_a);
+        let node_b = Arc::new(node_b);
+        let a_device_id = node_a.local_info().device_id;
+        let b_device_id = node_b.local_info().device_id;
+        tokio::time::timeout(
+            Duration::from_secs(35),
+            node_b.peer(&a_device_id, Some(30_000)),
+        )
+        .await
+        .context("timed out discovering node A from node B")??
+        .context("node A did not appear in node B's peer registry")?;
+
+        let listener = node_b.listen_quic(19_421).await?;
+        let accept = listener.accept();
+        let connect = node_a.connect_quic(&b_device_id, 19_421);
+        let (accepted, client) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(accept, connect)
+        })
+        .await
+        .context("timed out establishing the Truffle QUIC connection")?;
+        let server = accepted.context("QUIC listener closed")?;
+        let client = client?;
+
+        // The address the connection actually arrived from — whatever path the
+        // tailnet chose, direct or DERP-relayed.
+        let remote = server.remote_address();
+        let identity = tokio::time::timeout(WHOIS_TIMEOUT, node_b.whois(&remote.to_string()))
+            .await
+            .context("timed out asking the tailnet who opened the connection")??
+            .context("the tailnet claimed no identity for the connection's address")?;
+        let node_id = identity
+            .node_id
+            .clone()
+            .context("WhoIs answered without a stable node id")?;
+        let peer = node_b
+            .peer(&a_device_id, Some(PEER_RESOLVE_WAIT_MS))
+            .await?
+            .context("node A left node B's registry")?;
+        assert_eq!(
+            node_id, peer.tailscale_id,
+            "WhoIs authenticated a different node than the one that dialed"
+        );
+
+        // The production resolver, on the production inputs.
+        let resolver = NodeClientResolver {
+            node: Arc::clone(&node_b),
+        };
+        assert_eq!(
+            resolver.resolve(&a_device_id, Some(remote.ip())).await?,
+            format!("truffle:{}", peer.peer_ref)
+        );
+        // §9.1, closed on a real tailnet: node B's own id asserted by node A
+        // no longer buys node B's client id.
+        assert!(
+            resolver
+                .resolve(&b_device_id, Some(remote.ip()))
+                .await
+                .is_err(),
+            "a hello asserting another device's id was accepted"
+        );
+
         client.close();
         server.close();
         listener.close();

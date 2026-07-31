@@ -37,6 +37,7 @@ pub use service::{
 };
 pub use session::{
     AutomationInputOperation, AutomationInputResult, ExitOutcome, Session, SessionActivity,
-    SessionActivityConfidence, SessionActivityKind, SessionActivitySource, SessionEnvironment,
-    SessionExit, SessionProgramKind, SessionSummary, TerminationSource,
+    SessionActivityConfidence, SessionActivityKind, SessionActivitySource, SessionEndCause,
+    SessionEndEvidence, SessionEnvironment, SessionExit, SessionProgramKind, SessionStatus,
+    SessionSummary, SessionTombstone, SessionTombstones, TerminationSource, TombstoneClock,
 };
