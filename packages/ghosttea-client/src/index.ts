@@ -48,6 +48,7 @@ export type SessionExitedEvent = Extract<ServerEvent, { type: "session-exited" }
 
 const MAX_CONTROL_BYTES = 1024 * 1024;
 const CONFIG_DOCUMENT_PROTOCOL_MINOR = 11;
+const REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12;
 
 export class GhostteaConfigDocumentConflictError extends Error {
   readonly document: ConfigDocument;
@@ -389,6 +390,13 @@ export class GhostteaAutomationClient extends EventEmitter {
       command.type === "replace-config-document"
     ) {
       this.#requireProtocolMinor(CONFIG_DOCUMENT_PROTOCOL_MINOR, "configuration documents");
+    }
+    if (
+      command.type === "get-remote-session-state" ||
+      command.type === "reconnect-remote-session" ||
+      command.type === "retry-remote-view"
+    ) {
+      this.#requireProtocolMinor(REMOTE_LIFECYCLE_PROTOCOL_MINOR, "remote session lifecycle");
     }
     const requestId = this.#nextRequestId++;
     const encoded = Buffer.from(JSON.stringify({ ...command, requestId } satisfies ClientCommand));

@@ -24,8 +24,9 @@ pub use ghosttea_text::{
 };
 pub use mesh::{
     RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
-    RemoteHostSummary, RemoteResize, RemoteSelection, RemoteSessionOpen, RemoteTerminalRuntime,
-    TerminalMesh,
+    RemoteEndedReason, RemoteExitInfo, RemoteHostSummary, RemoteLifecycleChanged,
+    RemoteLifecycleState, RemoteResize, RemoteSelection, RemoteSessionLifecycle, RemoteSessionOpen,
+    RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState, RemoteViewStateChanged, TerminalMesh,
 };
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;

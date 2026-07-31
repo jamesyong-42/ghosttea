@@ -8,12 +8,37 @@ export interface RemoteChoice {
   session: SharedSessionSummary;
 }
 
+/** Attachable sessions matching the search text, optionally on one host only. */
+export function remoteSessionChoices(
+  hosts: readonly RemoteHostSummary[],
+  query: string,
+  deviceId?: string,
+): RemoteChoice[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  return hosts
+    .filter((host) => deviceId === undefined || host.deviceId === deviceId)
+    .flatMap((host) =>
+      host.sessions
+        .filter((session) => session.attachable && session.running)
+        .filter((session) => {
+          if (!normalized) return true;
+          return [host.deviceName, session.title, session.cwdLabel ?? ""]
+            .join(" ")
+            .toLocaleLowerCase()
+            .includes(normalized);
+        })
+        .map((session) => ({ host, session })),
+    );
+}
+
 interface RemoteSessionPaletteProps {
+  /** Restrict the listing to one host; every discovered host when omitted. */
+  deviceId?: string;
   onClose: () => void;
   onOpen: (choice: RemoteChoice) => Promise<void>;
 }
 
-export function RemoteSessionPalette({ onClose, onOpen }: RemoteSessionPaletteProps) {
+export function RemoteSessionPalette({ deviceId, onClose, onOpen }: RemoteSessionPaletteProps) {
   const terminalRuntime = useGhostteaRuntime();
   const inputRef = useRef<HTMLInputElement>(null);
   const aliveRef = useRef(true);
@@ -76,21 +101,7 @@ export function RemoteSessionPalette({ onClose, onOpen }: RemoteSessionPalettePr
     };
   }, [load]);
 
-  const choices = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
-    return hosts.flatMap((host) =>
-      host.sessions
-        .filter((session) => session.attachable && session.running)
-        .filter((session) => {
-          if (!normalized) return true;
-          return [host.deviceName, session.title, session.cwdLabel ?? ""]
-            .join(" ")
-            .toLocaleLowerCase()
-            .includes(normalized);
-        })
-        .map((session) => ({ host, session })),
-    );
-  }, [hosts, query]);
+  const choices = useMemo(() => remoteSessionChoices(hosts, query, deviceId), [deviceId, hosts, query]);
 
   const selectedIndex = Math.min(selected, Math.max(0, choices.length - 1));
 

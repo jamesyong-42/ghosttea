@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const commands: Record<string, unknown>[] = [];
 let socketBehavior: "normal" | "close-during-auth" | "silent-auth" = "normal";
-let serverProtocolMinor = 11;
+let serverProtocolMinor = 12;
+let lastSocket: FakeSocket | undefined;
 
 const config = {
   schemaVersion: 1,
@@ -165,6 +166,31 @@ class FakeSocket extends EventEmitter {
           }),
         ),
       );
+    } else if (command.type === "get-remote-session-state" || command.type === "reconnect-remote-session") {
+      queueMicrotask(() =>
+        this.emit(
+          "data",
+          packet({
+            requestId,
+            type: "remote-session-state",
+            lifecycleSeq: 4,
+            deviceId: "device",
+            deviceName: "studio-mac",
+            state: "suspended",
+            reason: null,
+            exit: null,
+            attempt: 2,
+            nextRetryMs: null,
+            lastContactMs: 30_000,
+            controller: null,
+            controlRevision: 0,
+            cols: 80,
+            rows: 24,
+            layoutEpoch: 1,
+            views: [],
+          }),
+        ),
+      );
     } else if (command.type === "close-session-owner") {
       queueMicrotask(() => this.emit("data", packet({ requestId, type: "ok" })));
     } else if (command.type === "terminate") {
@@ -200,6 +226,7 @@ class FakeSocket extends EventEmitter {
 vi.mock("node:net", () => ({
   createConnection: vi.fn(() => {
     const socket = new FakeSocket();
+    lastSocket = socket;
     queueMicrotask(() => socket.emit("connect"));
     return socket as unknown as Socket;
   }),
@@ -211,7 +238,7 @@ describe("GhostteaAutomationClient", () => {
   beforeEach(() => {
     commands.splice(0);
     socketBehavior = "normal";
-    serverProtocolMinor = 11;
+    serverProtocolMinor = 12;
   });
 
   it("reads, validates, and compare-and-swaps exact configuration documents", async () => {
@@ -245,6 +272,59 @@ describe("GhostteaAutomationClient", () => {
     await expect(client.getConfigDocument()).rejects.toThrow("requires protocol 1.11");
     await expect(client.request({ type: "get-config-document" })).rejects.toThrow("requires protocol 1.11");
     expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    client.dispose();
+  });
+
+  it("never sends remote lifecycle commands to a daemon that predates them", async () => {
+    // 1.11 shipped the configuration document API; a daemon there would close
+    // the socket on an unknown command rather than answering it.
+    serverProtocolMinor = 11;
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.request({ type: "get-remote-session-state", sessionId: "session" })).rejects.toThrow(
+      "requires protocol 1.12",
+    );
+    await expect(client.request({ type: "reconnect-remote-session", sessionId: "session" })).rejects.toThrow(
+      "requires protocol 1.12",
+    );
+    await expect(client.request({ type: "retry-remote-view", sessionId: "session", viewId: "view" })).rejects.toThrow(
+      "requires protocol 1.12",
+    );
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    client.dispose();
+  });
+
+  it("keeps a configuration-document-era pairing alive on the events 1.11 defined", async () => {
+    // The released 1.11 client decodes config events but not lifecycle ones,
+    // so the daemon withholds the latter (its own gate). This side of the
+    // contract: at a negotiated 1.11 the connection keeps serving config
+    // traffic and never puts a 1.12 command on the wire.
+    serverProtocolMinor = 11;
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    const announced: unknown[] = [];
+    client.on("config-changed", (event) => announced.push(event));
+    await client.connect();
+
+    lastSocket?.emit("data", packet({ requestId: 0, type: "config-changed", config }));
+    await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+    expect(announced).toHaveLength(1);
+    expect(client.connected).toBe(true);
+
+    await expect(client.request({ type: "get-remote-session-state", sessionId: "session" })).rejects.toThrow(
+      "requires protocol 1.12",
+    );
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    expect(client.connected).toBe(true);
+    client.dispose();
+  });
+
+  it("reconciles remote session state against a daemon that speaks 1.12", async () => {
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.request({ type: "get-remote-session-state", sessionId: "session" })).resolves.toMatchObject({
+      type: "remote-session-state",
+      state: "suspended",
+      deviceName: "studio-mac",
+    });
+    expect(commands.map((command) => command.type)).toEqual(["hello", "get-remote-session-state"]);
     client.dispose();
   });
 

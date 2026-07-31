@@ -38,6 +38,14 @@ class FakePort extends EventTarget {
   helloProtocolMinor: number | undefined;
   configSnapshot: ConfigSnapshot | undefined;
   sessions: SessionSummary[] = [];
+  deferAttachments = false;
+  readonly pendingAttachments: Array<{ requestId: number; sessionId: string; viewId: string }> = [];
+  attachViewStateSeq: number | undefined;
+  deferRemoteState = false;
+  readonly pendingRemoteStateRequestIds: number[] = [];
+  readonly remoteStateRequests: string[] = [];
+  remoteSession: SessionSummary = session;
+  remoteState: Record<string, unknown> = remoteSessionState();
   closed = false;
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
 
@@ -86,18 +94,20 @@ class FakePort extends EventTarget {
     } else if (message.type === "refresh-session") {
       this.dispatchEvent(new MessageEvent("message", { data: { requestId, type: "ok" } }));
     } else if (message.type === "attach-session") {
+      const attachment = { requestId, sessionId: String(message.sessionId), viewId: String(message.viewId) };
+      if (this.deferAttachments) this.pendingAttachments.push(attachment);
+      else this.completeAttachment(attachment);
+    } else if (message.type === "open-remote-session") {
       this.dispatchEvent(
-        new MessageEvent("message", {
-          data: {
-            requestId,
-            type: "view-attached",
-            sessionId: message.sessionId,
-            viewId: message.viewId,
-            attachmentEpoch: 2,
-            readWrite: this.attachReadWrite,
-          },
-        }),
+        new MessageEvent("message", { data: { requestId, type: "session-created", session: this.remoteSession } }),
       );
+    } else if (message.type === "get-remote-session-state" || message.type === "reconnect-remote-session") {
+      this.remoteStateRequests.push(message.type);
+      if (this.deferRemoteState) {
+        this.pendingRemoteStateRequestIds.push(requestId);
+        return;
+      }
+      this.answerRemoteState(requestId);
     } else if (message.type === "selection-text") {
       this.dispatchEvent(
         new MessageEvent("message", {
@@ -108,6 +118,72 @@ class FakePort extends EventTarget {
   }
 
   start(): void {}
+
+  completeAttachment(attachment = this.pendingAttachments.shift()): void {
+    if (!attachment) throw new Error("No pending view attachment");
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: attachment.requestId,
+          type: "view-attached",
+          sessionId: attachment.sessionId,
+          viewId: attachment.viewId,
+          attachmentEpoch: 2,
+          readWrite: this.attachReadWrite,
+          ...(this.attachViewStateSeq === undefined ? {} : { viewStateSeq: this.attachViewStateSeq }),
+        },
+      }),
+    );
+  }
+
+  answerRemoteState(requestId = this.pendingRemoteStateRequestIds.shift()): void {
+    if (requestId === undefined) throw new Error("No pending remote session state request");
+    this.dispatchEvent(
+      new MessageEvent("message", { data: { requestId, type: "remote-session-state", ...this.remoteState } }),
+    );
+  }
+
+  emitLifecycle(overrides: Record<string, unknown>): void {
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "remote-session-state-changed",
+          sessionId: session.id,
+          lifecycleSeq: 1,
+          deviceId: "device",
+          deviceName: "studio-mac",
+          state: "reconnecting",
+          reason: null,
+          exit: null,
+          attempt: 1,
+          nextRetryMs: null,
+          lastContactMs: 4_000,
+          ...overrides,
+        },
+      }),
+    );
+  }
+
+  emitViewState(overrides: Record<string, unknown>): void {
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "view-state-changed",
+          sessionId: session.id,
+          viewId: "view-1",
+          viewStateSeq: 1,
+          viewState: "attached",
+          attachmentEpoch: 5,
+          readWrite: true,
+          error: null,
+          retryable: null,
+          ...overrides,
+        },
+      }),
+    );
+  }
 
   acknowledgeSubscription(requestId = this.pendingSubscriptionAcknowledgements.shift()): void {
     if (requestId === undefined) throw new Error("No pending frame subscription acknowledgement");
@@ -162,6 +238,27 @@ const session = {
   persistence: null,
   activity: unknownSessionActivity(),
 } as const;
+
+function remoteSessionState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    lifecycleSeq: 2,
+    deviceId: "device",
+    deviceName: "studio-mac",
+    state: "suspended",
+    reason: null,
+    exit: null,
+    attempt: 1,
+    nextRetryMs: null,
+    lastContactMs: 30_000,
+    controller: null,
+    controlRevision: 0,
+    cols: 80,
+    rows: 24,
+    layoutEpoch: 1,
+    views: [],
+    ...overrides,
+  };
+}
 
 const configSnapshot: ConfigSnapshot = {
   schemaVersion: 1,
@@ -921,6 +1018,379 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
 
     expect(updates.at(-1)?.readWrite).toBe(false);
     expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+  });
+
+  it("never delivers keystrokes typed while a remote session is not live", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    control.deferAttachments = true;
+    await runtime.connect();
+    const suppressed: string[] = [];
+    runtime.addEventListener("input-suppressed", (event) =>
+      suppressed.push((event as CustomEvent<{ state: string }>).detail.state),
+    );
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    // A remote attach is a network round-trip, not the millisecond local one
+    // the queue exists for, so this keystroke is dropped rather than held.
+    runtime.sendText(remote.id, "view-1", "typed before attach");
+    control.completeAttachment();
+    await flushMicrotasks();
+    expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    runtime.sendText(remote.id, "view-1", "typed while reconnecting");
+    control.emitLifecycle({ lifecycleSeq: 2, state: "suspended" });
+    runtime.paste(remote.id, "view-1", "pasted while suspended");
+    await flushMicrotasks();
+    expect(control.messages.some((message) => message.type === "send-text" || message.type === "paste")).toBe(false);
+    expect(suppressed).toEqual(["opening", "reconnecting", "suspended"]);
+
+    control.emitLifecycle({ lifecycleSeq: 3, state: "live" });
+    control.emitViewState({ viewStateSeq: 4, attachmentEpoch: 9 });
+    await flushMicrotasks();
+    runtime.sendText(remote.id, "view-1", "typed after recovery");
+
+    const delivered = control.messages.filter((message) => message.type === "send-text");
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ text: "typed after recovery", attachmentEpoch: 9, inputSequence: 1 });
+    runtime.dispose();
+  });
+
+  it("learns a session is remote from an opening event and holds its input", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    // A session restored into a pane was never opened through this runtime, so
+    // the lifecycle event is the only thing that can mark it remote.
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    control.emitLifecycle({ lifecycleSeq: 0, state: "opening" });
+
+    expect(runtime.remoteSession(session.id)).toMatchObject({ state: "opening", deviceName: "studio-mac" });
+    runtime.sendText(session.id, "view-1", "typed while opening");
+    expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "live" });
+    runtime.sendText(session.id, "view-1", "typed once live");
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
+      { text: "typed once live" },
+    ]);
+    runtime.dispose();
+  });
+
+  it("still queues a local session's keystrokes across its mount-to-attach gap", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.deferAttachments = true;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    runtime.sendText(session.id, "view-1", "typed before attach");
+    expect(control.messages.some((message) => message.type === "send-text")).toBe(false);
+    control.completeAttachment();
+    await flushMicrotasks();
+
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
+      { text: "typed before attach", attachmentEpoch: 2, inputSequence: 1 },
+    ]);
+    runtime.dispose();
+  });
+
+  it("orders per-view state by sequence across events, reconciles, and attach responses", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.attachViewStateSeq = 3;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+    control.emitLifecycle({ lifecycleSeq: 1, state: "live" });
+
+    // A delayed failure from an abandoned attempt must not unseat the newer
+    // attachment the response already recorded.
+    control.emitViewState({ viewStateSeq: 2, viewState: "failed", attachmentEpoch: null, readWrite: null });
+    runtime.sendText(remote.id, "view-1", "after stale failure");
+    await flushMicrotasks();
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
+      { attachmentEpoch: 2, inputSequence: 1 },
+    ]);
+
+    // A higher sequence wins, and a view that is not attached has no epoch.
+    control.emitViewState({ viewStateSeq: 5, viewState: "failed", attachmentEpoch: null, readWrite: null });
+    runtime.sendText(remote.id, "view-1", "after real failure");
+    await flushMicrotasks();
+    expect(control.messages.filter((message) => message.type === "send-text")).toHaveLength(1);
+
+    control.remoteState = remoteSessionState({
+      lifecycleSeq: 6,
+      state: "live",
+      views: [
+        {
+          viewId: "view-1",
+          viewStateSeq: 7,
+          viewState: "attached",
+          attachmentEpoch: 11,
+          readWrite: true,
+          error: null,
+          retryable: null,
+        },
+      ],
+    });
+    await runtime.getRemoteSessionState(remote.id);
+    runtime.sendText(remote.id, "view-1", "after reconcile");
+    await flushMicrotasks();
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
+      { attachmentEpoch: 2 },
+      { attachmentEpoch: 11, text: "after reconcile" },
+    ]);
+    runtime.dispose();
+  });
+
+  it("applies an attach response from a daemon that predates the ordering fence", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.attachViewStateSeq = undefined;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    runtime.sendText(session.id, "view-1", "typed after legacy attach");
+    expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([{ attachmentEpoch: 2 }]);
+    runtime.dispose();
+  });
+
+  it("clears the per-view control epoch when the daemon reports no controller", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "control-state",
+          sessionId: session.id,
+          controller: { viewId: "view-1", controlEpoch: 7 },
+          controlRevision: 4,
+          cols: 80,
+          rows: 24,
+          layoutEpoch: 2,
+        },
+      }),
+    );
+    runtime.resize(session.id, "view-1", 100, 30);
+    expect(control.messages.filter((message) => message.type === "resize")).toHaveLength(1);
+
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "control-state",
+          sessionId: session.id,
+          controller: null,
+          controlRevision: 5,
+          cols: 80,
+          rows: 24,
+          layoutEpoch: 2,
+        },
+      }),
+    );
+    runtime.resize(session.id, "view-1", 110, 32);
+    expect(control.messages.filter((message) => message.type === "resize")).toHaveLength(1);
+    runtime.dispose();
+  });
+
+  it("reconciles every open remote session after the daemon reports lost events", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    control.sessions = [session];
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    const states: string[] = [];
+    runtime.addEventListener("remote-session-state", (event) =>
+      states.push((event as CustomEvent<{ state: string }>).detail.state),
+    );
+    control.remoteState = remoteSessionState({ lifecycleSeq: 9, state: "ended", reason: "host-restarted" });
+    control.dispatchEvent(new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 3 } }));
+    await flushMicrotasks();
+
+    expect(control.remoteStateRequests).toEqual(["get-remote-session-state"]);
+    expect(states).toEqual(["ended"]);
+    expect(runtime.remoteSession(remote.id)).toMatchObject({ state: "ended", reason: "host-restarted" });
+    runtime.dispose();
+  });
+
+  it("gives a one-shot reconnect the whole dial and handshake budget", async () => {
+    vi.stubGlobal("window", globalThis);
+    vi.useFakeTimers();
+    const control = new FakePort();
+    control.deferRemoteState = true;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    control.remoteState = remoteSessionState({ lifecycleSeq: 4, state: "live" });
+
+    const reconnecting = runtime.reconnectRemoteSession(remote.id);
+    // A default 10 s request budget could not survive a 20 s dial.
+    await vi.advanceTimersByTimeAsync(30_000);
+    control.answerRemoteState();
+    await expect(reconnecting).resolves.toMatchObject({ state: "live" });
+    expect(control.remoteStateRequests).toEqual(["reconnect-remote-session"]);
+    runtime.dispose();
+  });
+
+  it("sends no lifecycle commands to a daemon that predates them", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.helloProtocolMinor = 11;
+    control.configSnapshot = configSnapshot;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+
+    await expect(runtime.getRemoteSessionState(remote.id)).resolves.toBeUndefined();
+    await expect(runtime.reconnectRemoteSession(remote.id)).resolves.toBeUndefined();
+    await runtime.retryRemoteView(remote.id, "view-1");
+    control.dispatchEvent(new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 1 } }));
+    await flushMicrotasks();
+
+    expect(control.remoteStateRequests).toEqual([]);
+    expect(runtime.remoteLifecycleSupported).toBe(false);
+
+    // Everything 1.11 did define keeps working: the pairing degrades to
+    // Phase-0 behavior rather than losing the control channel.
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: { requestId: 0, type: "config-changed", config: { ...configSnapshot, revision: "config-v11" } },
+      }),
+    );
+    await flushMicrotasks();
+    expect(runtime.configSnapshot?.revision).toBe("config-v11");
+    runtime.dispose();
+  });
+
+  it("keeps a frozen replica copyable after its attachment epoch is cleared", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+    control.emitViewState({ viewStateSeq: 8, viewState: "failed", attachmentEpoch: null, readWrite: null });
+
+    await expect(
+      runtime.copySelection(remote.id, "view-1", { anchor: { column: 0, row: 0 }, focus: { column: 4, row: 0 } }),
+    ).resolves.toBe("copied from terminal");
+    expect(control.messages.at(-1)).toMatchObject({ type: "selection-text", attachmentEpoch: 2 });
+    runtime.dispose();
   });
 
   it("disposes mounted views, ports, timers, and the render worker exactly once", async () => {

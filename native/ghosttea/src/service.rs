@@ -42,12 +42,20 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 11;
+const CONTROL_PROTOCOL_MINOR: u16 = 12;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
 const CONFIG_EVENT_PROTOCOL_MINOR: u16 = 10;
 const CONFIG_DOCUMENT_PROTOCOL_MINOR: u16 = 11;
+/// Remote-session lifecycle: the state events, per-view readiness, controller
+/// state, and the three reconciliation commands.
+///
+/// Advertised only with its complete surface. A minor is a promise about which
+/// messages exist, not about what they do yet, so every minor-12 command ships
+/// here even where Phase 1 leaves the behaviour dormant — a client that
+/// negotiated 12 and then hit an unknown command would lose its socket.
+const REMOTE_LIFECYCLE_PROTOCOL_MINOR: u16 = 12;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
@@ -55,6 +63,7 @@ const _: () = assert!(CONFIG_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(CONFIG_DOCUMENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(REMOTE_LIFECYCLE_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// How long an accepted connection may take to present its token before the
@@ -71,8 +80,39 @@ fn client_accepts_event(event: &Value, protocol_minor: u16) -> bool {
         Some("session-activity-changed") => protocol_minor >= ACTIVITY_EVENT_PROTOCOL_MINOR,
         Some("session-created") => protocol_minor >= SESSION_CREATED_PROTOCOL_MINOR,
         Some("config-changed") => protocol_minor >= CONFIG_EVENT_PROTOCOL_MINOR,
+        Some("remote-session-state-changed" | "view-state-changed" | "control-state") => {
+            protocol_minor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR
+        }
         _ => true,
     }
+}
+
+/// Rewrite a broadcast event into the form this client can actually read, or
+/// drop it when there is none.
+///
+/// Only `control-state` has one: it supersedes `control-changed` for remote
+/// sessions, and a client that never negotiated it would otherwise silently
+/// stop hearing about controller changes it can still act on. A named
+/// controller downgrades to the legacy event; a *cleared* controller has no
+/// legacy spelling and stays invisible to older clients, exactly as today.
+/// Local sessions keep publishing `control-changed` directly at every minor.
+fn event_for_client(event: Value, protocol_minor: u16) -> Option<Value> {
+    if event.get("type").and_then(Value::as_str) == Some("control-state")
+        && protocol_minor < REMOTE_LIFECYCLE_PROTOCOL_MINOR
+    {
+        let controller = event.get("controller")?.as_object()?;
+        return Some(json!({
+            "requestId": 0,
+            "type": "control-changed",
+            "sessionId": event.get("sessionId")?,
+            "controllerViewId": controller.get("viewId")?,
+            "controlEpoch": controller.get("controlEpoch")?,
+            "cols": event.get("cols")?,
+            "rows": event.get("rows")?,
+            "layoutEpoch": event.get("layoutEpoch")?,
+        }));
+    }
+    client_accepts_event(&event, protocol_minor).then_some(event)
 }
 
 /// Announce a session that has just entered the local registry.
@@ -93,6 +133,141 @@ fn announce_session_created(
         "session": session,
     }));
 }
+
+/// The lifecycle fields shared by the pushed event and the reconciliation
+/// response, borrowed from whichever of the two mesh shapes carries them.
+///
+/// One place builds them for both, so the event a client applies optimistically
+/// and the snapshot it rebuilds from can never disagree about a field.
+struct LifecycleFields<'a> {
+    lifecycle_seq: u64,
+    device_id: &'a str,
+    device_name: &'a str,
+    state: mesh::RemoteLifecycleState,
+    reason: Option<mesh::RemoteEndedReason>,
+    exit: Option<mesh::RemoteExitInfo>,
+    attempt: u32,
+    next_retry_ms: Option<u64>,
+    last_contact_ms: Option<u64>,
+}
+
+impl<'a> From<&'a mesh::RemoteLifecycleChanged> for LifecycleFields<'a> {
+    fn from(changed: &'a mesh::RemoteLifecycleChanged) -> Self {
+        Self {
+            lifecycle_seq: changed.lifecycle_seq,
+            device_id: &changed.device_id,
+            device_name: &changed.device_name,
+            state: changed.state,
+            reason: changed.reason,
+            exit: changed.exit,
+            attempt: changed.attempt,
+            next_retry_ms: changed.next_retry_ms,
+            last_contact_ms: changed.last_contact_ms,
+        }
+    }
+}
+
+impl<'a> From<&'a mesh::RemoteSessionLifecycle> for LifecycleFields<'a> {
+    fn from(lifecycle: &'a mesh::RemoteSessionLifecycle) -> Self {
+        Self {
+            lifecycle_seq: lifecycle.lifecycle_seq,
+            device_id: &lifecycle.device_id,
+            device_name: &lifecycle.device_name,
+            state: lifecycle.state,
+            reason: lifecycle.reason,
+            exit: lifecycle.exit,
+            attempt: lifecycle.attempt,
+            next_retry_ms: lifecycle.next_retry_ms,
+            last_contact_ms: lifecycle.last_contact_ms,
+        }
+    }
+}
+
+/// One remote session's lifecycle, as a pushed event.
+///
+/// `reason`, `exit`, `nextRetryMs` and `lastContactMs` go out as JSON `null`
+/// when the daemon has no value. Phase 1 runs no reconnect engine, so most of
+/// them are always absent here — and a zero would read as evidence the viewer
+/// never gathered.
+fn remote_session_state_changed_event(session_id: &str, fields: LifecycleFields<'_>) -> Value {
+    json!({
+        "requestId": 0,
+        "type": "remote-session-state-changed",
+        "sessionId": session_id,
+        "lifecycleSeq": fields.lifecycle_seq,
+        "deviceId": fields.device_id,
+        "deviceName": fields.device_name,
+        "state": fields.state.as_str(),
+        "reason": fields.reason.map(mesh::RemoteEndedReason::as_str),
+        "exit": fields.exit,
+        "attempt": fields.attempt,
+        "nextRetryMs": fields.next_retry_ms,
+        "lastContactMs": fields.last_contact_ms,
+    })
+}
+
+/// One view's readiness, as a pushed event.
+///
+/// `attachmentEpoch` and `readWrite` are null unless the view is attached:
+/// there is no authoritative epoch or access level without a live attachment,
+/// and inventing either is the stale-epoch bug this schema exists to prevent.
+fn view_state_changed_event(changed: &mesh::RemoteViewStateChanged) -> Value {
+    json!({
+        "requestId": 0,
+        "type": "view-state-changed",
+        "sessionId": changed.session_id,
+        "viewId": changed.local_view_id,
+        "viewStateSeq": changed.view_state_seq,
+        "viewState": changed.view_state.as_str(),
+        "attachmentEpoch": changed.attachment_epoch,
+        "readWrite": changed.read_write,
+        "error": changed.error,
+        "retryable": changed.retryable,
+    })
+}
+
+/// A remote session's controller, as a pushed event.
+///
+/// `controlRevision` is 0 — the documented "legacy, unknown" sentinel, since
+/// 1.4 hosts carry no revisions on the wire and revisioned authorities start
+/// at 1. Clients treat control state from a revision-0 host as advisory and
+/// never compare-and-swap against it.
+fn control_state_event(session_id: &str, control: &LastKnownControl) -> Value {
+    json!({
+        "requestId": 0,
+        "type": "control-state",
+        "sessionId": session_id,
+        "controller": {
+            "viewId": control.controller_view_id,
+            "controlEpoch": control.control_epoch,
+        },
+        "controlRevision": LEGACY_CONTROL_REVISION,
+        "cols": control.cols,
+        "rows": control.rows,
+        "layoutEpoch": control.layout_epoch,
+    })
+}
+
+/// "This host tells us nothing about control revisions." Revisioned
+/// authorities start at 1, so 0 can never collide with a real one.
+const LEGACY_CONTROL_REVISION: u64 = 0;
+
+/// The last controller a remote host reported for a session.
+///
+/// The lifecycle snapshot deliberately says nothing about control: on a 1.4
+/// host it is not authoritative state, just the last thing observed. Kept here
+/// so reconciliation can still answer with it rather than with a zero, and
+/// scoped to remote sessions — local ones read their own `ViewAuthority`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LastKnownControl {
+    controller_view_id: String,
+    control_epoch: u64,
+    cols: u16,
+    rows: u16,
+    layout_epoch: u64,
+}
+
+type RemoteControlRecords = Arc<RwLock<HashMap<String, LastKnownControl>>>;
 
 struct TaskGuard(JoinHandle<()>);
 
@@ -219,6 +394,16 @@ enum Command {
         cols: u64,
         rows: u64,
         owner_id: Option<String>,
+    },
+    GetRemoteSessionState {
+        session_id: String,
+    },
+    ReconnectRemoteSession {
+        session_id: String,
+    },
+    RetryRemoteView {
+        session_id: String,
+        view_id: String,
     },
     GetSession {
         session_id: String,
@@ -404,6 +589,39 @@ enum ResponseBody {
         view_id: String,
         attachment_epoch: u64,
         read_write: bool,
+        /// Places this response inside the same per-view ordering fence as
+        /// `view-state-changed`, so a response racing a newer event cannot
+        /// regress the view. Omitted for local sessions, which have no
+        /// per-view sequence and whose clients apply the response directly.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        view_state_seq: Option<u64>,
+    },
+    RemoteSessionState {
+        lifecycle_seq: u64,
+        device_id: String,
+        device_name: String,
+        state: mesh::RemoteLifecycleState,
+        reason: Option<mesh::RemoteEndedReason>,
+        exit: Option<mesh::RemoteExitInfo>,
+        attempt: u32,
+        next_retry_ms: Option<u64>,
+        last_contact_ms: Option<u64>,
+        controller: Option<RemoteControllerInfo>,
+        control_revision: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+        views: Vec<ViewStateRecord>,
+    },
+    ViewState {
+        session_id: String,
+        view_id: String,
+        view_state_seq: u64,
+        view_state: mesh::RemoteViewState,
+        attachment_epoch: Option<u64>,
+        read_write: Option<bool>,
+        error: Option<String>,
+        retryable: Option<bool>,
     },
     ControlClaimed {
         session_id: String,
@@ -433,6 +651,44 @@ enum ResponseBody {
     },
 }
 
+/// Who holds terminal control, on the wire.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteControllerInfo {
+    view_id: String,
+    control_epoch: u64,
+}
+
+/// One view's readiness inside a reconciliation response.
+///
+/// The nullable fields are nullable for the same reason as in the event: no
+/// live attachment means no authoritative epoch or access level to report.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ViewStateRecord {
+    view_id: String,
+    view_state_seq: u64,
+    view_state: mesh::RemoteViewState,
+    attachment_epoch: Option<u64>,
+    read_write: Option<bool>,
+    error: Option<String>,
+    retryable: Option<bool>,
+}
+
+impl From<&mesh::RemoteViewRecord> for ViewStateRecord {
+    fn from(record: &mesh::RemoteViewRecord) -> Self {
+        Self {
+            view_id: record.local_view_id.clone(),
+            view_state_seq: record.view_state_seq,
+            view_state: record.view_state,
+            attachment_epoch: record.attachment_epoch,
+            read_write: record.read_write,
+            error: record.error.clone(),
+            retryable: record.retryable,
+        }
+    }
+}
+
 pub type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
 
 #[derive(Clone)]
@@ -442,6 +698,8 @@ struct ControlContext {
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
+    remote_controls: RemoteControlRecords,
+    reconnects: Arc<Mutex<HashSet<String>>>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
     config: ConfigManager,
@@ -771,21 +1029,64 @@ impl TerminalService {
             .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
         let mut remote_controls = mesh_runtime.subscribe_control();
         let mut remote_activities = mesh_runtime.subscribe_activity();
+        let mut remote_lifecycles = mesh_runtime.subscribe_lifecycle();
+        let mut remote_view_states = mesh_runtime.subscribe_view_state();
         let remote_events = event_tx.clone();
+        let remote_control_records: RemoteControlRecords = Arc::default();
+        let recorded_controls = Arc::clone(&remote_control_records);
         let _remote_control_task = TaskGuard(tokio::spawn(async move {
             loop {
                 match remote_controls.recv().await {
                     Ok(changed) => {
-                        let _ = remote_events.send(json!({
-                            "requestId": 0,
-                            "type": "control-changed",
-                            "sessionId": changed.session_id,
-                            "controllerViewId": changed.controller_view_id,
-                            "controlEpoch": changed.control_epoch,
-                            "cols": changed.cols,
-                            "rows": changed.rows,
-                            "layoutEpoch": changed.layout_epoch,
-                        }));
+                        let control = LastKnownControl {
+                            controller_view_id: changed.controller_view_id,
+                            control_epoch: changed.control_epoch,
+                            cols: changed.cols,
+                            rows: changed.rows,
+                            layout_epoch: changed.layout_epoch,
+                        };
+                        // Recorded before it is published: a client that
+                        // reconciles the moment it sees the event must not find
+                        // the daemon still holding the previous controller.
+                        recorded_controls
+                            .write()
+                            .unwrap()
+                            .insert(changed.session_id.clone(), control.clone());
+                        // One event on the bus, downgraded per connection.
+                        // Sending both spellings here would deliver two to a
+                        // client that understands the newer one.
+                        let _ =
+                            remote_events.send(control_state_event(&changed.session_id, &control));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+        let remote_lifecycle_events = event_tx.clone();
+        let _remote_lifecycle_task = TaskGuard(tokio::spawn(async move {
+            loop {
+                match remote_lifecycles.recv().await {
+                    Ok(changed) => {
+                        let _ = remote_lifecycle_events.send(remote_session_state_changed_event(
+                            &changed.session_id,
+                            LifecycleFields::from(&changed),
+                        ));
+                    }
+                    // A dropped transition is recoverable: the connection loop
+                    // reports the gap and clients reconcile every open remote
+                    // session from `get-remote-session-state`.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+        let remote_view_state_events = event_tx.clone();
+        let _remote_view_state_task = TaskGuard(tokio::spawn(async move {
+            loop {
+                match remote_view_states.recv().await {
+                    Ok(changed) => {
+                        let _ = remote_view_state_events.send(view_state_changed_event(&changed));
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -840,6 +1141,8 @@ impl TerminalService {
             event_tx,
             text_engine,
             mesh_runtime,
+            remote_controls: remote_control_records,
+            reconnects: Arc::default(),
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
             config,
@@ -1009,7 +1312,36 @@ fn runs_off_connection_loop(command: &Command) -> bool {
         Command::ListRemoteHosts
             | Command::ListRemoteSessions { .. }
             | Command::OpenRemoteSession { .. }
+            | Command::ReconnectRemoteSession { .. }
     )
+}
+
+/// Tell a client that has just said hello which of its sessions are remote.
+///
+/// Without this, a workspace restored from persistence has no way to learn
+/// that an already-open session is replicated: it never called
+/// `open-remote-session`, and a session that has been offline for hours
+/// produces no transition to announce itself with. It would queue input at a
+/// frozen tab and show no banner. Returns false when the socket is gone.
+async fn send_remote_lifecycle_snapshot(
+    context: &ControlContext,
+    outbound: &tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> bool {
+    for summary in context.mesh_runtime.summaries().await {
+        let Some(lifecycle) = context.mesh_runtime.session_lifecycle(&summary.id).await else {
+            continue;
+        };
+        let event =
+            remote_session_state_changed_event(&summary.id, LifecycleFields::from(&lifecycle));
+        if outbound
+            .send(serde_json::to_vec(&event).unwrap())
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
 }
 
 async fn serve_control(
@@ -1029,7 +1361,11 @@ async fn serve_control(
             let mut events = context.event_tx.subscribe();
             let (mut reader, mut writer) = tokio::io::split(socket);
             let client_id = uuid::Uuid::new_v4().to_string();
-            let mut attached = HashMap::<(String, String), u64>::new();
+            // Ownership, and nothing else. Epochs live where they are
+            // authoritative — the local `ViewAuthority`, or the mesh's own
+            // attachment record — and are read at use time, because a cached
+            // one outlives the attachment it names.
+            let mut attached = HashSet::<(String, String)>::new();
             let mut client_protocol_minor = 0_u16;
             // One writer task serializes packets from the connection loop and
             // from any commands running off it; clients pair responses to
@@ -1047,10 +1383,12 @@ async fn serve_control(
                     packet = read_packet(&mut reader, MAX_CONTROL_BYTES) => {
                         let Ok(packet) = packet else { break; };
                         let Ok(command) = serde_json::from_slice::<Envelope>(&packet) else { break; };
+                        let mut negotiated = false;
                         if let Command::Hello { protocol_major, protocol_minor, .. } = &command.command
                             && *protocol_major == CONTROL_PROTOCOL_MAJOR
                         {
                             client_protocol_minor = (*protocol_minor).min(CONTROL_PROTOCOL_MINOR);
+                            negotiated = true;
                         }
                         let notification = command.request_id == 0;
                         if runs_off_connection_loop(&command.command) {
@@ -1058,7 +1396,7 @@ async fn serve_control(
                             let client_id = client_id.clone();
                             let outbound = outbound_tx.clone();
                             tokio::spawn(async move {
-                                let mut detached_bookkeeping = HashMap::new();
+                                let mut detached_bookkeeping = HashSet::new();
                                 let response = handle_command(command, &client_id, &mut detached_bookkeeping, &context).await;
                                 if !notification {
                                     let _ = outbound.send(serde_json::to_vec(&response).unwrap()).await;
@@ -1068,12 +1406,20 @@ async fn serve_control(
                         }
                         let response = handle_command(command, &client_id, &mut attached, &context).await;
                         if !notification && outbound_tx.send(serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
+                        // After the response, so the client has its negotiated
+                        // minor before the first pushed event arrives.
+                        if negotiated
+                            && client_protocol_minor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR
+                            && !send_remote_lifecycle_snapshot(&context, &outbound_tx).await
+                        {
+                            break;
+                        }
                     }
                     event = events.recv() => match event {
                         Ok(event) => {
-                            if !client_accepts_event(&event, client_protocol_minor) {
+                            let Some(event) = event_for_client(event, client_protocol_minor) else {
                                 continue;
-                            }
+                            };
                             if outbound_tx.send(serde_json::to_vec(&event).unwrap()).await.is_err() { break; }
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -1096,14 +1442,11 @@ async fn serve_control(
                     }
                 }
             }
-            for ((session_id, view_id), attachment_epoch) in attached {
+            for (session_id, view_id) in attached {
                 if let Some(session) = context.registry.read().unwrap().get(&session_id).cloned() {
                     session.detach_view(&view_id, &client_id);
                 } else {
-                    context
-                        .mesh_runtime
-                        .detach_view(&session_id, &view_id, attachment_epoch)
-                        .await;
+                    detach_remote_view(&context, &session_id, &view_id).await;
                 }
             }
         });
@@ -1278,7 +1621,7 @@ fn live_sessions(context: &ControlContext) -> Vec<Arc<Session>> {
 async fn handle_command(
     command: Envelope,
     client_id: &str,
-    attached: &mut HashMap<(String, String), u64>,
+    attached: &mut HashSet<(String, String)>,
     context: &ControlContext,
 ) -> ResponseEnvelope {
     let request_id = command.request_id;
@@ -1656,65 +1999,142 @@ async fn handle_command(
                 if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                     session.refresh()?;
                 } else {
+                    // Still a re-render of the local replica. A true remote
+                    // refresh is a generation-advanced re-attach of the feed
+                    // view (§7), which arrives with the promotion machinery in
+                    // Phase 2; asking the host for a second state stream here
+                    // would leave two feeds with independent patch sequences.
                     context.mesh_runtime.refresh(&session_id).await?;
                 }
                 Ok(ResponseBody::Ok)
+            }
+            Command::GetRemoteSessionState { session_id } => {
+                let lifecycle = context
+                    .mesh_runtime
+                    .session_lifecycle(&session_id)
+                    .await
+                    .context("unknown remote session")?;
+                Ok(remote_session_state(context, &lifecycle).await)
+            }
+            Command::ReconnectRemoteSession { session_id } => {
+                // Reported before dialling, so an unknown session is an error
+                // rather than a dial that fails for its own reasons.
+                let lifecycle = context
+                    .mesh_runtime
+                    .session_lifecycle(&session_id)
+                    .await
+                    .context("unknown remote session")?;
+                let Some(_attempt) = ReconnectInFlight::enter(context, &session_id) else {
+                    // Another attempt is already dialling this session. Answer
+                    // with what it has reached so far rather than starting a
+                    // second dial; its conclusion arrives on the lifecycle
+                    // event for every client either way.
+                    return Ok(remote_session_state(context, &lifecycle).await);
+                };
+                // A refused dial is not a failed command: the mesh has put the
+                // session back in Suspended and the caller needs that state,
+                // not an error string it would have to translate.
+                let lifecycle = match context.mesh_runtime.reconnect_session(&session_id).await {
+                    Ok(lifecycle) => lifecycle,
+                    Err(_) => context
+                        .mesh_runtime
+                        .session_lifecycle(&session_id)
+                        .await
+                        .context("unknown remote session")?,
+                };
+                Ok(remote_session_state(context, &lifecycle).await)
+            }
+            Command::RetryRemoteView {
+                session_id,
+                view_id,
+            } => {
+                // Dormant in Phase 1: per-view re-attach arrives with the
+                // promotion machinery (§4.5). The command exists now because
+                // minor 12 is advertised with its complete surface, and it
+                // answers with the view's current record — a real response
+                // shape, with no side effect.
+                let lifecycle = context
+                    .mesh_runtime
+                    .session_lifecycle(&session_id)
+                    .await
+                    .context("unknown remote session")?;
+                let record = lifecycle
+                    .views
+                    .iter()
+                    .find(|record| record.local_view_id == view_id)
+                    .context("unknown remote view")?;
+                Ok(ResponseBody::ViewState {
+                    session_id,
+                    view_id: record.local_view_id.clone(),
+                    view_state_seq: record.view_state_seq,
+                    view_state: record.view_state,
+                    attachment_epoch: record.attachment_epoch,
+                    read_write: record.read_write,
+                    error: record.error.clone(),
+                    retryable: record.retryable,
+                })
             }
             Command::AttachSession {
                 session_id,
                 view_id,
             } => {
                 let key = (session_id.clone(), view_id.clone());
-                let (attachment_epoch, read_write) = if let Some(epoch) =
-                    attached.get(&key).copied()
-                {
-                    let read_write = if registry.read().unwrap().contains_key(&session_id) {
-                        true
-                    } else {
-                        context
-                            .mesh_runtime
-                            .summary(&session_id)
-                            .await
-                            .context("unknown remote session")?
-                            .read_write
-                    };
-                    (epoch, read_write)
+                let local = registry.read().unwrap().get(&session_id).cloned();
+                let (attachment_epoch, read_write, view_state_seq) = if let Some(session) = local {
+                    // Idempotent for the client that already holds the view, so
+                    // a re-attach reads the epoch back from the authority
+                    // rather than from this connection's memory of it.
+                    let attachment_epoch = session.attach_view(&view_id, client_id)?;
+                    (attachment_epoch, true, None)
                 } else {
-                    let attachment =
-                        if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
-                            let epoch = session.attach_view(&view_id, client_id)?;
-                            mesh::RemoteAttachment {
-                                attachment_epoch: epoch,
-                                read_write: true,
-                            }
-                        } else {
+                    // A view this connection owns may still have died with its
+                    // connection. Ask the authority; if it has no attachment to
+                    // report, re-dial instead of answering with the epoch we
+                    // were handed the first time — that epoch is exactly what
+                    // the host will now reject.
+                    let current = match attached.contains(&key) {
+                        true => {
                             context
                                 .mesh_runtime
+                                .current_attachment(&session_id, &view_id)
+                                .await
+                        }
+                        false => None,
+                    };
+                    let (attachment_epoch, read_write) = match current {
+                        Some(current) => current,
+                        None => {
+                            let attachment = context
+                                .mesh_runtime
                                 .attach_view(&session_id, &view_id)
-                                .await?
-                        };
-                    attached.insert(key, attachment.attachment_epoch);
-                    (attachment.attachment_epoch, attachment.read_write)
+                                .await?;
+                            (attachment.attachment_epoch, attachment.read_write)
+                        }
+                    };
+                    (
+                        attachment_epoch,
+                        read_write,
+                        remote_view_state_seq(context, &session_id, &view_id).await,
+                    )
                 };
+                attached.insert(key);
                 Ok(ResponseBody::ViewAttached {
                     session_id,
                     view_id,
                     attachment_epoch,
                     read_write,
+                    view_state_seq,
                 })
             }
             Command::DetachSession {
                 session_id,
                 view_id,
             } => {
-                if let Some(epoch) = attached.remove(&(session_id.clone(), view_id.clone())) {
+                if attached.remove(&(session_id.clone(), view_id.clone())) {
                     if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                         session.detach_view(&view_id, client_id);
                     } else {
-                        context
-                            .mesh_runtime
-                            .detach_view(&session_id, &view_id, epoch)
-                            .await;
+                        detach_remote_view(context, &session_id, &view_id).await;
                     }
                 }
                 Ok(ResponseBody::Ok)
@@ -1921,7 +2341,7 @@ async fn handle_command(
                 cols,
                 rows,
             } => {
-                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
+                require_attachment(attached, &session_id, &view_id)?;
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
                 let (controller_view_id, control_epoch, cols, rows, layout_epoch) =
@@ -1965,7 +2385,7 @@ async fn handle_command(
                 cols,
                 rows,
             } => {
-                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
+                require_attachment(attached, &session_id, &view_id)?;
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
                 if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
@@ -2018,12 +2438,20 @@ async fn handle_command(
                 end_row,
                 select_all,
             } => {
-                require_attachment(attached, &session_id, &view_id, attachment_epoch)?;
+                require_attachment(attached, &session_id, &view_id)?;
                 let start_column =
                     checked_dimension(start_column, "startColumn", 0, MAX_TERMINAL_COLS)?;
                 let end_column = checked_dimension(end_column, "endColumn", 0, MAX_TERMINAL_COLS)?;
                 let start_row = u32::try_from(start_row).context("startRow is out of range")?;
                 let end_row = u32::try_from(end_row).context("endRow is out of range")?;
+                let selection = mesh::RemoteSelection {
+                    attachment_epoch,
+                    start_column,
+                    start_row,
+                    end_column,
+                    end_row,
+                    select_all,
+                };
                 let text = if let Some(session) = registry.read().unwrap().get(&session_id).cloned()
                 {
                     session.selection_text(
@@ -2033,21 +2461,21 @@ async fn handle_command(
                         end_row,
                         select_all,
                     )?
-                } else {
+                } else if remote_session_is_live(context, &session_id).await {
+                    // Live sessions keep asking the host, which can reach
+                    // scrollback this side does not retain.
                     context
                         .mesh_runtime
-                        .selection_text(
-                            &session_id,
-                            &view_id,
-                            mesh::RemoteSelection {
-                                attachment_epoch,
-                                start_column,
-                                start_row,
-                                end_column,
-                                end_row,
-                                select_all,
-                            },
-                        )
+                        .selection_text(&session_id, &view_id, selection)
+                        .await?
+                } else {
+                    // §4.4: with no live attachment there is no epoch to fence
+                    // against and no host to ask, so the retained replica
+                    // viewport answers and the ownership record above is the
+                    // authorization. Copying from a frozen tab keeps working.
+                    context
+                        .mesh_runtime
+                        .offline_selection_text(&session_id, selection)
                         .await?
                 };
                 Ok(ResponseBody::SelectionText { text })
@@ -2128,7 +2556,7 @@ async fn handle_command(
             Command::Terminate { session_id, source } => {
                 let local_session = { registry.read().unwrap().get(&session_id).cloned() };
                 if let Some(session) = local_session {
-                    for (view_id, _) in remove_session_attachments(attached, &session_id) {
+                    for view_id in remove_session_attachments(attached, &session_id) {
                         session.detach_view(&view_id, client_id);
                     }
                     // Tracked, because the removal below outruns the ladder:
@@ -2140,6 +2568,7 @@ async fn handle_command(
                         bail!("unknown session");
                     }
                     remove_session_attachments(attached, &session_id);
+                    context.remote_controls.write().unwrap().remove(&session_id);
                 }
                 Ok(ResponseBody::Ok)
             }
@@ -2157,7 +2586,7 @@ async fn handle_command(
                     .cloned()
                     .collect::<Vec<_>>();
                 for session in local_sessions {
-                    for (view_id, _) in remove_session_attachments(attached, &session.id()) {
+                    for view_id in remove_session_attachments(attached, &session.id()) {
                         session.detach_view(&view_id, client_id);
                     }
                     // One failed termination must not strand the owner's
@@ -2183,6 +2612,7 @@ async fn handle_command(
                     if session.owner_id.as_deref() == Some(owner_id.as_str()) {
                         context.mesh_runtime.close_session(&session.id).await;
                         remove_session_attachments(attached, &session.id);
+                        context.remote_controls.write().unwrap().remove(&session.id);
                     }
                 }
                 Ok(ResponseBody::Ok)
@@ -2267,16 +2697,20 @@ fn checked_dimension(value: u64, name: &str, minimum: u16, maximum: u16) -> Resu
     Ok(value)
 }
 
+/// Whether this connection is the one that attached the view.
+///
+/// Ownership only. The epoch the caller sent is checked where it is
+/// authoritative — `ViewAuthority::authorize_input` and the controller fence
+/// locally, the mesh's own attachment record remotely — and comparing it here
+/// against a cached copy would only ever confirm what this connection last
+/// wrote down. It is also the sole authorization an offline `selection-text`
+/// can have, since a frozen session has no live epoch to present.
 fn require_attachment(
-    attached: &HashMap<(String, String), u64>,
+    attached: &HashSet<(String, String)>,
     session_id: &str,
     view_id: &str,
-    attachment_epoch: u64,
 ) -> Result<()> {
-    if attached
-        .get(&(session_id.to_owned(), view_id.to_owned()))
-        .is_some_and(|epoch| *epoch == attachment_epoch)
-    {
+    if attached.contains(&(session_id.to_owned(), view_id.to_owned())) {
         Ok(())
     } else {
         bail!("stale or unknown view attachment")
@@ -2284,18 +2718,155 @@ fn require_attachment(
 }
 
 fn remove_session_attachments(
-    attached: &mut HashMap<(String, String), u64>,
+    attached: &mut HashSet<(String, String)>,
     session_id: &str,
-) -> Vec<(String, u64)> {
+) -> Vec<String> {
     let mut removed = Vec::new();
-    attached.retain(|(attached_session_id, view_id), attachment_epoch| {
+    attached.retain(|(attached_session_id, view_id)| {
         if attached_session_id != session_id {
             return true;
         }
-        removed.push((view_id.clone(), *attachment_epoch));
+        removed.push(view_id.clone());
         false
     });
     removed
+}
+
+/// Release a remote view, fetching the epoch the wire detach has to carry.
+///
+/// The mesh drops its view record whichever epoch this is; the epoch only
+/// decides whether a `Detach` goes out to the host. A view with no current
+/// attachment has nothing to tell the host about, which is exactly the case
+/// this must not invent an epoch for.
+async fn detach_remote_view(context: &ControlContext, session_id: &str, view_id: &str) {
+    let attachment_epoch = context
+        .mesh_runtime
+        .current_attachment(session_id, view_id)
+        .await
+        .map_or(0, |(attachment_epoch, _)| attachment_epoch);
+    context
+        .mesh_runtime
+        .detach_view(session_id, view_id, attachment_epoch)
+        .await;
+}
+
+/// The view's current sequence, for responses that must land inside the
+/// per-view ordering fence. `None` for a session the mesh tracks no lifecycle
+/// for, which is the pre-lifecycle path clients already handle.
+async fn remote_view_state_seq(
+    context: &ControlContext,
+    session_id: &str,
+    view_id: &str,
+) -> Option<u64> {
+    context
+        .mesh_runtime
+        .session_lifecycle(session_id)
+        .await?
+        .views
+        .iter()
+        .find(|record| record.local_view_id == view_id)
+        .map(|record| record.view_state_seq)
+}
+
+/// Whether a remote session can still be asked to do things on the wire.
+///
+/// A mesh that reports no lifecycle at all is treated as live: that is the
+/// behaviour every path had before lifecycles existed.
+async fn remote_session_is_live(context: &ControlContext, session_id: &str) -> bool {
+    context
+        .mesh_runtime
+        .session_lifecycle(session_id)
+        .await
+        .is_none_or(|lifecycle| lifecycle.state == mesh::RemoteLifecycleState::Live)
+}
+
+/// The complete reconciliation object for one remote session.
+///
+/// Control state is advisory here and says so with `controlRevision: 0`: a 1.4
+/// host publishes no revisions and cannot express a cleared controller, so the
+/// best this can report is the last one observed. Size falls back to the
+/// replica's own dimensions, which are real, rather than to zeros.
+async fn remote_session_state(
+    context: &ControlContext,
+    lifecycle: &mesh::RemoteSessionLifecycle,
+) -> ResponseBody {
+    let control = context
+        .remote_controls
+        .read()
+        .unwrap()
+        .get(&lifecycle.session_id)
+        .cloned();
+    let (controller, cols, rows, layout_epoch) = match control {
+        Some(control) => (
+            Some(RemoteControllerInfo {
+                view_id: control.controller_view_id,
+                control_epoch: control.control_epoch,
+            }),
+            control.cols,
+            control.rows,
+            control.layout_epoch,
+        ),
+        None => {
+            let (cols, rows) = context
+                .mesh_runtime
+                .summary(&lifecycle.session_id)
+                .await
+                .map_or((0, 0), |summary| (summary.cols, summary.rows));
+            (None, cols, rows, 0)
+        }
+    };
+    ResponseBody::RemoteSessionState {
+        lifecycle_seq: lifecycle.lifecycle_seq,
+        device_id: lifecycle.device_id.clone(),
+        device_name: lifecycle.device_name.clone(),
+        state: lifecycle.state,
+        reason: lifecycle.reason,
+        exit: lifecycle.exit,
+        attempt: lifecycle.attempt,
+        next_retry_ms: lifecycle.next_retry_ms,
+        last_contact_ms: lifecycle.last_contact_ms,
+        controller,
+        control_revision: LEGACY_CONTROL_REVISION,
+        cols,
+        rows,
+        layout_epoch,
+        views: lifecycle.views.iter().map(ViewStateRecord::from).collect(),
+    }
+}
+
+/// Claims the one resume attempt a session may have in flight.
+///
+/// The mesh serializes attempts per session but does not merge them, so
+/// without this a second manual retry would wait out the first and then dial
+/// again for an answer it already has. Released on drop, so a failed attempt
+/// never locks the session out of the next one.
+struct ReconnectInFlight<'a> {
+    context: &'a ControlContext,
+    session_id: String,
+}
+
+impl<'a> ReconnectInFlight<'a> {
+    fn enter(context: &'a ControlContext, session_id: &str) -> Option<Self> {
+        let claimed = context
+            .reconnects
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned());
+        claimed.then(|| Self {
+            context,
+            session_id: session_id.to_owned(),
+        })
+    }
+}
+
+impl Drop for ReconnectInFlight<'_> {
+    fn drop(&mut self) {
+        self.context
+            .reconnects
+            .lock()
+            .unwrap()
+            .remove(&self.session_id);
+    }
 }
 
 async fn serve_frames(mut listener: ipc::Listener, token: String, frames: FrameHub) -> Result<()> {
@@ -2474,15 +3045,22 @@ mod protocol_tests {
     }
 
     fn start_test_service(label: &str) -> TestService {
+        start_test_service_with_mesh(label, None)
+    }
+
+    fn start_test_service_with_mesh(label: &str, mesh: Option<TestMesh>) -> TestService {
         let control_endpoint = unique_endpoint(&format!("{label}-control"));
         let frame_endpoint = unique_endpoint(&format!("{label}-frames"));
         let token = "shutdown-test-token".to_owned();
-        let service = TerminalService::new(TerminalServiceConfig {
+        let mut service = TerminalService::new(TerminalServiceConfig {
             control_socket: control_endpoint.name.clone(),
             frame_socket: frame_endpoint.name.clone(),
             auth_token: token.clone(),
         })
         .with_text_engine(TextEngine::discover().unwrap());
+        if let Some(mesh) = mesh {
+            service = service.with_terminal_mesh(mesh);
+        }
         let listeners = service.bind().unwrap();
         let (handle, serving) = service.serve_managed(listeners);
         TestService {
@@ -3143,21 +3721,18 @@ mod protocol_tests {
 
     #[test]
     fn terminating_a_session_removes_all_of_its_attachment_bookkeeping() {
-        let mut attached = HashMap::from([
-            (("session-a".to_owned(), "view-1".to_owned()), 1),
-            (("session-a".to_owned(), "view-2".to_owned()), 2),
-            (("session-b".to_owned(), "view-3".to_owned()), 3),
+        let mut attached = HashSet::from([
+            ("session-a".to_owned(), "view-1".to_owned()),
+            ("session-a".to_owned(), "view-2".to_owned()),
+            ("session-b".to_owned(), "view-3".to_owned()),
         ]);
 
         let mut removed = remove_session_attachments(&mut attached, "session-a");
         removed.sort();
-        assert_eq!(
-            removed,
-            vec![("view-1".to_owned(), 1), ("view-2".to_owned(), 2)]
-        );
+        assert_eq!(removed, vec!["view-1".to_owned(), "view-2".to_owned()]);
         assert_eq!(
             attached,
-            HashMap::from([(("session-b".to_owned(), "view-3".to_owned()), 3)])
+            HashSet::from([("session-b".to_owned(), "view-3".to_owned())])
         );
     }
 
@@ -3396,5 +3971,1111 @@ mod protocol_tests {
         }))
         .unwrap();
         assert!(matches!(envelope.command, Command::Unknown));
+    }
+
+    /// A mesh runtime that answers from fixtures, so the daemon's remote
+    /// surface can be exercised without a peer on the other end.
+    ///
+    /// Attachments live in a map the tests can empty, which is how a view that
+    /// died with its connection is spelled: `current_attachment` stops
+    /// answering for it, and anything that still needs an epoch has to dial.
+    #[derive(Default)]
+    struct TestRuntimeState {
+        lifecycles: HashMap<String, mesh::RemoteSessionLifecycle>,
+        attachments: HashMap<(String, String), (u64, bool)>,
+        summaries: Vec<session::SessionSummary>,
+        calls: Vec<String>,
+        next_attachment_epoch: u64,
+        reconnect_fails: bool,
+    }
+
+    struct TestRuntime {
+        controls: broadcast::Sender<mesh::RemoteControlChanged>,
+        activities: broadcast::Sender<mesh::RemoteActivityChanged>,
+        lifecycles: broadcast::Sender<mesh::RemoteLifecycleChanged>,
+        view_states: broadcast::Sender<mesh::RemoteViewStateChanged>,
+        state: Mutex<TestRuntimeState>,
+    }
+
+    impl Default for TestRuntime {
+        fn default() -> Self {
+            Self {
+                controls: broadcast::channel(16).0,
+                activities: broadcast::channel(16).0,
+                lifecycles: broadcast::channel(16).0,
+                view_states: broadcast::channel(16).0,
+                state: Mutex::default(),
+            }
+        }
+    }
+
+    impl TestRuntime {
+        fn open(&self, lifecycle: mesh::RemoteSessionLifecycle) {
+            let mut state = self.state.lock().unwrap();
+            state.summaries.push(remote_summary(&lifecycle.session_id));
+            state
+                .lifecycles
+                .insert(lifecycle.session_id.clone(), lifecycle);
+        }
+
+        fn set_state(&self, session_id: &str, lifecycle_state: mesh::RemoteLifecycleState) {
+            let mut state = self.state.lock().unwrap();
+            let lifecycle = state.lifecycles.get_mut(session_id).unwrap();
+            lifecycle.state = lifecycle_state;
+            lifecycle.lifecycle_seq += 1;
+        }
+
+        /// The view stops answering, as it would once its connection died.
+        fn drop_attachment(&self, session_id: &str, view_id: &str) {
+            self.state
+                .lock()
+                .unwrap()
+                .attachments
+                .remove(&(session_id.to_owned(), view_id.to_owned()));
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.state.lock().unwrap().calls.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl mesh::RemoteTerminalRuntime for TestRuntime {
+        fn subscribe_control(&self) -> broadcast::Receiver<mesh::RemoteControlChanged> {
+            self.controls.subscribe()
+        }
+
+        fn subscribe_activity(&self) -> broadcast::Receiver<mesh::RemoteActivityChanged> {
+            self.activities.subscribe()
+        }
+
+        fn subscribe_lifecycle(&self) -> broadcast::Receiver<mesh::RemoteLifecycleChanged> {
+            self.lifecycles.subscribe()
+        }
+
+        fn subscribe_view_state(&self) -> broadcast::Receiver<mesh::RemoteViewStateChanged> {
+            self.view_states.subscribe()
+        }
+
+        async fn hosts(&self) -> Result<Vec<mesh::RemoteHostSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_sessions(
+            &self,
+            _device_id: &str,
+        ) -> Result<Vec<tunnel_protocol::SharedSessionSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn open_session(
+            &self,
+            _request: mesh::RemoteSessionOpen,
+        ) -> Result<session::SessionSummary> {
+            bail!("the test runtime opens no sessions")
+        }
+
+        async fn summaries(&self) -> Vec<session::SessionSummary> {
+            self.state.lock().unwrap().summaries.clone()
+        }
+
+        async fn summary(&self, session_id: &str) -> Option<session::SessionSummary> {
+            self.state
+                .lock()
+                .unwrap()
+                .summaries
+                .iter()
+                .find(|summary| summary.id == session_id)
+                .cloned()
+        }
+
+        async fn attach_view(
+            &self,
+            session_id: &str,
+            view_id: &str,
+        ) -> Result<mesh::RemoteAttachment> {
+            let mut state = self.state.lock().unwrap();
+            state
+                .calls
+                .push(format!("attach-view:{session_id}:{view_id}"));
+            state.next_attachment_epoch += 1;
+            let attachment_epoch = state.next_attachment_epoch;
+            state.attachments.insert(
+                (session_id.to_owned(), view_id.to_owned()),
+                (attachment_epoch, true),
+            );
+            Ok(mesh::RemoteAttachment {
+                attachment_epoch,
+                read_write: true,
+            })
+        }
+
+        async fn current_attachment(&self, session_id: &str, view_id: &str) -> Option<(u64, bool)> {
+            self.state
+                .lock()
+                .unwrap()
+                .attachments
+                .get(&(session_id.to_owned(), view_id.to_owned()))
+                .copied()
+        }
+
+        async fn send_input(
+            &self,
+            _session_id: &str,
+            _view_id: &str,
+            _attachment_epoch: u64,
+            _input_sequence: u64,
+            _operation: tunnel_protocol::TunnelInput,
+        ) -> Result<()> {
+            bail!("the test runtime sends no input")
+        }
+
+        async fn claim_control(
+            &self,
+            _session_id: &str,
+            _view_id: &str,
+            _attachment_epoch: u64,
+            _cols: u16,
+            _rows: u16,
+        ) -> Result<mesh::RemoteControlClaim> {
+            bail!("the test runtime claims no control")
+        }
+
+        async fn resize(
+            &self,
+            _session_id: &str,
+            _view_id: &str,
+            _request: mesh::RemoteResize,
+        ) -> Result<()> {
+            bail!("the test runtime resizes nothing")
+        }
+
+        async fn selection_text(
+            &self,
+            session_id: &str,
+            _view_id: &str,
+            _request: mesh::RemoteSelection,
+        ) -> Result<String> {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .push(format!("selection-text:{session_id}"));
+            Ok("from the host".to_owned())
+        }
+
+        async fn offline_selection_text(
+            &self,
+            session_id: &str,
+            _request: mesh::RemoteSelection,
+        ) -> Result<String> {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .push(format!("offline-selection-text:{session_id}"));
+            Ok("from the replica".to_owned())
+        }
+
+        async fn refresh(&self, _session_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64) {
+            self.state.lock().unwrap().calls.push(format!(
+                "detach-view:{session_id}:{view_id}:{attachment_epoch}"
+            ));
+        }
+
+        async fn close_session(&self, _session_id: &str) -> bool {
+            false
+        }
+
+        async fn session_lifecycle(
+            &self,
+            session_id: &str,
+        ) -> Option<mesh::RemoteSessionLifecycle> {
+            self.state
+                .lock()
+                .unwrap()
+                .lifecycles
+                .get(session_id)
+                .cloned()
+        }
+
+        async fn reconnect_session(
+            &self,
+            session_id: &str,
+        ) -> Result<mesh::RemoteSessionLifecycle> {
+            let fails = {
+                let mut state = self.state.lock().unwrap();
+                state.calls.push(format!("reconnect:{session_id}"));
+                state.reconnect_fails
+            };
+            if fails {
+                // What a refused dial leaves behind: the session is back in
+                // Suspended and the error carries no state of its own.
+                self.set_state(session_id, mesh::RemoteLifecycleState::Suspended);
+                bail!("no route to the host");
+            }
+            self.set_state(session_id, mesh::RemoteLifecycleState::Live);
+            self.session_lifecycle(session_id)
+                .await
+                .context("unknown session")
+        }
+    }
+
+    struct TestMesh {
+        runtime: Arc<TestRuntime>,
+    }
+
+    #[async_trait::async_trait]
+    impl mesh::TerminalMesh for TestMesh {
+        fn runtime(&self) -> Arc<dyn mesh::RemoteTerminalRuntime> {
+            Arc::clone(&self.runtime) as Arc<dyn mesh::RemoteTerminalRuntime>
+        }
+
+        async fn serve(
+            self: Box<Self>,
+            _registry: Registry,
+            _host_config: watch::Receiver<Arc<TerminalPresentationConfig>>,
+        ) -> Result<()> {
+            std::future::pending().await
+        }
+    }
+
+    fn remote_view(view_id: &str, view_state: mesh::RemoteViewState) -> mesh::RemoteViewRecord {
+        mesh::RemoteViewRecord {
+            local_view_id: view_id.to_owned(),
+            view_state_seq: 4,
+            view_state,
+            attachment_epoch: matches!(view_state, mesh::RemoteViewState::Attached).then_some(9),
+            read_write: matches!(view_state, mesh::RemoteViewState::Attached).then_some(true),
+            error: None,
+            retryable: None,
+        }
+    }
+
+    fn remote_lifecycle(
+        session_id: &str,
+        state: mesh::RemoteLifecycleState,
+        views: Vec<mesh::RemoteViewRecord>,
+    ) -> mesh::RemoteSessionLifecycle {
+        mesh::RemoteSessionLifecycle {
+            session_id: session_id.to_owned(),
+            lifecycle_seq: 7,
+            device_id: "device-1".to_owned(),
+            device_name: "studio-mac".to_owned(),
+            state,
+            reason: None,
+            exit: None,
+            attempt: 0,
+            next_retry_ms: None,
+            last_contact_ms: None,
+            views,
+        }
+    }
+
+    fn remote_summary(session_id: &str) -> session::SessionSummary {
+        session::SessionSummary {
+            id: session_id.to_owned(),
+            handle: "1".to_owned(),
+            executable: "remote-terminal".to_owned(),
+            cols: 120,
+            rows: 40,
+            exited: false,
+            read_write: true,
+            title: Some("remote".to_owned()),
+            cwd: None,
+            bell_count: 0,
+            pid: None,
+            created_at_ms: 0,
+            exit_code: None,
+            exit_signal: None,
+            requested_termination: None,
+            exit_outcome: None,
+            owner_id: None,
+            persistence: None,
+            activity: session::SessionActivity::default(),
+        }
+    }
+
+    /// Start a service over a fixture mesh and hand back both ends of it.
+    fn start_remote_service(label: &str) -> (TestService, Arc<TestRuntime>) {
+        let runtime = Arc::new(TestRuntime::default());
+        let mesh = TestMesh {
+            runtime: Arc::clone(&runtime),
+        };
+        (start_test_service_with_mesh(label, Some(mesh)), runtime)
+    }
+
+    /// Say hello at a chosen minor and return the negotiated response.
+    async fn say_hello(stream: &mut ControlStream, protocol_minor: u16) -> Value {
+        request(
+            stream,
+            json!({
+                "requestId": 1,
+                "type": "hello",
+                "protocolMajor": CONTROL_PROTOCOL_MAJOR,
+                "protocolMinor": protocol_minor,
+                "clientBuild": "test",
+            }),
+        )
+        .await
+    }
+
+    /// Everything the daemon pushes within a short window.
+    ///
+    /// Long enough for a broadcast to cross the socket, short enough that the
+    /// "nothing arrives" assertions stay honest about what they proved.
+    async fn pushed_events(stream: &mut ControlStream) -> Vec<Value> {
+        let mut events = Vec::new();
+        while let Ok(Ok(packet)) = tokio::time::timeout(
+            Duration::from_millis(250),
+            read_packet(stream, MAX_CONTROL_BYTES),
+        )
+        .await
+        {
+            let event: Value = serde_json::from_slice(&packet).unwrap();
+            if event["requestId"] == 0 {
+                events.push(event);
+            }
+        }
+        events
+    }
+
+    fn event_types(events: &[Value]) -> Vec<String> {
+        events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// The three lifecycle events are new in minor 12, and an older client
+    /// that received one would fail to decode it and lose its socket.
+    #[test]
+    fn remote_lifecycle_events_reach_only_clients_that_negotiated_them() {
+        for event_type in [
+            "remote-session-state-changed",
+            "view-state-changed",
+            "control-state",
+        ] {
+            let event = json!({ "type": event_type });
+            assert!(!client_accepts_event(
+                &event,
+                REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1
+            ));
+            assert!(client_accepts_event(
+                &event,
+                REMOTE_LIFECYCLE_PROTOCOL_MINOR
+            ));
+        }
+        // The gate is per event, not a wholesale cut-off: a minor-11 client
+        // keeps everything it already understood.
+        let config = json!({ "type": "config-changed" });
+        assert!(client_accepts_event(
+            &config,
+            REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1
+        ));
+    }
+
+    /// A daemon with no reconnect engine reports absence, not zero: `attempt: 0`
+    /// where the value is unknown would read as evidence nobody gathered.
+    #[test]
+    fn lifecycle_events_send_null_rather_than_invented_values() {
+        let changed = mesh::RemoteLifecycleChanged {
+            session_id: "session-1".to_owned(),
+            lifecycle_seq: 3,
+            device_id: "device-1".to_owned(),
+            device_name: "studio-mac".to_owned(),
+            state: mesh::RemoteLifecycleState::Suspended,
+            reason: None,
+            exit: None,
+            attempt: 1,
+            next_retry_ms: None,
+            last_contact_ms: None,
+        };
+        assert_eq!(
+            remote_session_state_changed_event("session-1", LifecycleFields::from(&changed)),
+            json!({
+                "requestId": 0,
+                "type": "remote-session-state-changed",
+                "sessionId": "session-1",
+                "lifecycleSeq": 3,
+                "deviceId": "device-1",
+                "deviceName": "studio-mac",
+                "state": "suspended",
+                "reason": null,
+                "exit": null,
+                "attempt": 1,
+                "nextRetryMs": null,
+                "lastContactMs": null,
+            })
+        );
+
+        let ended = mesh::RemoteLifecycleChanged {
+            state: mesh::RemoteLifecycleState::Ended,
+            reason: Some(mesh::RemoteEndedReason::SessionExited),
+            exit: Some(mesh::RemoteExitInfo { code: Some(1) }),
+            last_contact_ms: Some(12_000),
+            ..changed
+        };
+        assert_eq!(
+            remote_session_state_changed_event("session-1", LifecycleFields::from(&ended)),
+            json!({
+                "requestId": 0,
+                "type": "remote-session-state-changed",
+                "sessionId": "session-1",
+                "lifecycleSeq": 3,
+                "deviceId": "device-1",
+                "deviceName": "studio-mac",
+                "state": "ended",
+                "reason": "session-exited",
+                "exit": { "code": 1 },
+                "attempt": 1,
+                "nextRetryMs": null,
+                "lastContactMs": 12000,
+            })
+        );
+    }
+
+    /// Epoch and access level exist only while a view is attached. A pending
+    /// or failed view reports null for both rather than a value no attachment
+    /// stands behind.
+    #[test]
+    fn view_state_events_carry_an_epoch_only_while_attached() {
+        let pending = mesh::RemoteViewStateChanged {
+            session_id: "session-1".to_owned(),
+            local_view_id: "view-1".to_owned(),
+            view_state_seq: 12,
+            view_state: mesh::RemoteViewState::Pending,
+            attachment_epoch: None,
+            read_write: None,
+            error: None,
+            retryable: None,
+        };
+        assert_eq!(
+            view_state_changed_event(&pending),
+            json!({
+                "requestId": 0,
+                "type": "view-state-changed",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+                "viewStateSeq": 12,
+                "viewState": "pending",
+                "attachmentEpoch": null,
+                "readWrite": null,
+                "error": null,
+                "retryable": null,
+            })
+        );
+
+        let attached = mesh::RemoteViewStateChanged {
+            view_state_seq: 13,
+            view_state: mesh::RemoteViewState::Attached,
+            attachment_epoch: Some(9),
+            read_write: Some(true),
+            ..pending.clone()
+        };
+        assert_eq!(
+            view_state_changed_event(&attached),
+            json!({
+                "requestId": 0,
+                "type": "view-state-changed",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+                "viewStateSeq": 13,
+                "viewState": "attached",
+                "attachmentEpoch": 9,
+                "readWrite": true,
+                "error": null,
+                "retryable": null,
+            })
+        );
+
+        let failed = mesh::RemoteViewStateChanged {
+            view_state_seq: 14,
+            view_state: mesh::RemoteViewState::Failed,
+            attachment_epoch: None,
+            read_write: None,
+            error: Some("attach refused".to_owned()),
+            retryable: Some(true),
+            ..pending
+        };
+        let event = view_state_changed_event(&failed);
+        assert_eq!(event["attachmentEpoch"], json!(null));
+        assert_eq!(event["readWrite"], json!(null));
+        assert_eq!(event["error"], json!("attach refused"));
+        assert_eq!(event["retryable"], json!(true));
+    }
+
+    /// One controller change, one spelling per client: the newer event for
+    /// clients that negotiated it, the legacy one for those that did not, and
+    /// never both to the same connection.
+    #[test]
+    fn control_state_downgrades_to_the_legacy_event_for_older_clients() {
+        let control = LastKnownControl {
+            controller_view_id: "view-1".to_owned(),
+            control_epoch: 5,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 3,
+        };
+        let event = control_state_event("session-1", &control);
+        assert_eq!(
+            event,
+            json!({
+                "requestId": 0,
+                "type": "control-state",
+                "sessionId": "session-1",
+                "controller": { "viewId": "view-1", "controlEpoch": 5 },
+                "controlRevision": 0,
+                "cols": 120,
+                "rows": 40,
+                "layoutEpoch": 3,
+            })
+        );
+
+        assert_eq!(
+            event_for_client(event.clone(), REMOTE_LIFECYCLE_PROTOCOL_MINOR),
+            Some(event.clone())
+        );
+        assert_eq!(
+            event_for_client(event, REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1),
+            Some(json!({
+                "requestId": 0,
+                "type": "control-changed",
+                "sessionId": "session-1",
+                "controllerViewId": "view-1",
+                "controlEpoch": 5,
+                "cols": 120,
+                "rows": 40,
+                "layoutEpoch": 3,
+            }))
+        );
+    }
+
+    /// A cleared controller has no legacy spelling, so it stays invisible to
+    /// older clients — the one thing the downgrade cannot carry, and exactly
+    /// what they already lived without.
+    #[test]
+    fn a_cleared_controller_has_nothing_to_downgrade_to() {
+        let cleared = json!({
+            "requestId": 0,
+            "type": "control-state",
+            "sessionId": "session-1",
+            "controller": null,
+            "controlRevision": 0,
+            "cols": 120,
+            "rows": 40,
+            "layoutEpoch": 3,
+        });
+        assert_eq!(
+            event_for_client(cleared.clone(), REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1),
+            None
+        );
+        assert_eq!(
+            event_for_client(cleared.clone(), REMOTE_LIFECYCLE_PROTOCOL_MINOR),
+            Some(cleared)
+        );
+    }
+
+    /// A workspace restored from persistence never called
+    /// `open-remote-session` and may see no transition for hours, so the hello
+    /// itself has to say which of its sessions are replicated.
+    #[tokio::test]
+    async fn hello_announces_open_remote_sessions_to_lifecycle_clients() {
+        let (service, runtime) = start_remote_service("hello-snapshot");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Suspended,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+        runtime.open(remote_lifecycle(
+            "session-2",
+            mesh::RemoteLifecycleState::Live,
+            Vec::new(),
+        ));
+
+        let mut current = connect_control(&service).await;
+        let hello = say_hello(&mut current, CONTROL_PROTOCOL_MINOR).await;
+        assert_eq!(hello["protocolMinor"], CONTROL_PROTOCOL_MINOR);
+        let announced = pushed_events(&mut current).await;
+        assert_eq!(
+            event_types(&announced),
+            vec![
+                "remote-session-state-changed".to_owned(),
+                "remote-session-state-changed".to_owned()
+            ],
+            "one announcement per open remote session, and nothing else"
+        );
+        let mut announced_sessions = announced
+            .iter()
+            .map(|event| event["sessionId"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        announced_sessions.sort_unstable();
+        assert_eq!(announced_sessions, vec!["session-1", "session-2"]);
+        assert_eq!(announced[0]["state"], "suspended");
+        assert_eq!(announced[0]["deviceName"], "studio-mac");
+
+        let mut legacy = connect_control(&service).await;
+        say_hello(&mut legacy, REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1).await;
+        assert!(
+            pushed_events(&mut legacy).await.is_empty(),
+            "a client that never negotiated the event must not be sent one"
+        );
+
+        service.serving.abort();
+    }
+
+    /// The downgrade matrix, over a real socket: a lifecycle client and a
+    /// minor-11 client on the same daemon, each hearing the one spelling it
+    /// can decode.
+    #[tokio::test]
+    async fn each_client_hears_remote_changes_in_the_spelling_it_negotiated() {
+        let (service, runtime) = start_remote_service("event-downgrade");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut current = connect_control(&service).await;
+        say_hello(&mut current, CONTROL_PROTOCOL_MINOR).await;
+        let _snapshot = pushed_events(&mut current).await;
+        let mut legacy = connect_control(&service).await;
+        say_hello(&mut legacy, REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1).await;
+
+        runtime
+            .controls
+            .send(mesh::RemoteControlChanged {
+                session_id: "session-1".to_owned(),
+                controller_view_id: "view-1".to_owned(),
+                control_epoch: 5,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 3,
+            })
+            .unwrap();
+        runtime
+            .lifecycles
+            .send(mesh::RemoteLifecycleChanged {
+                session_id: "session-1".to_owned(),
+                lifecycle_seq: 8,
+                device_id: "device-1".to_owned(),
+                device_name: "studio-mac".to_owned(),
+                state: mesh::RemoteLifecycleState::Suspended,
+                reason: None,
+                exit: None,
+                attempt: 0,
+                next_retry_ms: None,
+                last_contact_ms: None,
+            })
+            .unwrap();
+        runtime
+            .view_states
+            .send(mesh::RemoteViewStateChanged {
+                session_id: "session-1".to_owned(),
+                local_view_id: "view-1".to_owned(),
+                view_state_seq: 12,
+                view_state: mesh::RemoteViewState::Pending,
+                attachment_epoch: None,
+                read_write: None,
+                error: None,
+                retryable: None,
+            })
+            .unwrap();
+
+        let current_events = pushed_events(&mut current).await;
+        assert_eq!(
+            event_types(&current_events),
+            vec![
+                "control-state".to_owned(),
+                "remote-session-state-changed".to_owned(),
+                "view-state-changed".to_owned()
+            ]
+        );
+        assert_eq!(current_events[0]["controller"]["controlEpoch"], 5);
+        assert_eq!(current_events[2]["attachmentEpoch"], json!(null));
+
+        let legacy_events = pushed_events(&mut legacy).await;
+        assert_eq!(
+            event_types(&legacy_events),
+            vec!["control-changed".to_owned()],
+            "controller updates survive the downgrade; the lifecycle events do not exist for this client"
+        );
+        assert_eq!(legacy_events[0]["controllerViewId"], "view-1");
+        assert_eq!(legacy_events[0]["controlEpoch"], 5);
+
+        service.serving.abort();
+    }
+
+    /// The bug this replaces: a re-attach answered from the connection's own
+    /// notes, handing back an epoch the host had already stopped honouring.
+    #[tokio::test]
+    async fn attaching_a_remote_view_reads_the_epoch_from_the_authority() {
+        let (service, runtime) = start_remote_service("attach-authority");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let attach = json!({
+            "requestId": 2,
+            "type": "attach-session",
+            "sessionId": "session-1",
+            "viewId": "view-1",
+        });
+
+        let first = request(&mut client, attach.clone()).await;
+        assert_eq!(first["type"], "view-attached");
+        assert_eq!(first["attachmentEpoch"], 1);
+        assert_eq!(
+            first["viewStateSeq"], 4,
+            "a remote attach lands inside the per-view ordering fence"
+        );
+
+        // Attached, and still owned: the authority answers, and nothing dials.
+        let cached = request(&mut client, attach.clone()).await;
+        assert_eq!(cached["attachmentEpoch"], 1);
+        assert_eq!(
+            runtime.calls(),
+            vec!["attach-view:session-1:view-1".to_owned()]
+        );
+
+        // The view dies with its connection. The next attach must dial for a
+        // fresh epoch rather than repeat the one it was given.
+        runtime.drop_attachment("session-1", "view-1");
+        let redialled = request(&mut client, attach).await;
+        assert_eq!(
+            redialled["attachmentEpoch"], 2,
+            "a dead view re-dials instead of reusing a cached epoch"
+        );
+        assert_eq!(
+            runtime.calls(),
+            vec![
+                "attach-view:session-1:view-1".to_owned(),
+                "attach-view:session-1:view-1".to_owned()
+            ]
+        );
+
+        service.serving.abort();
+    }
+
+    /// Local sessions have no per-view sequence; the field's absence is what
+    /// tells a client to apply the response the way it always has.
+    #[test]
+    fn a_local_attachment_carries_no_view_sequence() {
+        let value = serde_json::to_value(ResponseEnvelope {
+            request_id: 3,
+            body: ResponseBody::ViewAttached {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+                attachment_epoch: 2,
+                read_write: true,
+                view_state_seq: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(value["type"], "view-attached");
+        assert!(value.get("viewStateSeq").is_none());
+    }
+
+    /// A dial can take as long as the peer does; the connection loop must not
+    /// wait on it with a keystroke queued behind.
+    #[test]
+    fn one_shot_reconnect_runs_off_the_connection_loop() {
+        assert!(runs_off_connection_loop(&Command::ReconnectRemoteSession {
+            session_id: "session-1".to_owned()
+        }));
+    }
+
+    /// Both outcomes are states, not errors: the caller needs to know where
+    /// the session landed, and a refused dial lands it in Suspended.
+    #[tokio::test]
+    async fn reconnecting_reports_the_state_it_reached_either_way() {
+        let (service, runtime) = start_remote_service("reconnect-state");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Suspended,
+            vec![remote_view("view-1", mesh::RemoteViewState::Failed)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let reconnect = json!({
+            "requestId": 2,
+            "type": "reconnect-remote-session",
+            "sessionId": "session-1",
+        });
+
+        let resumed = request(&mut client, reconnect.clone()).await;
+        assert_eq!(resumed["type"], "remote-session-state");
+        assert_eq!(resumed["state"], "live");
+        assert_eq!(resumed["deviceName"], "studio-mac");
+        assert_eq!(resumed["views"][0]["viewId"], "view-1");
+        assert_eq!(resumed["views"][0]["attachmentEpoch"], json!(null));
+        assert!(
+            resumed.get("sessionId").is_none(),
+            "the response is correlated by request id, not by session"
+        );
+
+        runtime.state.lock().unwrap().reconnect_fails = true;
+        let refused = request(&mut client, reconnect).await;
+        assert_eq!(refused["type"], "remote-session-state");
+        assert_eq!(refused["state"], "suspended");
+
+        let unknown = request(
+            &mut client,
+            json!({
+                "requestId": 4,
+                "type": "reconnect-remote-session",
+                "sessionId": "no-such-session",
+            }),
+        )
+        .await;
+        assert_eq!(unknown["type"], "error");
+
+        service.serving.abort();
+    }
+
+    /// Dormant in Phase 1: the command exists because minor 12 ships its whole
+    /// surface, and it answers with the record it found, untouched.
+    #[tokio::test]
+    async fn retrying_a_view_answers_with_its_record_and_changes_nothing() {
+        let (service, runtime) = start_remote_service("retry-view");
+        let mut failed = remote_view("view-1", mesh::RemoteViewState::Failed);
+        failed.error = Some("attach refused".to_owned());
+        failed.retryable = Some(true);
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Suspended,
+            vec![failed],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let response = request(
+            &mut client,
+            json!({
+                "requestId": 2,
+                "type": "retry-remote-view",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+            }),
+        )
+        .await;
+        assert_eq!(response["type"], "view-state");
+        assert_eq!(response["sessionId"], "session-1");
+        assert_eq!(response["viewId"], "view-1");
+        assert_eq!(response["viewStateSeq"], 4);
+        assert_eq!(response["viewState"], "failed");
+        assert_eq!(response["attachmentEpoch"], json!(null));
+        assert_eq!(response["readWrite"], json!(null));
+        assert_eq!(response["error"], "attach refused");
+        assert_eq!(response["retryable"], json!(true));
+        assert!(
+            runtime.calls().is_empty(),
+            "a dormant retry touches the mesh not at all"
+        );
+
+        let unknown = request(
+            &mut client,
+            json!({
+                "requestId": 3,
+                "type": "retry-remote-view",
+                "sessionId": "session-1",
+                "viewId": "view-9",
+            }),
+        )
+        .await;
+        assert_eq!(unknown["type"], "error");
+
+        service.serving.abort();
+    }
+
+    /// Copying from a frozen tab keeps working: the retained viewport answers
+    /// while the session is not live, authorized by the ownership record.
+    #[tokio::test]
+    async fn selection_falls_back_to_the_replica_while_a_session_is_not_live() {
+        let (service, runtime) = start_remote_service("offline-selection");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let selection = json!({
+            "requestId": 3,
+            "type": "selection-text",
+            "sessionId": "session-1",
+            "viewId": "view-1",
+            "attachmentEpoch": 1,
+            "startColumn": 0,
+            "startRow": 0,
+            "endColumn": 10,
+            "endRow": 2,
+            "selectAll": false,
+        });
+
+        let unauthorized = request(&mut client, selection.clone()).await;
+        assert_eq!(
+            unauthorized["type"], "error",
+            "a connection that never attached the view cannot read its selection"
+        );
+
+        request(
+            &mut client,
+            json!({
+                "requestId": 2,
+                "type": "attach-session",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+            }),
+        )
+        .await;
+
+        let live = request(&mut client, selection.clone()).await;
+        assert_eq!(live["text"], "from the host");
+
+        runtime.set_state("session-1", mesh::RemoteLifecycleState::Suspended);
+        let frozen = request(&mut client, selection).await;
+        assert_eq!(frozen["type"], "selection-text");
+        assert_eq!(frozen["text"], "from the replica");
+        assert!(
+            frozen.get("scope").is_none(),
+            "the response keeps the shape older clients decode strictly"
+        );
+        assert_eq!(
+            runtime.calls(),
+            vec![
+                "attach-view:session-1:view-1".to_owned(),
+                "selection-text:session-1".to_owned(),
+                "offline-selection-text:session-1".to_owned()
+            ]
+        );
+
+        service.serving.abort();
+    }
+
+    /// Reconciliation has to answer with controller state too: a lost
+    /// `control-state` clear would otherwise strand a stale epoch with no
+    /// repair path.
+    #[tokio::test]
+    async fn reconciliation_reports_last_known_control_as_advisory() {
+        let (service, runtime) = start_remote_service("reconcile-control");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let query = json!({
+            "requestId": 2,
+            "type": "get-remote-session-state",
+            "sessionId": "session-1",
+        });
+
+        let before = request(&mut client, query.clone()).await;
+        assert_eq!(before["type"], "remote-session-state");
+        assert_eq!(
+            before["controller"],
+            json!(null),
+            "a controller nobody has reported is absent, not invented"
+        );
+        assert_eq!(before["controlRevision"], 0);
+        assert_eq!(
+            (before["cols"].clone(), before["rows"].clone()),
+            (json!(120), json!(40)),
+            "size falls back to the replica's own dimensions"
+        );
+        assert_eq!(before["views"][0]["attachmentEpoch"], 9);
+        assert_eq!(before["views"][0]["readWrite"], json!(true));
+
+        runtime
+            .controls
+            .send(mesh::RemoteControlChanged {
+                session_id: "session-1".to_owned(),
+                controller_view_id: "view-1".to_owned(),
+                control_epoch: 5,
+                cols: 100,
+                rows: 30,
+                layout_epoch: 3,
+            })
+            .unwrap();
+        let _control = pushed_events(&mut client).await;
+
+        let after = request(&mut client, query).await;
+        assert_eq!(
+            after["controller"],
+            json!({ "viewId": "view-1", "controlEpoch": 5 })
+        );
+        assert_eq!(after["controlRevision"], 0);
+        assert_eq!(
+            (
+                after["cols"].clone(),
+                after["rows"].clone(),
+                after["layoutEpoch"].clone()
+            ),
+            (json!(100), json!(30), json!(3))
+        );
+
+        let unknown = request(
+            &mut client,
+            json!({
+                "requestId": 5,
+                "type": "get-remote-session-state",
+                "sessionId": "no-such-session",
+            }),
+        )
+        .await;
+        assert_eq!(unknown["type"], "error");
+
+        service.serving.abort();
+    }
+
+    #[test]
+    fn deserializes_remote_lifecycle_commands() {
+        let state: Envelope = serde_json::from_value(json!({
+            "requestId": 50,
+            "type": "get-remote-session-state",
+            "sessionId": "session-1",
+        }))
+        .unwrap();
+        assert!(matches!(
+            state.command,
+            Command::GetRemoteSessionState { session_id } if session_id == "session-1"
+        ));
+
+        let reconnect: Envelope = serde_json::from_value(json!({
+            "requestId": 51,
+            "type": "reconnect-remote-session",
+            "sessionId": "session-1",
+        }))
+        .unwrap();
+        assert!(matches!(
+            reconnect.command,
+            Command::ReconnectRemoteSession { session_id } if session_id == "session-1"
+        ));
+
+        let retry: Envelope = serde_json::from_value(json!({
+            "requestId": 52,
+            "type": "retry-remote-view",
+            "sessionId": "session-1",
+            "viewId": "view-1",
+        }))
+        .unwrap();
+        assert!(matches!(
+            retry.command,
+            Command::RetryRemoteView { session_id, view_id }
+                if session_id == "session-1" && view_id == "view-1"
+        ));
     }
 }

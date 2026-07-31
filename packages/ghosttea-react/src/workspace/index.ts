@@ -90,4 +90,18 @@ export {
   type WorkspaceTabsDocumentV1,
   type WorkspaceTabsTransition,
 } from "./workspace-tabs.js";
+export {
+  RemoteSessionBanner,
+  useInputSuppressionHint,
+  useRemoteSessionLifecycle,
+  type RemoteSessionBannerProps,
+} from "./RemoteSessionBanner.js";
+export {
+  contactElapsedMs,
+  inputSuppressionHint,
+  remoteBannerActionLabel,
+  remoteBannerContent,
+  type RemoteBannerAction,
+  type RemoteBannerContent,
+} from "./remote-banner.js";
 export { TERMINAL_THEMES } from "./themes.js";

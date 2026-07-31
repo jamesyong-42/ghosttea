@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 11;
+export const PROTOCOL_MINOR = 12;
 export const CONFIG_SCHEMA_VERSION = 1;
 export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
@@ -124,6 +124,64 @@ export function unknownSessionActivity(): SessionActivity {
   };
 }
 
+/** Viewer-side lifecycle of a session replicated from a remote host. */
+export type RemoteSessionState = "opening" | "live" | "synchronizing" | "reconnecting" | "suspended" | "ended";
+
+/** Why a remote session reached its terminal state. Claimed only on evidence. */
+export type RemoteSessionEndReason =
+  "session-closed" | "session-exited" | "session-unavailable" | "host-restarted" | "host-shutdown" | "closed-locally";
+
+export interface RemoteSessionExit {
+  code: number | null;
+}
+
+export type RemoteViewState = "pending" | "attached" | "failed";
+
+export interface RemoteControllerInfo {
+  viewId: string;
+  controlEpoch: number;
+}
+
+export interface RemoteViewRecord {
+  viewId: string;
+  /** Monotonic per view; consumers drop anything at or below the last applied. */
+  viewStateSeq: number;
+  viewState: RemoteViewState;
+  /**
+   * Null whenever the view is not attached. There is no authoritative epoch or
+   * access level without a live attachment, and inventing either reintroduces
+   * the stale-epoch bug this schema exists to prevent.
+   */
+  attachmentEpoch: number | null;
+  readWrite: boolean | null;
+  error: string | null;
+  retryable: boolean | null;
+}
+
+export interface RemoteSessionLifecycle {
+  /** Monotonic per session; orders every lifecycle transition. */
+  lifecycleSeq: number;
+  deviceId: string;
+  deviceName: string;
+  state: RemoteSessionState;
+  reason: RemoteSessionEndReason | null;
+  exit: RemoteSessionExit | null;
+  attempt: number | null;
+  nextRetryMs: number | null;
+  lastContactMs: number | null;
+}
+
+/** Complete client state for one remote session, rebuilt from the daemon. */
+export interface RemoteSessionStateSnapshot extends RemoteSessionLifecycle {
+  controller: RemoteControllerInfo | null;
+  /** 0 means "legacy host, unknown": revisioned authorities start at 1. */
+  controlRevision: number;
+  cols: number;
+  rows: number;
+  layoutEpoch: number;
+  views: RemoteViewRecord[];
+}
+
 export type SessionEnvironment =
   { mode: "inherit"; overrides?: Record<string, string> } | { mode: "clean"; variables: Record<string, string> };
 
@@ -185,6 +243,10 @@ export type ClientCommand =
       rows: number;
       ownerId?: string;
     }
+  | { requestId: number; type: "get-remote-session-state"; sessionId: string }
+  /** One-shot resume attempt: re-dial, re-attach, and report the outcome. */
+  | { requestId: number; type: "reconnect-remote-session"; sessionId: string }
+  | { requestId: number; type: "retry-remote-view"; sessionId: string; viewId: string }
   | { requestId: number; type: "get-session"; sessionId: string }
   | { requestId: number; type: "refresh-session"; sessionId: string }
   | { requestId: number; type: "attach-session"; sessionId: string; viewId: string }
@@ -266,6 +328,9 @@ const RENDERER_CLIENT_COMMAND_TYPES = [
   "list-remote-hosts",
   "list-remote-sessions",
   "open-remote-session",
+  "get-remote-session-state",
+  "reconnect-remote-session",
+  "retry-remote-view",
   "get-session",
   "refresh-session",
   "attach-session",
@@ -403,7 +468,14 @@ export type ServerEvent =
       viewId: string;
       attachmentEpoch: number;
       readWrite: boolean;
+      /**
+       * Places this response inside the per-view ordering fence. Absent from
+       * daemons before protocol 1.12, whose responses apply directly.
+       */
+      viewStateSeq?: number;
     }
+  | ({ requestId: number; type: "remote-session-state" } & RemoteSessionStateSnapshot)
+  | ({ requestId: number; type: "view-state"; sessionId: string } & RemoteViewRecord)
   | {
       requestId: number;
       type: "control-claimed";
@@ -443,6 +515,23 @@ export type ServerEvent =
       sessionId: string;
       controllerViewId: string;
       controlEpoch: number;
+      cols: number;
+      rows: number;
+      layoutEpoch: number;
+    }
+  | ({ requestId: 0; type: "remote-session-state-changed"; sessionId: string } & RemoteSessionLifecycle)
+  | ({ requestId: 0; type: "view-state-changed"; sessionId: string } & RemoteViewRecord)
+  /**
+   * Supersedes `control-changed` for clients that negotiated protocol 1.12.
+   * Unlike it, this can say "no controller", which is the only way a lost
+   * controller clear can ever be repaired.
+   */
+  | {
+      requestId: 0;
+      type: "control-state";
+      sessionId: string;
+      controller: RemoteControllerInfo | null;
+      controlRevision: number;
       cols: number;
       rows: number;
       layoutEpoch: number;
@@ -579,6 +668,47 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       typeof summary.readWrite === "boolean" &&
       Number.isSafeInteger(summary.createdAtMs) &&
       normalizeActivity(summary)
+    );
+  };
+  const nullableInteger = (value: unknown): boolean => value === null || Number.isSafeInteger(value);
+  const validController = (controller: unknown): boolean => {
+    if (controller === null) return true;
+    if (!controller || typeof controller !== "object") return false;
+    const value = controller as Record<string, unknown>;
+    return typeof value.viewId === "string" && Number.isSafeInteger(value.controlEpoch);
+  };
+  const validLifecycle = (candidate: Record<string, unknown>): boolean =>
+    Number.isSafeInteger(candidate.lifecycleSeq) &&
+    typeof candidate.deviceId === "string" &&
+    typeof candidate.deviceName === "string" &&
+    ["opening", "live", "synchronizing", "reconnecting", "suspended", "ended"].includes(String(candidate.state)) &&
+    (candidate.reason === null ||
+      [
+        "session-closed",
+        "session-exited",
+        "session-unavailable",
+        "host-restarted",
+        "host-shutdown",
+        "closed-locally",
+      ].includes(String(candidate.reason))) &&
+    (candidate.exit === null ||
+      (Boolean(candidate.exit) &&
+        typeof candidate.exit === "object" &&
+        nullableInteger((candidate.exit as Record<string, unknown>).code))) &&
+    nullableInteger(candidate.attempt) &&
+    nullableInteger(candidate.nextRetryMs) &&
+    nullableInteger(candidate.lastContactMs);
+  const validViewRecord = (view: unknown): boolean => {
+    if (!view || typeof view !== "object") return false;
+    const record = view as Record<string, unknown>;
+    return (
+      typeof record.viewId === "string" &&
+      Number.isSafeInteger(record.viewStateSeq) &&
+      ["pending", "attached", "failed"].includes(String(record.viewState)) &&
+      nullableInteger(record.attachmentEpoch) &&
+      (record.readWrite === null || typeof record.readWrite === "boolean") &&
+      (record.error === null || typeof record.error === "string") &&
+      (record.retryable === null || typeof record.retryable === "boolean")
     );
   };
   const validByteColor = (color: unknown): boolean =>
@@ -736,7 +866,35 @@ export function isServerEvent(value: unknown): value is ServerEvent {
         typeof candidate.sessionId === "string" &&
         typeof candidate.viewId === "string" &&
         Number.isSafeInteger(candidate.attachmentEpoch) &&
-        typeof candidate.readWrite === "boolean"
+        typeof candidate.readWrite === "boolean" &&
+        (candidate.viewStateSeq === undefined || Number.isSafeInteger(candidate.viewStateSeq))
+      );
+    case "remote-session-state":
+      return (
+        validLifecycle(candidate) &&
+        validController(candidate.controller) &&
+        Number.isSafeInteger(candidate.controlRevision) &&
+        Number.isSafeInteger(candidate.cols) &&
+        Number.isSafeInteger(candidate.rows) &&
+        Number.isSafeInteger(candidate.layoutEpoch) &&
+        Array.isArray(candidate.views) &&
+        candidate.views.every(validViewRecord)
+      );
+    case "view-state":
+      return typeof candidate.sessionId === "string" && validViewRecord(candidate);
+    case "remote-session-state-changed":
+      return candidate.requestId === 0 && typeof candidate.sessionId === "string" && validLifecycle(candidate);
+    case "view-state-changed":
+      return candidate.requestId === 0 && typeof candidate.sessionId === "string" && validViewRecord(candidate);
+    case "control-state":
+      return (
+        candidate.requestId === 0 &&
+        typeof candidate.sessionId === "string" &&
+        validController(candidate.controller) &&
+        Number.isSafeInteger(candidate.controlRevision) &&
+        Number.isSafeInteger(candidate.cols) &&
+        Number.isSafeInteger(candidate.rows) &&
+        Number.isSafeInteger(candidate.layoutEpoch)
       );
     case "control-claimed":
       return (

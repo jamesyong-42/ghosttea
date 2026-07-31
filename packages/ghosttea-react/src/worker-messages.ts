@@ -17,6 +17,8 @@ export type RendererToWorkerMessage =
   | { type: "selection"; sessionHandle: string; surfaceId?: string; selection: CellSelection | null }
   | { type: "visibility"; sessionHandle: string; surfaceId?: string; visible: boolean }
   | { type: "focus"; surfaceId: string; sessionHandle: string; focused: boolean }
+  /** Hold the cursor steady while a replica is frozen, leaving focus untouched. */
+  | { type: "cursor-frozen"; surfaceId: string; frozen: boolean }
   | { type: "cursor-activity"; sessionHandle: string }
   | { type: "force-full-redraw"; sessionHandle: string }
   | { type: "force-row-redraw"; sessionHandle: string; row: number }
