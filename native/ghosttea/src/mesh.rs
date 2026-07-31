@@ -238,6 +238,14 @@ pub struct MeshReconnectConfig {
     /// acceleration: the host reaps them itself once it notices the abandoned
     /// connection died.
     pub zombie_purge: bool,
+    /// How long a connection carrying an attached view may go without contact
+    /// before the viewer probes it. Idle-triggered, not a fixed interval: a
+    /// session whose state stream never falls quiet never pings at all.
+    pub heartbeat_idle: Duration,
+    /// How long without contact declares the connection dead. Counts from the
+    /// same contact clock as [`Self::heartbeat_idle`], so it is the total
+    /// silence tolerated, not an extra wait after the ping.
+    pub heartbeat_fail: Duration,
 }
 
 impl Default for MeshReconnectConfig {
@@ -250,6 +258,8 @@ impl Default for MeshReconnectConfig {
             synchronize_timeout: Duration::from_secs(10),
             advertisement_fast_path: true,
             zombie_purge: true,
+            heartbeat_idle: Duration::from_secs(3),
+            heartbeat_fail: Duration::from_secs(6),
         }
     }
 }

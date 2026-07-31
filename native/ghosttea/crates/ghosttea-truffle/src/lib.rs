@@ -37,10 +37,11 @@ use ghosttea::{
     SessionSummary, StateStreamCancel, TakeOver, TerminalMesh, TerminalPresentationConfig,
     ViewAccess,
     tunnel_protocol::{
-        AttachRejectCode, CompactChannel, ConnectionMessage, ControllerInfo, LogicalTerminalPatch,
-        LogicalTerminalSnapshot, MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES,
-        PROTOCOL_MAJOR, PROTOCOL_MINOR, REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint,
-        RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
+        AttachRejectCode, CompactChannel, ConnectionMessage, ControllerInfo, HeartbeatMessage,
+        LogicalTerminalPatch, LogicalTerminalSnapshot, MAX_CONTROL_MESSAGE_BYTES,
+        MAX_HEARTBEAT_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+        REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint, RowReplacement,
+        SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
         SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
         TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
         decode_compact_message, decode_message, decode_preface, decode_state_message,
@@ -746,6 +747,55 @@ impl SessionLifecycle {
         true
     }
 
+    /// Refresh contact for a heartbeat that belongs to the current connection.
+    /// The currency check and the refresh share one critical section for the
+    /// same reason `admit_state` does: a superseded connection must never end
+    /// up vouching for the one that replaced it.
+    fn note_contact(&self, incarnation: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.incarnation != incarnation {
+            return false;
+        }
+        state.last_contact = Some(Instant::now());
+        true
+    }
+
+    /// How long this session has gone without contact on `incarnation`, or
+    /// `None` if it is not evidence about that connection at all: a session
+    /// bound elsewhere, not yet live, or holding nothing attached has no
+    /// reason to hear from the host and its silence means nothing.
+    fn contact_age(&self, incarnation: u64) -> Option<Duration> {
+        let state = self.state.lock().unwrap();
+        if state.incarnation != incarnation || state.state != RemoteLifecycleState::Live {
+            return None;
+        }
+        state
+            .views
+            .values()
+            .any(|record| record.state == RemoteViewState::Attached)
+            .then(|| state.last_contact.map(|at| at.elapsed()))
+            .flatten()
+    }
+
+    /// A host announcing its own shutdown. The comparison is here, under this
+    /// lock, and not at the caller: a shutdown from a connection that has
+    /// already been replaced must not end the session its replacement serves.
+    fn commit_host_shutdown(&self, incarnation: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.incarnation != incarnation {
+            return false;
+        }
+        self.end(&mut state, RemoteEndedReason::HostShutdown);
+        drop(state);
+        // The schedule stops after the verdict is committed rather than
+        // before it, so the comparison and the end stay in one critical
+        // section. An engine that outlives the commit by an instant costs
+        // nothing: it returns at its next look at the state, and an abort
+        // could not have recalled a dial already in flight anyway.
+        self.cancel_engine();
+        true
+    }
+
     fn snapshot(&self) -> RemoteSessionLifecycle {
         let state = self.state.lock().unwrap();
         let mut views = state
@@ -1109,19 +1159,23 @@ impl SessionLifecycle {
     fn commit_ended(&self, reason: RemoteEndedReason) {
         self.cancel_engine();
         let mut state = self.state.lock().unwrap();
+        self.end(&mut state, reason);
+    }
+
+    fn end(&self, state: &mut LifecycleState, reason: RemoteEndedReason) {
         if state.state == RemoteLifecycleState::Ended {
             return;
         }
         state.next_retry = None;
         let view_ids = state.views.keys().cloned().collect::<Vec<_>>();
         for local_view_id in view_ids {
-            self.set_view(&mut state, &local_view_id, |record| {
+            self.set_view(state, &local_view_id, |record| {
                 record.state = RemoteViewState::Pending;
                 record.attachment_epoch = None;
                 record.read_write = None;
             });
         }
-        self.advance(&mut state, RemoteLifecycleState::Ended, Some(reason));
+        self.advance(state, RemoteLifecycleState::Ended, Some(reason));
     }
 
     /// Commit a liveness-driven teardown for one connection incarnation. The
@@ -1306,6 +1360,103 @@ fn backoff_delay(config: &MeshReconnectConfig, attempt: u32, jitter: &JitterSour
         .saturating_mul(2_u32.saturating_pow(attempt.min(31)))
         .min(config.backoff_cap);
     jitter(window).min(window).max(config.backoff_floor)
+}
+
+/// One heartbeat task per reconnect-capable connection, owning that
+/// incarnation's nonces. Transport keep-alive proves the tunnel is up; this
+/// proves the host behind it is still answering, which is the failure a
+/// black-holed connection presents.
+///
+/// Every effect it commits names the incarnation it acted for and is compared
+/// against the current one under the lifecycle's own lock, so a task that is
+/// descheduled while its connection is replaced can neither vouch for the
+/// replacement nor tear it down.
+async fn heartbeat_loop(runtime: MeshRuntime, device_id: String, host: Arc<RemoteHostConnection>) {
+    if let Err(error) = run_heartbeat(&runtime, &device_id, &host).await {
+        // The stream itself failing is the same verdict a silent host gets:
+        // this connection cannot be trusted to carry the session.
+        eprintln!("[terminal-mesh] heartbeat stream failed: {error:#}");
+        runtime.fail_connection(&device_id, &host).await;
+    }
+}
+
+async fn run_heartbeat(
+    runtime: &MeshRuntime,
+    device_id: &str,
+    host: &Arc<RemoteHostConnection>,
+) -> Result<()> {
+    let config = runtime.config();
+    // Sample several times inside the idle window: the cadence is a bound on
+    // how late a probe can be, not an interval anything is scheduled on.
+    let tick = (config.heartbeat_idle / 3).max(Duration::from_millis(10));
+    let mut stream = ProtocolStream::new(host.connection.open_stream().await?);
+    stream
+        .write_preface(&StreamPreface {
+            stream_kind: StreamKind::Heartbeat,
+            session_id: None,
+            view_id: None,
+        })
+        .await?;
+    let mut outstanding: Option<u64> = None;
+    let mut nonce = 0_u64;
+    loop {
+        if !host.healthy.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            message = stream.read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES) => {
+                match message? {
+                    None => return Ok(()),
+                    Some(HeartbeatMessage::Pong { nonce: echoed }) => {
+                        // An unsolicited or replayed pong refreshes nothing,
+                        // even on the current connection: only an answer to a
+                        // ping this incarnation actually sent is evidence.
+                        if outstanding == Some(echoed) {
+                            outstanding = None;
+                            runtime.note_contact(host).await;
+                        }
+                    }
+                    Some(HeartbeatMessage::HostShutdown {}) => {
+                        runtime.commit_host_shutdown(host).await;
+                        return Ok(());
+                    }
+                    // Answering costs nothing and keeps the stream symmetric
+                    // for a host that wants to probe its viewers.
+                    Some(HeartbeatMessage::Ping { nonce: probed }) => {
+                        stream
+                            .write_message(
+                                &HeartbeatMessage::Pong { nonce: probed },
+                                MAX_HEARTBEAT_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
+                }
+            }
+            () = tokio::time::sleep(tick) => {
+                let Some(quiet) = runtime.quietest_contact(host).await else {
+                    // Nothing attached on this connection has any reason to
+                    // hear from the host, so its silence is not evidence.
+                    outstanding = None;
+                    continue;
+                };
+                if quiet >= config.heartbeat_fail {
+                    runtime.fail_connection(device_id, host).await;
+                    return Ok(());
+                }
+                if quiet >= config.heartbeat_idle && outstanding.is_none() {
+                    nonce = nonce.saturating_add(1);
+                    stream
+                        .write_message(
+                            &HeartbeatMessage::Ping { nonce },
+                            MAX_HEARTBEAT_MESSAGE_BYTES,
+                        )
+                        .await?;
+                    outstanding = Some(nonce);
+                }
+            }
+        }
+    }
 }
 
 /// Wait out a scheduled backoff, cut short if the device reappears.
@@ -3220,6 +3371,17 @@ impl MeshRuntime {
             stale.healthy.store(false, Ordering::Release);
             stale.connection.close();
         }
+        drop(connections);
+        // Only the connection that was published gets a heartbeat: the loser
+        // of a dial race is closed above, and probing it would be probing
+        // something nothing is riding.
+        if remote.supports_reconnect() {
+            tokio::spawn(heartbeat_loop(
+                self.clone(),
+                device_id.to_owned(),
+                Arc::clone(&remote),
+            ));
+        }
         Ok(remote)
     }
 
@@ -3240,6 +3402,37 @@ impl MeshRuntime {
         let stale = connections.remove(device_id)?;
         stale.connection.close();
         None
+    }
+
+    /// The freshest contact anything on this connection has had, or `None` if
+    /// nothing on it is in a position to hear from the host. One live session
+    /// hearing from the host vouches for the connection they share.
+    async fn quietest_contact(&self, host: &Arc<RemoteHostConnection>) -> Option<Duration> {
+        self.replicas
+            .read()
+            .await
+            .values()
+            .filter_map(|remote| remote.lifecycle.contact_age(host.incarnation))
+            .min()
+    }
+
+    async fn note_contact(&self, host: &Arc<RemoteHostConnection>) {
+        for remote in self.replicas.read().await.values() {
+            remote.lifecycle.note_contact(host.incarnation);
+        }
+    }
+
+    async fn commit_host_shutdown(&self, host: &Arc<RemoteHostConnection>) {
+        let sessions = self
+            .replicas
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for remote in sessions {
+            remote.lifecycle.commit_host_shutdown(host.incarnation);
+        }
     }
 
     /// Retire a connection the moment an operation on it fails. Without this a
@@ -4756,6 +4949,26 @@ async fn serve_connection(
     Ok(())
 }
 
+/// Answer liveness probes for as long as the stream lives. A host has nothing
+/// outstanding of its own here — `Pong` is only ever an answer, and the
+/// shutdown announcement travels the other way.
+async fn serve_heartbeat(mut control: ProtocolStream) -> Result<()> {
+    while let Some(message) = control
+        .read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES)
+        .await?
+    {
+        if let HeartbeatMessage::Ping { nonce } = message {
+            control
+                .write_message(
+                    &HeartbeatMessage::Pong { nonce },
+                    MAX_HEARTBEAT_MESSAGE_BYTES,
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn handle_application_stream(
     connection: Arc<dyn MeshConnection>,
     stream: Box<dyn MeshStream>,
@@ -4776,8 +4989,15 @@ async fn handle_application_stream(
     } = context;
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
-    if preface.stream_kind != StreamKind::SessionControl {
-        bail!("peer-opened stream kind is not supported");
+    match preface.stream_kind {
+        StreamKind::SessionControl => {}
+        // Liveness is a property of the connection, so these frames name no
+        // session and this handler keeps no state: echo the nonce and let the
+        // viewer's own contact clock do the deciding. The connection scope
+        // stays held for as long as the stream lives, which is correct — an
+        // open heartbeat stream is a connection that can still deliver work.
+        StreamKind::Heartbeat => return serve_heartbeat(control).await,
+        _ => bail!("peer-opened stream kind is not supported"),
     }
     let session_id = preface
         .session_id
@@ -6307,11 +6527,51 @@ mod tests {
         }
     }
 
+    /// What the scripted host does with the viewer's heartbeat stream.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum HeartbeatBehavior {
+        /// What a healthy host does.
+        Answer,
+        /// Connected and chatty, but never answering the ping that was asked:
+        /// a pong nobody is waiting for must refresh nothing, so this host is
+        /// indistinguishable from a silent one.
+        ReplayStalePongs,
+        /// Announce shutdown as soon as the stream opens.
+        AnnounceShutdown,
+    }
+
+    async fn scripted_heartbeat(
+        mut stream: ProtocolStream,
+        behavior: HeartbeatBehavior,
+    ) -> Result<()> {
+        while let Some(message) = stream
+            .read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES)
+            .await?
+        {
+            let HeartbeatMessage::Ping { nonce } = message else {
+                continue;
+            };
+            // Answering the first probe is the earliest moment a host can be
+            // sure the viewer is bound to it and listening.
+            let answer = match behavior {
+                HeartbeatBehavior::Answer => HeartbeatMessage::Pong { nonce },
+                // Never a nonce this viewer has outstanding.
+                HeartbeatBehavior::ReplayStalePongs => HeartbeatMessage::Pong { nonce: u64::MAX },
+                HeartbeatBehavior::AnnounceShutdown => HeartbeatMessage::HostShutdown {},
+            };
+            stream
+                .write_message(&answer, MAX_HEARTBEAT_MESSAGE_BYTES)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn serve_scripted_host(
         connection: Arc<dyn MeshConnection>,
         host_instance_id: String,
         remote_session_id: String,
         gate: SnapshotGate,
+        heartbeat: HeartbeatBehavior,
     ) -> Result<()> {
         let control_stream = connection
             .accept_stream()
@@ -6350,6 +6610,10 @@ mod tests {
             while let Some(stream) = streams_connection.accept_stream().await? {
                 let mut view_control = ProtocolStream::new(stream);
                 let preface = view_control.read_preface().await?;
+                if preface.stream_kind == StreamKind::Heartbeat {
+                    tokio::spawn(scripted_heartbeat(view_control, heartbeat));
+                    continue;
+                }
                 if preface.stream_kind != StreamKind::SessionControl {
                     continue;
                 }
@@ -6752,11 +7016,19 @@ mod tests {
         /// An open remote session whose host withholds snapshots until told.
         /// Returns before the first view has attached.
         async fn scripted(gate: SnapshotGate) -> Result<Self> {
+            Self::scripted_at(gate, quiet_reconnect(), HeartbeatBehavior::Answer).await
+        }
+
+        async fn scripted_at(
+            gate: SnapshotGate,
+            config: MeshReconnectConfig,
+            heartbeat: HeartbeatBehavior,
+        ) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = "scripted-session".to_owned();
             let transport = TestTransport::new("host-1");
             let runtime = MeshRuntime::new();
-            runtime.set_reconnect_config(quiet_reconnect());
+            runtime.set_reconnect_config(config);
             runtime
                 .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
                 .await;
@@ -6770,6 +7042,7 @@ mod tests {
                 "host-1".into(),
                 remote_session_id.clone(),
                 gate,
+                heartbeat,
             ));
             let connection = client_handshake(
                 client as Arc<dyn MeshConnection>,
@@ -7196,10 +7469,13 @@ mod tests {
             .expect("host session");
 
         session.claim_control("r:pane-1", "truffle:peer:1", 100, 30)?;
-        let claimed = tokio::time::timeout(Duration::from_secs(5), states.recv())
-            .await
-            .context("no controller announcement arrived")??;
-        let controller = claimed.controller.expect("a controller was announced");
+        // The stream's opening frame announces the absence of a controller and
+        // can still be in flight here; the claim is the one being asserted.
+        let claimed = next_control_state(&mut states, |state| state.controller.is_some()).await?;
+        let controller = claimed
+            .controller
+            .clone()
+            .expect("a controller was announced");
         // Translated back to the local id before it crosses the mesh boundary.
         assert_eq!(controller.view_id, "pane-1");
         // A reconnect-capable authority starts at 1, so 0 survives only as the
@@ -7408,6 +7684,142 @@ mod tests {
             Some(RemoteViewState::Attached)
         );
         Ok(())
+    }
+
+    /// A lifecycle with no runtime behind it, for the rules that must hold
+    /// under the lock regardless of who is calling.
+    fn test_lifecycle() -> Arc<SessionLifecycle> {
+        SessionLifecycle::new(
+            "session".to_owned(),
+            "device".to_owned(),
+            "device".to_owned(),
+            None,
+            broadcast::channel(8).0,
+            broadcast::channel(8).0,
+        )
+    }
+
+    /// Heartbeat timings small enough to test, in the same proportion as the
+    /// shipped 3 s / 6 s: probe at one unit of silence, give up at two.
+    fn probing_reconnect() -> MeshReconnectConfig {
+        MeshReconnectConfig {
+            heartbeat_idle: Duration::from_millis(60),
+            heartbeat_fail: Duration::from_millis(120),
+            // Long enough that a failed probe lands in Reconnecting and stays
+            // there to be observed, rather than resting immediately.
+            suspend_after: Duration::from_secs(60),
+            ..quiet_reconnect()
+        }
+    }
+
+    /// The failure the heartbeat exists for: a connection that is up, and a
+    /// host that talks, but no answer to what was actually asked. Without
+    /// this the session sits Live behind a dead host until the transport's
+    /// own idle timeout notices, half a minute later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unanswered_probe_declares_the_connection_dead() -> Result<()> {
+        let gate = SnapshotGate::default();
+        let fixture = Fixture::scripted_at(
+            gate.clone(),
+            probing_reconnect(),
+            HeartbeatBehavior::ReplayStalePongs,
+        )
+        .await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        // The scripted host sends nothing more after its snapshot, so contact
+        // goes quiet, the probe goes out, and the pong that comes back
+        // answers a nonce nobody is holding.
+        fixture
+            .wait_for_state(RemoteLifecycleState::Reconnecting)
+            .await?;
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_none(),
+            "the connection that failed its probe stayed in the cache"
+        );
+        Ok(())
+    }
+
+    /// A host that says it is going away is believed on the spot: waiting for
+    /// the probe to time out would spend six seconds pretending otherwise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_host_shutdown_on_the_heartbeat_stream_ends_the_session() -> Result<()> {
+        let gate = SnapshotGate::default();
+        let fixture = Fixture::scripted_at(
+            gate.clone(),
+            probing_reconnect(),
+            HeartbeatBehavior::AnnounceShutdown,
+        )
+        .await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::HostShutdown)
+        );
+        Ok(())
+    }
+
+    /// §5's commit-time rule, at the only layer that can enforce it: a task
+    /// holding a verdict for a connection that has since been replaced must
+    /// neither vouch for the replacement nor tear it down. Checking currency
+    /// and acting in two steps is what lets a descheduled task do both.
+    #[test]
+    fn a_superseded_connection_can_neither_vouch_nor_terminate() {
+        let lifecycle = test_lifecycle();
+        lifecycle.record_view("pane-1");
+        lifecycle.commit_view_attached("pane-1", 1, true);
+        lifecycle.bind_connection(2);
+        lifecycle.commit_live();
+
+        assert!(
+            !lifecycle.note_contact(1),
+            "a superseded connection refreshed the current one's contact clock"
+        );
+        assert!(lifecycle.note_contact(2));
+        assert!(
+            !lifecycle.commit_host_shutdown(1),
+            "a superseded connection ended a session it no longer serves"
+        );
+        assert_ne!(lifecycle.state_kind(), RemoteLifecycleState::Ended);
+        assert!(lifecycle.commit_host_shutdown(2));
+        assert_eq!(lifecycle.state_kind(), RemoteLifecycleState::Ended);
+    }
+
+    /// Silence is only evidence where the host had a reason to speak. A
+    /// session bound elsewhere, or holding nothing attached, must not be able
+    /// to condemn a connection it is not using.
+    #[test]
+    fn only_an_attached_session_on_this_connection_is_evidence_about_it() {
+        let lifecycle = test_lifecycle();
+        lifecycle.bind_connection(2);
+        lifecycle.commit_live();
+        assert_eq!(
+            lifecycle.contact_age(2),
+            None,
+            "a session with nothing attached vouched for a connection"
+        );
+
+        lifecycle.record_view("pane-1");
+        lifecycle.commit_view_attached("pane-1", 1, true);
+        lifecycle.commit_live();
+        assert!(lifecycle.contact_age(2).is_some());
+        assert_eq!(
+            lifecycle.contact_age(1),
+            None,
+            "a session reported on a connection it is not bound to"
+        );
     }
 
     /// The §6.2 table in one place. Each code's action turns on its scope, and
