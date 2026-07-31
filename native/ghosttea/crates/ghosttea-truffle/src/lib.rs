@@ -5867,7 +5867,15 @@ async fn spawn_state_stream(
                 },
                 changed = controls.recv() => match changed {
                     Ok(changed) => control_state_message(&changed, protocol_minor),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // Skipping here would leave this viewer holding whatever
+                    // it last heard — including a controller that has since
+                    // been cleared — with nothing to correct it. Repairing is
+                    // what the compact arm already does, and what the activity
+                    // arm below does; this was the odd one out.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        session.announce_control();
+                        continue;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => match changed {
