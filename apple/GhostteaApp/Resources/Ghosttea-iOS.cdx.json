@@ -129,7 +129,7 @@
       },
       {
         "name": "ghosttea:cargo-lock:sha256",
-        "value": "deb59927e216c0a78e00356a11595735cff93ed1044e3535f39d599d819e460d"
+        "value": "2c49ed9f3e92606156e05f2ea28f94318bb605dbca801feede20a59f34108744"
       },
       {
         "name": "ghosttea:rust-target",
@@ -1127,6 +1127,30 @@
         {
           "name": "ghosttea:cargo-source",
           "value": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        {
+          "name": "ghosttea:rust-target",
+          "value": "aarch64-apple-ios"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ghosttea-config@0.6.2",
+      "name": "ghosttea-config",
+      "version": "0.6.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:cargo/ghosttea-config@0.6.2",
+      "properties": [
+        {
+          "name": "ghosttea:cargo-source",
+          "value": "workspace"
         },
         {
           "name": "ghosttea:rust-target",
@@ -3145,6 +3169,13 @@
       ]
     },
     {
+      "ref": "pkg:cargo/ghosttea-config@0.6.2",
+      "dependsOn": [
+        "pkg:cargo/serde@1.0.228",
+        "pkg:cargo/serde_json@1.0.150"
+      ]
+    },
+    {
       "ref": "pkg:cargo/ghosttea-core@0.6.2",
       "dependsOn": [
         "pkg:cargo/anyhow@1.0.103",
@@ -3157,6 +3188,7 @@
     {
       "ref": "pkg:cargo/ghosttea-ffi@0.6.2",
       "dependsOn": [
+        "pkg:cargo/ghosttea-config@0.6.2",
         "pkg:cargo/ghosttea-core@0.6.2",
         "pkg:cargo/ghosttea-text@0.6.2",
         "pkg:cargo/serde_json@1.0.150"
