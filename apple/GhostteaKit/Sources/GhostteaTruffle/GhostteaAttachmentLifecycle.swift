@@ -67,17 +67,46 @@ public struct GhostteaAttachmentSnapshot: Equatable, Sendable {
   public var acceptsInput: Bool { phase.acceptsInput && readWrite }
 }
 
-/// Why a keystroke was discarded. §4.3: rejected visibly, never queued, never
-/// replayed on resume.
+/// Why an operation this pane initiated was refused.
+///
+/// One vocabulary for keystrokes and for the control operations — take
+/// control, resize, copy — because the scene renders them from one place.
+/// They differ in *delivery*, not in shape: a rejected keystroke is also
+/// broadcast on the event stream, since §4.3 requires it be visible without
+/// the caller asking, while a control refusal is thrown to the caller that
+/// invoked the action and already knows which one it was.
 public struct GhostteaAttachmentInputRejection: Error, Equatable, Sendable {
   public enum Reason: String, Equatable, Sendable {
     case notLive
     case readOnly
     case writeFailed
+    /// A resize from a pane that does not hold control. The host would refuse
+    /// it; refusing locally keeps the reason legible.
+    case noControl
+    /// The attachment a request was waiting on went away before the host
+    /// answered. Distinct from a write failure: the request did leave.
+    case attachmentEnded
   }
 
   public let phase: GhostteaAttachmentPhase
   public let reason: Reason
+}
+
+/// The control operations throw this alias so their call sites read honestly;
+/// it is the same type the input path uses, deliberately.
+public typealias GhostteaAttachmentControlRejection = GhostteaAttachmentInputRejection
+
+/// How a sink refuses one frame.
+///
+/// The distinction is load-bearing: a discontinuity the replica cannot bridge
+/// is repaired by asking for an authoritative snapshot, while any other
+/// failure means the replica itself is unusable and the attachment has to go.
+/// Throwing something untyped takes the second path.
+public enum GhostteaAttachmentApplyFailure: Error, Equatable, Sendable {
+  /// This frame could not be applied but the attachment is healthy — a logical
+  /// discontinuity only a full snapshot can repair. The lifecycle requests one
+  /// and, critically, does **not** acknowledge the frame it rejected.
+  case needsSnapshot
 }
 
 public enum GhostteaAttachmentLifecycleEvent: Equatable, Sendable {
@@ -105,6 +134,13 @@ extension GhostteaAttachmentDialer {
 /// Where admitted state frames go. Awaited in order: the lifecycle reports Live
 /// only once the recovery snapshot has come back from here, so input can never
 /// race ahead of the screen it is typed against.
+///
+/// **The sink never acknowledges.** Returning from `apply` *is* the
+/// acknowledgement: the lifecycle owns the wire, so it sends the `StateAck`
+/// once the frame has been applied, with that frame's own coordinates. A sink
+/// that throws ``GhostteaAttachmentApplyFailure/needsSnapshot`` gets a fresh
+/// snapshot requested and no ack for the frame it refused, which is exactly
+/// what "never apply or acknowledge the rejected patch" requires.
 public protocol GhostteaAttachmentStateSink: Sendable {
   func apply(_ message: GhostteaTerminalStateMessage) async throws
 }
@@ -144,6 +180,11 @@ public actor GhostteaAttachmentLifecycle {
   /// same same-epoch collision a resume would.
   private var attachGeneration: UInt64 = 0
   private var inputSequence: UInt64 = 0
+  /// Separate sequence spaces, as the wire defines them: input, control
+  /// claims, and resizes are ordered independently of one another.
+  private var clientSequence: UInt64 = 0
+  private var resizeSequence: UInt64 = 0
+  private var selectionWaiters: [String: CheckedContinuation<String, Error>] = [:]
   private var attempt: UInt32 = 0
   private var cols: UInt16
   private var rows: UInt16
@@ -247,16 +288,141 @@ public actor GhostteaAttachmentLifecycle {
       throw rejection
     }
     inputSequence &+= 1
-    let sequence = inputSequence
-    let sentIncarnation = incarnation
-    let sentGeneration = generation
     do {
-      try await attachment.send(operation, sequence: sequence)
+      try await write(sequence: inputSequence, to: attachment) { attachment, sequence in
+        try await attachment.send(operation, sequence: sequence)
+      }
     } catch {
-      commitDisconnect(generation: sentGeneration, incarnation: sentIncarnation)
+      // Same dead connection, different surface: a keystroke that did not land
+      // is the one thing §4.3 requires be visible without the caller asking.
       let rejection = GhostteaAttachmentInputRejection(phase: phase, reason: .writeFailed)
       emit(.inputRejected(rejection))
       throw rejection
+    }
+  }
+
+  /// The one fenced write path every pane-initiated operation takes — input,
+  /// control claim, resize, selection. The attachment stamps its own
+  /// attachment epoch on the frame, so the fencing is identical across all of
+  /// them, and a failed write is the same evidence of a dead connection
+  /// whatever the frame was — committed against the incarnation that owned it,
+  /// never against whatever has replaced it since.
+  private func write(
+    sequence: UInt64,
+    to attachment: GhostteaTruffleAttachment,
+    _ body: (GhostteaTruffleAttachment, UInt64) async throws -> Void
+  ) async throws {
+    let sentGeneration = generation
+    let sentIncarnation = incarnation
+    do {
+      try await body(attachment, sequence)
+    } catch {
+      commitDisconnect(generation: sentGeneration, incarnation: sentIncarnation)
+      throw GhostteaAttachmentControlRejection(phase: phase, reason: .writeFailed)
+    }
+  }
+
+  private func requireLiveAttachment() throws -> GhostteaTruffleAttachment {
+    guard case .live = phase, let attachment = current else {
+      throw GhostteaAttachmentControlRejection(phase: phase, reason: .notLive)
+    }
+    return attachment
+  }
+
+  /// The ack the sink never sends. Coordinates come from the frame that was
+  /// applied, so a snapshot acks at patch sequence 0 and a patch at its own.
+  /// A failed ack is a dying connection, which the reader reports on its own;
+  /// swallowing it here can never invent state.
+  private func acknowledge(_ message: GhostteaTerminalStateMessage) async {
+    guard let attachment = current else { return }
+    switch message {
+    case .snapshot(let snapshot):
+      try? await attachment.acknowledge(
+        sessionEpoch: snapshot.sessionEpoch, layoutEpoch: snapshot.layoutEpoch,
+        patchSequence: 0, terminalRevision: snapshot.terminalRevision)
+    case .patch(let patch):
+      try? await attachment.acknowledge(
+        sessionEpoch: patch.sessionEpoch, layoutEpoch: patch.layoutEpoch,
+        patchSequence: patch.patchSequence, terminalRevision: patch.terminalRevision)
+    default:
+      break
+    }
+  }
+
+  private func requestSnapshotOnCurrentAttachment() async {
+    guard let attachment = current else { return }
+    try? await attachment.requestSnapshot()
+  }
+
+  /// Whether this pane currently holds resize control, and at which epoch.
+  /// `nil` when another view holds it, when nobody does, or when the host has
+  /// not said — the three cases a resize must not guess between.
+  public var heldControlEpoch: UInt64? {
+    guard let controller, let attachment = current,
+      controller.controllerViewID == attachment.viewID
+    else { return nil }
+    return controller.controlEpoch
+  }
+
+  /// Ask the pane's focus layer to take resize control (§4.2.3's claim, minus
+  /// the compare-and-swap, which the focus-owning layer drives).
+  public func claimControl(cols: UInt16, rows: UInt16) async throws {
+    let attachment = try requireLiveAttachment()
+    self.cols = cols
+    self.rows = rows
+    clientSequence &+= 1
+    try await write(sequence: clientSequence, to: attachment) { attachment, sequence in
+      try await attachment.claimControl(cols: cols, rows: rows, sequence: sequence)
+    }
+  }
+
+  /// Resize the shared terminal. Only the controlling pane may: the epoch is
+  /// read from the controller state this attachment last observed, never
+  /// assumed.
+  public func resize(cols: UInt16, rows: UInt16) async throws {
+    let attachment = try requireLiveAttachment()
+    guard let controlEpoch = heldControlEpoch else {
+      throw GhostteaAttachmentControlRejection(phase: phase, reason: .noControl)
+    }
+    self.cols = cols
+    self.rows = rows
+    resizeSequence &+= 1
+    try await write(sequence: resizeSequence, to: attachment) { attachment, sequence in
+      try await attachment.resize(
+        cols: cols, rows: rows, controlEpoch: controlEpoch, sequence: sequence)
+    }
+  }
+
+  /// Ask for a fresh authoritative snapshot — after a rejected patch, or on
+  /// foreground when the retained frame may be stale. Returns whether the
+  /// request reached a live attachment; a session that is reconnecting gets a
+  /// snapshot from the resume itself, so a `false` here is not a failure.
+  @discardableResult
+  public func requestSnapshot() async -> Bool {
+    guard case .live = phase, current != nil else { return false }
+    await requestSnapshotOnCurrentAttachment()
+    return true
+  }
+
+  /// Authoritative selection extraction, resolved with the host's answer.
+  ///
+  /// The bound is the connection's own liveness rather than a timer: the
+  /// heartbeat declares a silent host dead within `heartbeatFailMs`, and the
+  /// teardown that follows fails every pending request. A request outliving
+  /// its attachment therefore throws rather than hanging.
+  public func selectionText(_ selection: GhostteaSelectionRequest) async throws -> String {
+    let attachment = try requireLiveAttachment()
+    let requestID = UUID().uuidString
+    let sentGeneration = generation
+    let sentIncarnation = incarnation
+    do {
+      _ = try await attachment.requestSelectionText(selection, requestID: requestID)
+    } catch {
+      commitDisconnect(generation: sentGeneration, incarnation: sentIncarnation)
+      throw GhostteaAttachmentControlRejection(phase: phase, reason: .writeFailed)
+    }
+    return try await withCheckedThrowingContinuation { continuation in
+      selectionWaiters[requestID] = continuation
     }
   }
 
@@ -573,7 +739,13 @@ public actor GhostteaAttachmentLifecycle {
       else { return true }
       try? await attachment.pong(nonce: nonce)
       return true
-    case .selectionText:
+    case .selectionText(let requestID, let text):
+      // Answers are matched by request id and are not fenced by generation:
+      // the caller awaiting one asked on this incarnation, and a stale answer
+      // simply finds no waiter.
+      if let waiter = selectionWaiters.removeValue(forKey: requestID) {
+        waiter.resume(returning: text)
+      }
       return true
     case .state(let message):
       // The gate covers every state-channel dispatch, not only replica
@@ -610,14 +782,22 @@ public actor GhostteaAttachmentLifecycle {
       }
       do {
         try await sink?.apply(message)
+      } catch GhostteaAttachmentApplyFailure.needsSnapshot {
+        // A discontinuity is recoverable only through an authoritative
+        // snapshot. The rejected frame is neither applied nor acknowledged.
+        guard generation == self.generation, incarnation == self.incarnation else { return true }
+        await requestSnapshotOnCurrentAttachment()
+        return true
       } catch {
         commitDisconnect(generation: generation, incarnation: incarnation)
         return false
       }
       // Re-checked after the sink's await: applying is a suspension point, and
       // a snapshot that finished under a generation that has since been
-      // retired must not be the one that unblocks input.
+      // retired must not be the one that unblocks input — nor the one this
+      // connection acknowledges.
       guard generation == self.generation, incarnation == self.incarnation else { return true }
+      await acknowledge(message)
       if case .snapshot = message { signalSynchronized(generation: generation) }
       return true
     }
@@ -762,6 +942,15 @@ public actor GhostteaAttachmentLifecycle {
     if let waiter = synchronizeWaiter {
       synchronizeWaiter = nil
       waiter.resume(returning: false)
+    }
+    // Nothing can answer these now. Failing them is what keeps the liveness
+    // bound honest: a caller awaiting a selection is released by the same
+    // teardown that would have detected the silence.
+    let pending = selectionWaiters
+    selectionWaiters.removeAll()
+    for waiter in pending.values {
+      waiter.resume(
+        throwing: GhostteaAttachmentControlRejection(phase: phase, reason: .attachmentEnded))
     }
   }
 

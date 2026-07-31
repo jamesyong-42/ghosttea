@@ -392,6 +392,174 @@ import Truffle
   await lifecycle.close()
 }
 
+@Test func theActorAcknowledgesEachAppliedFrameOnTheSinksBehalf() async {
+  let dialer = ScriptedDialer()
+  let sink = RecordingSink()
+  let lifecycle = makeLifecycle(dialer: dialer, sink: sink)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 42), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+
+  // The sink never acks; returning from apply is the trigger, and the frame's
+  // own coordinates are what goes on the wire.
+  guard
+    case .stateAck(let sessionEpoch, let layoutEpoch, let patchSequence, let revision)? =
+      await nextAcknowledgement(peer)
+  else {
+    Issue.record("expected the snapshot acknowledgement")
+    return
+  }
+  #expect(sessionEpoch == 7)
+  #expect(layoutEpoch == 3)
+  #expect(patchSequence == 0)
+  #expect(revision == 42)
+
+  try? await peer.writeState(patchJSON())
+  guard case .stateAck(_, _, let patchAck, let patchRevision)? = await nextAcknowledgement(peer)
+  else {
+    Issue.record("expected the patch acknowledgement")
+    return
+  }
+  #expect(patchAck == 1)
+  #expect(patchRevision == 43)
+  #expect(await sink.applied.count == 2)
+  await lifecycle.close()
+}
+
+@Test func aSinkThatNeedsASnapshotGetsOneAndTheRejectedFrameIsNotAcknowledged() async {
+  let dialer = ScriptedDialer()
+  let sink = RecordingSink()
+  let lifecycle = makeLifecycle(dialer: dialer, sink: sink)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 42), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  await sink.refuseNext(.needsSnapshot)
+  try? await peer.writeState(patchJSON())
+
+  // A discontinuity asks for an authoritative snapshot; it never acknowledges
+  // the patch it could not apply, and it never tears the session down.
+  guard case .requestSnapshot? = await nextControl(peer) else {
+    Issue.record("expected a snapshot request")
+    return
+  }
+  #expect(await peer.pendingAcknowledgementCount == 0)
+  #expect(await lifecycle.currentSnapshot.phase == .live)
+  await lifecycle.close()
+}
+
+@Test func selectionTextResolvesWithTheHostsAnswerAndFailsWithItsAttachment() async {
+  let dialer = ScriptedDialer()
+  let lifecycle = makeLifecycle(dialer: dialer)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  // Awaited through a box rather than inline: a breakage that drops the answer
+  // has to fail this test, not park it on a continuation forever.
+  let copied = SelectionBox()
+  await copied.run { try await lifecycle.selectionText(GhostteaSelectionRequest(selectAll: true)) }
+  guard
+    case .selectionText(let requestID, _, let epoch, _, _, _, _, let selectAll)? =
+      await nextControl(peer)
+  else {
+    Issue.record("expected a selection request")
+    return
+  }
+  #expect(epoch == 11)
+  #expect(selectAll)
+  try? await peer.writeControl(.selectionTextResult(requestID: requestID, text: "shared output"))
+  #expect(await copied.settledText() == "shared output")
+
+  // A request that outlives its attachment is released by the teardown rather
+  // than parked on a continuation nothing will ever resume.
+  let orphaned = SelectionBox()
+  await orphaned.run { try await lifecycle.selectionText(GhostteaSelectionRequest(selectAll: true)) }
+  _ = await nextControl(peer)
+  await peer.close()
+  #expect(await orphaned.settledReason() == .attachmentEnded)
+}
+
+@Test func controlClaimsAndResizesCarryTheFencedEpochsOrAreRefused() async {
+  let dialer = ScriptedDialer()
+  let lifecycle = makeLifecycle(dialer: dialer)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+
+  // Outside Live both refuse for the same reason input does — there is no
+  // attachment to stamp an epoch from.
+  await #expect(throws: GhostteaAttachmentControlRejection.self) {
+    try await lifecycle.claimControl(cols: 100, rows: 30)
+  }
+
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  // A resize before control is held is refused locally rather than sent for
+  // the host to reject.
+  #expect(await lifecycle.heldControlEpoch == nil)
+  var refusal: GhostteaAttachmentControlRejection.Reason?
+  do { try await lifecycle.resize(cols: 120, rows: 40) } catch
+    let rejection as GhostteaAttachmentControlRejection
+  {
+    refusal = rejection.reason
+  } catch {}
+  #expect(refusal == .noControl)
+
+  try? await lifecycle.claimControl(cols: 120, rows: 40)
+  guard case .focusAndResize(let viewID, let epoch, let cols, let rows, _)? = await nextControl(peer)
+  else {
+    Issue.record("expected a control claim")
+    return
+  }
+  #expect(viewID == "r:pane-1")
+  #expect(epoch == 11)
+  #expect(cols == 120 && rows == 40)
+
+  // Control held by *another* view is not this pane's to resize with. The
+  // epoch belongs to whoever the host named, so a pane that reads it as its
+  // own would resize with an epoch the host will reject — or worse, one it
+  // will accept for a claim this pane never made.
+  try? await peer.writeState(#"{"cs":[["r:other-pane",9],2,120,40,1]}"#)
+  _ = await poll { await lifecycle.currentControlState.revision == 2 ? true : nil }
+  #expect(await lifecycle.heldControlEpoch == nil)
+  var borrowed: GhostteaAttachmentControlRejection.Reason?
+  do { try await lifecycle.resize(cols: 132, rows: 44) } catch
+    let rejection as GhostteaAttachmentControlRejection
+  {
+    borrowed = rejection.reason
+  } catch {}
+  #expect(borrowed == .noControl)
+
+  // The host grants control to this pane's wire identity; only then does a
+  // resize go out, carrying the granted control epoch.
+  try? await peer.writeState(#"{"cs":[["r:pane-1",4],3,120,40,1]}"#)
+  _ = await poll { await lifecycle.heldControlEpoch }
+  #expect(await lifecycle.heldControlEpoch == 4)
+  try? await lifecycle.resize(cols: 132, rows: 44)
+  guard
+    case .resize(_, let resizeEpoch, let controlEpoch, _, let newCols, let newRows)? =
+      await nextControl(peer)
+  else {
+    Issue.record("expected a resize")
+    return
+  }
+  #expect(resizeEpoch == 11)
+  #expect(controlEpoch == 4)
+  #expect(newCols == 132 && newRows == 44)
+  await lifecycle.close()
+}
+
 @Test func aLegacyHostIsNeverProbed() async {
   let dialer = ScriptedDialer()
   let clock = ManualClock()
@@ -408,6 +576,8 @@ import Truffle
   // the outage the probe exists to detect, so nothing is scheduled at all.
   #expect(await clock.settledSleeperCount() == 0)
   await clock.advance(30_000, sleepers: 0)
+  // The snapshot's acknowledgement is expected and lives on its own queue;
+  // what must not appear is a probe.
   #expect(await peer.pendingControlCount == 0)
   #expect(await lifecycle.currentSnapshot.phase == .live)
   await lifecycle.close()
@@ -762,6 +932,12 @@ private func nextControl(_ peer: ScriptedPeer) async -> GhostteaSessionControlMe
   await poll { await peer.takeControl() }
 }
 
+/// The next acknowledgement, which the peer queues apart from pane-initiated
+/// frames.
+private func nextAcknowledgement(_ peer: ScriptedPeer) async -> GhostteaSessionControlMessage? {
+  await poll { await peer.takeAcknowledgement() }
+}
+
 /// Wall-clock guard so an expectation that will never be met fails in seconds
 /// instead of hanging the suite.
 ///
@@ -869,10 +1045,61 @@ private final class ManualClock: GhostteaLifecycleClock, @unchecked Sendable {
   }
 }
 
+/// Holds the outcome of a selection request that is in flight, so a test can
+/// poll for it with a deadline instead of awaiting it inline — an awaited call
+/// that never resolves hangs the suite, and proving nothing is the one thing a
+/// test must not do.
+private actor SelectionBox {
+  private var text: String?
+  private var reason: GhostteaAttachmentInputRejection.Reason?
+  private var finished = false
+
+  func run(_ body: @escaping @Sendable () async throws -> String) {
+    Task {
+      do {
+        await self.finish(text: try await body(), reason: nil)
+      } catch let rejection as GhostteaAttachmentInputRejection {
+        await self.finish(text: nil, reason: rejection.reason)
+      } catch {
+        await self.finish(text: nil, reason: nil)
+      }
+    }
+  }
+
+  private func finish(text: String?, reason: GhostteaAttachmentInputRejection.Reason?) {
+    self.text = text
+    self.reason = reason
+    finished = true
+  }
+
+  func settledText() async -> String? {
+    await poll { await self.settled() } ?? nil
+    return text
+  }
+
+  func settledReason() async -> GhostteaAttachmentInputRejection.Reason? {
+    await poll { await self.settled() } ?? nil
+    return reason
+  }
+
+  private func settled() -> Bool? { finished ? true : nil }
+}
+
 private actor RecordingSink: GhostteaAttachmentStateSink {
   private(set) var applied: [GhostteaTerminalStateMessage] = []
+  private var refusal: GhostteaAttachmentApplyFailure?
+
+  /// Makes the next frame fail the way a replica rejecting a discontinuous
+  /// patch does.
+  func refuseNext(_ failure: GhostteaAttachmentApplyFailure) {
+    refusal = failure
+  }
 
   func apply(_ message: GhostteaTerminalStateMessage) async throws {
+    if let refusal {
+      self.refusal = nil
+      throw refusal
+    }
     applied.append(message)
   }
 }
@@ -950,6 +1177,7 @@ private actor ScriptedPeer {
   private let connection: LoopbackConnection
   private var buffer = Data()
   private var received: [GhostteaSessionControlMessage] = []
+  private var acknowledgements: [GhostteaSessionControlMessage] = []
   private var controlWaiters: [CheckedContinuation<GhostteaSessionControlMessage, Never>] = []
   private var pump: Task<Void, Never>?
 
@@ -994,11 +1222,30 @@ private actor ScriptedPeer {
       attachGeneration: generation, resume: resume, wantsState: wantsState)
   }
 
+  /// Acknowledgements are queued apart from everything else. They are
+  /// automatic state-sync traffic rather than something the pane chose to
+  /// send, so keeping them out of the main queue is what lets a test still
+  /// assert "the pane sent nothing" and mean it.
   private func deliver(_ message: GhostteaSessionControlMessage) {
+    if case .stateAck = message {
+      acknowledgements.append(message)
+      return
+    }
     if controlWaiters.isEmpty {
       received.append(message)
     } else {
       controlWaiters.removeFirst().resume(returning: message)
+    }
+  }
+
+  func takeAcknowledgement() -> GhostteaSessionControlMessage? {
+    acknowledgements.isEmpty ? nil : acknowledgements.removeFirst()
+  }
+
+  var pendingAcknowledgementCount: Int {
+    get async {
+      for _ in 0..<16 { await Task.yield() }
+      return acknowledgements.count
     }
   }
 
