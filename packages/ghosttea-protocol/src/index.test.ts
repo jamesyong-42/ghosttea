@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { isRendererClientCommandAllowed, isServerEvent, unknownSessionActivity } from "./index";
 
+describe("isServerEvent forward compatibility", () => {
+  it("tolerates fields it has never heard of, so an additive daemon change is not fatal", () => {
+    // A rejected event destroys the socket, so anything the daemon may add
+    // later has to pass a client that predates it.
+    expect(isServerEvent({ requestId: 1, type: "selection-text", text: "copied", unheardOf: { nested: 1 } })).toBe(
+      true,
+    );
+    expect(isServerEvent({ requestId: 1, type: "selection-text", text: "copied", scope: "viewport" })).toBe(true);
+    // Including a value of a field it does know, added after this client shipped.
+    expect(isServerEvent({ requestId: 1, type: "selection-text", text: "copied", scope: "command-output" })).toBe(true);
+    expect(isServerEvent({ requestId: 0, type: "session-activity-changed", sessionId: "s", activity: undefined })).toBe(
+      false,
+    );
+  });
+});
+
 describe("isServerEvent", () => {
   it("allows reviewed renderer commands and rejects privileged or unknown commands", () => {
     expect(isRendererClientCommandAllowed({ requestId: 1, type: "get-config" })).toBe(true);

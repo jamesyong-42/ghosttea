@@ -8,6 +8,7 @@ import {
   type RemoteHostSummary,
   type RemoteSessionLifecycle,
   type RemoteViewRecord,
+  type SelectionScopeKind,
   type SessionActivity,
   type ServerEvent,
   type SessionSummary,
@@ -90,6 +91,10 @@ interface ViewRuntimeState {
    * live attachment.
    */
   lastAttachmentEpoch: number | undefined;
+  /** Attachment epoch this view has already claimed control for, if any. */
+  claimedEpoch: number | undefined;
+  /** Control revision that claim was made against, for the cleared-controller retry. */
+  claimedRevision: number;
 }
 
 /** A session's lifecycle as this client currently believes it. */
@@ -97,7 +102,29 @@ export type RemoteSessionRuntimeState = RemoteSessionLifecycle & {
   sessionId: string;
   /** Monotonic clock reading when this state was observed, for honest elapsed timing. */
   observedAt: number;
+  /**
+   * Live again, but still showing the screen from before the outage. The
+   * replica is not trustworthy until a frame from the recovered stream has
+   * actually been committed, so the pane stays cooled until then.
+   */
+  awaitingRecoveryFrame: boolean;
 };
+
+/** States that leave a screen on display which the host is no longer updating. */
+export function showsStaleScreen(state: RemoteSessionLifecycle["state"]): boolean {
+  return state !== "live" && state !== "opening";
+}
+
+/** Whether a pane is showing stale content: frozen outright, or live but not yet redrawn. */
+export function sessionIsFrozen(state: RemoteSessionRuntimeState): boolean {
+  return showsStaleScreen(state.state) || state.awaitingRecoveryFrame;
+}
+
+export interface SelectionScope {
+  sessionId: string;
+  viewId: string;
+  scope: SelectionScopeKind;
+}
 
 export interface RemoteInputSuppression {
   sessionId: string;
@@ -174,6 +201,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #focusByView = new Map<string, boolean>();
   readonly #views = new Map<string, ViewRuntimeState>();
   readonly #remoteSessions = new Map<string, RemoteSessionRuntimeState>();
+  readonly #controlBySession = new Map<string, { controller: RemoteControllerInfo | null; revision: number }>();
   #remoteLifecycleSupported = false;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
@@ -238,6 +266,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.#resync.request(data.sessionHandle);
       } else if (data.type === "frame-resync-complete") {
         this.#resync.complete(data.sessionHandle);
+      } else if (data.type === "frame-committed") {
+        this.#thawRecoveredSession(data.sessionHandle);
       } else if (data.type === "catalog-pressure") {
         console.warn(
           `[terminal-runtime] native text catalog budget exceeded for ${data.sessionHandle}; using bounded fallback text`,
@@ -374,7 +404,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     this.#control.addEventListener("control-state", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "control-state" }>>).detail;
-      this.#applyController(detail.sessionId, detail.controller, detail.cols, detail.rows);
+      this.#applyController(detail.sessionId, detail.controller, detail.cols, detail.rows, detail.controlRevision);
     });
     this.#control.addEventListener("remote-session-state-changed", (event) => {
       const detail = (event as CustomEvent<Extract<ServerEvent, { type: "remote-session-state-changed" }>>).detail;
@@ -875,6 +905,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       nextRetryMs: null,
       lastContactMs: null,
       observedAt: performance.now(),
+      awaitingRecoveryFrame: false,
     });
     return response.session;
   }
@@ -931,6 +962,8 @@ export class GhostteaTerminalRuntime extends EventTarget {
       pendingInput: [],
       lastViewStateSeq: undefined,
       lastAttachmentEpoch: undefined,
+      claimedEpoch: undefined,
+      claimedRevision: 0,
     };
     this.#views.set(viewId, view);
     const remote = this.#remoteSessions.get(sessionId);
@@ -1020,7 +1053,20 @@ export class GhostteaTerminalRuntime extends EventTarget {
     return this.#remoteSessions.get(sessionId);
   }
 
-  #applyController(sessionId: string, controller: RemoteControllerInfo | null, cols: number, rows: number): void {
+  #applyController(
+    sessionId: string,
+    controller: RemoteControllerInfo | null,
+    cols: number,
+    rows: number,
+    revision = 0,
+  ): void {
+    const previous = this.#controlBySession.get(sessionId);
+    this.#controlBySession.set(sessionId, {
+      controller,
+      // A legacy `control-changed` carries no revision; keep the last one so a
+      // downgrade never looks like the controller was cleared at a newer one.
+      revision: Math.max(revision, previous?.revision ?? 0),
+    });
     for (const [viewId, view] of this.#views) {
       if (view.sessionId !== sessionId) continue;
       if (!controller || controller.viewId !== viewId) {
@@ -1036,6 +1082,58 @@ export class GhostteaTerminalRuntime extends EventTarget {
         this.#sendResize(viewId, view, view.desiredCols, view.desiredRows);
       }
     }
+    // A cleared controller is the one case worth re-evaluating: the pane that
+    // still holds focus may now take control back.
+    for (const viewId of this.#viewIdsForSession(sessionId)) this.#maybeReclaim(viewId);
+  }
+
+  *#viewIdsForSession(sessionId: string): Generator<string> {
+    for (const [viewId, view] of this.#views) {
+      if (view.sessionId === sessionId) yield viewId;
+    }
+  }
+
+  /**
+   * The single funnel for taking resize control (§4.2.3). Every condition that
+   * gates a claim re-enters here when it changes, because no one event is
+   * enough: recovery marks a view attached before its session reaches live, and
+   * the focus setter suppresses repeat `true` updates, so a claim keyed on
+   * either alone would be skipped and never retried.
+   *
+   * At most one claim per attachment epoch, plus one more each time the
+   * controller is cleared at a newer revision.
+   */
+  #maybeReclaim(viewId: string): void {
+    const view = this.#views.get(viewId);
+    if (!view || view.readWrite === false) return;
+    const attachmentEpoch = view.attachmentEpoch;
+    if (attachmentEpoch === undefined) return;
+    if (view.desiredCols === undefined || view.desiredRows === undefined) return;
+    if (this.#focusByView.get(viewId) !== true) return;
+    const remote = this.#remoteSessions.get(view.sessionId);
+    if (remote && (remote.state !== "live" || remote.awaitingRecoveryFrame)) return;
+    const control = this.#controlBySession.get(view.sessionId);
+    const controller = control?.controller ?? null;
+    // Never take control from another pane. Our own name on the record is not
+    // a reason to stop: after a resume it is the previous incarnation's, and
+    // the new attachment epoch below is what decides.
+    if (controller && controller.viewId !== viewId) return;
+    const revision = control?.revision ?? 0;
+    // One claim per attachment epoch. A controller *cleared* at a newer
+    // revision earns one more; the seat being confirmed as ours does not.
+    if (view.claimedEpoch === attachmentEpoch && (controller !== null || view.claimedRevision >= revision)) return;
+    const session = this.#sessionByHandle.get(view.sessionHandle);
+    if (!session) return;
+    view.claimedEpoch = attachmentEpoch;
+    view.claimedRevision = revision;
+    this.#control?.notify({
+      type: "focus-and-resize",
+      sessionId: session.id,
+      viewId,
+      attachmentEpoch,
+      cols: view.desiredCols,
+      rows: view.desiredRows,
+    });
   }
 
   /**
@@ -1060,6 +1158,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
       view.attachmentEpoch = update.attachmentEpoch;
       view.lastAttachmentEpoch = update.attachmentEpoch;
       if (update.readWrite !== null) view.readWrite = update.readWrite;
+      this.#maybeReclaim(viewId);
       return true;
     }
     view.pendingInput.length = 0;
@@ -1077,16 +1176,46 @@ export class GhostteaTerminalRuntime extends EventTarget {
         : lifecycle.lifecycleSeq <= previous.lifecycleSeq;
       if (stale) return false;
     }
-    const state: RemoteSessionRuntimeState = { ...lifecycle, sessionId, observedAt: performance.now() };
+    // Coming back from a frozen state, the screen on display is still the one
+    // from before the outage. Keep it marked stale until the recovered stream
+    // actually commits a frame; `opening` never had a screen to distrust.
+    const awaitingRecoveryFrame =
+      lifecycle.state === "live" &&
+      previous !== undefined &&
+      (previous.awaitingRecoveryFrame || showsStaleScreen(previous.state));
+    const state: RemoteSessionRuntimeState = {
+      ...lifecycle,
+      sessionId,
+      observedAt: performance.now(),
+      awaitingRecoveryFrame,
+    };
     this.#remoteSessions.set(sessionId, state);
     if (state.state !== "live") {
       for (const view of this.#views.values()) {
         if (view.sessionId === sessionId) view.pendingInput.length = 0;
       }
     }
-    this.#setCursorFrozen(sessionId, state.state !== "live");
+    this.#setCursorFrozen(sessionId, sessionIsFrozen(state));
     this.dispatchEvent(new CustomEvent("remote-session-state", { detail: state }));
+    for (const viewId of this.#viewIdsForSession(sessionId)) this.#maybeReclaim(viewId);
     return true;
+  }
+
+  /**
+   * A frame from the recovered stream has been committed, so what the pane
+   * shows is current again. The first commit after the session went live is by
+   * construction the recovery snapshot or later, since the daemon reaches live
+   * only once that snapshot has been ingested.
+   */
+  #thawRecoveredSession(sessionHandle: string): void {
+    const sessionId = this.#sessionByHandle.get(sessionHandle)?.id;
+    const state = sessionId === undefined ? undefined : this.#remoteSessions.get(sessionId);
+    if (!state || !state.awaitingRecoveryFrame) return;
+    const thawed: RemoteSessionRuntimeState = { ...state, awaitingRecoveryFrame: false };
+    this.#remoteSessions.set(thawed.sessionId, thawed);
+    this.#setCursorFrozen(thawed.sessionId, sessionIsFrozen(thawed));
+    this.dispatchEvent(new CustomEvent("remote-session-state", { detail: thawed }));
+    for (const viewId of this.#viewIdsForSession(thawed.sessionId)) this.#maybeReclaim(viewId);
   }
 
   /** Hold the cursor steady while the replica is frozen, without disturbing focus. */
@@ -1107,7 +1236,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
       throw new Error("ghosttead returned an unexpected remote session state");
     }
     this.#applyRemoteSessionState(command.sessionId, response, true);
-    this.#applyController(command.sessionId, response.controller, response.cols, response.rows);
+    this.#applyController(
+      command.sessionId,
+      response.controller,
+      response.cols,
+      response.rows,
+      response.controlRevision,
+    );
     for (const view of response.views) this.#applyViewState(view.viewId, view);
     return this.#remoteSessions.get(command.sessionId);
   }
@@ -1291,6 +1426,9 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (view) {
       view.desiredCols = cols;
       view.desiredRows = rows;
+      // An explicit claim is the funnel's outcome, not a competing path.
+      view.claimedEpoch = view.attachmentEpoch;
+      view.claimedRevision = this.#controlBySession.get(view.sessionId)?.revision ?? 0;
     }
     const session = this.#sessionByHandle.get(sessionHandle);
     if (!session) return;
@@ -1316,7 +1454,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
       view.desiredCols = cols;
       view.desiredRows = rows;
     }
-    if (this.#focusByView.get(viewId) === focused) return;
+    if (this.#focusByView.get(viewId) === focused) {
+      // Focus has not moved, so the claim below will not run — but an epoch or
+      // controller change since the last update may have made one possible,
+      // and nothing else would ever retry it after a resume.
+      this.#maybeReclaim(viewId);
+      return;
+    }
     this.#focusByView.set(viewId, focused);
     this.#postWorker({ type: "focus", surfaceId: viewId, sessionHandle, focused });
     const session = this.#sessionByHandle.get(sessionHandle);
@@ -1333,6 +1477,11 @@ export class GhostteaTerminalRuntime extends EventTarget {
           focused,
         });
         if (focused) {
+          // Taking focus is a deliberate claim, and counts as this epoch's.
+          if (view) {
+            view.claimedEpoch = attachmentEpoch;
+            view.claimedRevision = this.#controlBySession.get(view.sessionId)?.revision ?? 0;
+          }
           this.#control?.notify({
             type: "focus-and-resize",
             sessionId: session.id,
@@ -1368,6 +1517,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
       selectAll,
     });
     if (response.type !== "selection-text") throw new Error("ghosttead returned an unexpected selection response");
+    // Offline the daemon can only reach the retained screen, so say so rather
+    // than letting a short copy read as the whole scrollback.
+    if (response.scope !== undefined) {
+      this.dispatchEvent(
+        new CustomEvent("selection-scope", {
+          detail: { sessionId, viewId, scope: response.scope } satisfies SelectionScope,
+        }),
+      );
+    }
     if (response.text) this.#platform.writeClipboard(response.text);
     return response.text;
   }
@@ -1420,6 +1578,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#sessionByHandle.delete(handle);
     this.#handleBySessionId.delete(sessionId);
     this.#remoteSessions.delete(sessionId);
+    this.#controlBySession.delete(sessionId);
     if (subscriptionChanged) {
       this.#frameSubscriptionVersion += 1;
       this.#syncFrameSubscriptionsInBackground();
@@ -1442,7 +1601,12 @@ export class GhostteaTerminalRuntime extends EventTarget {
     if (!view || view.sessionId !== sessionId) return;
     view.desiredCols = cols;
     view.desiredRows = rows;
-    if (view.attachmentEpoch === undefined || view.controlEpoch === undefined) return;
+    if (view.attachmentEpoch === undefined || view.controlEpoch === undefined) {
+      // Dimensions are one of the funnel's conditions: a pane that measured
+      // itself while uncontrolled may now be able to take control.
+      this.#maybeReclaim(viewId);
+      return;
+    }
     this.#sendResize(viewId, view, cols, rows);
   }
 
@@ -1476,6 +1640,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#performanceRequests.clear();
     this.#views.clear();
     this.#remoteSessions.clear();
+    this.#controlBySession.clear();
     this.#focusByView.clear();
     this.#mountGenerationBySurface.clear();
     this.#mouseTrackingByHandle.clear();

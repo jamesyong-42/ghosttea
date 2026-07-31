@@ -7,6 +7,7 @@ import {
   paneIsFrozen,
   remoteBannerActionLabel,
   remoteBannerContent,
+  retryCountdownMs,
 } from "./remote-banner";
 import { remoteSessionChoices } from "./RemoteSessionPalette";
 
@@ -23,11 +24,49 @@ function lifecycle(overrides: Partial<RemoteSessionRuntimeState> = {}): RemoteSe
     nextRetryMs: null,
     lastContactMs: null,
     observedAt: 0,
+    awaitingRecoveryFrame: false,
     ...overrides,
   };
 }
 
 describe("remoteBannerContent", () => {
+  it("acknowledges a resume only once the restored screen is on display", () => {
+    const live = lifecycle({ state: "live" });
+    expect(remoteBannerContent(live, null, { reconnected: true })).toMatchObject({
+      glyph: "✓",
+      spinning: false,
+      message: "Reconnected",
+      actions: [],
+    });
+    // Still showing the pre-outage frame: claiming "Reconnected" over it would
+    // be the lie the cooling exists to prevent.
+    expect(
+      remoteBannerContent(lifecycle({ state: "live", awaitingRecoveryFrame: true }), null, { reconnected: true }),
+    ).toBeNull();
+    expect(remoteBannerContent(live, null, { reconnected: false })).toBeNull();
+  });
+
+  it("reports the attempt and the countdown to the next dial", () => {
+    const reconnecting = lifecycle({ state: "reconnecting", attempt: 3 });
+    expect(remoteBannerContent(reconnecting, 12_400, { retryMs: 4_000 })?.message).toBe(
+      "Connection to studio-mac lost — reconnecting… · last contact 12 s ago · attempt 3 · retrying in 4 s",
+    );
+    // A countdown that has run out says nothing: the dial is already going out.
+    expect(remoteBannerContent(reconnecting, null, { retryMs: 0 })?.message).toBe(
+      "Connection to studio-mac lost — reconnecting… · attempt 3",
+    );
+    expect(remoteBannerContent(lifecycle({ state: "reconnecting" }), null, {})?.message).toBe(
+      "Connection to studio-mac lost — reconnecting…",
+    );
+  });
+
+  it("marks only work in flight as spinning", () => {
+    expect(remoteBannerContent(lifecycle({ state: "reconnecting" }), null)?.spinning).toBe(true);
+    expect(remoteBannerContent(lifecycle({ state: "synchronizing" }), null)?.spinning).toBe(true);
+    expect(remoteBannerContent(lifecycle({ state: "suspended" }), null)?.spinning).toBe(false);
+    expect(remoteBannerContent(lifecycle({ state: "ended" }), null)?.spinning).toBe(false);
+  });
+
   it("shows nothing while the session is live or still opening", () => {
     expect(remoteBannerContent(lifecycle({ state: "live" }), null)).toBeNull();
     // Opening is the normal path to a first frame, not a fault to announce.
@@ -92,11 +131,30 @@ describe("contactElapsedMs", () => {
   });
 });
 
+describe("retryCountdownMs", () => {
+  it("counts the scheduled dial down from when the state was observed", () => {
+    expect(retryCountdownMs(lifecycle({ nextRetryMs: 5_000, observedAt: 1_000 }), 3_000)).toBe(3_000);
+    expect(retryCountdownMs(lifecycle({ nextRetryMs: 5_000, observedAt: 1_000 }), 9_000)).toBe(0);
+    expect(retryCountdownMs(lifecycle({ nextRetryMs: null }), 9_000)).toBeNull();
+  });
+
+  it("restarts from the newest event rather than continuing the old countdown", () => {
+    const first = lifecycle({ nextRetryMs: 4_000, observedAt: 1_000 });
+    expect(retryCountdownMs(first, 4_500)).toBe(500);
+    // The engine backed off further; the banner counts the new value down from
+    // when it arrived, not from where the previous one had got to.
+    const second = lifecycle({ nextRetryMs: 8_000, observedAt: 5_000 });
+    expect(retryCountdownMs(second, 5_500)).toBe(7_500);
+  });
+});
+
 describe("paneIsFrozen", () => {
   it("cools every pane whose session is not live, once it has something to show", () => {
     expect(paneIsFrozen(undefined)).toBe(false);
     expect(paneIsFrozen(lifecycle({ state: "live" }))).toBe(false);
     expect(paneIsFrozen(lifecycle({ state: "opening" }))).toBe(false);
+    // Live again, but the screen is still the one from before the outage.
+    expect(paneIsFrozen(lifecycle({ state: "live", awaitingRecoveryFrame: true }))).toBe(true);
     for (const state of ["reconnecting", "synchronizing", "suspended", "ended"] as const) {
       expect(paneIsFrozen(lifecycle({ state }))).toBe(true);
     }

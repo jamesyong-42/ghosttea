@@ -848,6 +848,14 @@ function applyFrame(packet: ArrayBuffer): void {
     if (requiresFullRedraw) invalidateFull(surfaceId);
     else if (hasRowDamage) invalidateRows(surfaceId, damagedRows, geometryChanged);
   }
+  // Announced only once the frame is committed and its redraw scheduled, so a
+  // consumer waiting on recovery is never told "done" ahead of the pixels.
+  postToRenderer({
+    type: "frame-committed",
+    sessionHandle: id,
+    sessionEpoch: frame.sessionEpoch,
+    frameSequence: frame.frameSequence,
+  });
   if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
 }
 

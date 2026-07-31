@@ -31,6 +31,12 @@ export type WorkerToRendererMessage =
   | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }
+  /**
+   * A frame has been applied and its invalidation scheduled. Unlike
+   * `frame-resync-complete` this carries the sequence it committed, so a
+   * consumer can tell a recovered frame from the one it replaced.
+   */
+  | { type: "frame-committed"; sessionHandle: string; sessionEpoch: bigint; frameSequence: bigint }
   | { type: "catalog-pressure"; sessionHandle: string; reason: "working-set-exceeds-budget" }
   | { type: "frame-credit"; bytes: number }
   | { type: "performance-started"; requestId: number }
