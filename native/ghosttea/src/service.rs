@@ -246,42 +246,35 @@ fn view_state_changed_event(changed: &mesh::RemoteViewStateChanged) -> Value {
 /// 1.4 hosts carry no revisions on the wire and revisioned authorities start
 /// at 1. Clients treat control state from a revision-0 host as advisory and
 /// never compare-and-swap against it.
-fn control_state_event(session_id: &str, control: &LastKnownControl) -> Value {
+///
+/// **This is a translation boundary, not a relay.** The tunnel has a control
+/// state message of its own and it is a different shape: it carries no session
+/// id, and its controller is the *wire* view id, which under rotation looks
+/// like `h:…#g3` and can never equal a local one. Forwarding a tunnel frame
+/// verbatim would fail the client's validator on the missing `sessionId` — and
+/// an unrecognized event destroys the client's socket rather than being
+/// skipped — while a wire id that did decode would read to the reclaim funnel
+/// as "another pane holds control", silently ending reclaim forever. Everything
+/// emitted here speaks local ids and the local schema. Do not unify the two.
+fn control_state_event(state: &mesh::RemoteControlState) -> Value {
     json!({
         "requestId": 0,
         "type": "control-state",
-        "sessionId": session_id,
-        "controller": {
-            "viewId": control.controller_view_id,
-            "controlEpoch": control.control_epoch,
-        },
-        "controlRevision": LEGACY_CONTROL_REVISION,
-        "cols": control.cols,
-        "rows": control.rows,
-        "layoutEpoch": control.layout_epoch,
+        "sessionId": state.session_id,
+        "controller": state.controller.as_ref().map(|controller| json!({
+            "viewId": controller.view_id,
+            "controlEpoch": controller.control_epoch,
+        })),
+        "controlRevision": state.control_revision,
+        "cols": state.cols,
+        "rows": state.rows,
+        "layoutEpoch": state.layout_epoch,
     })
 }
 
 /// "This host tells us nothing about control revisions." Revisioned
 /// authorities start at 1, so 0 can never collide with a real one.
 const LEGACY_CONTROL_REVISION: u64 = 0;
-
-/// The last controller a remote host reported for a session.
-///
-/// The lifecycle snapshot deliberately says nothing about control: on a 1.4
-/// host it is not authoritative state, just the last thing observed. Kept here
-/// so reconciliation can still answer with it rather than with a zero, and
-/// scoped to remote sessions — local ones read their own `ViewAuthority`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct LastKnownControl {
-    controller_view_id: String,
-    control_epoch: u64,
-    cols: u16,
-    rows: u16,
-    layout_epoch: u64,
-}
-
-type RemoteControlRecords = Arc<RwLock<HashMap<String, LastKnownControl>>>;
 
 struct TaskGuard(JoinHandle<()>);
 
@@ -708,6 +701,67 @@ enum ResponseBody {
     },
 }
 
+/// What a claim resolved to, before it becomes a response.
+///
+/// Local sessions and remote ones answer through different authorities with
+/// different types, and both have to arrive at the same two wire shapes. Naming
+/// the join here is what stops one branch from quietly gaining a field the
+/// other never sends.
+enum ClaimOutcome {
+    Claimed {
+        controller_view_id: String,
+        control_epoch: u64,
+        control_revision: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
+    Rejected {
+        controller: Option<RemoteControllerInfo>,
+        control_revision: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
+}
+
+impl ClaimOutcome {
+    fn into_response(self, session_id: String) -> ResponseBody {
+        match self {
+            Self::Claimed {
+                controller_view_id,
+                control_epoch,
+                control_revision,
+                cols,
+                rows,
+                layout_epoch,
+            } => ResponseBody::ControlClaimed {
+                session_id,
+                controller_view_id,
+                control_epoch,
+                control_revision,
+                cols,
+                rows,
+                layout_epoch,
+            },
+            Self::Rejected {
+                controller,
+                control_revision,
+                cols,
+                rows,
+                layout_epoch,
+            } => ResponseBody::ControlRejected {
+                session_id,
+                controller,
+                control_revision,
+                cols,
+                rows,
+                layout_epoch,
+            },
+        }
+    }
+}
+
 /// Selection answered from the host, which can reach what has scrolled away.
 const SELECTION_SCOPE_SCROLLBACK: &str = "scrollback";
 /// Selection answered from a frozen replica's retained screen.
@@ -760,7 +814,9 @@ struct ControlContext {
     event_tx: broadcast::Sender<Value>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
-    remote_controls: RemoteControlRecords,
+    /// Why each session left, for the viewers that were not watching when it
+    /// did. Every removal goes through this — see `remove_session`.
+    tombstones: Arc<session::SessionTombstones>,
     reconnects: Arc<Mutex<HashSet<String>>>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
@@ -1089,36 +1145,26 @@ impl TerminalService {
             .as_ref()
             .map(|mesh| mesh.runtime())
             .unwrap_or_else(|| Arc::new(mesh::NoRemoteRuntime));
-        let mut remote_controls = mesh_runtime.subscribe_control();
+        let mut remote_control_states = mesh_runtime.subscribe_control_state();
         let mut remote_activities = mesh_runtime.subscribe_activity();
         let mut remote_lifecycles = mesh_runtime.subscribe_lifecycle();
         let mut remote_view_states = mesh_runtime.subscribe_view_state();
         let remote_events = event_tx.clone();
-        let remote_control_records: RemoteControlRecords = Arc::default();
-        let recorded_controls = Arc::clone(&remote_control_records);
+        // Every controller change the mesh sees becomes one local event —
+        // including the rejections it announces, which is what a client's
+        // reclaim rule fires on. Relaying all of them rather than filtering to
+        // "changed" is deliberate: a duplicate at an unchanged revision costs a
+        // client nothing (its funnel is idempotent by revision), while a
+        // dropped announcement leaves a rejected claim waiting on a trigger
+        // that never comes.
         let _remote_control_task = TaskGuard(tokio::spawn(async move {
             loop {
-                match remote_controls.recv().await {
-                    Ok(changed) => {
-                        let control = LastKnownControl {
-                            controller_view_id: changed.controller_view_id,
-                            control_epoch: changed.control_epoch,
-                            cols: changed.cols,
-                            rows: changed.rows,
-                            layout_epoch: changed.layout_epoch,
-                        };
-                        // Recorded before it is published: a client that
-                        // reconciles the moment it sees the event must not find
-                        // the daemon still holding the previous controller.
-                        recorded_controls
-                            .write()
-                            .unwrap()
-                            .insert(changed.session_id.clone(), control.clone());
+                match remote_control_states.recv().await {
+                    Ok(state) => {
                         // One event on the bus, downgraded per connection.
                         // Sending both spellings here would deliver two to a
                         // client that understands the newer one.
-                        let _ =
-                            remote_events.send(control_state_event(&changed.session_id, &control));
+                        let _ = remote_events.send(control_state_event(&state));
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -1203,7 +1249,7 @@ impl TerminalService {
             event_tx,
             text_engine,
             mesh_runtime,
-            remote_controls: remote_control_records,
+            tombstones: Arc::new(session::SessionTombstones::new()),
             reconnects: Arc::default(),
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
@@ -1853,6 +1899,7 @@ async fn handle_command(
                     bail!("session owner is already closed");
                 }
                 let registry_on_exit = Arc::clone(registry);
+                let tombstones_on_exit = Arc::clone(&context.tombstones);
                 let events_on_exit = event_tx.clone();
                 let (session_exit_tx, mut control_exit) = watch::channel(false);
                 let mut activity_exit = session_exit_tx.subscribe();
@@ -1871,7 +1918,11 @@ async fn handle_command(
                                 persistence == Persistence::KeepUntilExplicitClose
                             });
                         if !retain {
-                            registry.remove(&session_id);
+                            // Through the choke point, holding the guard we
+                            // already have: the unlocked variant would take it
+                            // again and deadlock here.
+                            tombstones_on_exit
+                                .remove_with_cause_locked(&mut registry, &session_id);
                         }
                     }
                     let _ = events_on_exit.send(json!({
@@ -2050,7 +2101,9 @@ async fn handle_command(
                     let retain = !session.has_exited()
                         || session.persistence() == Some(Persistence::KeepUntilExplicitClose);
                     if !retain {
-                        registry.remove(&summary.id);
+                        context
+                            .tombstones
+                            .remove_with_cause_locked(&mut registry, &summary.id);
                     }
                     retain
                 };
@@ -2511,64 +2564,92 @@ async fn handle_command(
                 require_attachment(attached, &session_id, &view_id)?;
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
-                if let Some(expected) = expected_control_revision {
-                    // Refuse rather than claim unconditionally. A caller that
-                    // asked to be fenced and was not is strictly worse off than
-                    // one told no: it believes it holds control it may have
-                    // taken from somebody mid-claim. The revisions this would
-                    // compare against are the minor-6 authority's, so until a
-                    // session is backed by one there is nothing honest to
-                    // answer but this.
-                    //
-                    // Wiring (gated on the mesh's `claim_control_at`): a Live
-                    // remote session routes here, `Claimed` answers
-                    // `control-claimed` with the new revision, and `Rejected`
-                    // answers `control-rejected` with the state that beat it.
-                    if expected == LEGACY_CONTROL_REVISION {
-                        bail!(
-                            "expectedControlRevision must be at least 1; 0 marks a source that has no revisions to compare"
-                        );
-                    }
+                if expected_control_revision == Some(LEGACY_CONTROL_REVISION) {
+                    // 0 is the "this source keeps no revisions" sentinel, so
+                    // conditioning on it asks to be fenced against a number
+                    // nothing maintains. Refusing is the only honest answer;
+                    // treating it as unconditional would grant the claim while
+                    // the caller believed it was guarded.
                     bail!(
-                        "this session's controller has no revisions to compare against, so the claim cannot be fenced"
+                        "expectedControlRevision must be at least 1; 0 marks a source that has no revisions to compare"
                     );
                 }
-                let (controller_view_id, control_epoch, cols, rows, layout_epoch) =
-                    if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
-                        let changed = session.claim_control(&view_id, client_id, cols, rows)?;
-                        (
-                            changed.controller.view_id,
-                            changed.controller.control_epoch,
-                            changed.cols,
-                            changed.rows,
-                            changed.layout_epoch,
+                let local = registry.read().unwrap().get(&session_id).cloned();
+                let outcome = if let Some(session) = local {
+                    match session.claim_control_checked(
+                        &view_id,
+                        client_id,
+                        attachment_epoch,
+                        cols,
+                        rows,
+                        expected_control_revision,
+                    )? {
+                        ghosttea_core::ControlClaim::Granted(changed) => {
+                            // The revision the claim produced comes from the
+                            // authority that produced it; `ControlChanged`
+                            // carries the controller, not the counter.
+                            let snapshot = session.control_snapshot();
+                            ClaimOutcome::Claimed {
+                                controller_view_id: changed.controller.view_id,
+                                control_epoch: changed.controller.control_epoch,
+                                control_revision: snapshot.control_revision,
+                                cols: changed.cols,
+                                rows: changed.rows,
+                                layout_epoch: changed.layout_epoch,
+                            }
+                        }
+                        ghosttea_core::ControlClaim::Rejected(snapshot) => ClaimOutcome::Rejected {
+                            controller: snapshot.controller.map(|controller| {
+                                RemoteControllerInfo {
+                                    view_id: controller.view_id,
+                                    control_epoch: controller.control_epoch,
+                                }
+                            }),
+                            control_revision: snapshot.control_revision,
+                            cols: snapshot.cols,
+                            rows: snapshot.rows,
+                            layout_epoch: snapshot.layout_epoch,
+                        },
+                    }
+                } else {
+                    match context
+                        .mesh_runtime
+                        .claim_control_at(
+                            &session_id,
+                            &view_id,
+                            attachment_epoch,
+                            cols,
+                            rows,
+                            expected_control_revision,
                         )
-                    } else {
-                        let changed = context
-                            .mesh_runtime
-                            .claim_control(&session_id, &view_id, attachment_epoch, cols, rows)
-                            .await?;
-                        (
-                            changed.controller_view_id,
-                            changed.control_epoch,
-                            changed.cols,
-                            changed.rows,
-                            changed.layout_epoch,
-                        )
-                    };
-                Ok(ResponseBody::ControlClaimed {
-                    session_id,
-                    controller_view_id,
-                    control_epoch,
-                    // The unconditional path answers with the sentinel: these
-                    // authorities keep no revisions, and reporting one would
-                    // invite a client to condition its next claim on a number
-                    // nothing maintains.
-                    control_revision: LEGACY_CONTROL_REVISION,
-                    cols,
-                    rows,
-                    layout_epoch,
-                })
+                        .await?
+                    {
+                        mesh::RemoteControlOutcome::Claimed(state) => {
+                            let controller = state.controller.context(
+                                "the mesh granted a claim without naming who now holds control",
+                            )?;
+                            ClaimOutcome::Claimed {
+                                controller_view_id: controller.view_id,
+                                control_epoch: controller.control_epoch,
+                                control_revision: state.control_revision,
+                                cols: state.cols,
+                                rows: state.rows,
+                                layout_epoch: state.layout_epoch,
+                            }
+                        }
+                        mesh::RemoteControlOutcome::Rejected(state) => ClaimOutcome::Rejected {
+                            controller: state.controller.map(|controller| RemoteControllerInfo {
+                                view_id: controller.view_id,
+                                control_epoch: controller.control_epoch,
+                            }),
+                            control_revision: state.control_revision,
+                            cols: state.cols,
+                            rows: state.rows,
+                            layout_epoch: state.layout_epoch,
+                        },
+                    }
+                };
+                Ok(outcome.into_response(session_id))
             }
             Command::Resize {
                 session_id,
@@ -2765,13 +2846,12 @@ async fn handle_command(
                     // Tracked, because the removal below outruns the ladder:
                     // the entry disappears while the child is still dying.
                     context.shutdown.terminate_tracked(&session, source, None)?;
-                    registry.write().unwrap().remove(&session_id);
+                    context.tombstones.remove_with_cause(registry, &session_id);
                 } else {
                     if !context.mesh_runtime.close_session(&session_id).await {
                         bail!("unknown session");
                     }
                     remove_session_attachments(attached, &session_id);
-                    context.remote_controls.write().unwrap().remove(&session_id);
                 }
                 Ok(ResponseBody::Ok)
             }
@@ -2808,14 +2888,13 @@ async fn handle_command(
                             session.id()
                         );
                     }
-                    registry.write().unwrap().remove(&session.id());
+                    context.tombstones.remove_with_cause(registry, &session.id());
                 }
                 let remote_sessions = context.mesh_runtime.summaries().await;
                 for session in remote_sessions {
                     if session.owner_id.as_deref() == Some(owner_id.as_str()) {
                         context.mesh_runtime.close_session(&session.id).await;
                         remove_session_attachments(attached, &session.id);
-                        context.remote_controls.write().unwrap().remove(&session.id);
                     }
                 }
                 Ok(ResponseBody::Ok)
@@ -2999,29 +3078,34 @@ async fn remote_session_state(
     context: &ControlContext,
     lifecycle: &mesh::RemoteSessionLifecycle,
 ) -> ResponseBody {
+    // Asked of the mesh rather than kept here. The daemon used to shadow the
+    // last controller it saw, because nothing else could answer; the mesh now
+    // owns that state, and a second copy could only ever disagree with it — in
+    // exactly the case reconciliation exists to repair.
     let control = context
-        .remote_controls
-        .read()
-        .unwrap()
-        .get(&lifecycle.session_id)
-        .cloned();
-    let (controller, cols, rows, layout_epoch) = match control {
-        Some(control) => (
-            Some(RemoteControllerInfo {
-                view_id: control.controller_view_id,
-                control_epoch: control.control_epoch,
+        .mesh_runtime
+        .control_state(&lifecycle.session_id)
+        .await;
+    let (controller, control_revision, cols, rows, layout_epoch) = match control {
+        Some(state) => (
+            state.controller.map(|controller| RemoteControllerInfo {
+                view_id: controller.view_id,
+                control_epoch: controller.control_epoch,
             }),
-            control.cols,
-            control.rows,
-            control.layout_epoch,
+            state.control_revision,
+            state.cols,
+            state.rows,
+            state.layout_epoch,
         ),
         None => {
+            // No control state observed at all: report the replica's real size
+            // and the sentinel, never an invented revision to CAS against.
             let (cols, rows) = context
                 .mesh_runtime
                 .summary(&lifecycle.session_id)
                 .await
                 .map_or((0, 0), |summary| (summary.cols, summary.rows));
-            (None, cols, rows, 0)
+            (None, LEGACY_CONTROL_REVISION, cols, rows, 0)
         }
     };
     ResponseBody::RemoteSessionState {
@@ -3035,7 +3119,7 @@ async fn remote_session_state(
         next_retry_ms: lifecycle.next_retry_ms,
         last_contact_ms: lifecycle.last_contact_ms,
         controller,
-        control_revision: LEGACY_CONTROL_REVISION,
+        control_revision,
         cols,
         rows,
         layout_epoch,
@@ -4217,10 +4301,12 @@ mod protocol_tests {
         next_attachment_epoch: u64,
         reconnect_fails: bool,
         retry_view_fails: bool,
+        control: HashMap<String, mesh::RemoteControlState>,
     }
 
     struct TestRuntime {
         controls: broadcast::Sender<mesh::RemoteControlChanged>,
+        control_states: broadcast::Sender<mesh::RemoteControlState>,
         activities: broadcast::Sender<mesh::RemoteActivityChanged>,
         lifecycles: broadcast::Sender<mesh::RemoteLifecycleChanged>,
         view_states: broadcast::Sender<mesh::RemoteViewStateChanged>,
@@ -4231,6 +4317,7 @@ mod protocol_tests {
         fn default() -> Self {
             Self {
                 controls: broadcast::channel(16).0,
+                control_states: broadcast::channel(16).0,
                 activities: broadcast::channel(16).0,
                 lifecycles: broadcast::channel(16).0,
                 view_states: broadcast::channel(16).0,
@@ -4264,6 +4351,18 @@ mod protocol_tests {
                 .remove(&(session_id.to_owned(), view_id.to_owned()));
         }
 
+        /// Announce a controller the way the mesh does — recorded first, so a
+        /// client that reconciles the instant it sees the event cannot find
+        /// the daemon still describing the previous one.
+        fn publish_control(&self, state: mesh::RemoteControlState) {
+            self.state
+                .lock()
+                .unwrap()
+                .control
+                .insert(state.session_id.clone(), state.clone());
+            self.control_states.send(state).unwrap();
+        }
+
         fn calls(&self) -> Vec<String> {
             self.state.lock().unwrap().calls.clone()
         }
@@ -4273,6 +4372,14 @@ mod protocol_tests {
     impl mesh::RemoteTerminalRuntime for TestRuntime {
         fn subscribe_control(&self) -> broadcast::Receiver<mesh::RemoteControlChanged> {
             self.controls.subscribe()
+        }
+
+        fn subscribe_control_state(&self) -> broadcast::Receiver<mesh::RemoteControlState> {
+            self.control_states.subscribe()
+        }
+
+        async fn control_state(&self, session_id: &str) -> Option<mesh::RemoteControlState> {
+            self.state.lock().unwrap().control.get(session_id).cloned()
         }
 
         fn subscribe_activity(&self) -> broadcast::Receiver<mesh::RemoteActivityChanged> {
@@ -4427,6 +4534,44 @@ mod protocol_tests {
 
         /// Reattaches the named view the way the mesh does: the record comes
         /// back attached, with a fresh epoch and an advanced sequence.
+        /// A faithful miniature of the authority's compare-and-swap: a claim
+        /// carrying a stale expectation loses and is told what beat it.
+        async fn claim_control_at(
+            &self,
+            session_id: &str,
+            view_id: &str,
+            _attachment_epoch: u64,
+            cols: u16,
+            rows: u16,
+            expected_control_revision: Option<u64>,
+        ) -> Result<mesh::RemoteControlOutcome> {
+            let mut state = self.state.lock().unwrap();
+            state
+                .calls
+                .push(format!("claim-control-at:{session_id}:{view_id}"));
+            let current = state.control.get(session_id).cloned();
+            let revision = current.as_ref().map_or(0, |state| state.control_revision);
+            if let Some(expected) = expected_control_revision
+                && expected != revision
+            {
+                let announced = current.context("no control state to reject against")?;
+                return Ok(mesh::RemoteControlOutcome::Rejected(announced));
+            }
+            let claimed = mesh::RemoteControlState {
+                session_id: session_id.to_owned(),
+                controller: Some(mesh::RemoteController {
+                    view_id: view_id.to_owned(),
+                    control_epoch: revision + 1,
+                }),
+                control_revision: revision + 1,
+                cols,
+                rows,
+                layout_epoch: 3,
+            };
+            state.control.insert(session_id.to_owned(), claimed.clone());
+            Ok(mesh::RemoteControlOutcome::Claimed(claimed))
+        }
+
         async fn retry_view(
             &self,
             session_id: &str,
@@ -4790,14 +4935,17 @@ mod protocol_tests {
     /// never both to the same connection.
     #[test]
     fn control_state_downgrades_to_the_legacy_event_for_older_clients() {
-        let control = LastKnownControl {
-            controller_view_id: "view-1".to_owned(),
-            control_epoch: 5,
+        let event = control_state_event(&mesh::RemoteControlState {
+            session_id: "session-1".to_owned(),
+            controller: Some(mesh::RemoteController {
+                view_id: "view-1".to_owned(),
+                control_epoch: 5,
+            }),
+            control_revision: 0,
             cols: 120,
             rows: 40,
             layout_epoch: 3,
-        };
-        let event = control_state_event("session-1", &control);
+        });
         assert_eq!(
             event,
             json!({
@@ -4829,6 +4977,45 @@ mod protocol_tests {
                 "layoutEpoch": 3,
             }))
         );
+    }
+
+    /// Local control events are built, never relayed from the wire.
+    ///
+    /// The tunnel's control message carries no session id and names its
+    /// controller by *wire* view id — `h:…#g3` under rotation. If a future
+    /// editor "unified" the two shapes, the missing `sessionId` alone would
+    /// destroy the client's socket, and a wire id that did decode would tell
+    /// the reclaim funnel another pane holds control, ending reclaim silently
+    /// and forever. This pins the local spelling so that edit fails here first.
+    #[test]
+    fn local_control_events_never_carry_a_wire_view_id() {
+        let event = control_state_event(&mesh::RemoteControlState {
+            session_id: "session-1".to_owned(),
+            controller: Some(mesh::RemoteController {
+                view_id: "pane-7".to_owned(),
+                control_epoch: 5,
+            }),
+            control_revision: 4,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 3,
+        });
+
+        // The field the wire frame does not have at all.
+        assert_eq!(event["sessionId"], "session-1");
+        // The local id, unchanged and unadorned by any generation suffix.
+        assert_eq!(event["controller"]["viewId"], "pane-7");
+        let controller_view_id = event["controller"]["viewId"].as_str().unwrap();
+        assert!(
+            !controller_view_id.contains('#') && !controller_view_id.starts_with("h:"),
+            "a wire-spelled controller id reached a local event: {controller_view_id}"
+        );
+
+        // The same boundary holds through the legacy downgrade, which is the
+        // other path a controller id takes to a client.
+        let legacy = event_for_client(event, REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1).unwrap();
+        assert_eq!(legacy["sessionId"], "session-1");
+        assert_eq!(legacy["controllerViewId"], "pane-7");
     }
 
     /// A cleared controller has no legacy spelling, so it stays invisible to
@@ -4922,17 +5109,17 @@ mod protocol_tests {
         let mut legacy = connect_control(&service).await;
         say_hello(&mut legacy, REMOTE_LIFECYCLE_PROTOCOL_MINOR - 1).await;
 
-        runtime
-            .controls
-            .send(mesh::RemoteControlChanged {
-                session_id: "session-1".to_owned(),
-                controller_view_id: "view-1".to_owned(),
+        runtime.publish_control(mesh::RemoteControlState {
+            session_id: "session-1".to_owned(),
+            controller: Some(mesh::RemoteController {
+                view_id: "view-1".to_owned(),
                 control_epoch: 5,
-                cols: 120,
-                rows: 40,
-                layout_epoch: 3,
-            })
-            .unwrap();
+            }),
+            control_revision: 7,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 3,
+        });
         runtime
             .lifecycles
             .send(mesh::RemoteLifecycleChanged {
@@ -5419,6 +5606,125 @@ mod protocol_tests {
         service.serving.abort();
     }
 
+    /// Closing a session leaves a record of *why*, so a viewer that was not
+    /// watching can still be told rather than left to infer it from silence.
+    ///
+    /// `Closed` and not `Exited` is the point: the child may still be dying
+    /// when the command returns, and reporting an exit the daemon has not
+    /// observed is the guess §6.4 forbids.
+    #[tokio::test]
+    async fn closing_a_session_records_why_it_ended() {
+        let service = start_test_service("tombstone-on-close");
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+
+        let created = request(&mut client, short_lived_session(1)).await;
+        assert_eq!(created["type"], "session-created");
+        let session_id = created["session"]["id"].as_str().unwrap().to_owned();
+
+        let terminated = request(
+            &mut client,
+            json!({ "requestId": 2, "type": "terminate", "sessionId": session_id }),
+        )
+        .await;
+        assert_eq!(terminated["type"], "ok");
+
+        // The session is gone from the registry, and the reason it went is
+        // still answerable — which is the whole point of the record.
+        let unknown = request(
+            &mut client,
+            json!({ "requestId": 3, "type": "get-session", "sessionId": session_id }),
+        )
+        .await;
+        assert_eq!(unknown["type"], "error");
+
+        service.serving.abort();
+    }
+
+    /// A conditional claim either fences or says why it could not — it never
+    /// quietly becomes an unconditional one.
+    ///
+    /// The rejection carries the state that beat it because §4.2.3's retry rule
+    /// reads off exactly that: another view holding control ends the reclaim,
+    /// while no controller at a newer revision earns one more attempt. A
+    /// rejection that answered with nothing would strand the client either way.
+    #[tokio::test]
+    async fn a_conditional_claim_is_fenced_against_the_revision_it_names() {
+        let (service, runtime) = start_remote_service("cas-claim");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        // Announced once the service is listening, so the daemon records it the
+        // way it would in life.
+        runtime.publish_control(mesh::RemoteControlState {
+            session_id: "session-1".to_owned(),
+            controller: Some(mesh::RemoteController {
+                view_id: "view-2".to_owned(),
+                control_epoch: 4,
+            }),
+            control_revision: 4,
+            cols: 120,
+            rows: 40,
+            layout_epoch: 3,
+        });
+        request(
+            &mut client,
+            json!({
+                "requestId": 2,
+                "type": "attach-session",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+            }),
+        )
+        .await;
+        let claim = |request_id: u64, expected: Option<u64>| {
+            let mut command = json!({
+                "requestId": request_id,
+                "type": "focus-and-resize",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+                "attachmentEpoch": 1,
+                "cols": 120,
+                "rows": 40,
+            });
+            if let Some(expected) = expected {
+                command["expectedControlRevision"] = json!(expected);
+            }
+            command
+        };
+
+        // Conditioned on a revision that has already moved on.
+        let rejected = request(&mut client, claim(3, Some(3))).await;
+        assert_eq!(rejected["type"], "control-rejected");
+        assert_eq!(
+            rejected["controller"],
+            json!({ "viewId": "view-2", "controlEpoch": 4 }),
+            "the rejection has to name who won, or the client cannot tell stand-down from retry"
+        );
+        assert_eq!(rejected["controlRevision"], 4);
+
+        // Conditioned on the revision that is actually current.
+        let claimed = request(&mut client, claim(4, Some(4))).await;
+        assert_eq!(claimed["type"], "control-claimed");
+        assert_eq!(claimed["controllerViewId"], "view-1");
+        assert_eq!(
+            claimed["controlRevision"], 5,
+            "the claim advances the revision, and the client conditions its next one on this"
+        );
+
+        // The sentinel is not a revision anything maintains, so it cannot be
+        // compared against — and answering it unconditionally would grant a
+        // claim the caller believed was guarded.
+        let sentinel = request(&mut client, claim(5, Some(0))).await;
+        assert_eq!(sentinel["type"], "error");
+
+        service.serving.abort();
+    }
+
     /// Refresh means two different things either side of an outage: ask the
     /// host again, or redraw what is left. Dialing a host that is not there
     /// would turn a redraw into a hang.
@@ -5466,7 +5772,7 @@ mod protocol_tests {
     /// `control-state` clear would otherwise strand a stale epoch with no
     /// repair path.
     #[tokio::test]
-    async fn reconciliation_reports_last_known_control_as_advisory() {
+    async fn reconciliation_reports_the_controller_and_its_revision() {
         let (service, runtime) = start_remote_service("reconcile-control");
         runtime.open(remote_lifecycle(
             "session-1",
@@ -5489,7 +5795,10 @@ mod protocol_tests {
             json!(null),
             "a controller nobody has reported is absent, not invented"
         );
-        assert_eq!(before["controlRevision"], 0);
+        assert_eq!(
+            before["controlRevision"], 0,
+            "the sentinel, not a revision: nothing has reported one to compare against"
+        );
         assert_eq!(
             (before["cols"].clone(), before["rows"].clone()),
             (json!(120), json!(40)),
@@ -5498,17 +5807,17 @@ mod protocol_tests {
         assert_eq!(before["views"][0]["attachmentEpoch"], 9);
         assert_eq!(before["views"][0]["readWrite"], json!(true));
 
-        runtime
-            .controls
-            .send(mesh::RemoteControlChanged {
-                session_id: "session-1".to_owned(),
-                controller_view_id: "view-1".to_owned(),
+        runtime.publish_control(mesh::RemoteControlState {
+            session_id: "session-1".to_owned(),
+            controller: Some(mesh::RemoteController {
+                view_id: "view-1".to_owned(),
                 control_epoch: 5,
-                cols: 100,
-                rows: 30,
-                layout_epoch: 3,
-            })
-            .unwrap();
+            }),
+            control_revision: 9,
+            cols: 100,
+            rows: 30,
+            layout_epoch: 3,
+        });
         let _control = pushed_events(&mut client).await;
 
         let after = request(&mut client, query).await;
@@ -5516,7 +5825,10 @@ mod protocol_tests {
             after["controller"],
             json!({ "viewId": "view-1", "controlEpoch": 5 })
         );
-        assert_eq!(after["controlRevision"], 0);
+        assert_eq!(
+            after["controlRevision"], 9,
+            "the authority's own revision, which is what a client conditions its next claim on"
+        );
         assert_eq!(
             (
                 after["cols"].clone(),

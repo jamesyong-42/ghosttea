@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path, sync::Arc};
+use std::{env, fs, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use ghosttea::{
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         );
     });
     let Some(config) = TruffleHostConfig::from_env()? else {
-        return service.run().await;
+        return serve_until_signal(service).await;
     };
 
     let mut builder = Node::<TailscaleProvider>::builder()
@@ -80,7 +80,87 @@ async fn main() -> Result<()> {
             ..TruffleTerminalConfig::default()
         },
     )?;
-    service.with_terminal_mesh(terminal_mesh).run().await
+    serve_until_signal(service.with_terminal_mesh(terminal_mesh)).await
+}
+
+/// How long a drain may take before the deadline forces the ladder to the end.
+///
+/// A supervisor that sends SIGTERM is usually counting too — systemd's default
+/// patience is 90 s — so this has to leave room for the escalation it triggers
+/// rather than spend the whole allowance waiting politely.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(10);
+
+/// Serve until a listener fails or the supervisor asks us to leave.
+///
+/// `run()` cannot do this: it holds the handle for the lifetime of the future,
+/// so nothing can ask it to stop, and SIGTERM used to end the process outright
+/// — no drain, no exit stamps, and every PTY orphaned mid-write. The drain
+/// machinery already existed; it simply had no way in.
+async fn serve_until_signal(service: TerminalService) -> Result<()> {
+    let listeners = service.bind()?;
+    let (handle, serving) = service.serve_managed(listeners);
+    // Spawned rather than selected on where it stands. The drain runs *inside*
+    // this future, and `shutdown()` waits for the report it sends back — so a
+    // `select!` holding the future inline stops polling it the instant the
+    // signal arm wins, and the two wait on each other forever. SIGTERM then
+    // hangs the daemon instead of ending it, which is worse than the abrupt
+    // death this replaced. On its own task the runtime keeps driving it.
+    let mut serving = tokio::spawn(serving);
+    tokio::select! {
+        served = &mut serving => served.context("terminal service task stopped")?,
+        signal = shutdown_signal() => {
+            eprintln!("[ghosttead] {signal}: draining sessions");
+            let report = handle.shutdown(SHUTDOWN_DRAIN_BUDGET).await?;
+            // Say what the drain actually managed, the way the report itself
+            // is written to: "stopped" and "stopped in time" are different
+            // claims, and a supervisor reading logs deserves the difference.
+            eprintln!(
+                "[ghosttead] drained {} session(s), killed {}, unresponsive {:?}, in {:?}",
+                report.drained, report.killed, report.unresponsive, report.spent
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Resolve when the supervisor asks this process to stop.
+///
+/// SIGINT as well as SIGTERM: a daemon run in a terminal during development is
+/// stopped with ctrl-c, and that path deserves the same drain as production.
+#[cfg(unix)]
+async fn shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    // A process that cannot install a handler still has to serve; it simply
+    // loses the graceful path, which is where it started.
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            eprintln!("[ghosttead] cannot listen for SIGTERM, shutdown will not drain: {error}");
+            return std::future::pending().await;
+        }
+    };
+    let mut interrupt = match signal(SignalKind::interrupt()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            eprintln!("[ghosttead] cannot listen for SIGINT: {error}");
+            terminate.recv().await;
+            return "SIGTERM";
+        }
+    };
+    tokio::select! {
+        _ = terminate.recv() => "SIGTERM",
+        _ = interrupt.recv() => "SIGINT",
+    }
+}
+
+#[cfg(windows)]
+async fn shutdown_signal() -> &'static str {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        eprintln!("[ghosttead] cannot listen for ctrl-c, shutdown will not drain: {error}");
+        return std::future::pending().await;
+    }
+    "ctrl-c"
 }
 
 fn configured_text_engine() -> Result<Option<TextEngine>> {
