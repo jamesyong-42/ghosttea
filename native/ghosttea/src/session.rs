@@ -1923,19 +1923,37 @@ impl Session {
         let _ = self.control_state_tx.send(snapshot);
     }
 
+    /// Re-announce the current controller state on **both** channels.
+    ///
+    /// This is the repair path — a rejected resize, a subscriber that lagged —
+    /// so it has to reach the revisioned channel the state streams actually
+    /// watch, not only the legacy one. A repair that publishes solely to
+    /// `control_tx` cannot fix a lagged `control_state_tx` consumer by
+    /// construction.
+    ///
+    /// The snapshot goes out even when there is no controller: that is exactly
+    /// the state the legacy frame cannot express, and therefore the one most
+    /// likely to need repairing. The legacy emission keeps its original
+    /// controller-only behaviour for consumers that cannot represent a clear.
     pub fn announce_control(&self) {
         let authority = self.authority.lock().unwrap();
-        let Some(controller) = authority.controller().cloned() else {
-            return;
-        };
+        let snapshot = authority.control_snapshot();
         let (cols, rows) = authority.size();
-        let _ = self.control_tx.send(ControlChanged {
-            controller,
-            cols,
-            rows,
-            layout_epoch: authority.layout_epoch(),
-            size_changed: false,
-        });
+        let legacy = authority
+            .controller()
+            .cloned()
+            .map(|controller| ControlChanged {
+                controller,
+                cols,
+                rows,
+                layout_epoch: authority.layout_epoch(),
+                size_changed: false,
+            });
+        drop(authority);
+        if let Some(changed) = legacy {
+            let _ = self.control_tx.send(changed);
+        }
+        self.announce_control_state(snapshot);
     }
 
     pub fn refresh(&self) -> Result<()> {
@@ -2738,6 +2756,78 @@ mod tests {
                 Err(broadcast::error::TryRecvError::Empty)
             ),
             "detaching a non-controlling view is not a controller change"
+        );
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+    }
+
+    /// The repair path exists to fix a consumer that missed a change — a
+    /// rejected resize, a lagged state stream. Publishing it only to the
+    /// legacy channel cannot repair the revisioned one that actually lagged.
+    #[cfg(unix)]
+    #[test]
+    fn control_repair_announcements_reach_revisioned_subscribers() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+
+        session.attach_view("a", "client").unwrap();
+        session.claim_control("a", "client", 100, 30).unwrap();
+        let mut states = session.subscribe_control_state();
+        let mut legacy = session.subscribe_control();
+
+        session.announce_control();
+        let repaired = states
+            .try_recv()
+            .expect("a control repair must reach the revisioned channel");
+        assert_eq!(
+            repaired.controller.map(|controller| controller.view_id),
+            Some("a".to_owned())
+        );
+        assert!(repaired.control_revision >= 1);
+        assert!(
+            legacy.try_recv().is_ok(),
+            "legacy subscribers must keep being served"
+        );
+
+        // The repair a legacy-only announcement can never deliver: after the
+        // controller goes away there is nothing for `ControlChanged` to carry,
+        // so the revisioned channel is the only one that can state it.
+        assert!(session.detach_view("a", "client"));
+        let _ = states.try_recv();
+        let _ = legacy.try_recv();
+
+        session.announce_control();
+        let repaired = states
+            .try_recv()
+            .expect("a no-controller repair must still announce");
+        assert!(repaired.controller.is_none());
+        assert!(
+            matches!(
+                legacy.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "the legacy frame structurally cannot say 'no controller'"
         );
 
         session
