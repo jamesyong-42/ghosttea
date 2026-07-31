@@ -2662,6 +2662,80 @@ mod tests {
         );
     }
 
+    /// §4.2.3: the clear announcement is the entire reason `ControlState`
+    /// exists, and a detach is how a controller most often goes away.
+    #[cfg(unix)]
+    #[test]
+    fn detaching_the_controller_announces_the_clear_on_both_detach_paths() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+
+        let controlling = session.attach_view("a", "client").unwrap();
+        session.claim_control("a", "client", 100, 30).unwrap();
+        let mut states = session.subscribe_control_state();
+        let claimed = session.control_snapshot().control_revision;
+
+        // The epoch-conditional path the host uses.
+        assert!(session.detach_view_if_epoch("a", "client", controlling));
+        let cleared = states
+            .try_recv()
+            .expect("an epoch-conditional detach that clears control must announce it");
+        assert!(cleared.controller.is_none());
+        assert!(
+            cleared.control_revision > claimed,
+            "a clear is a controller change and must move the revision"
+        );
+
+        // The legacy path any other caller may still use.
+        session.attach_view("b", "client").unwrap();
+        session.claim_control("b", "client", 100, 30).unwrap();
+        let claimed = states
+            .try_recv()
+            .expect("a claim announces")
+            .control_revision;
+        assert!(session.detach_view("b", "client"));
+        let cleared = states
+            .try_recv()
+            .expect("the legacy detach path must announce the clear too");
+        assert!(cleared.controller.is_none());
+        assert!(cleared.control_revision > claimed);
+
+        // A detach that clears nothing stays quiet — the guard's actual job,
+        // and the reason it cannot be replaced by announcing unconditionally.
+        session.attach_view("c", "client").unwrap();
+        assert!(session.detach_view("c", "client"));
+        assert!(
+            matches!(
+                states.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "detaching a non-controlling view is not a controller change"
+        );
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+    }
+
     #[cfg(unix)]
     fn wait_for_activity(
         session: &Session,
