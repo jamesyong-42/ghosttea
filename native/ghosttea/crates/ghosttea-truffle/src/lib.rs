@@ -12057,6 +12057,105 @@ mod tests {
         Ok(())
     }
 
+    // ── Cross-language constants lockstep ────────────────────────────
+
+    /// The Swift half of the reconnect timings, read at compile time.
+    ///
+    /// Reading the real file rather than a copy is the point: a Swift edit that
+    /// drifts from Rust cannot be made without this crate rebuilding and the
+    /// test below failing.
+    const SWIFT_RECONNECT_CONSTANTS: &str = include_str!(
+        "../../../../../apple/GhostteaKit/Sources/GhostteaTruffle/GhostteaReconnectConstants.swift"
+    );
+
+    /// The `public static let <name>: UInt64 = <digits>` declarations inside
+    /// `GhostteaReconnectDefaults`, in file order.
+    ///
+    /// Scoped to that enum deliberately. The same file declares defaults
+    /// elsewhere — `bannerGraceMs` among them — and those are not pinned: it is
+    /// how long the UI waits before showing a banner, and the daemon renders
+    /// nothing, so there is no Rust counterpart for it to drift from.
+    fn swift_reconnect_defaults() -> Vec<(String, u64)> {
+        let body = SWIFT_RECONNECT_CONSTANTS
+            .split_once("public enum GhostteaReconnectDefaults {")
+            .expect("the Swift constants enum was renamed or removed")
+            .1
+            .split_once("\n}")
+            .expect("the Swift constants enum is unterminated")
+            .0;
+        body.lines()
+            .filter_map(|line| {
+                let (name, value) = line
+                    .trim()
+                    .strip_prefix("public static let ")?
+                    .split_once(": UInt64 = ")?;
+                Some((
+                    name.to_owned(),
+                    value
+                        .trim()
+                        .replace('_', "")
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| panic!("{name} is no longer a plain integer literal")),
+                ))
+            })
+            .collect()
+    }
+
+    /// Every reconnect timing the two languages share, pinned to one value.
+    ///
+    /// The clients enforce these locally — a viewer decides for itself when a
+    /// connection has gone quiet — so nothing on the wire forces agreement and
+    /// a drift would not fail an interop test. It would ship as one platform
+    /// giving up on a host seconds before the other, which reads as a flaky
+    /// network rather than as the edit that caused it.
+    #[test]
+    fn the_swift_reconnect_constants_match_their_rust_counterparts() {
+        let rust = MeshReconnectConfig::default();
+        let pinned: [(&str, u64); 8] = [
+            ("heartbeatIdleMs", rust.heartbeat_idle.as_millis() as u64),
+            ("heartbeatFailMs", rust.heartbeat_fail.as_millis() as u64),
+            ("backoffBaseMs", rust.backoff_base.as_millis() as u64),
+            ("backoffCapMs", rust.backoff_cap.as_millis() as u64),
+            ("backoffFloorMs", rust.backoff_floor.as_millis() as u64),
+            ("suspendAfterMs", rust.suspend_after.as_millis() as u64),
+            (
+                "synchronizeTimeoutMs",
+                rust.synchronize_timeout.as_millis() as u64,
+            ),
+            (
+                "remoteReconnectProtocolMinor",
+                u64::from(REMOTE_RECONNECT_PROTOCOL_MINOR),
+            ),
+        ];
+        let swift = swift_reconnect_defaults();
+
+        // Exhaustiveness before equality. A constant added on the Swift side
+        // with no row here would otherwise sail through — an unpinned constant
+        // is exactly the drift this test exists to catch, and it is invisible
+        // to a test that only checks the rows it already knows about.
+        let mut found: Vec<&str> = swift.iter().map(|(name, _)| name.as_str()).collect();
+        let mut expected: Vec<&str> = pinned.iter().map(|(name, _)| *name).collect();
+        found.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            found, expected,
+            "GhostteaReconnectDefaults and this test have drifted apart: every \
+             constant in that enum needs a Rust counterpart pinned here, and a \
+             name dropped on one side has to be dropped on both"
+        );
+
+        for (name, want) in pinned {
+            let (_, got) = swift
+                .iter()
+                .find(|(found, _)| found == name)
+                .expect("checked exhaustively above");
+            assert_eq!(
+                *got, want,
+                "GhostteaReconnectDefaults.{name} is {got} in Swift but {want} in Rust"
+            );
+        }
+    }
+
     // ── Tailnet identity binding (§9.1) ──────────────────────────────
 
     /// A WhoIs answer as the sidecar produces one: an owner, a name, and the
