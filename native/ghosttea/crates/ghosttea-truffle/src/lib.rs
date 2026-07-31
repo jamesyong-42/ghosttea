@@ -45,6 +45,17 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 type HostStore = truffle::synced_store::SyncedStore<TerminalHostAdvertisement>;
 type HostConfigReceiver = tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>;
+
+#[derive(Clone)]
+struct IncomingSessionContext {
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    client_id: String,
+    state_codec: StateCodec,
+    protocol_minor: u16,
+    host_config: HostConfigReceiver,
+}
+
 type RemoteViews = Arc<tokio::sync::Mutex<HashMap<(String, String), Arc<RemoteView>>>>;
 type RemoteConnections = Arc<tokio::sync::Mutex<HashMap<String, Arc<RemoteHostConnection>>>>;
 
@@ -1256,12 +1267,14 @@ where
             handle_compact_session_protocol(
                 &mut control,
                 preface,
-                registry,
-                config,
-                client_id,
-                state_codec,
-                protocol_minor,
-                host_config,
+                IncomingSessionContext {
+                    registry,
+                    config,
+                    client_id,
+                    state_codec,
+                    protocol_minor,
+                    host_config,
+                },
             )
             .await?;
         }
@@ -1273,16 +1286,19 @@ where
 async fn handle_compact_session_protocol<S>(
     control: &mut CompactProtocolStream<S>,
     preface: StreamPreface,
-    registry: Registry,
-    config: TruffleTerminalConfig,
-    client_id: String,
-    state_codec: StateCodec,
-    protocol_minor: u16,
-    mut host_config: HostConfigReceiver,
+    context: IncomingSessionContext,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let IncomingSessionContext {
+        registry,
+        config,
+        client_id,
+        state_codec,
+        protocol_minor,
+        mut host_config,
+    } = context;
     let session_id = preface
         .session_id
         .context("compact session stream lacks session id")?;
@@ -1703,33 +1719,20 @@ async fn handle_connection(
         .await?;
 
     let streams_connection = Arc::clone(&connection);
-    let streams_registry = registry.clone();
-    let streams_config = config.clone();
-    let streams_client_id = client_id.clone();
-    let streams_state_codec = state_codec;
-    let streams_host_config = host_config;
+    let streams_context = IncomingSessionContext {
+        registry: registry.clone(),
+        config: config.clone(),
+        client_id: client_id.clone(),
+        state_codec,
+        protocol_minor,
+        host_config,
+    };
     let streams = tokio::spawn(async move {
         while let Some(stream) = streams_connection.accept_stream().await? {
-            let registry = streams_registry.clone();
-            let config = streams_config.clone();
-            let client_id = streams_client_id.clone();
-            let state_codec = streams_state_codec;
-            let protocol_minor = protocol_minor;
-            let host_config = streams_host_config.clone();
+            let context = streams_context.clone();
             let connection = Arc::clone(&streams_connection);
             tokio::spawn(async move {
-                if let Err(error) = handle_application_stream(
-                    connection,
-                    stream,
-                    registry,
-                    config,
-                    client_id,
-                    state_codec,
-                    protocol_minor,
-                    host_config,
-                )
-                .await
-                {
+                if let Err(error) = handle_application_stream(connection, stream, context).await {
                     eprintln!("[terminal-mesh] stream closed: {error:#}");
                 }
             });
@@ -1776,13 +1779,16 @@ async fn handle_connection(
 async fn handle_application_stream(
     connection: Arc<truffle::transport::quic::QuicConnection>,
     stream: QuicStream,
-    registry: Registry,
-    config: TruffleTerminalConfig,
-    client_id: String,
-    state_codec: StateCodec,
-    protocol_minor: u16,
-    host_config: HostConfigReceiver,
+    context: IncomingSessionContext,
 ) -> Result<()> {
+    let IncomingSessionContext {
+        registry,
+        config,
+        client_id,
+        state_codec,
+        protocol_minor,
+        host_config,
+    } = context;
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
     if preface.stream_kind != StreamKind::SessionControl {

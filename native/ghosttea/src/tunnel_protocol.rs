@@ -1072,8 +1072,10 @@ mod tests {
 
     #[test]
     fn presentation_changes_round_trip_in_json_and_compact_state_codecs() {
-        let mut snapshot = ghosttea_config::ConfigSnapshot::default();
-        snapshot.revision = "remote-revision".into();
+        let snapshot = ghosttea_config::ConfigSnapshot {
+            revision: "remote-revision".into(),
+            ..ghosttea_config::ConfigSnapshot::default()
+        };
         let message = StateMessage::ConfigurationChanged {
             presentation: snapshot.terminal_presentation(),
         };
