@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -175,6 +178,44 @@ pub struct RemoteViewRecord {
     pub retryable: Option<bool>,
 }
 
+/// Recovery tunables. These belong to the mesh rather than the local IPC
+/// config: they describe how this viewer treats a host that has gone quiet,
+/// not how clients reach this daemon.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshReconnectConfig {
+    /// Full jitter, AWS definition:
+    /// `delay(n) = max(floor, uniform(0, min(cap, base · 2ⁿ)))`, `n` 0-based.
+    pub backoff_base: Duration,
+    pub backoff_cap: Duration,
+    pub backoff_floor: Duration,
+    /// How long a host may stay absent before the engine stops burning dials
+    /// and the session comes to rest in Suspended, still watching.
+    pub suspend_after: Duration,
+    /// How long a synchronizing session waits for its feed's first snapshot
+    /// before abandoning the attempt.
+    pub synchronize_timeout: Duration,
+    /// Whether a fresh advertisement short-circuits the backoff timer.
+    pub advertisement_fast_path: bool,
+    /// Whether a resumed session purges the attachments it stranded. Purely an
+    /// acceleration: the host reaps them itself once it notices the abandoned
+    /// connection died.
+    pub zombie_purge: bool,
+}
+
+impl Default for MeshReconnectConfig {
+    fn default() -> Self {
+        Self {
+            backoff_base: Duration::from_millis(500),
+            backoff_cap: Duration::from_secs(10),
+            backoff_floor: Duration::from_millis(250),
+            suspend_after: Duration::from_secs(10 * 60),
+            synchronize_timeout: Duration::from_secs(10),
+            advertisement_fast_path: true,
+            zombie_purge: true,
+        }
+    }
+}
+
 /// The authoritative reconciliation snapshot for one remote session.
 #[derive(Clone, Debug)]
 pub struct RemoteSessionLifecycle {
@@ -275,6 +316,13 @@ pub trait RemoteTerminalRuntime: Send + Sync {
     /// One-shot resume: invalidate the cached connection, dial exactly once,
     /// and re-attach this session's views under an advanced generation.
     async fn reconnect_session(&self, _session_id: &str) -> Result<RemoteSessionLifecycle> {
+        unavailable()
+    }
+
+    /// A true remote refresh of a live session: a generation-advanced
+    /// re-attach of its feed. Errors when the session is not live — there is
+    /// no host to ask, and a local re-render is `refresh`'s job.
+    async fn refresh_remote(&self, _session_id: &str) -> Result<()> {
         unavailable()
     }
 

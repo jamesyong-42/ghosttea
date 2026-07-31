@@ -14,6 +14,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 ghosttea = { version = "0.6.2", path = "../.." }
 ghosttea-text = { version = "0.6.2", path = "../ghosttea-text" }
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
