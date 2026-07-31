@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::IpAddr,
     sync::{
         Arc, Mutex as SyncMutex,
@@ -20,28 +20,50 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 use truffle_core as truffle;
 use truffle_core::{
-    Node, StoreEvent, network::tailscale::TailscaleProvider, session::PeerEvent,
+    Node, NodeError, Peer, StoreEvent,
+    network::{NetworkError, TailscalePeerIdentity, tailscale::TailscaleProvider},
+    session::PeerEvent,
     transport::quic::QuicStream,
 };
 use uuid::Uuid;
 
 use ghosttea::{
-    MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment, RemoteControlChanged,
-    RemoteControlClaim, RemoteEndedReason, RemoteHostSummary, RemoteLifecycleChanged,
-    RemoteLifecycleState, RemoteReplica, RemoteResize, RemoteSelection, RemoteSessionLifecycle,
-    RemoteSessionOpen, RemoteTerminalRuntime, RemoteViewRecord, RemoteViewState,
-    RemoteViewStateChanged, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
-    TerminalPresentationConfig, ViewAccess,
+    AttachRejectionCode, ControlClaim, ControlSnapshot, HostShutdownAnnouncer, MeshReconnectConfig,
+    RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
+    RemoteControlOutcome, RemoteControlState, RemoteController, RemoteEndedReason,
+    RemoteHostSummary, RemoteLifecycleChanged, RemoteLifecycleState, RemoteReplica, RemoteResize,
+    RemoteSelection, RemoteSessionLifecycle, RemoteSessionOpen, RemoteTerminalRuntime,
+    RemoteViewRecord, RemoteViewState, RemoteViewStateChanged, ResumeEvidence, Session,
+    SessionRegistry as Registry, SessionStatusSource, SessionSummary, StateStreamCancel, TakeOver,
+    TerminalMesh, TerminalPresentationConfig, ViewAccess,
     tunnel_protocol::{
-        CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
-        MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
-        RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage,
-        SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
-        TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
-        decode_compact_message, decode_message, decode_preface, decode_state_message,
+        AttachRejectCode, CompactChannel, ConnectionMessage, ControllerInfo, HeartbeatMessage,
+        LogicalTerminalPatch, LogicalTerminalSnapshot, MAX_CONTROL_MESSAGE_BYTES,
+        MAX_HEARTBEAT_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
+        REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint, RowReplacement,
+        SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
+        SessionStatusKind, SharedSessionSummary, StateCodec, StateMessage, StreamKind,
+        StreamPreface, TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement,
+        TunnelInput, decode_compact_message, decode_message, decode_preface, decode_state_message,
         encode_compact_message, encode_message, encode_preface, encode_state_message,
     },
 };
+
+/// The highest minor the compact endpoint will negotiate.
+///
+/// The compact path implements none of the reconnect contract: its attach
+/// discards `attach_generation`, `resume`, and `wants_state`, it attaches
+/// through the legacy path with no takeover, and it answers no compare-and-swap
+/// on control. Advertising minor 6 there would promise fencing that does not
+/// exist — strictly worse than negotiating down, because a client that trusts
+/// the number stops protecting itself. Phase 4 (iOS/compact parity) is where
+/// the contract and its harness get built; lifting this cap is that work's
+/// first step, not a prerequisite for it.
+const COMPACT_MAX_PROTOCOL_MINOR: u16 = REMOTE_RECONNECT_PROTOCOL_MINOR - 1;
+// A build-time guarantee rather than a test: raising the cap to the reconnect
+// minor without implementing the contract should fail to compile, not fail
+// under a test someone can forget to run.
+const _: () = assert!(COMPACT_MAX_PROTOCOL_MINOR < REMOTE_RECONNECT_PROTOCOL_MINOR);
 
 pub const DEFAULT_QUIC_PORT: u16 = 9420;
 pub const DEFAULT_COMPACT_PORT: u16 = 9421;
@@ -53,14 +75,31 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 type HostStore = truffle::synced_store::SyncedStore<TerminalHostAdvertisement>;
 type HostConfigReceiver = tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>;
 
+/// What a host connection needs from the daemon above it and cannot work out
+/// for itself. Kept apart from [`TruffleTerminalConfig`], which is the knobs a
+/// caller writes down literally; these are wiring the daemon hands over.
+#[derive(Clone, Default)]
+struct HostServices {
+    /// Absent until the daemon supplies one, and absent forever in tests and
+    /// in the loopback harness: a host with no source answers `Unknown`, which
+    /// is exactly what "this host cannot say" means on the wire.
+    session_status: Option<Arc<dyn SessionStatusSource>>,
+    shutdown: HostShutdownAnnouncer,
+}
+
 #[derive(Clone)]
 struct IncomingSessionContext {
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     client_id: String,
     state_codec: StateCodec,
     protocol_minor: u16,
     host_config: HostConfigReceiver,
+    /// The connection this stream arrived on: its id orders attach attempts
+    /// for the stage-2 fence, and holding the scope keeps the connection
+    /// counted as live for exactly as long as this handler could still act.
+    connection: ConnectionScope,
 }
 
 /// Samples a delay from a backoff window. Injectable so scheduling tests can
@@ -91,6 +130,10 @@ pub struct MeshRuntime {
     activity_tx: broadcast::Sender<RemoteActivityChanged>,
     lifecycle_tx: broadcast::Sender<RemoteLifecycleChanged>,
     view_state_tx: broadcast::Sender<RemoteViewStateChanged>,
+    control_state_tx: broadcast::Sender<RemoteControlState>,
+    /// Last controller state seen per session — the reconciliation source, so
+    /// a dropped clear has a repair path.
+    control_states: Arc<SyncMutex<HashMap<String, RemoteControlState>>>,
     config: Arc<SyncMutex<MeshReconnectConfig>>,
     jitter: Arc<SyncMutex<JitterSource>>,
     /// Fires when a device looks reachable again, so a session waiting out its
@@ -114,6 +157,8 @@ impl Default for MeshRuntime {
             activity_tx,
             lifecycle_tx,
             view_state_tx,
+            control_state_tx: broadcast::channel(64).0,
+            control_states: Arc::default(),
             config: Arc::new(SyncMutex::new(MeshReconnectConfig::default())),
             jitter: Arc::new(SyncMutex::new(uniform_jitter())),
             wakeup_tx: broadcast::channel(64).0,
@@ -133,6 +178,11 @@ struct MeshReady {
 /// host gives up on it. A peer that has just re-joined is briefly absent.
 const PEER_RESOLVE_WAIT_MS: u64 = 3_000;
 
+/// How long the tailnet's WhoIs answer may take. WhoIs is a local
+/// control-plane query, so this only trips when the sidecar is wedged — and
+/// then the connection is refused rather than admitted unauthenticated.
+const WHOIS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Resolves the device identity a client asserts in its hello into the
 /// `client_id` that owns its view attachments.
 #[async_trait]
@@ -146,27 +196,81 @@ struct NodeClientResolver {
 
 #[async_trait]
 impl ClientResolver for NodeClientResolver {
-    /// Identity comes from the hello, corroborated by discovery.
+    /// Identity comes from the tailnet, not from the hello.
     ///
-    /// The source address cannot carry it: an inbound QUIC connection arrives
-    /// from whatever path the tailnet chose, which stops matching the address
-    /// discovery recorded as soon as a node re-joins or a path rotates — and a
-    /// host that matched on the address then rejected every legitimate client
-    /// (the observed failure).
+    /// [`Node::whois`] answers who owns the address a connection arrived from
+    /// — a control-plane fact no peer can assert — and the `client_id` is
+    /// derived from the peer that answer resolves to. The hello's
+    /// `local_device_id` is demoted to corroboration: it must *agree* with what
+    /// the registry publishes for that peer, and can no longer grant an
+    /// identity. This closes the Phase 2 caveat (§9.1) — asserting another
+    /// device's id now fails the comparison instead of inheriting its
+    /// `client_id`, its attachments, and (under `allow_tailnet_write`) its
+    /// input.
     ///
-    /// AUTHORIZATION CAVEAT: with the address no longer binding a connection to
-    /// a device, one peer inside the tailnet can assert another's device id and
-    /// inherit its `client_id`, which owns view attachments and epochs — and,
-    /// under `allow_tailnet_write` or a shared capability, its input. The
-    /// tailnet remains the outer gate (authenticated, same-app, ALPN-scoped),
-    /// so this is impersonation within an already-trusted set rather than open
-    /// access. Closing it properly needs a transport-level identity for QUIC
-    /// connections, the way the compact path already gets one from WhoIs; that
-    /// is tracked for the next protocol phase.
+    /// Transports whose provider has no WhoIs at all keep the Phase 2 path
+    /// below: in-process transports, and — measured, not hypothetical — a
+    /// Truffle sidecar older than protocol v3, which is where `tsnet:whois`
+    /// shipped. Those hosts keep working with the §9.1 caveat still open, and
+    /// [`warn_whois_unsupported`] says so out loud. A WhoIs that exists and
+    /// declines to answer is *not* that case: it is refused.
     async fn resolve(&self, device_id: &str, remote_ip: Option<IpAddr>) -> Result<String> {
         if device_id.trim().is_empty() {
             bail!("client hello carries no device id");
         }
+        let node_id = match authenticated_node_id(self.whois(remote_ip).await) {
+            Ok(Some(node_id)) => node_id,
+            Ok(None) => return self.resolve_from_hello(device_id, remote_ip).await,
+            Err(error) => return Err(reject_connection(remote_ip, error)),
+        };
+        let peer = self
+            .node
+            .peer(&node_id, Some(PEER_RESOLVE_WAIT_MS))
+            .await
+            .context("resolve the tailnet identity that opened the connection")?;
+        bind_authenticated_peer(
+            &node_id,
+            peer.as_ref().map(PeerBinding::from).as_ref(),
+            device_id,
+        )
+        .map_err(|error| reject_connection(remote_ip, error))
+    }
+}
+
+impl NodeClientResolver {
+    /// The tailnet's WhoIs answer for the address a connection arrived from.
+    /// The port is irrelevant to WhoIs, so the address alone is asked about.
+    async fn whois(&self, remote_ip: Option<IpAddr>) -> TailnetWhoIs {
+        let Some(remote_ip) = remote_ip else {
+            return TailnetWhoIs::Unavailable("connection carries no source address".into());
+        };
+        match tokio::time::timeout(WHOIS_TIMEOUT, self.node.whois(&remote_ip.to_string())).await {
+            Ok(Ok(Some(identity))) => TailnetWhoIs::Identity(Box::new(identity)),
+            Ok(Ok(None)) => TailnetWhoIs::Anonymous,
+            Ok(Err(NodeError::Network(NetworkError::Unsupported(cause)))) => {
+                warn_whois_unsupported(&cause);
+                TailnetWhoIs::Unsupported
+            }
+            Ok(Err(error)) => TailnetWhoIs::Unavailable(error.to_string()),
+            Err(_) => TailnetWhoIs::Unavailable(format!("no answer within {WHOIS_TIMEOUT:?}")),
+        }
+    }
+
+    /// The pre-WhoIs binding, kept for transports that have no tailnet behind
+    /// them: the hello's device id, validated against the live registry.
+    ///
+    /// The source address cannot carry identity here — an inbound connection
+    /// arrives from whatever path the tailnet chose, which stops matching the
+    /// address discovery recorded as soon as a node re-joins or a path rotates,
+    /// and a host that matched on the address rejected every legitimate client
+    /// (the Phase 2 failure). Reachable only when the provider has no WhoIs at
+    /// all, so the device-id assertion carries the weight it once did
+    /// everywhere.
+    async fn resolve_from_hello(
+        &self,
+        device_id: &str,
+        remote_ip: Option<IpAddr>,
+    ) -> Result<String> {
         let peer = self
             .node
             .peer(device_id, Some(PEER_RESOLVE_WAIT_MS))
@@ -191,6 +295,163 @@ impl ClientResolver for NodeClientResolver {
         }
         Ok(format!("truffle:{}", peer.peer_ref))
     }
+}
+
+/// The tailnet's answer about the address a connection arrived from.
+enum TailnetWhoIs {
+    /// The control plane authenticated the address to this identity.
+    Identity(Box<TailscalePeerIdentity>),
+    /// The tailnet has no identity for the address: the caller is anonymous —
+    /// absent, not fabricated.
+    Anonymous,
+    /// The provider has no WhoIs at all: an in-process transport, or a sidecar
+    /// predating protocol v3. Distinct from a failed query — nothing was
+    /// withheld, there is simply nothing to ask.
+    Unsupported,
+    /// The provider has WhoIs and the query failed or timed out.
+    Unavailable(String),
+}
+
+/// The registry facts a connection is bound against, projected out of
+/// [`Peer`] so the binding policy is exercisable without a tailnet.
+struct PeerBinding {
+    tailscale_id: String,
+    device_id: Option<String>,
+    peer_ref: String,
+}
+
+impl From<&Peer> for PeerBinding {
+    fn from(peer: &Peer) -> Self {
+        Self {
+            tailscale_id: peer.tailscale_id.clone(),
+            device_id: peer.device_id.clone(),
+            peer_ref: peer.peer_ref.clone(),
+        }
+    }
+}
+
+/// The stable node id a WhoIs answer authenticates. `Ok(None)` means the
+/// transport has no WhoIs to authenticate with — the only verdict that may
+/// fall back to hello-asserted identity.
+fn authenticated_node_id(whois: TailnetWhoIs) -> Result<Option<String>> {
+    match whois {
+        // A stable node ID is the only WhoIs field that maps to the peer
+        // registry; an identity carrying none authenticates nothing, however
+        // much else it says.
+        TailnetWhoIs::Identity(identity) => match identity.node_id {
+            Some(node_id) if !node_id.trim().is_empty() => Ok(Some(node_id)),
+            _ => bail!("tailnet identity carries no stable node id"),
+        },
+        TailnetWhoIs::Anonymous => {
+            bail!("the tailnet claims no identity for the address this connection arrived from")
+        }
+        TailnetWhoIs::Unsupported => Ok(None),
+        TailnetWhoIs::Unavailable(cause) => bail!("tailnet identity is unavailable: {cause}"),
+    }
+}
+
+/// The `client_id` an authenticated connection owns.
+///
+/// The identity is the peer the authenticated stable node id resolves to, so
+/// the `client_id` is never derived from anything the hello asserted. The
+/// asserted device id only has to agree with the durable id the registry
+/// publishes for that peer. A peer whose durable id discovery has not learned
+/// yet still binds: the `client_id` comes from the authenticated peer either
+/// way, so an assertion has nothing left to steal.
+fn bind_authenticated_peer(
+    node_id: &str,
+    peer: Option<&PeerBinding>,
+    asserted_device_id: &str,
+) -> Result<String> {
+    let peer = peer.context(
+        "the tailnet identity that opened this connection is not a current Truffle peer",
+    )?;
+    // `Node::peer` accepts several identifier forms — names and device-id
+    // prefixes among them — so only an exact stable-id match may stand in for
+    // the authenticated identity.
+    if peer.tailscale_id != node_id {
+        bail!("tailnet identity did not resolve to itself in the peer registry");
+    }
+    if let Some(published) = peer.device_id.as_deref()
+        && published != asserted_device_id
+    {
+        bail!("client hello asserts a device id the tailnet identity does not own");
+    }
+    Ok(format!("truffle:{}", peer.peer_ref))
+}
+
+/// Say once per process that this host cannot authenticate who is connecting.
+///
+/// A provider without WhoIs is unremarkable in-process, but on a real tailnet
+/// it means the Truffle sidecar predates `tsnet:whois` (protocol v3) and the
+/// host is running with the Phase 2 identity caveat (§9.1) still open. The
+/// fallback keeps those hosts working; staying silent about it would make a
+/// security-relevant downgrade invisible.
+fn warn_whois_unsupported(cause: &str) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[terminal-mesh][diag] tailnet WhoIs is unavailable ({cause}); connections fall back \
+             to hello-asserted identity, so a peer inside the tailnet can assert another device's \
+             id. Upgrade the Truffle sidecar to protocol v3 to close this."
+        );
+    }
+}
+
+/// One diagnostic line per refused connection. Carries the address and the
+/// reason only — never a hello payload, a token, or an owner's tailnet login.
+/// Map an authority rejection onto the wire's closed code set. `ghosttea-core`
+/// deliberately does not depend on the wire types, so the translation lives
+/// here — and the codes the authority cannot produce (`unknown-session`,
+/// `access-denied`) come from this host's own lookup and auth checks.
+/// The controller frame a viewer at this minor can decode. Only a
+/// reconnect-capable viewer gets `ControlState`, which is the only shape that
+/// can say "no controller"; below that a clear stays unrepresentable and is
+/// simply not announced, exactly as before.
+fn control_state_message(snapshot: &ControlSnapshot, protocol_minor: u16) -> Option<StateMessage> {
+    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+        return Some(StateMessage::ControlState {
+            controller: snapshot
+                .controller
+                .as_ref()
+                .map(|controller| ControllerInfo {
+                    controller_view_id: controller.view_id.clone(),
+                    control_epoch: controller.control_epoch,
+                }),
+            control_revision: snapshot.control_revision,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            layout_epoch: snapshot.layout_epoch,
+        });
+    }
+    snapshot
+        .controller
+        .as_ref()
+        .map(|controller| StateMessage::ControlChanged {
+            controller_view_id: controller.view_id.clone(),
+            control_epoch: controller.control_epoch,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            layout_epoch: snapshot.layout_epoch,
+        })
+}
+
+fn attach_reject_code(code: AttachRejectionCode) -> AttachRejectCode {
+    match code {
+        AttachRejectionCode::StaleResume => AttachRejectCode::StaleResume,
+        AttachRejectionCode::ViewInvalid => AttachRejectCode::ViewInvalid,
+        AttachRejectionCode::ViewLimit => AttachRejectCode::ViewLimit,
+        AttachRejectionCode::SessionEpochMismatch => AttachRejectCode::SessionEpochMismatch,
+    }
+}
+
+fn reject_connection(remote_ip: Option<IpAddr>, error: anyhow::Error) -> anyhow::Error {
+    let source = remote_ip.map_or_else(
+        || "an unaddressed connection".to_owned(),
+        |ip| ip.to_string(),
+    );
+    eprintln!("[terminal-mesh][diag] refused connection from {source}: {error:#}");
+    error
 }
 
 /// Everything the viewer needs from discovery to reach one host. Isolating it
@@ -219,7 +480,6 @@ struct RemoteSession {
 
 struct RemoteView {
     session_control: tokio::sync::Mutex<ProtocolStream>,
-    control: tokio::sync::watch::Receiver<Option<RemoteControlClaim>>,
     state_cancel: tokio::sync::watch::Sender<bool>,
     attachment_epoch: u64,
     read_write: bool,
@@ -242,6 +502,20 @@ struct RemoteHostConnection {
     state_codec: StateCodec,
     healthy: AtomicBool,
     incarnation: u64,
+    /// The minor this connection negotiated. Every reconnect behavior reads
+    /// its gate from here rather than from the advertisement: the
+    /// advertisement says what the host offers, only the handshake says what
+    /// this connection settled on.
+    protocol_minor: u16,
+}
+
+impl RemoteHostConnection {
+    /// Whether this connection can carry ordered takeover, heartbeats, and
+    /// the controller-state frames. Below it the viewer keeps the rotation
+    /// path, which is the whole 1.4 compatibility story.
+    fn supports_reconnect(&self) -> bool {
+        self.protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR
+    }
 }
 
 fn connection_is_reusable(
@@ -257,15 +531,23 @@ fn connection_is_reusable(
 /// prefixes keep the two namespaces disjoint: without them a short local id
 /// equal to another id's hash would produce the same base.
 fn wire_view_id(local_view_id: &str, generation: u64) -> String {
+    format!("{}#g{generation}", stable_wire_view_id(local_view_id))
+}
+
+/// The rotation-free identity, for hosts that order attempts by
+/// `attach_generation` instead. The namespace prefixes and the length bound
+/// still apply — only the per-attempt suffix goes away, because on those hosts
+/// reusing the id is the point: takeover mints a fresh epoch for it.
+fn stable_wire_view_id(local_view_id: &str) -> String {
     if local_view_id.len() <= MAX_INLINE_LOCAL_VIEW_ID_BYTES {
-        format!("r:{local_view_id}#g{generation}")
+        format!("r:{local_view_id}")
     } else {
         let digest = Sha256::digest(local_view_id.as_bytes());
         let mut hashed = String::with_capacity(32);
         for byte in &digest[..16] {
             hashed.push_str(&format!("{byte:02x}"));
         }
-        format!("h:{hashed}#g{generation}")
+        format!("h:{hashed}")
     }
 }
 
@@ -273,7 +555,19 @@ fn wire_view_id(local_view_id: &str, generation: u64) -> String {
 /// session does not own: a peer's rotated id carries no local meaning, and
 /// leaving the rotation visible would make it compare unequal to itself.
 fn local_view_id_from_wire(wire_view_id: &str) -> Option<String> {
-    let base = wire_view_id.rsplit_once("#g")?.0;
+    // Both encodings appear on the wire depending on the peer's minor, so the
+    // rotation suffix is stripped only when it looks like one. A local id that
+    // itself ends in `#g<digits>` would be mis-split here — acceptable because
+    // this is the best-effort path for ids this session does not own; ids it
+    // does own resolve exactly through the view map before reaching it.
+    let base = match wire_view_id.rsplit_once("#g") {
+        Some((base, generation))
+            if !generation.is_empty() && generation.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => wire_view_id,
+    };
     base.strip_prefix("r:").map(str::to_owned)
 }
 
@@ -297,6 +591,10 @@ struct ViewRecord {
     /// The newest generation whose `AttachView` actually reached the wire. An
     /// attempt that never got written stranded nothing to purge.
     written: u64,
+    /// The last epoch this lineage held. Unlike `attachment_epoch` it survives
+    /// the view going pending, because that is exactly when a resume needs to
+    /// cite what it is resuming from.
+    last_attachment_epoch: Option<u64>,
 }
 
 impl ViewRecord {
@@ -312,6 +610,7 @@ impl ViewRecord {
             wire_view_id: None,
             oldest_unpurged: 1,
             written: 0,
+            last_attachment_epoch: None,
         }
     }
 
@@ -467,12 +766,67 @@ impl SessionLifecycle {
     /// Gate one state-channel dispatch and refresh contact in the same
     /// critical section. Checking currency and then refreshing separately
     /// would let a superseded connection vouch for the current one.
-    fn admit_state(&self, generation: u64) -> bool {
+    fn admit_state(&self, generation: u64, incarnation: u64) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.generation != generation {
+        // Both identifiers, atomically. The generation alone is not enough:
+        // attaching a second view rebinds the incarnation without advancing
+        // the generation, so a reader left over from a connection that has
+        // been replaced still matches on generation — and would then publish
+        // state and, worse, refresh the contact clock on behalf of the
+        // connection that replaced it, masking a black hole indefinitely.
+        if state.generation != generation || state.incarnation != incarnation {
             return false;
         }
         state.last_contact = Some(Instant::now());
+        true
+    }
+
+    /// Refresh contact for a heartbeat that belongs to the current connection.
+    /// The currency check and the refresh share one critical section for the
+    /// same reason `admit_state` does: a superseded connection must never end
+    /// up vouching for the one that replaced it.
+    fn note_contact(&self, incarnation: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.incarnation != incarnation {
+            return false;
+        }
+        state.last_contact = Some(Instant::now());
+        true
+    }
+
+    /// How long this session has gone without contact on `incarnation`, or
+    /// `None` if it is not evidence about that connection at all: a session
+    /// bound elsewhere, not yet live, or holding nothing attached has no
+    /// reason to hear from the host and its silence means nothing.
+    fn contact_age(&self, incarnation: u64) -> Option<Duration> {
+        let state = self.state.lock().unwrap();
+        if state.incarnation != incarnation || state.state != RemoteLifecycleState::Live {
+            return None;
+        }
+        state
+            .views
+            .values()
+            .any(|record| record.state == RemoteViewState::Attached)
+            .then(|| state.last_contact.map(|at| at.elapsed()))
+            .flatten()
+    }
+
+    /// A host announcing its own shutdown. The comparison is here, under this
+    /// lock, and not at the caller: a shutdown from a connection that has
+    /// already been replaced must not end the session its replacement serves.
+    fn commit_host_shutdown(&self, incarnation: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.incarnation != incarnation {
+            return false;
+        }
+        self.end(&mut state, RemoteEndedReason::HostShutdown);
+        drop(state);
+        // The schedule stops after the verdict is committed rather than
+        // before it, so the comparison and the end stay in one critical
+        // section. An engine that outlives the commit by an instant costs
+        // nothing: it returns at its next look at the state, and an abort
+        // could not have recalled a dial already in flight anyway.
+        self.cancel_engine();
         true
     }
 
@@ -626,9 +980,18 @@ impl SessionLifecycle {
     /// activation and picks the lexicographically smallest recorded view, so
     /// both ends of a resume agree on which stream owns session state without
     /// coordinating. It is sticky: a smaller id mounted later never re-elects.
+    /// Elect a feed, skipping panes the host has already refused: a view whose
+    /// identity was rejected cannot become the stream the whole session reads
+    /// from, and re-electing it would loop on the same refusal.
     fn elect_feed(&self) -> Option<String> {
         let mut state = self.state.lock().unwrap();
-        let elected = state.views.keys().min().cloned();
+        let elected = state
+            .views
+            .iter()
+            .filter(|(_, record)| record.state != RemoteViewState::Failed)
+            .map(|(local_view_id, _)| local_view_id)
+            .min()
+            .cloned();
         state.feed_view_id.clone_from(&elected);
         elected
     }
@@ -682,14 +1045,22 @@ impl SessionLifecycle {
 
     /// Rotate one view's wire identity for an attach attempt that is about to
     /// be written.
-    fn begin_view_attempt(&self, local_view_id: &str) -> (String, u64) {
+    fn begin_view_attempt(&self, local_view_id: &str, rotate: bool) -> (String, u64) {
         let mut state = self.state.lock().unwrap();
         let mut wire = String::new();
         let mut generation = 0;
         self.set_view(&mut state, local_view_id, |record| {
             record.generation = record.generation.saturating_add(1);
             generation = record.generation;
-            wire = wire_view_id(local_view_id, record.generation);
+            // The lineage counter advances either way — it is the
+            // `attach_generation` a minor-6 host orders attempts by, and the
+            // rotation suffix a legacy host is fenced by. Only the encoding
+            // differs.
+            wire = if rotate {
+                wire_view_id(local_view_id, record.generation)
+            } else {
+                stable_wire_view_id(local_view_id)
+            };
             record.wire_view_id = Some(wire.clone());
             record.state = RemoteViewState::Pending;
             record.attachment_epoch = None;
@@ -705,6 +1076,7 @@ impl SessionLifecycle {
         self.set_view(&mut state, local_view_id, |record| {
             record.state = RemoteViewState::Attached;
             record.attachment_epoch = Some(attachment_epoch);
+            record.last_attachment_epoch = Some(attachment_epoch);
             record.read_write = Some(read_write);
             record.error = None;
             record.retryable = None;
@@ -740,6 +1112,19 @@ impl SessionLifecycle {
 
     fn forget_view(&self, local_view_id: &str) {
         self.state.lock().unwrap().views.remove(local_view_id);
+    }
+
+    /// Evidence for a resume: what this view last held, so the host can refuse
+    /// a takeover aimed at a world that no longer exists. `None` when this
+    /// lineage has never attached — there is nothing to resume.
+    fn resume_hint(&self, local_view_id: &str, terminal_revision: u64) -> Option<ResumeHint> {
+        let state = self.state.lock().unwrap();
+        let previous_attachment_epoch = state.views.get(local_view_id)?.last_attachment_epoch?;
+        Some(ResumeHint {
+            previous_session_epoch: state.session_epoch?,
+            previous_attachment_epoch,
+            previous_terminal_revision: terminal_revision,
+        })
     }
 
     fn record_identity(&self, host_instance_id: &str, session_epoch: u64) {
@@ -817,19 +1202,23 @@ impl SessionLifecycle {
     fn commit_ended(&self, reason: RemoteEndedReason) {
         self.cancel_engine();
         let mut state = self.state.lock().unwrap();
+        self.end(&mut state, reason);
+    }
+
+    fn end(&self, state: &mut LifecycleState, reason: RemoteEndedReason) {
         if state.state == RemoteLifecycleState::Ended {
             return;
         }
         state.next_retry = None;
         let view_ids = state.views.keys().cloned().collect::<Vec<_>>();
         for local_view_id in view_ids {
-            self.set_view(&mut state, &local_view_id, |record| {
+            self.set_view(state, &local_view_id, |record| {
                 record.state = RemoteViewState::Pending;
                 record.attachment_epoch = None;
                 record.read_write = None;
             });
         }
-        self.advance(&mut state, RemoteLifecycleState::Ended, Some(reason));
+        self.advance(state, RemoteLifecycleState::Ended, Some(reason));
     }
 
     /// Commit a liveness-driven teardown for one connection incarnation. The
@@ -887,6 +1276,20 @@ struct AttachOutcome {
 enum AttachFailure {
     Ended(RemoteEndedReason),
     Failed(anyhow::Error),
+    /// The response is obsolete — a newer attempt for this lineage superseded
+    /// it. It marks nothing and re-elects nothing; whatever the superseding
+    /// attempt concludes is the outcome.
+    Superseded,
+    /// The one genuinely view-scoped rejection: this pane's identity was
+    /// refused and the session is unharmed. Distinct from `Failed` because the
+    /// disposition turns on it — the connection is kept, and a feed re-elects
+    /// the next eligible view in place rather than tearing anything down.
+    ViewInvalid(anyhow::Error),
+    /// The host refused on grounds a redial cannot change. Distinct from
+    /// `Failed` because `Failed` is the *ambiguous* case, and ambiguity is
+    /// what earns the immediate retry on a fresh connection; re-asking a
+    /// question that has been answered definitively only costs a connection.
+    Rejected(anyhow::Error),
 }
 
 impl From<anyhow::Error> for AttachFailure {
@@ -902,7 +1305,49 @@ impl From<AttachFailure> for anyhow::Error {
                 anyhow::anyhow!("remote terminal session ended: {}", reason.as_str())
             }
             AttachFailure::Failed(error) => error,
+            AttachFailure::Superseded => {
+                anyhow::anyhow!("remote view attach was superseded by a newer attempt")
+            }
+            AttachFailure::ViewInvalid(error) | AttachFailure::Rejected(error) => error,
         }
+    }
+}
+
+/// The §6.2 code/action table. The action turns on the code's *scope* — there
+/// is no blanket "rejected means retry": most codes are not view-scoped, and
+/// the table is authoritative over the advisory `retryable` flag a host sends.
+fn attach_rejection_outcome(code: AttachRejectCode, feed: bool) -> AttachFailure {
+    match code {
+        AttachRejectCode::StaleResume => AttachFailure::Superseded,
+        // View-scoped: this pane failed, the session did not.
+        AttachRejectCode::ViewInvalid => {
+            AttachFailure::ViewInvalid(anyhow::anyhow!("remote host rejected the view identity"))
+        }
+        // Session x client admission. A replacement view hits the same cap, so
+        // re-electing is pointless; the feed's caller invalidates the
+        // connection so the retry cannot preserve the cap that rejected it.
+        AttachRejectCode::ViewLimit => AttachFailure::Rejected(anyhow::anyhow!(
+            "remote host is at its view limit for this client"
+        )),
+        // Session verdicts, whichever attach surfaced them.
+        AttachRejectCode::SessionEpochMismatch => {
+            AttachFailure::Ended(RemoteEndedReason::HostRestarted)
+        }
+        // Without a tombstone lookup wired, absence is all the evidence there
+        // is — and unavailable is the honest name for that.
+        AttachRejectCode::UnknownSession => {
+            AttachFailure::Ended(RemoteEndedReason::SessionUnavailable)
+        }
+        AttachRejectCode::AccessDenied => {
+            AttachFailure::Rejected(anyhow::anyhow!("remote host denied access to this session"))
+        }
+        // A code this viewer predates. Treat it the way an ambiguous failure is
+        // treated — the caller closes the connection and advances the
+        // generation — rather than guessing at a scope.
+        AttachRejectCode::Unknown => AttachFailure::Failed(anyhow::anyhow!(
+            "remote host rejected the attach with an unrecognised code{}",
+            if feed { " on the feed view" } else { "" }
+        )),
     }
 }
 
@@ -960,6 +1405,43 @@ async fn list_sessions_on(host: &RemoteHostConnection) -> Result<Vec<SharedSessi
     }
 }
 
+/// Ask a host what became of a session it is no longer listing. Same lockstep
+/// discipline as the listing: one request under the control mutex, matched by
+/// request id.
+async fn session_status_on(
+    host: &RemoteHostConnection,
+    remote_session_id: &str,
+) -> Result<SessionStatusKind> {
+    let mut control = host.control.lock().await;
+    let request_id = Uuid::new_v4().to_string();
+    control
+        .write_message(
+            &ConnectionMessage::SessionStatus {
+                request_id: request_id.clone(),
+                session_id: remote_session_id.to_owned(),
+            },
+            MAX_CONTROL_MESSAGE_BYTES,
+        )
+        .await?;
+    match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
+    )
+    .await
+    .context("timed out waiting for a session-status answer")??
+    .context("remote host closed before answering session status")?
+    {
+        ConnectionMessage::SessionStatusResult {
+            request_id: response_id,
+            status,
+        } if response_id == request_id => Ok(status),
+        ConnectionMessage::Error { message, .. } => {
+            bail!("remote host rejected the session-status request: {message}")
+        }
+        _ => bail!("remote host returned an invalid session-status answer"),
+    }
+}
+
 /// Full jitter, AWS definition: the window doubles per attempt up to the cap
 /// and the delay is sampled uniformly inside it, so viewers that lost the same
 /// host do not come back in lockstep and re-flood it.
@@ -969,6 +1451,103 @@ fn backoff_delay(config: &MeshReconnectConfig, attempt: u32, jitter: &JitterSour
         .saturating_mul(2_u32.saturating_pow(attempt.min(31)))
         .min(config.backoff_cap);
     jitter(window).min(window).max(config.backoff_floor)
+}
+
+/// One heartbeat task per reconnect-capable connection, owning that
+/// incarnation's nonces. Transport keep-alive proves the tunnel is up; this
+/// proves the host behind it is still answering, which is the failure a
+/// black-holed connection presents.
+///
+/// Every effect it commits names the incarnation it acted for and is compared
+/// against the current one under the lifecycle's own lock, so a task that is
+/// descheduled while its connection is replaced can neither vouch for the
+/// replacement nor tear it down.
+async fn heartbeat_loop(runtime: MeshRuntime, device_id: String, host: Arc<RemoteHostConnection>) {
+    if let Err(error) = run_heartbeat(&runtime, &device_id, &host).await {
+        // The stream itself failing is the same verdict a silent host gets:
+        // this connection cannot be trusted to carry the session.
+        eprintln!("[terminal-mesh] heartbeat stream failed: {error:#}");
+        runtime.fail_connection(&device_id, &host).await;
+    }
+}
+
+async fn run_heartbeat(
+    runtime: &MeshRuntime,
+    device_id: &str,
+    host: &Arc<RemoteHostConnection>,
+) -> Result<()> {
+    let config = runtime.config();
+    // Sample several times inside the idle window: the cadence is a bound on
+    // how late a probe can be, not an interval anything is scheduled on.
+    let tick = (config.heartbeat_idle / 3).max(Duration::from_millis(10));
+    let mut stream = ProtocolStream::new(host.connection.open_stream().await?);
+    stream
+        .write_preface(&StreamPreface {
+            stream_kind: StreamKind::Heartbeat,
+            session_id: None,
+            view_id: None,
+        })
+        .await?;
+    let mut outstanding: Option<u64> = None;
+    let mut nonce = 0_u64;
+    loop {
+        if !host.healthy.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            message = stream.read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES) => {
+                match message? {
+                    None => return Ok(()),
+                    Some(HeartbeatMessage::Pong { nonce: echoed }) => {
+                        // An unsolicited or replayed pong refreshes nothing,
+                        // even on the current connection: only an answer to a
+                        // ping this incarnation actually sent is evidence.
+                        if outstanding == Some(echoed) {
+                            outstanding = None;
+                            runtime.note_contact(host).await;
+                        }
+                    }
+                    Some(HeartbeatMessage::HostShutdown {}) => {
+                        runtime.commit_host_shutdown(host).await;
+                        return Ok(());
+                    }
+                    // Answering costs nothing and keeps the stream symmetric
+                    // for a host that wants to probe its viewers.
+                    Some(HeartbeatMessage::Ping { nonce: probed }) => {
+                        stream
+                            .write_message(
+                                &HeartbeatMessage::Pong { nonce: probed },
+                                MAX_HEARTBEAT_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
+                }
+            }
+            () = tokio::time::sleep(tick) => {
+                let Some(quiet) = runtime.quietest_contact(host).await else {
+                    // Nothing attached on this connection has any reason to
+                    // hear from the host, so its silence is not evidence.
+                    outstanding = None;
+                    continue;
+                };
+                if quiet >= config.heartbeat_fail {
+                    runtime.fail_connection(device_id, host).await;
+                    return Ok(());
+                }
+                if quiet >= config.heartbeat_idle && outstanding.is_none() {
+                    nonce = nonce.saturating_add(1);
+                    stream
+                        .write_message(
+                            &HeartbeatMessage::Ping { nonce },
+                            MAX_HEARTBEAT_MESSAGE_BYTES,
+                        )
+                        .await?;
+                    outstanding = Some(nonce);
+                }
+            }
+        }
+    }
 }
 
 /// Wait out a scheduled backoff, cut short if the device reappears.
@@ -1083,6 +1662,21 @@ async fn reconnect_engine_inner(runtime: MeshRuntime, session_id: String) {
             Err(AttachFailure::Failed(error)) => {
                 eprintln!("[terminal-mesh] resume attempt {attempt} failed: {error:#}");
             }
+            // Another attempt is already governing this lineage; nothing to
+            // conclude here, so leave the schedule as it is.
+            Err(AttachFailure::Superseded) => {}
+            // The feed's identity was refused and re-election inside the
+            // attempt found nothing left to promote. Keep dialing: a later
+            // attempt mints fresh identities.
+            Err(AttachFailure::ViewInvalid(error)) => {
+                eprintln!("[terminal-mesh] resume attempt {attempt} lost its view: {error:#}");
+            }
+            // Definitive, but not permanent: a view limit frees as watermarks
+            // are collected, so the schedule stands rather than the session
+            // being marked over.
+            Err(AttachFailure::Rejected(error)) => {
+                eprintln!("[terminal-mesh] resume attempt {attempt} refused: {error:#}");
+            }
         }
     }
 }
@@ -1141,6 +1735,11 @@ async fn purge_attachment(
                 access_token: remote.access_token.clone(),
                 cols,
                 rows,
+                attach_generation: 0,
+                resume: None,
+                // The purge wants the host's existing attachment back so it can
+                // detach it; a state stream would only have to be drained.
+                wants_state: true,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1179,6 +1778,20 @@ async fn purge_attachment(
 /// The Phase-1 end-reason evidence rules. A listing is the only evidence a 1.4
 /// host can offer, and absence proves nothing beyond unavailability — so the
 /// honest fallback is `session-unavailable`, never a guessed close or exit.
+/// Record the latest controller state and announce it. Recording first is what
+/// gives a dropped announcement a repair path through reconciliation.
+fn publish_control_state(
+    states: &Arc<SyncMutex<HashMap<String, RemoteControlState>>>,
+    sender: &broadcast::Sender<RemoteControlState>,
+    state: RemoteControlState,
+) {
+    states
+        .lock()
+        .unwrap()
+        .insert(state.session_id.clone(), state.clone());
+    let _ = sender.send(state);
+}
+
 fn ended_reason_from_listing(entry: Option<&SharedSessionSummary>) -> Option<RemoteEndedReason> {
     match entry {
         None => Some(RemoteEndedReason::SessionUnavailable),
@@ -1321,6 +1934,37 @@ impl MeshRuntime {
         }
     }
 
+    /// The §6.4 verdict, improved by the host's own records where the listing
+    /// has nothing to say. Absence is exactly the case a tombstone exists for:
+    /// without asking, every session killed during an outage reads as
+    /// "unavailable", which tells a user nothing about what happened to it.
+    async fn ended_reason_with_status(
+        &self,
+        host: &Arc<RemoteHostConnection>,
+        entry: Option<&SharedSessionSummary>,
+        remote_session_id: &str,
+    ) -> Option<RemoteEndedReason> {
+        let listed = ended_reason_from_listing(entry);
+        // A listed session has already answered for itself, and a host below
+        // the reconnect minor has no answer to give.
+        if entry.is_some() || !host.supports_reconnect() {
+            return listed;
+        }
+        match session_status_on(host, remote_session_id).await {
+            Ok(SessionStatusKind::Ended { reason }) => Some(match reason {
+                SessionEndReason::Exited { .. } => RemoteEndedReason::SessionExited,
+                SessionEndReason::Closed => RemoteEndedReason::SessionClosed,
+            }),
+            // It holds the session after all — it appeared between the listing
+            // and this question. Claim nothing: the attach that follows is
+            // better evidence than either answer.
+            Ok(SessionStatusKind::Live) => None,
+            // An expired or never-written tombstone, or a host that cannot
+            // say. `Unknown` is never upgraded, so absence stands on its own.
+            Ok(SessionStatusKind::Unknown) | Err(_) => listed,
+        }
+    }
+
     /// Apply §6.4 listing evidence to sessions that are already off the air.
     /// A live session is never ended from a listing: the host lists what it
     /// serves, and our own attachment is the better evidence.
@@ -1341,11 +1985,22 @@ impl MeshRuntime {
                 )
             })
             .collect::<Vec<_>>();
+        // Both verdict paths consult, or the two would disagree: whichever of
+        // this sweep and a resume attempt ran first would decide the reason a
+        // user is shown.
+        let host = self.cached_connection(device_id).await;
         for (remote_session_id, lifecycle) in candidates {
             let entry = sessions
                 .iter()
                 .find(|summary| summary.session_id == remote_session_id);
-            if let Some(reason) = ended_reason_from_listing(entry) {
+            let reason = match host.as_ref() {
+                Some(host) => {
+                    self.ended_reason_with_status(host, entry, &remote_session_id)
+                        .await
+                }
+                None => ended_reason_from_listing(entry),
+            };
+            if let Some(reason) = reason {
                 lifecycle.commit_ended(reason);
             }
         }
@@ -1464,6 +2119,19 @@ impl MeshRuntime {
                 lifecycle.commit_ended(reason);
                 bail!("remote terminal session ended: {}", reason.as_str());
             }
+            // Discarded outright: no `failed` mark, because the superseding
+            // attempt owns this view's outcome.
+            Err(AttachFailure::Superseded) => {
+                bail!("remote view attach was superseded by a newer attempt")
+            }
+            // View-scoped: this pane is refused, the session and the
+            // connection are both fine, so neither is touched on the way out.
+            Err(AttachFailure::ViewInvalid(error)) => Err(error),
+            // Definitive. The attempt has already applied whatever connection
+            // disposition the code calls for; retrying on a fresh dial would
+            // re-ask a question the host has answered, and for a secondary it
+            // would take down the connection its live session is using.
+            Err(AttachFailure::Rejected(error)) => Err(error),
             // The initial dial can land on a connection the host has already
             // forgotten. Retrying is safe now only because the second attempt
             // rotates to a fresh wire identity.
@@ -1475,6 +2143,11 @@ impl MeshRuntime {
                         lifecycle.commit_ended(reason);
                         bail!("remote terminal session ended: {}", reason.as_str());
                     }
+                    Err(AttachFailure::Superseded) => {
+                        bail!("remote view attach was superseded by a newer attempt")
+                    }
+                    Err(AttachFailure::ViewInvalid(error))
+                    | Err(AttachFailure::Rejected(error)) => Err(error),
                     Err(AttachFailure::Failed(error)) => Err(anyhow::anyhow!(
                         "remote view attach failed after reconnect: {first_error:#}: {error:#}"
                     )),
@@ -1553,7 +2226,28 @@ impl MeshRuntime {
         let _incoming = host.incoming.lock().await;
         // Rotate immediately before the write, never earlier: a stalled
         // attempt must not carry an old generation onto a newer connection.
-        let (wire_view_id, view_generation) = remote.lifecycle.begin_view_attempt(local_view_id);
+        // A minor-6 host orders attempts by `attach_generation` and mints a
+        // fresh epoch per takeover, so the identity is reused; below that the
+        // rotation suffix is the only fence available.
+        let takeover = host.supports_reconnect();
+        let (wire_view_id, view_generation) = remote
+            .lifecycle
+            .begin_view_attempt(local_view_id, !takeover);
+        let resume = takeover
+            .then(|| {
+                let revision = remote
+                    .replica
+                    .retained_snapshot()
+                    .map_or(0, |snapshot| snapshot.terminal_revision);
+                remote.lifecycle.resume_hint(local_view_id, revision)
+            })
+            .flatten();
+        // A secondary's stream is drained and discarded, so a host that can
+        // honour the request is told not to open one: it costs a full snapshot
+        // per pane and a patch stream nobody reads. Below the reconnect minor
+        // the field means nothing to the host, which opens a stream either
+        // way — so there the viewer must still expect one.
+        let wants_state = feed || !host.supports_reconnect();
         let state_generation = remote.lifecycle.generation();
         let connection = Arc::clone(&host.connection);
         let mut session_control = ProtocolStream::new(connection.open_stream().await?);
@@ -1574,6 +2268,12 @@ impl MeshRuntime {
                     access_token: remote.access_token.clone(),
                     cols: summary.cols,
                     rows: summary.rows,
+                    // Zero is the legacy declaration: a rotating viewer must
+                    // not claim a lineage the host would order against, and a
+                    // host that sees it routes to the plain attach path.
+                    attach_generation: if takeover { view_generation } else { 0 },
+                    resume,
+                    wants_state,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
@@ -1598,6 +2298,35 @@ impl MeshRuntime {
                 session_epoch,
                 ..
             } if response_id == request_id => (attachment_epoch, read_write, session_epoch),
+            SessionControlMessage::AttachRejected {
+                request_id: response_id,
+                code,
+                ..
+            } if response_id == request_id => {
+                // `retryable` is deliberately ignored: the table is
+                // authoritative, and a host sending a contradictory value must
+                // not change the action taken.
+                let outcome = attach_rejection_outcome(code, feed);
+                // Connection disposition per the §6.2 table, which turns on the
+                // role as well as the code. `view-limit` is the asymmetric one:
+                // the feed closes the connection before retrying, because
+                // watermark GC cannot free the cap while this connection pins
+                // the fence — but a secondary hitting the same cap must leave
+                // the connection alone, since an already-Live session rides it
+                // and losing one pane is not a reason to drop the rest.
+                let retire = match code {
+                    AttachRejectCode::ViewLimit => feed,
+                    AttachRejectCode::UnknownSession
+                    | AttachRejectCode::SessionEpochMismatch
+                    | AttachRejectCode::AccessDenied
+                    | AttachRejectCode::Unknown => true,
+                    AttachRejectCode::StaleResume | AttachRejectCode::ViewInvalid => false,
+                };
+                if retire {
+                    self.note_connection_failure(&remote.device_id, &host).await;
+                }
+                return Err(outcome);
+            }
             _ => {
                 return Err(AttachFailure::Failed(anyhow::anyhow!(
                     "remote terminal returned an invalid attach response"
@@ -1616,29 +2345,38 @@ impl MeshRuntime {
         // Bind before the reader exists, so the reader's eventual verdict has
         // an incarnation to be compared against.
         remote.lifecycle.bind_connection(host.incarnation);
-        let state_stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
-            .await
-            .context("timed out waiting for remote terminal state")??
-            .context("remote terminal closed before opening state stream")?;
-        let mut state = ProtocolStream::new(state_stream);
-        let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, state.read_preface())
-            .await
-            .context("timed out reading remote state preface")?
-            .context("read remote terminal state preface")?;
-        if preface.stream_kind != StreamKind::LiveState
-            || preface.session_id.as_deref() != Some(remote.remote_session_id.as_str())
-            || preface.view_id.as_deref() != Some(wire_view_id.as_str())
-        {
-            return Err(AttachFailure::Failed(anyhow::anyhow!(
-                "remote terminal returned a misrouted state stream"
-            )));
-        }
-        let (control_sender, control) = tokio::sync::watch::channel(None);
+        // Waiting for a stream this attach declined would hang here for the
+        // whole handshake timeout and then fail — the one way this change can
+        // break, and the reason the two decisions are read from one flag.
+        let state = if wants_state {
+            let state_stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
+                .await
+                .context("timed out waiting for remote terminal state")??
+                .context("remote terminal closed before opening state stream")?;
+            let mut state = ProtocolStream::new(state_stream);
+            let preface = tokio::time::timeout(HANDSHAKE_TIMEOUT, state.read_preface())
+                .await
+                .context("timed out reading remote state preface")?
+                .context("read remote terminal state preface")?;
+            if preface.stream_kind != StreamKind::LiveState
+                || preface.session_id.as_deref() != Some(remote.remote_session_id.as_str())
+                || preface.view_id.as_deref() != Some(wire_view_id.as_str())
+            {
+                return Err(AttachFailure::Failed(anyhow::anyhow!(
+                    "remote terminal returned a misrouted state stream"
+                )));
+            }
+            Some(state)
+        } else {
+            None
+        };
         let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
-        let (synchronized_tx, synchronized) = tokio::sync::watch::channel(false);
+        // A view with no stream has nothing to wait for and is as synchronized
+        // as it will ever be; only the feed is ever awaited, and the feed
+        // always has one.
+        let (synchronized_tx, synchronized) = tokio::sync::watch::channel(state.is_none());
         let view = Arc::new(RemoteView {
             session_control: tokio::sync::Mutex::new(session_control),
-            control,
             state_cancel,
             attachment_epoch,
             read_write,
@@ -1666,6 +2404,16 @@ impl MeshRuntime {
                 displaced.state_cancel.send_replace(true);
             }
         }
+        // A view that declined state has no reader to spawn. Nothing arrives on
+        // its behalf — including the session-level verdicts and the disconnect
+        // report, which the feed's reader raises for the whole session.
+        let Some(mut state) = state else {
+            return Ok(AttachOutcome {
+                attachment_epoch,
+                read_write,
+                synchronized,
+            });
+        };
         let replica = Arc::clone(&remote.replica);
         let local_session_id = remote.replica.summary().id;
         let remote_device_id = remote.device_id.clone();
@@ -1676,6 +2424,8 @@ impl MeshRuntime {
         let connections = Arc::clone(&self.connections);
         let remote_control_tx = self.control_tx.clone();
         let remote_activity_tx = self.activity_tx.clone();
+        let control_state_tx = self.control_state_tx.clone();
+        let control_states = Arc::clone(&self.control_states);
         let engine_runtime = self.clone();
         let incarnation = host.incarnation;
         tokio::spawn(async move {
@@ -1704,13 +2454,38 @@ impl MeshRuntime {
                 // frames gated could still move controller or activity state
                 // after recovery, or refresh the current connection's contact
                 // clock on its behalf.
-                if !lifecycle.admit_state(state_generation) {
+                if !lifecycle.admit_state(state_generation, incarnation) {
                     continue;
                 }
                 // Contact is refreshed above for any traffic on the current
                 // incarnation, but only the feed publishes: a secondary's
                 // stream is drained so its independent patch sequence can
                 // never interleave with the feed's in the shared replica.
+                // A session ending is a session-level fact, not replica state,
+                // so it counts whichever of this session's streams reported it
+                // — but only from the current generation and incarnation, which
+                // the gate above has already established.
+                match &message {
+                    StateMessage::SessionEnded { reason } => {
+                        lifecycle.commit_ended(match reason {
+                            SessionEndReason::Exited { .. } => RemoteEndedReason::SessionExited,
+                            SessionEndReason::Closed => RemoteEndedReason::SessionClosed,
+                        });
+                        // One session concluding says nothing about the
+                        // transport, which is shared: retiring it here would
+                        // tear down every sibling session on this device for
+                        // an event that was clean and expected.
+                        connection_failed = false;
+                        break;
+                    }
+                    StateMessage::HostShutdown {} => {
+                        lifecycle.commit_ended(RemoteEndedReason::HostShutdown);
+                        // The host itself is going away, so the connection is
+                        // genuinely finished — left to the failure path.
+                        break;
+                    }
+                    _ => {}
+                }
                 if !remote_view.feed {
                     continue;
                 }
@@ -1730,6 +2505,43 @@ impl MeshRuntime {
                             break;
                         }
                     }
+                    // The reconnect shape, the only one that can say "no
+                    // controller". Republished as the same mesh-level state a
+                    // legacy frame produces, so consumers see one vocabulary.
+                    StateMessage::ControlState {
+                        controller,
+                        control_revision,
+                        cols,
+                        rows,
+                        layout_epoch,
+                    } => {
+                        let controller = controller.map(|controller| RemoteController {
+                            view_id: lifecycle.local_view_id_for(&controller.controller_view_id),
+                            control_epoch: controller.control_epoch,
+                        });
+                        if let Some(controller) = controller.as_ref() {
+                            let _ = remote_control_tx.send(RemoteControlChanged {
+                                session_id: local_session_id.clone(),
+                                controller_view_id: controller.view_id.clone(),
+                                control_epoch: controller.control_epoch,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            });
+                        }
+                        publish_control_state(
+                            &control_states,
+                            &control_state_tx,
+                            RemoteControlState {
+                                session_id: local_session_id.clone(),
+                                controller,
+                                control_revision,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            },
+                        );
+                    }
                     StateMessage::ControlChanged {
                         controller_view_id,
                         control_epoch,
@@ -1740,22 +2552,32 @@ impl MeshRuntime {
                         // Controller identities arrive as wire ids; every mesh
                         // consumer above this point speaks local ids.
                         let controller_view_id = lifecycle.local_view_id_for(&controller_view_id);
-                        let claim = RemoteControlClaim {
+                        let _ = remote_control_tx.send(RemoteControlChanged {
+                            session_id: local_session_id.clone(),
                             controller_view_id: controller_view_id.clone(),
                             control_epoch,
                             cols,
                             rows,
                             layout_epoch,
-                        };
-                        control_sender.send_replace(Some(claim));
-                        let _ = remote_control_tx.send(RemoteControlChanged {
-                            session_id: local_session_id.clone(),
-                            controller_view_id,
-                            control_epoch,
-                            cols,
-                            rows,
-                            layout_epoch,
                         });
+                        // Revision 0 says "legacy, unknown": this host cannot
+                        // report revisions or clears, and a client must never
+                        // compare-and-swap against it.
+                        publish_control_state(
+                            &control_states,
+                            &control_state_tx,
+                            RemoteControlState {
+                                session_id: local_session_id.clone(),
+                                controller: Some(RemoteController {
+                                    view_id: controller_view_id,
+                                    control_epoch,
+                                }),
+                                control_revision: 0,
+                                cols,
+                                rows,
+                                layout_epoch,
+                            },
+                        );
                     }
                     StateMessage::ActivityChanged { activity } => {
                         replica.set_activity(activity.clone());
@@ -1769,6 +2591,12 @@ impl MeshRuntime {
                     // this projection directly; desktop per-pane presentation
                     // is a separate UI boundary.
                     StateMessage::ConfigurationChanged { .. } => {}
+                    // Carrying a nullable controller through to the mesh API
+                    // needs a shape that can say "no controller", which the
+                    // current RemoteControlClaim cannot. No host emits this
+                    // until the minor-6 host behaviors land alongside it.
+                    // Handled above, before the feed check.
+                    StateMessage::SessionEnded { .. } | StateMessage::HostShutdown {} => {}
                 }
             }
             // A stream that ended because we asked to be detached is not a
@@ -1932,6 +2760,13 @@ impl MeshRuntime {
                 }
                 Err(error)
             }
+            // A newer attempt already owns this lineage. Reporting an error
+            // would be a lie about a session someone else is busy recovering,
+            // so hand back the state as it stands and let them finish.
+            Err(AttachFailure::Superseded) => Ok(lifecycle.snapshot()),
+            Err(AttachFailure::ViewInvalid(error)) | Err(AttachFailure::Rejected(error)) => {
+                Err(error)
+            }
         }
     }
 
@@ -2026,6 +2861,22 @@ impl MeshRuntime {
                 self.arm_reconnect(remote).await;
                 Err(AttachFailure::Failed(error))
             }
+            // Deliberately none of the above: arming the engine here would put
+            // a second dial loop behind an attempt that is already running,
+            // and the state it would commit is not this promotion's to write.
+            Err(AttachFailure::Superseded) => Err(AttachFailure::Superseded),
+            // Nothing eligible was left to promote. The connection is healthy,
+            // so this is a session with no usable pane rather than an outage.
+            Err(AttachFailure::ViewInvalid(error)) => {
+                remote.lifecycle.commit_suspended();
+                Err(AttachFailure::ViewInvalid(error))
+            }
+            Err(AttachFailure::Rejected(error)) => {
+                remote.lifecycle.commit_reconnecting();
+                drop(attempt);
+                self.arm_reconnect(remote).await;
+                Err(AttachFailure::Rejected(error))
+            }
         }
     }
 
@@ -2069,7 +2920,10 @@ impl MeshRuntime {
         let entry = sessions
             .iter()
             .find(|summary| summary.session_id == remote.remote_session_id);
-        if let Some(reason) = ended_reason_from_listing(entry) {
+        if let Some(reason) = self
+            .ended_reason_with_status(&host, entry, &remote.remote_session_id)
+            .await
+        {
             return Err(AttachFailure::Ended(reason));
         }
 
@@ -2082,20 +2936,42 @@ impl MeshRuntime {
     /// hold up recovery.
     async fn establish_feed(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
         let lifecycle = &remote.lifecycle;
-        let Some(feed_view_id) = lifecycle.elect_feed() else {
-            lifecycle.commit_suspended();
-            return Ok(());
-        };
-        let outcome = match self.attach_view_attempt(remote, &feed_view_id, true).await {
-            Ok(outcome) => outcome,
-            Err(AttachFailure::Ended(reason)) => return Err(AttachFailure::Ended(reason)),
-            Err(AttachFailure::Failed(error)) => {
-                lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
-                // The feed could not attach, which is strong evidence this
-                // connection is not usable; retire it so the next attempt
-                // dials rather than reusing it.
-                self.invalidate_connection(&remote.device_id, None).await;
-                return Err(AttachFailure::Failed(error));
+        // §6.2 gives `view-invalid` the only in-place recovery in the table:
+        // the refused pane is marked and the next eligible view takes the feed
+        // on the same connection. Election skips failed panes, so each turn of
+        // this loop removes one candidate and it cannot spin.
+        let (feed_view_id, outcome) = loop {
+            let Some(feed_view_id) = lifecycle.elect_feed() else {
+                lifecycle.commit_suspended();
+                return Ok(());
+            };
+            match self.attach_view_attempt(remote, &feed_view_id, true).await {
+                Ok(outcome) => break (feed_view_id, outcome),
+                Err(AttachFailure::Ended(reason)) => return Err(AttachFailure::Ended(reason)),
+                Err(AttachFailure::Failed(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                    // The feed could not attach, which is strong evidence this
+                    // connection is not usable; retire it so the next attempt
+                    // dials rather than reusing it.
+                    self.invalidate_connection(&remote.device_id, None).await;
+                    return Err(AttachFailure::Failed(error));
+                }
+                // The host answered coherently — it just answered a question a
+                // newer attempt has already asked again. The connection is fine
+                // and the pane is not failed, so mark neither.
+                Err(AttachFailure::Superseded) => return Err(AttachFailure::Superseded),
+                // The identity was refused, not the session and not the
+                // transport. Mark this pane and promote the next one in place.
+                Err(AttachFailure::ViewInvalid(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                }
+                // The connection disposition is already applied; the feed
+                // simply has no attachment, so the session waits for the
+                // engine rather than being torn down here.
+                Err(AttachFailure::Rejected(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                    return Err(AttachFailure::Rejected(error));
+                }
             }
         };
         lifecycle.commit_view_attached(&feed_view_id, outcome.attachment_epoch, outcome.read_write);
@@ -2166,6 +3042,16 @@ impl MeshRuntime {
                     return;
                 }
                 Err(AttachFailure::Failed(error)) => {
+                    remote
+                        .lifecycle
+                        .commit_view_failed(&local_view_id, format!("{error:#}"), true)
+                }
+                // Leave the pane pending rather than failed: the attempt that
+                // superseded this one is the one that will resolve it.
+                Err(AttachFailure::Superseded) => {}
+                // The table's secondary column: the pane fails and the Live
+                // session around it is untouched.
+                Err(AttachFailure::ViewInvalid(error)) | Err(AttachFailure::Rejected(error)) => {
                     remote
                         .lifecycle
                         .commit_view_failed(&local_view_id, format!("{error:#}"), true)
@@ -2257,11 +3143,16 @@ impl MeshRuntime {
         if !view.read_write {
             bail!("remote terminal view is read-only");
         }
-        let mut state = view.control.clone();
-        let previous_epoch = state
-            .borrow()
-            .as_ref()
-            .map_or(0, |current| current.control_epoch);
+        // Session-scoped, deliberately not the view's own control watch: a
+        // secondary declines its state stream, so its per-view sender is
+        // dropped at attach, and awaiting it would report the channel closed —
+        // an error for a claim the host may well have granted. Control is a
+        // property of the session, and the feed's stream is what carries it.
+        let mut states = self.subscribe_control_state();
+        let previous_epoch = self
+            .last_control_state(session_id)
+            .and_then(|state| state.controller)
+            .map_or(0, |controller| controller.control_epoch);
         let wire_view_id = view.wire_view_id.clone();
         view.session_control
             .lock()
@@ -2273,27 +3164,118 @@ impl MeshRuntime {
                     cols,
                     rows,
                     client_sequence: 0,
+                    // None is legacy last-write-wins; the CAS reclaim belongs
+                    // with the controller work, not here.
+                    expected_control_revision: None,
                 },
                 MAX_CONTROL_MESSAGE_BYTES,
             )
             .await?;
         tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
             loop {
-                state
-                    .changed()
-                    .await
-                    .context("remote terminal control stream closed")?;
-                let current = state.borrow_and_update().clone();
-                if let Some(current) = current
-                    && current.controller_view_id == view_id
-                    && current.control_epoch > previous_epoch
-                {
-                    return Ok(current);
+                let state = states.recv().await?;
+                if state.session_id != session_id {
+                    continue;
+                }
+                let Some(controller) = state.controller else {
+                    continue;
+                };
+                if controller.view_id == view_id && controller.control_epoch > previous_epoch {
+                    return Ok(RemoteControlClaim {
+                        controller_view_id: controller.view_id,
+                        control_epoch: controller.control_epoch,
+                        cols: state.cols,
+                        rows: state.rows,
+                        layout_epoch: state.layout_epoch,
+                    });
                 }
             }
         })
         .await
         .context("timed out claiming remote terminal control")?
+    }
+
+    pub fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        self.control_state_tx.subscribe()
+    }
+
+    pub fn last_control_state(&self, session_id: &str) -> Option<RemoteControlState> {
+        self.control_states.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// Claim control, compare-and-swapping against an observed revision when
+    /// one is supplied. `None` is legacy last-write-wins.
+    pub async fn claim_control_at(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        attachment_epoch: u64,
+        cols: u16,
+        rows: u16,
+        expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
+        let view = self
+            .remote_view(session_id, view_id, attachment_epoch)
+            .await?;
+        if !view.read_write {
+            bail!("remote terminal view is read-only");
+        }
+        // Session-scoped for the same reason as the claim above: a secondary
+        // has no per-view control sender to await once it declines its stream.
+        let mut states = self.subscribe_control_state();
+        let previous_epoch = self
+            .last_control_state(session_id)
+            .and_then(|state| state.controller)
+            .map_or(0, |controller| controller.control_epoch);
+        let wire_view_id = view.wire_view_id.clone();
+        view.session_control
+            .lock()
+            .await
+            .write_message(
+                &SessionControlMessage::FocusAndResize {
+                    view_id: wire_view_id,
+                    attachment_epoch,
+                    cols,
+                    rows,
+                    client_sequence: 0,
+                    expected_control_revision,
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await?;
+
+        // The first controller announcement for this session after the request
+        // settles it: either it names this view at a newer epoch, or the swap
+        // lost, to another holder or to a clear. There is nothing further to
+        // wait for.
+        let settled = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            loop {
+                let state = states.recv().await?;
+                if state.session_id == session_id {
+                    return Ok::<RemoteControlState, anyhow::Error>(state);
+                }
+            }
+        })
+        .await
+        .context("timed out claiming remote terminal control")??;
+        let claimed = settled.controller.as_ref().is_some_and(|controller| {
+            controller.view_id == view_id && controller.control_epoch > previous_epoch
+        });
+
+        let announced = self.last_control_state(session_id).unwrap_or(settled);
+        if claimed {
+            return Ok(RemoteControlOutcome::Claimed(announced));
+        }
+        // Announce the losing outcome ourselves rather than leaving the retry
+        // rule waiting on the host's frame to race in: a lost or oddly ordered
+        // announcement would otherwise kill the reclaim silently. Duplicates at
+        // one revision are expected; consumers are idempotent by revision.
+        publish_control_state(
+            &self.control_states,
+            &self.control_state_tx,
+            announced.clone(),
+        );
+        Ok(RemoteControlOutcome::Rejected(announced))
     }
 
     pub async fn resize(
@@ -2453,6 +3435,12 @@ impl MeshRuntime {
                     eprintln!("[terminal-mesh] feed promotion failed: {error:#}");
                     remote.lifecycle.commit_suspended();
                 }
+                // Suspending here would park a session another attempt is
+                // actively bringing back.
+                AttachFailure::Superseded => {}
+                AttachFailure::ViewInvalid(error) | AttachFailure::Rejected(error) => {
+                    eprintln!("[terminal-mesh] feed promotion found no usable view: {error:#}");
+                }
             }
         }
     }
@@ -2579,6 +3567,17 @@ impl MeshRuntime {
             stale.healthy.store(false, Ordering::Release);
             stale.connection.close();
         }
+        drop(connections);
+        // Only the connection that was published gets a heartbeat: the loser
+        // of a dial race is closed above, and probing it would be probing
+        // something nothing is riding.
+        if remote.supports_reconnect() {
+            tokio::spawn(heartbeat_loop(
+                self.clone(),
+                device_id.to_owned(),
+                Arc::clone(&remote),
+            ));
+        }
         Ok(remote)
     }
 
@@ -2599,6 +3598,37 @@ impl MeshRuntime {
         let stale = connections.remove(device_id)?;
         stale.connection.close();
         None
+    }
+
+    /// The freshest contact anything on this connection has had, or `None` if
+    /// nothing on it is in a position to hear from the host. One live session
+    /// hearing from the host vouches for the connection they share.
+    async fn quietest_contact(&self, host: &Arc<RemoteHostConnection>) -> Option<Duration> {
+        self.replicas
+            .read()
+            .await
+            .values()
+            .filter_map(|remote| remote.lifecycle.contact_age(host.incarnation))
+            .min()
+    }
+
+    async fn note_contact(&self, host: &Arc<RemoteHostConnection>) {
+        for remote in self.replicas.read().await.values() {
+            remote.lifecycle.note_contact(host.incarnation);
+        }
+    }
+
+    async fn commit_host_shutdown(&self, host: &Arc<RemoteHostConnection>) {
+        let sessions = self
+            .replicas
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for remote in sessions {
+            remote.lifecycle.commit_host_shutdown(host.incarnation);
+        }
     }
 
     /// Retire a connection the moment an operation on it fails. Without this a
@@ -2788,6 +3818,7 @@ impl HostTransport for QuicHostTransport {
             &self.ready.node.local_info().device_id,
             &self.ready.host_instance_id,
             &advertisement.host_instance_id,
+            PROTOCOL_MINOR,
         )
         .await
         {
@@ -2810,6 +3841,7 @@ async fn client_handshake(
     local_device_id: &str,
     local_host_instance_id: &str,
     expected_host_instance_id: &str,
+    offered_minor: u16,
 ) -> Result<Arc<RemoteHostConnection>> {
     let mut control = ProtocolStream::new(connection.open_stream().await?);
     control
@@ -2824,7 +3856,7 @@ async fn client_handshake(
         .write_message(
             &ConnectionMessage::ClientHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                protocol_minor: offered_minor,
                 host_instance_id: local_host_instance_id.to_owned(),
                 local_device_id: local_device_id.to_owned(),
                 nonce: nonce.clone(),
@@ -2833,7 +3865,7 @@ async fn client_handshake(
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await?;
-    let state_codec = match tokio::time::timeout(
+    let (state_codec, protocol_minor) = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
         control.read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES),
     )
@@ -2853,7 +3885,10 @@ async fn client_handshake(
             && host_instance_id == expected_host_instance_id
             && state_codec.is_none_or(|codec| codec == StateCodec::CompactJsonV1) =>
         {
-            state_codec.unwrap_or(StateCodec::Json)
+            (
+                state_codec.unwrap_or(StateCodec::Json),
+                protocol_minor.min(offered_minor),
+            )
         }
         _ => bail!("remote host returned an invalid server hello"),
     };
@@ -2865,6 +3900,7 @@ async fn client_handshake(
         state_codec,
         healthy: AtomicBool::new(true),
         incarnation: NEXT_CONNECTION_INCARNATION.fetch_add(1, Ordering::Relaxed),
+        protocol_minor,
     }))
 }
 
@@ -2964,6 +4000,8 @@ pub struct TruffleTerminalMesh {
     node: Arc<Node<TailscaleProvider>>,
     config: TruffleTerminalConfig,
     runtime: MeshRuntime,
+    connections: ConnectionLedger,
+    services: HostServices,
 }
 
 impl TruffleTerminalMesh {
@@ -2975,11 +4013,32 @@ impl TruffleTerminalMesh {
             node,
             config,
             runtime,
+            connections: ConnectionLedger::default(),
+            services: HostServices::default(),
         })
+    }
+
+    /// The lookup this host answers session-status requests from. Set before
+    /// `serve`. Only the host half needs it: a resuming viewer asks the host
+    /// that owns the session over the wire, never a source of its own.
+    pub fn set_session_status_source(&mut self, source: Arc<dyn SessionStatusSource>) {
+        self.services.session_status = Some(source);
+    }
+
+    /// Cloneable and safe to keep after `serve` has taken the mesh, which is
+    /// the whole point: a drain announces long after that.
+    pub fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        self.services.shutdown.clone()
     }
 
     pub fn runtime(&self) -> MeshRuntime {
         self.runtime.clone()
+    }
+
+    /// Every connection this host has accepted, and which of them are fully
+    /// terminated. Both listeners number their connections from it.
+    pub fn connections(&self) -> ConnectionLedger {
+        self.connections.clone()
     }
 
     pub async fn serve(self, registry: Registry, host_config: HostConfigReceiver) -> Result<()> {
@@ -2987,6 +4046,8 @@ impl TruffleTerminalMesh {
             node,
             config,
             runtime,
+            connections,
+            services,
         } = self;
         let host_instance_id = Uuid::new_v4().to_string();
         let listener = Arc::new(
@@ -3043,16 +4104,20 @@ impl TruffleTerminalMesh {
             Arc::clone(&listener),
             registry.clone(),
             config.clone(),
+            services.clone(),
             host_instance_id.clone(),
             host_config.clone(),
+            connections.clone(),
         );
         let compact_accept = compact_accept_loop(
             Arc::clone(&node),
             compact_listener,
             registry,
             config.clone(),
+            services,
             host_instance_id,
             host_config,
+            connections,
         );
         let result = tokio::select! {
             result = advertise => result,
@@ -3146,7 +4211,11 @@ async fn advertise_loop(
                     title: summary.title.unwrap_or_else(|| summary.executable.clone()),
                     cwd_label: summary.cwd,
                     running: !summary.exited,
-                    attachable: true,
+                    // A concluded session is gone as far as attaching goes.
+                    // Exited-but-not-concluded still is: the viewer resumes it
+                    // and shows the final screen, so exitedness belongs in
+                    // `running`, not here.
+                    attachable: !session.has_concluded(),
                     read_write: config.advertises_write(),
                     created_at_ms: session.created_at_ms(),
                     activity: summary.activity,
@@ -3205,18 +4274,25 @@ async fn request_advertisements_from_online_peers(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compact_accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     mut listener: truffle::transport::RawListener,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    connections: ConnectionLedger,
 ) -> Result<()> {
     while let Some(incoming) = listener.accept().await {
+        // Same invariant as the QUIC loop: the id is the connection's place in
+        // the accept order, so it is taken here and nowhere later.
+        let scope = connections.accept();
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
+        let services = services.clone();
         let host_instance_id = host_instance_id.clone();
         let host_config = host_config.clone();
         tokio::spawn(async move {
@@ -3225,8 +4301,10 @@ async fn compact_accept_loop(
                 incoming,
                 registry,
                 config,
+                services,
                 host_instance_id,
                 host_config,
+                scope,
             )
             .await
             {
@@ -3237,13 +4315,16 @@ async fn compact_accept_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_compact_connection(
     node: Arc<Node<TailscaleProvider>>,
     incoming: truffle::transport::RawIncoming,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let authenticated_node_id = incoming
         .remote_identity
@@ -3257,26 +4338,32 @@ async fn handle_compact_connection(
         .find(|peer| peer.tailscale_id == authenticated_node_id)
         .context("compact-stream source is not a current Truffle peer")?;
     let client_id = format!("truffle:{}", peer.peer_ref);
+    scope.identify(&client_id);
     handle_compact_protocol(
         incoming.stream,
         registry,
         config,
+        services,
         host_instance_id,
         peer.device_id,
         client_id,
         host_config,
+        scope,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_compact_protocol<S>(
     stream: S,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     expected_device_id: Option<String>,
     client_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -3310,7 +4397,7 @@ where
             (
                 nonce,
                 negotiate_state_codec(state_codecs),
-                protocol_minor.min(PROTOCOL_MINOR),
+                protocol_minor.min(COMPACT_MAX_PROTOCOL_MINOR),
             )
         }
         ConnectionMessage::ClientHello { .. } => {
@@ -3322,7 +4409,9 @@ where
         .write_message(
             &ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                // What was negotiated, not what this host could manage alone:
+                // a client that offered less must not be told it got more.
+                protocol_minor,
                 host_instance_id,
                 nonce: client_nonce,
                 state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
@@ -3345,6 +4434,18 @@ where
                                     request_id,
                                     sessions: shared_sessions(&registry, &config),
                                 },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            )
+                            .await?;
+                    }
+                    ConnectionMessage::SessionStatus {
+                        request_id,
+                        session_id,
+                    } => {
+                        let status = session_status_for(&services, &session_id);
+                        control
+                            .write_message(
+                                &ConnectionMessage::SessionStatusResult { request_id, status },
                                 MAX_CONTROL_MESSAGE_BYTES,
                             )
                             .await?;
@@ -3373,10 +4474,12 @@ where
                 IncomingSessionContext {
                     registry,
                     config,
+                    services: services.clone(),
                     client_id,
                     state_codec,
                     protocol_minor,
                     host_config,
+                    connection: scope,
                 },
             )
             .await?;
@@ -3397,10 +4500,12 @@ where
     let IncomingSessionContext {
         registry,
         config,
+        services,
         client_id,
         state_codec,
         protocol_minor,
         mut host_config,
+        connection: _connection_scope,
     } = context;
     let session_id = preface
         .session_id
@@ -3452,6 +4557,13 @@ where
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
+                // The authority does not yet mint fresh epochs on takeover or
+                // report controller state at attach, so these stay at their
+                // pre-takeover values rather than asserting a capability the
+                // host does not have. Revision 0 is the "unknown" sentinel.
+                resumed: false,
+                controller: None,
+                control_revision: 0,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -3459,11 +4571,22 @@ where
         .context("write compact view-attached response")?;
 
     let result = async {
-        let mut controls = session.subscribe_control();
+        let mut controls = session.subscribe_control_state();
         let mut activities = session.subscribe_activity();
         let mut snapshots = session.subscribe_logical();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
+        let mut shutdown = services.shutdown.watch();
+        // An attachment arriving after the announcement has already gone out
+        // must not be told the host is healthy by omission. Gated with the
+        // frame itself: below the reconnect minor this is undecodable, and
+        // the compact endpoint is capped there until Phase 4.
+        if *shutdown.borrow_and_update() && protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+            control
+                .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                .await?;
+            return Ok(());
+        }
         if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
             let presentation = host_config.borrow_and_update().as_ref().clone();
             control
@@ -3481,19 +4604,14 @@ where
                 )
                 .await?;
         }
-        let (controller, cols, rows, layout_epoch) = session.control_state();
-        if let Some(controller) = controller {
+        // The opening state of a stream has to carry the same shape the live
+        // updates below do. At minor >= 6 that means `ControlState` with the
+        // revision: a stream that opens while nobody holds control must still
+        // say so, and one that opens while somebody does must not hand the
+        // viewer a revisionless frame it would read as the 0 sentinel.
+        if let Some(message) = control_state_message(&session.control_snapshot(), protocol_minor) {
             control
-                .write_compact_state_message(
-                    &StateMessage::ControlChanged {
-                        controller_view_id: controller.view_id,
-                        control_epoch: controller.control_epoch,
-                        cols,
-                        rows,
-                        layout_epoch,
-                    },
-                    state_codec,
-                )
+                .write_compact_state_message(&message, state_codec)
                 .await?;
         }
         if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
@@ -3510,6 +4628,19 @@ where
         loop {
             tokio::select! {
                 biased;
+                // §6.3's compact half: this transport has no heartbeat stream
+                // to carry the announcement, so it travels as state.
+                announced = shutdown.changed() => {
+                    if announced.is_err() || !*shutdown.borrow_and_update() {
+                        continue;
+                    }
+                    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                        control
+                            .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                            .await?;
+                    }
+                    return Ok(());
+                }
                 changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
                     changed.context("host configuration publisher closed")?;
                     let presentation = host_config.borrow_and_update().as_ref().clone();
@@ -3537,9 +4668,25 @@ where
                             attachment_epoch: epoch,
                             cols,
                             rows,
+                            expected_control_revision,
                             ..
                         } if incoming_view == view_id && epoch == attachment_epoch => {
-                            session.claim_control(&view_id, &client_id, cols, rows)?;
+                            // Same reasoning as the QUIC loop: the epoch this
+                            // handler holds is not authorization on its own.
+                            // Compact carries no swap today (see the minor cap
+                            // above), and `None` is legacy last-write-wins, so
+                            // this is the epoch check arriving early.
+                            match session.claim_control_checked(
+                                &view_id,
+                                &client_id,
+                                attachment_epoch,
+                                cols,
+                                rows,
+                                expected_control_revision,
+                            )? {
+                                ControlClaim::Granted(_) => {}
+                                ControlClaim::Rejected(_) => session.announce_control(),
+                            }
                         }
                         SessionControlMessage::Resize {
                             view_id: incoming_view,
@@ -3549,9 +4696,10 @@ where
                             cols,
                             rows,
                         } if incoming_view == view_id && epoch == attachment_epoch => {
-                            if session.resize_view(
+                            if session.resize_view_checked(
                                 &view_id,
                                 &client_id,
+                                attachment_epoch,
                                 control_epoch,
                                 resize_sequence,
                                 cols,
@@ -3682,16 +4830,9 @@ where
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
-                    control.write_compact_state_message(
-                        &StateMessage::ControlChanged {
-                            controller_view_id: changed.controller.view_id,
-                            control_epoch: changed.controller.control_epoch,
-                            cols: changed.cols,
-                            rows: changed.rows,
-                            layout_epoch: changed.layout_epoch,
-                        },
-                        state_codec,
-                    ).await?;
+                    if let Some(message) = control_state_message(&changed, protocol_minor) {
+                        control.write_compact_state_message(&message, state_codec).await?;
+                    }
                 }
                 changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
                     let activity = match changed {
@@ -3712,22 +4853,201 @@ where
         Ok(())
     }
     .await;
-    session.detach_view(&view_id, &client_id);
+    // Epoch-conditional, because a handler outlives its attachment: once a
+    // takeover has replaced this view, detaching by (view, client) alone would
+    // destroy the successor's attachment — and if it lands between that
+    // takeover and its state-stream registration, the successor never gets a
+    // stream at all.
+    session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
     result
 }
 
+/// Connection ids are handed out from one process-wide sequence. A client's
+/// own connections are a subsequence of it, which is all the attach fence
+/// needs: monotonic per client.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+struct ConnectionLedgerState {
+    /// Accepted connections that are not yet fully terminated, in id order.
+    /// The value is the client its hello bound, once one has.
+    live: BTreeMap<u64, Option<String>>,
+    /// The highest id handed out, so a ledger with nothing in flight answers
+    /// "everything accepted so far is gone" rather than "nothing is".
+    highest_accepted: u64,
+}
+
+/// Whether a live connection could still turn out to be this client's.
+///
+/// The fence and its collection must agree on this exactly. If they diverge —
+/// say one counts unidentified connections and the other does not — collection
+/// does not merely slow down, it stalls: the fence settles above an id
+/// `terminated_through` will never pass, the watermark is never collected, and
+/// the per-client cap eventually starts refusing attaches with `view-limit`.
+/// Hence one function, called by both.
+fn could_belong_to(owner: &Option<String>, client_id: &str) -> bool {
+    owner.as_deref().is_none_or(|owner| owner == client_id)
+}
+
+/// Every accepted transport connection, from raw acceptance until it is
+/// **fully terminated** — the transport closed *and* every handler it spawned
+/// finished, not merely orphaned.
+///
+/// This is the observability the stage-2 attach fence runs on (§4.2.1). A
+/// watermark stamped `fence_conn_id` for a client may be collected once that
+/// client's view is detached **and** `terminated_through(client_id) >=
+/// fence_conn_id`: at that point no connection able to carry a lower attach
+/// generation can still deliver one.
+///
+/// That holds because an id leaves `live` in exactly one place — the scope's
+/// `Drop`, once the transport is closed *and* the last handler holding a clone
+/// has finished. Removing at transport close instead would look like a
+/// harmless optimization and would silently break the fence: an orphaned
+/// handler can still drain frames it already received, which is precisely the
+/// weaker argument §4.2.1 rejects.
+#[derive(Clone, Default)]
+pub struct ConnectionLedger {
+    state: Arc<SyncMutex<ConnectionLedgerState>>,
+}
+
+impl ConnectionLedger {
+    /// Stamp the next connection id and begin tracking it.
+    ///
+    /// Called at raw transport acceptance, before any handler runs — §4.2.1
+    /// invariant (a). An id minted later (at hello, say) could rank a
+    /// slow-handshaking older connection *above* the fence recorded for a
+    /// newer one, and the fence's soundness proof depends on it not.
+    pub fn accept(&self) -> ConnectionScope {
+        let id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.live.insert(id, None);
+            state.highest_accepted = state.highest_accepted.max(id);
+        }
+        ConnectionScope(Arc::new(ConnectionScopeInner {
+            id,
+            ledger: self.clone(),
+        }))
+    }
+
+    /// The greatest connection id `n` for which every connection with id ≤ `n`
+    /// that could belong to `client_id` is fully terminated.
+    ///
+    /// A connection that has not yet completed its hello belongs to no client
+    /// yet, so it counts against every client: nothing may be excluded from a
+    /// client's fence before it has said who it is.
+    pub fn terminated_through(&self, client_id: &str) -> u64 {
+        let state = self.state.lock().unwrap();
+        state
+            .live
+            .iter()
+            .find(|(_, owner)| could_belong_to(owner, client_id))
+            .map_or(state.highest_accepted, |(id, _)| id - 1)
+    }
+
+    /// The highest connection id this client could still be holding.
+    ///
+    /// **Invariant this returns**: a value greater than or equal to the id of
+    /// every live connection that could belong to `client_id`. That is the
+    /// property the attach fence consumes (§4.2.1), and weakening it — most
+    /// temptingly by dropping the not-yet-identified term — turns a delayed
+    /// attach on an uncovered connection into an accepted one, months later,
+    /// under load.
+    ///
+    /// Stamping the arriving connection's own id instead would under-fence
+    /// whenever an attach lands on an older connection while a newer one is
+    /// open.
+    ///
+    /// An unidentified connection holds every client's fence down, but only
+    /// for a bounded window: a hello that never completes is dropped by the
+    /// handshake path (~38 s worst case — three 10 s stages plus WhoIs and
+    /// peer resolution), after which its scope drops and the id leaves `live`.
+    /// It cannot stall collection indefinitely, so it does not need a timer.
+    pub fn highest_for(&self, client_id: &str) -> u64 {
+        let state = self.state.lock().unwrap();
+        state
+            .live
+            .iter()
+            .filter(|(_, owner)| could_belong_to(owner, client_id))
+            .map(|(id, _)| *id)
+            .next_back()
+            .unwrap_or(state.highest_accepted)
+    }
+
+    /// Whether one connection is fully terminated. The per-connection form of
+    /// [`terminated_through`](Self::terminated_through), for callers holding a
+    /// single id rather than a fence.
+    pub fn fully_terminated(&self, connection_id: u64) -> bool {
+        !self.state.lock().unwrap().live.contains_key(&connection_id)
+    }
+
+    fn identify(&self, connection_id: u64, client_id: &str) {
+        if let Some(owner) = self.state.lock().unwrap().live.get_mut(&connection_id) {
+            *owner = Some(client_id.to_owned());
+        }
+    }
+
+    fn finish(&self, connection_id: u64) {
+        self.state.lock().unwrap().live.remove(&connection_id);
+    }
+}
+
+/// One connection's place in the ledger. Every task that could still act for
+/// the connection holds a clone; the connection is recorded as fully
+/// terminated when the last clone drops. That is exactly "transport closed and
+/// all spawned handlers completed" — an aborted handler drops its clone the
+/// same as one that ran to the end.
+#[derive(Clone)]
+pub struct ConnectionScope(Arc<ConnectionScopeInner>);
+
+struct ConnectionScopeInner {
+    id: u64,
+    ledger: ConnectionLedger,
+}
+
+impl ConnectionScope {
+    /// This connection's id, ordered against every other accepted connection.
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    /// The ledger this connection is tracked in, for asking about others.
+    pub fn ledger(&self) -> &ConnectionLedger {
+        &self.0.ledger
+    }
+
+    /// Record which client the connection turned out to belong to, once its
+    /// hello has been authenticated.
+    pub fn identify(&self, client_id: &str) {
+        self.0.ledger.identify(self.0.id, client_id);
+    }
+}
+
+impl Drop for ConnectionScopeInner {
+    fn drop(&mut self) {
+        self.ledger.finish(self.id);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     node: Arc<Node<TailscaleProvider>>,
     listener: Arc<truffle::transport::quic::QuicListener>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    connections: ConnectionLedger,
 ) -> Result<()> {
     while let Some(connection) = listener.accept().await {
+        // Stamped on the raw transport, before the handler that will
+        // handshake — at whatever pace the client sets — exists.
+        let scope = connections.accept();
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
+        let services = services.clone();
         let host_instance_id = host_instance_id.clone();
         let host_config = host_config.clone();
         tokio::spawn(async move {
@@ -3736,8 +5056,10 @@ async fn accept_loop(
                 Arc::new(connection),
                 registry,
                 config,
+                services,
                 host_instance_id,
                 host_config,
+                scope,
             )
             .await
             {
@@ -3748,35 +5070,43 @@ async fn accept_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     node: Arc<Node<TailscaleProvider>>,
     connection: Arc<truffle::transport::quic::QuicConnection>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let remote_ip = connection.remote_address().ip();
     serve_connection(
         connection,
         registry,
         config,
+        services,
         host_instance_id,
         Arc::new(NodeClientResolver { node }),
         Some(remote_ip),
         host_config,
+        scope,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_connection(
     connection: Arc<dyn MeshConnection>,
     registry: Registry,
     config: TruffleTerminalConfig,
+    services: HostServices,
     host_instance_id: String,
     resolver: Arc<dyn ClientResolver>,
     remote_ip: Option<IpAddr>,
     host_config: HostConfigReceiver,
+    scope: ConnectionScope,
 ) -> Result<()> {
     let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connection.accept_stream())
         .await
@@ -3820,11 +5150,17 @@ async fn serve_connection(
         _ => bail!("expected client hello"),
     };
     let client_id = resolver.resolve(&asserted_device_id, remote_ip).await?;
+    // Until this lands the connection counts against every client's fence,
+    // because a connection that has not said who it is could still turn out to
+    // be theirs.
+    scope.identify(&client_id);
     control
         .write_message(
             &ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                // What was negotiated, not what this host could manage alone:
+                // a client that offered less must not be told it got more.
+                protocol_minor,
                 host_instance_id,
                 nonce: client_nonce,
                 state_codec: (state_codec != StateCodec::Json).then_some(state_codec),
@@ -3834,13 +5170,19 @@ async fn serve_connection(
         .await?;
 
     let streams_connection = Arc::clone(&connection);
+    // Every handler spawned below carries its own clone of the scope, so the
+    // ledger reports this connection terminated only once the last of them has
+    // finished — the difference between a handler completing and merely being
+    // orphaned, which is what the fence needs to distinguish.
     let streams_context = IncomingSessionContext {
         registry: registry.clone(),
         config: config.clone(),
+        services: services.clone(),
         client_id: client_id.clone(),
         state_codec,
         protocol_minor,
         host_config,
+        connection: scope.clone(),
     };
     let streams = tokio::spawn(async move {
         while let Some(stream) = streams_connection.accept_stream().await? {
@@ -3872,6 +5214,21 @@ async fn serve_connection(
                     )
                     .await?;
             }
+            // Why a session this viewer held is no longer listed. Answered
+            // from the daemon's own evidence, so absence from the registry
+            // stops being the only thing a resuming viewer can observe.
+            ConnectionMessage::SessionStatus {
+                request_id,
+                session_id,
+            } => {
+                let status = session_status_for(&services, &session_id);
+                control
+                    .write_message(
+                        &ConnectionMessage::SessionStatusResult { request_id, status },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
             _ => {
                 control
                     .write_message(
@@ -3891,6 +5248,79 @@ async fn serve_connection(
     Ok(())
 }
 
+/// Why a concluded session ended, in the wire's vocabulary. Mirrors the
+/// tombstone's own rule (`SessionTombstones::commit`): a process that was
+/// observed to exit reports its code, anything else was closed.
+fn session_end_reason(session: &Session) -> SessionEndReason {
+    if session.has_exited() {
+        SessionEndReason::Exited {
+            code: session.summary().exit_code,
+        }
+    } else {
+        SessionEndReason::Closed
+    }
+}
+
+/// Answer a tombstone lookup. A host with no status source says `Unknown`,
+/// which is the honest reading of "this host cannot say" — never an upgrade to
+/// a specific end reason, and never a downgrade of one it does have.
+fn session_status_for(services: &HostServices, session_id: &str) -> SessionStatusKind {
+    services
+        .session_status
+        .as_ref()
+        .map_or(SessionStatusKind::Unknown, |source| {
+            source.session_status(session_id).into()
+        })
+}
+
+/// Answer liveness probes for as long as the stream lives. A host has nothing
+/// outstanding of its own here — `Pong` is only ever an answer, and the
+/// shutdown announcement travels the other way.
+async fn serve_heartbeat(
+    mut control: ProtocolStream,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    // A stream that opens after the announcement has to see it too, which is
+    // why the watch is read before waiting for a change rather than after.
+    if *shutdown.borrow_and_update() {
+        return announce_shutdown(&mut control).await;
+    }
+    loop {
+        let message = tokio::select! {
+            biased;
+            announced = shutdown.changed() => {
+                if announced.is_err() || !*shutdown.borrow_and_update() {
+                    continue;
+                }
+                return announce_shutdown(&mut control).await;
+            }
+            message = control.read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES) => message?,
+        };
+        let Some(message) = message else {
+            return Ok(());
+        };
+        if let HeartbeatMessage::Ping { nonce } = message {
+            control
+                .write_message(
+                    &HeartbeatMessage::Pong { nonce },
+                    MAX_HEARTBEAT_MESSAGE_BYTES,
+                )
+                .await?;
+        }
+    }
+}
+
+/// Tell this viewer the host is going away, then stop: there is nothing
+/// further to say on a connection whose host has announced its own exit.
+async fn announce_shutdown(control: &mut ProtocolStream) -> Result<()> {
+    control
+        .write_message(
+            &HeartbeatMessage::HostShutdown {},
+            MAX_HEARTBEAT_MESSAGE_BYTES,
+        )
+        .await
+}
+
 async fn handle_application_stream(
     connection: Arc<dyn MeshConnection>,
     stream: Box<dyn MeshStream>,
@@ -3899,15 +5329,28 @@ async fn handle_application_stream(
     let IncomingSessionContext {
         registry,
         config,
+        services,
         client_id,
         state_codec,
         protocol_minor,
         host_config,
+        // Held for the life of the handler: the fence may not treat this
+        // connection as dead while a stream on it can still deliver an attach.
+        // Also the source of this attach's fence id and of the collection
+        // bound handed to the authority.
+        connection: connection_scope,
     } = context;
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
-    if preface.stream_kind != StreamKind::SessionControl {
-        bail!("peer-opened stream kind is not supported");
+    match preface.stream_kind {
+        StreamKind::SessionControl => {}
+        // Liveness is a property of the connection, so these frames name no
+        // session and this handler keeps no state: echo the nonce and let the
+        // viewer's own contact clock do the deciding. The connection scope
+        // stays held for as long as the stream lives, which is correct — an
+        // open heartbeat stream is a connection that can still deliver work.
+        StreamKind::Heartbeat => return serve_heartbeat(control, services.shutdown.watch()).await,
+        _ => bail!("peer-opened stream kind is not supported"),
     }
     let session_id = preface
         .session_id
@@ -3919,15 +5362,24 @@ async fn handle_application_stream(
     .await
     .context("timed out reading session attach")??
     .context("session stream closed before attach")?;
-    let (request_id, view_id, access_token, _cols, _rows) = match attach {
+    let (request_id, view_id, access_token, attach_generation, resume, wants_state) = match attach {
         SessionControlMessage::AttachView {
             request_id,
             session_id: requested_session,
             view_id,
             access_token,
-            cols,
-            rows,
-        } if requested_session == session_id => (request_id, view_id, access_token, cols, rows),
+            attach_generation,
+            resume,
+            wants_state,
+            ..
+        } if requested_session == session_id => (
+            request_id,
+            view_id,
+            access_token,
+            attach_generation,
+            resume,
+            wants_state,
+        ),
         _ => bail!("expected matching attach-view message"),
     };
     let session = registry
@@ -3937,8 +5389,69 @@ async fn handle_application_stream(
         .cloned()
         .context("unknown shared terminal session")?;
     let access = config.access_for(access_token.as_deref());
-    let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
-    session.refresh()?;
+    // A zero generation is a viewer that fences by rotating its wire id, so it
+    // has no lineage to order and must not go through takeover — the second
+    // such attach would be rejected as stale, correctly but uselessly.
+    let ordered = protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR && attach_generation > 0;
+    let attached = if ordered {
+        // Collect before stamping. Watermarks are only reachable through calls
+        // like this one, so an attach is the natural moment to retire the ones
+        // whose connections have all finished.
+        session.gc_attach_watermarks(
+            &client_id,
+            connection_scope.ledger().terminated_through(&client_id),
+        );
+        let fence_conn_id = connection_scope.ledger().highest_for(&client_id);
+        match session.take_over_view(
+            &view_id,
+            &client_id,
+            access,
+            attach_generation,
+            fence_conn_id,
+            resume.map(|hint| ResumeEvidence {
+                previous_session_epoch: hint.previous_session_epoch,
+                previous_attachment_epoch: hint.previous_attachment_epoch,
+                previous_terminal_revision: hint.previous_terminal_revision,
+            }),
+        ) {
+            Ok(taken) => taken,
+            Err(rejection) => {
+                // A rejection the viewer can act on. Without it the stream just
+                // closes, which is indistinguishable from a transport failure
+                // and sends the viewer down the ambiguous path.
+                let _ = control
+                    .write_message(
+                        &SessionControlMessage::AttachRejected {
+                            request_id,
+                            code: attach_reject_code(rejection.code),
+                            retryable: matches!(
+                                rejection.code,
+                                AttachRejectionCode::ViewInvalid | AttachRejectionCode::ViewLimit
+                            ),
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await;
+                return Err(anyhow::Error::new(rejection));
+            }
+        }
+    } else {
+        let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
+        let snapshot = session.control_snapshot();
+        TakeOver {
+            attachment_epoch,
+            resumed: false,
+            controller_cleared: false,
+            control_revision: snapshot.control_revision,
+            controller: snapshot.controller,
+        }
+    };
+    let attachment_epoch = attached.attachment_epoch;
+    // Takeover deliberately publishes nothing, so a `wants_state: false` attach
+    // creates no snapshot at all — that is its entire purpose.
+    if wants_state {
+        session.refresh()?;
+    }
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
     let presentation = (protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR)
         .then(|| host_config.borrow().as_ref().clone());
@@ -3953,21 +5466,50 @@ async fn handle_application_stream(
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
+                resumed: attached.resumed,
+                // Read under the same lock the takeover mutated, so the viewer
+                // cannot observe a controller torn between two reads.
+                controller: attached
+                    .controller
+                    .as_ref()
+                    .map(|controller| ControllerInfo {
+                        controller_view_id: controller.view_id.clone(),
+                        control_epoch: controller.control_epoch,
+                    }),
+                control_revision: attached.control_revision,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await?;
     let (state_cancel, state_cancelled) = tokio::sync::watch::channel(false);
-    spawn_state_stream(
-        Arc::clone(&connection),
-        Arc::clone(&session),
-        &view_id,
-        state_cancelled.clone(),
-        state_codec,
-        protocol_minor,
-        host_config.clone(),
-    )
-    .await?;
+    // A view that declined state gets no stream and no snapshot; its
+    // `ViewAttached` satisfies only the per-view half of the input barrier.
+    if wants_state {
+        // Registration is epoch-checked against the authority's *current*
+        // attachment, and a handler whose registration fails aborts without
+        // spawning. That is the half of the race cancellation alone cannot
+        // win: either the takeover finds this handle and fires it, or this
+        // registration finds the epoch already superseded and self-cancels —
+        // no interleaving lets a superseded stream run.
+        let registration_cancel = state_cancel.clone();
+        session.register_state_stream(
+            &view_id,
+            attachment_epoch,
+            StateStreamCancel::new(move || {
+                registration_cancel.send_replace(true);
+            }),
+        )?;
+        spawn_state_stream(
+            Arc::clone(&connection),
+            Arc::clone(&session),
+            &view_id,
+            state_cancelled.clone(),
+            state_codec,
+            protocol_minor,
+            host_config.clone(),
+        )
+        .await?;
+    }
 
     let result = session_control_loop(
         &mut control,
@@ -3985,7 +5527,19 @@ async fn handle_application_stream(
     )
     .await;
     state_cancel.send_replace(true);
-    session.detach_view(&view_id, &client_id);
+    // Epoch-conditional, because a handler outlives its attachment: once a
+    // takeover has replaced this view, detaching by (view, client) alone would
+    // destroy the successor's attachment — and if it lands between that
+    // takeover and its state-stream registration, the successor never gets a
+    // stream at all.
+    session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
+    // This handler is finishing, so the fence may have just advanced past the
+    // connection it was holding down. Ask again on the way out rather than
+    // leaving the collection to the client's next attach, which may never come.
+    session.gc_attach_watermarks(
+        &client_id,
+        connection_scope.ledger().terminated_through(&client_id),
+    );
     result
 }
 
@@ -4015,9 +5569,30 @@ async fn session_control_loop(
                 attachment_epoch: epoch,
                 cols,
                 rows,
+                expected_control_revision,
                 ..
             } if view_id == attached_view_id && epoch == attachment_epoch => {
-                session.claim_control(&view_id, client_id, cols, rows)?;
+                // The guard above proves only that the command names the epoch
+                // this handler was born with — and a takeover moves the
+                // authority on without telling this loop, so both sides of
+                // that comparison can be stale together. The checked call is
+                // what compares against the *authority's* current attachment,
+                // under its own lock, and applies the client's swap while it
+                // is in there.
+                match session.claim_control_checked(
+                    &view_id,
+                    client_id,
+                    attachment_epoch,
+                    cols,
+                    rows,
+                    expected_control_revision,
+                )? {
+                    ControlClaim::Granted(_) => {}
+                    // The swap lost. Re-announce so the loser learns the
+                    // revision it would have to swap against next; saying
+                    // nothing would leave it retrying against a stale one.
+                    ControlClaim::Rejected(_) => session.announce_control(),
+                }
             }
             SessionControlMessage::Resize {
                 view_id,
@@ -4028,9 +5603,10 @@ async fn session_control_loop(
                 rows,
             } if view_id == attached_view_id && epoch == attachment_epoch => {
                 if session
-                    .resize_view(
+                    .resize_view_checked(
                         &view_id,
                         client_id,
+                        attachment_epoch,
                         control_epoch,
                         resize_sequence,
                         cols,
@@ -4144,6 +5720,12 @@ async fn spawn_state_stream(
     protocol_minor: u16,
     mut host_config: HostConfigReceiver,
 ) -> Result<()> {
+    // Before anything is opened, let alone written: a takeover that fires
+    // between registration and here has already superseded this attachment,
+    // and the cheapest way to write nothing is to start nothing.
+    if *cancelled.borrow_and_update() {
+        return Ok(());
+    }
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
     state
@@ -4153,48 +5735,53 @@ async fn spawn_state_stream(
             view_id: Some(view_id.to_owned()),
         })
         .await?;
-    let mut controls = session.subscribe_control();
+    let mut controls = session.subscribe_control_state();
     let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
+    let mut concluded = session.subscribe_conclusion();
     let mut previous = session.logical_snapshot();
+    // Setup is not exempt from cancellation. The guarantee this stream is held
+    // to is that no write *begins* after cancellation is observed, and the
+    // opening burst below is writes like any other: a takeover that fires
+    // mid-setup must not have the rest of it land on a superseded attachment.
+    macro_rules! write_setup {
+        ($message:expr) => {
+            if *cancelled.borrow_and_update() {
+                return Ok(());
+            }
+            state.write_state_message($message, state_codec).await?;
+        };
+    }
     if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
         let presentation = host_config.borrow_and_update().as_ref().clone();
-        state
-            .write_state_message(
-                &StateMessage::ConfigurationChanged { presentation },
-                state_codec,
-            )
-            .await?;
+        write_setup!(&StateMessage::ConfigurationChanged { presentation });
     }
     if let Some(snapshot) = previous.as_ref() {
-        state
-            .write_state_message(&StateMessage::Snapshot(snapshot.clone()), state_codec)
-            .await?;
+        write_setup!(&StateMessage::Snapshot(snapshot.clone()));
     }
-    let (controller, cols, rows, layout_epoch) = session.control_state();
-    if let Some(controller) = controller {
-        state
-            .write_state_message(
-                &StateMessage::ControlChanged {
-                    controller_view_id: controller.view_id,
-                    control_epoch: controller.control_epoch,
-                    cols,
-                    rows,
-                    layout_epoch,
-                },
-                state_codec,
-            )
-            .await?;
+    // Same contract as the compact path: the opening frame is the live-update
+    // shape, so a viewer that opens a stream after a clear learns of it and one
+    // that opens with a controller present keeps the real revision.
+    if let Some(message) = control_state_message(&session.control_snapshot(), protocol_minor) {
+        write_setup!(&message);
     }
     if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
-        state
-            .write_state_message(
-                &StateMessage::ActivityChanged {
-                    activity: session.summary().activity,
-                },
-                state_codec,
-            )
-            .await?;
+        write_setup!(&StateMessage::ActivityChanged {
+            activity: session.summary().activity,
+        });
+    }
+    // A session that concluded before this stream opened has to say so here:
+    // the watch below only reports the transition, and a viewer attaching to
+    // an already-dead session would otherwise wait for news that never comes.
+    // Below the reconnect minor the frame is undecodable, so such a viewer
+    // keeps the only signal it has ever had — the stream ending.
+    if *concluded.borrow_and_update() {
+        if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+            write_setup!(&StateMessage::SessionEnded {
+                reason: session_end_reason(&session),
+            });
+        }
+        return Ok(());
     }
     tokio::spawn(async move {
         let mut patch_sequence = 0_u64;
@@ -4235,6 +5822,30 @@ async fn spawn_state_stream(
                     }
                     continue;
                 },
+                // §6.3: the host says why a session ended. Without this a
+                // connected viewer keeps a healthy connection to a session
+                // that no longer exists, and stays Live until it is told
+                // something by some other means — which, while attached and
+                // with the heartbeat answering, never comes.
+                ended = concluded.changed() => {
+                    if ended.is_err() {
+                        break;
+                    }
+                    if !*concluded.borrow_and_update() {
+                        continue;
+                    }
+                    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                        let _ = state
+                            .write_state_message(
+                                &StateMessage::SessionEnded {
+                                    reason: session_end_reason(&session),
+                                },
+                                state_codec,
+                            )
+                            .await;
+                    }
+                    break;
+                },
                 snapshot = snapshots.recv() => match snapshot {
                     Ok(snapshot) => {
                         let next_sequence = patch_sequence.saturating_add(1);
@@ -4255,14 +5866,16 @@ async fn spawn_state_stream(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 changed = controls.recv() => match changed {
-                    Ok(changed) => Some(StateMessage::ControlChanged {
-                        controller_view_id: changed.controller.view_id,
-                        control_epoch: changed.controller.control_epoch,
-                        cols: changed.cols,
-                        rows: changed.rows,
-                        layout_epoch: changed.layout_epoch,
-                    }),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(changed) => control_state_message(&changed, protocol_minor),
+                    // Skipping here would leave this viewer holding whatever
+                    // it last heard — including a controller that has since
+                    // been cleared — with nothing to correct it. Repairing is
+                    // what the compact arm already does, and what the activity
+                    // arm below does; this was the odd one out.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        session.announce_control();
+                        continue;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => match changed {
@@ -4346,7 +5959,7 @@ fn shared_sessions(
                 title: summary.title.unwrap_or_else(|| summary.executable.clone()),
                 cwd_label: summary.cwd,
                 running: !summary.exited,
-                attachable: true,
+                attachable: !session.has_concluded(),
                 read_write: config.advertises_write(),
                 created_at_ms: session.created_at_ms(),
                 activity: summary.activity,
@@ -4795,6 +6408,35 @@ impl RemoteTerminalRuntime for MeshRuntime {
         MeshRuntime::refresh_remote(self, session_id).await
     }
 
+    fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        MeshRuntime::subscribe_control_state(self)
+    }
+
+    async fn control_state(&self, session_id: &str) -> Option<RemoteControlState> {
+        MeshRuntime::last_control_state(self, session_id)
+    }
+
+    async fn claim_control_at(
+        &self,
+        session_id: &str,
+        view_id: &str,
+        attachment_epoch: u64,
+        cols: u16,
+        rows: u16,
+        expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
+        MeshRuntime::claim_control_at(
+            self,
+            session_id,
+            view_id,
+            attachment_epoch,
+            cols,
+            rows,
+            expected_control_revision,
+        )
+        .await
+    }
+
     async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64) {
         MeshRuntime::detach_view(self, session_id, view_id, attachment_epoch).await;
     }
@@ -4844,6 +6486,14 @@ impl RemoteTerminalRuntime for MeshRuntime {
 impl TerminalMesh for TruffleTerminalMesh {
     fn runtime(&self) -> Arc<dyn RemoteTerminalRuntime> {
         Arc::new(self.runtime())
+    }
+
+    fn set_session_status_source(&mut self, source: Arc<dyn SessionStatusSource>) {
+        TruffleTerminalMesh::set_session_status_source(self, source);
+    }
+
+    fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        TruffleTerminalMesh::shutdown_announcer(self)
     }
 
     async fn serve(
@@ -4962,6 +6612,7 @@ mod tests {
             server_io,
             registry,
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "desktop-instance".into(),
             Some("ios-device".into()),
             "truffle:peer:1".into(),
@@ -4969,6 +6620,7 @@ mod tests {
                 ghosttea::ConfigSnapshot::default().terminal_presentation(),
             ))
             .1,
+            ConnectionLedger::default().accept(),
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client
@@ -4998,11 +6650,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // The client above offered the highest minor this build knows, and is
+        // deliberately answered less: the compact endpoint implements none of
+        // the reconnect contract, and a client that is told 6 would stop
+        // protecting itself in exchange for fencing that is not there.
         assert!(matches!(
             hello,
             ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                protocol_minor: COMPACT_MAX_PROTOCOL_MINOR,
                 ref host_instance_id,
                 ref nonce,
                 state_codec: Some(StateCodec::CompactJsonV1),
@@ -5041,6 +6697,7 @@ mod tests {
             server_io,
             Registry::default(),
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "desktop-instance".into(),
             Some("expected-device".into()),
             "truffle:peer:1".into(),
@@ -5048,6 +6705,7 @@ mod tests {
                 ghosttea::ConfigSnapshot::default().terminal_presentation(),
             ))
             .1,
+            ConnectionLedger::default().accept(),
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client
@@ -5310,11 +6968,51 @@ mod tests {
         }
     }
 
+    /// What the scripted host does with the viewer's heartbeat stream.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum HeartbeatBehavior {
+        /// What a healthy host does.
+        Answer,
+        /// Connected and chatty, but never answering the ping that was asked:
+        /// a pong nobody is waiting for must refresh nothing, so this host is
+        /// indistinguishable from a silent one.
+        ReplayStalePongs,
+        /// Announce shutdown as soon as the stream opens.
+        AnnounceShutdown,
+    }
+
+    async fn scripted_heartbeat(
+        mut stream: ProtocolStream,
+        behavior: HeartbeatBehavior,
+    ) -> Result<()> {
+        while let Some(message) = stream
+            .read_message::<HeartbeatMessage>(MAX_HEARTBEAT_MESSAGE_BYTES)
+            .await?
+        {
+            let HeartbeatMessage::Ping { nonce } = message else {
+                continue;
+            };
+            // Answering the first probe is the earliest moment a host can be
+            // sure the viewer is bound to it and listening.
+            let answer = match behavior {
+                HeartbeatBehavior::Answer => HeartbeatMessage::Pong { nonce },
+                // Never a nonce this viewer has outstanding.
+                HeartbeatBehavior::ReplayStalePongs => HeartbeatMessage::Pong { nonce: u64::MAX },
+                HeartbeatBehavior::AnnounceShutdown => HeartbeatMessage::HostShutdown {},
+            };
+            stream
+                .write_message(&answer, MAX_HEARTBEAT_MESSAGE_BYTES)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn serve_scripted_host(
         connection: Arc<dyn MeshConnection>,
         host_instance_id: String,
         remote_session_id: String,
         gate: SnapshotGate,
+        heartbeat: HeartbeatBehavior,
     ) -> Result<()> {
         let control_stream = connection
             .accept_stream()
@@ -5353,6 +7051,10 @@ mod tests {
             while let Some(stream) = streams_connection.accept_stream().await? {
                 let mut view_control = ProtocolStream::new(stream);
                 let preface = view_control.read_preface().await?;
+                if preface.stream_kind == StreamKind::Heartbeat {
+                    tokio::spawn(scripted_heartbeat(view_control, heartbeat));
+                    continue;
+                }
                 if preface.stream_kind != StreamKind::SessionControl {
                     continue;
                 }
@@ -5380,6 +7082,9 @@ mod tests {
                             rows: 24,
                             read_write: true,
                             presentation: None,
+                            resumed: false,
+                            controller: None,
+                            control_revision: 0,
                         },
                         MAX_CONTROL_MESSAGE_BYTES,
                     )
@@ -5445,6 +7150,163 @@ mod tests {
         Ok(())
     }
 
+    /// A host that answers every attach with the same rejection. `retryable`
+    /// is settable so a test can show the advisory flag moves nothing: the
+    /// §6.2 code table is what decides the action.
+    async fn serve_rejecting_host(
+        connection: Arc<dyn MeshConnection>,
+        host_instance_id: String,
+        remote_session_id: String,
+        code: AttachRejectCode,
+        retryable: bool,
+        accepts: usize,
+    ) -> Result<()> {
+        let control_stream = connection
+            .accept_stream()
+            .await?
+            .context("rejecting host got no control stream")?;
+        let mut control = ProtocolStream::new(control_stream);
+        let preface = control.read_preface().await?;
+        if preface.stream_kind != StreamKind::ConnectionControl {
+            bail!("rejecting host expected a connection-control stream");
+        }
+        let nonce = match control
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await?
+            .context("rejecting host got no client hello")?
+        {
+            ConnectionMessage::ClientHello { nonce, .. } => nonce,
+            _ => bail!("rejecting host expected a client hello"),
+        };
+        control
+            .write_message(
+                &ConnectionMessage::ServerHello {
+                    protocol_major: PROTOCOL_MAJOR,
+                    protocol_minor: PROTOCOL_MINOR,
+                    host_instance_id,
+                    nonce,
+                    state_codec: Some(StateCodec::CompactJsonV1),
+                },
+                MAX_CONTROL_MESSAGE_BYTES,
+            )
+            .await?;
+
+        let streams_connection = Arc::clone(&connection);
+        let session = remote_session_id.clone();
+        let streams = tokio::spawn(async move {
+            // Accepting the first `accepts` attaches is what lets a test reach
+            // the secondary path at all: the feed has to be live before a
+            // refusal can be about one pane rather than the whole session.
+            let mut accepted = 0_usize;
+            let mut epoch = 0_u64;
+            while let Some(stream) = streams_connection.accept_stream().await? {
+                let mut view_control = ProtocolStream::new(stream);
+                let preface = view_control.read_preface().await?;
+                if preface.stream_kind != StreamKind::SessionControl {
+                    continue;
+                }
+                let (request_id, wire_view_id) = match view_control
+                    .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                    .await?
+                    .context("rejecting host got no attach")?
+                {
+                    SessionControlMessage::AttachView {
+                        request_id,
+                        view_id,
+                        ..
+                    } => (request_id, view_id),
+                    _ => bail!("rejecting host expected an attach"),
+                };
+                if accepted >= accepts {
+                    view_control
+                        .write_message(
+                            &SessionControlMessage::AttachRejected {
+                                request_id,
+                                code,
+                                retryable,
+                            },
+                            MAX_CONTROL_MESSAGE_BYTES,
+                        )
+                        .await?;
+                    continue;
+                }
+                accepted += 1;
+                epoch += 1;
+                view_control
+                    .write_message(
+                        &SessionControlMessage::ViewAttached {
+                            request_id,
+                            session_epoch: 1,
+                            layout_epoch: 1,
+                            attachment_epoch: epoch,
+                            cols: 80,
+                            rows: 24,
+                            read_write: true,
+                            presentation: None,
+                            resumed: false,
+                            controller: None,
+                            control_revision: 1,
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+                let mut state = ProtocolStream::new(streams_connection.open_stream().await?);
+                state
+                    .write_preface(&StreamPreface {
+                        stream_kind: StreamKind::LiveState,
+                        session_id: Some(session.clone()),
+                        view_id: Some(wire_view_id),
+                    })
+                    .await?;
+                tokio::spawn(async move {
+                    let _ = state
+                        .write_state_message(
+                            &StateMessage::Snapshot(logical_snapshot(1, "rejecting")),
+                            StateCodec::CompactJsonV1,
+                        )
+                        .await;
+                    std::future::pending::<()>().await;
+                });
+                tokio::spawn(async move {
+                    while view_control
+                        .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                        .await
+                        .is_ok_and(|message| message.is_some())
+                    {}
+                });
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        while let Some(message) = control
+            .read_message::<ConnectionMessage>(MAX_CONTROL_MESSAGE_BYTES)
+            .await?
+        {
+            if let ConnectionMessage::ListSessions { request_id } = message {
+                control
+                    .write_message(
+                        &ConnectionMessage::Sessions {
+                            request_id,
+                            sessions: vec![SharedSessionSummary {
+                                session_id: remote_session_id.clone(),
+                                title: "rejecting".into(),
+                                cwd_label: None,
+                                running: true,
+                                attachable: true,
+                                read_write: true,
+                                created_at_ms: 0,
+                                activity: ghosttea::SessionActivity::default(),
+                            }],
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await?;
+            }
+        }
+        streams.abort();
+        Ok(())
+    }
+
     /// The loopback transport carries no tailnet identity, so tests assert the
     /// client id directly.
     struct StaticClientResolver(&'static str);
@@ -5460,6 +7322,10 @@ mod tests {
         server: Arc<LoopbackConnection>,
         task: tokio::task::JoinHandle<Result<()>>,
         _presentation: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
+        /// The host's view of its own connections, so a test can ask whether
+        /// this one is fully terminated.
+        connections: ConnectionLedger,
+        connection_id: u64,
     }
 
     impl LoopbackHost {
@@ -5477,10 +7343,31 @@ mod tests {
         registry: &Registry,
         host_instance_id: &str,
     ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
+        connect_loopback_at(
+            registry,
+            host_instance_id,
+            PROTOCOL_MINOR,
+            HostServices::default(),
+        )
+        .await
+    }
+
+    /// `offered_minor` is what the viewer asks for; the host answers with the
+    /// negotiated minimum, so passing < REMOTE_RECONNECT_PROTOCOL_MINOR gives
+    /// a genuine legacy pair rather than a simulated one.
+    async fn connect_loopback_at(
+        registry: &Registry,
+        host_instance_id: &str,
+        offered_minor: u16,
+        services: HostServices,
+    ) -> Result<(Arc<RemoteHostConnection>, LoopbackHost)> {
         let (client, server) = loopback_pair();
         let (presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
             ghosttea::ConfigSnapshot::default().terminal_presentation(),
         ));
+        let connections = ConnectionLedger::default();
+        let scope = connections.accept();
+        let connection_id = scope.id();
         let task = tokio::spawn(serve_connection(
             Arc::clone(&server) as Arc<dyn MeshConnection>,
             registry.clone(),
@@ -5488,16 +7375,19 @@ mod tests {
                 allow_tailnet_write: true,
                 ..TruffleTerminalConfig::default()
             },
+            services,
             host_instance_id.to_owned(),
             Arc::new(StaticClientResolver("truffle:peer:1")) as Arc<dyn ClientResolver>,
             None,
             presentation_rx,
+            scope,
         ));
         let connection = client_handshake(
             client as Arc<dyn MeshConnection>,
             "viewer-device",
             "viewer-instance",
             host_instance_id,
+            offered_minor,
         )
         .await?;
         Ok((
@@ -5506,6 +7396,8 @@ mod tests {
                 server,
                 task,
                 _presentation: presentation,
+                connections,
+                connection_id,
             },
         ))
     }
@@ -5564,9 +7456,11 @@ mod tests {
         runtime: MeshRuntime,
         transport: Arc<TestTransport>,
         registry: Registry,
+        services: HostServices,
         remote_session_id: String,
         session_id: String,
         hosts: Vec<LoopbackHost>,
+        offered_minor: u16,
     }
 
     impl Fixture {
@@ -5575,7 +7469,27 @@ mod tests {
             Self::attached_with(quiet_reconnect()).await
         }
 
+        /// A pair that negotiated below the reconnect minor, so the viewer is
+        /// on the rotation path — the compatibility half of every behavior.
+        async fn attached_legacy() -> Result<Self> {
+            Self::attached_at(quiet_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await
+        }
+
         async fn attached_with(config: MeshReconnectConfig) -> Result<Self> {
+            Self::attached_at(config, PROTOCOL_MINOR).await
+        }
+
+        async fn attached_at(config: MeshReconnectConfig, offered_minor: u16) -> Result<Self> {
+            Self::attached_serving(config, offered_minor, HostServices::default()).await
+        }
+
+        /// The full form: the daemon-side services the host serves with are
+        /// what a test drives when it is the seam under test.
+        async fn attached_serving(
+            config: MeshReconnectConfig,
+            offered_minor: u16,
+            services: HostServices,
+        ) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = spawn_host_session(&registry)?;
             let transport = TestTransport::new("host-1");
@@ -5584,7 +7498,8 @@ mod tests {
             runtime
                 .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
                 .await;
-            let (connection, host) = connect_loopback(&registry, "host-1").await?;
+            let (connection, host) =
+                connect_loopback_at(&registry, "host-1", offered_minor, services.clone()).await?;
             transport.queue(connection);
 
             let summary = runtime
@@ -5604,9 +7519,11 @@ mod tests {
                 runtime,
                 transport,
                 registry,
+                services,
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![host],
+                offered_minor,
             };
             fixture
                 .runtime
@@ -5618,11 +7535,19 @@ mod tests {
         /// An open remote session whose host withholds snapshots until told.
         /// Returns before the first view has attached.
         async fn scripted(gate: SnapshotGate) -> Result<Self> {
+            Self::scripted_at(gate, quiet_reconnect(), HeartbeatBehavior::Answer).await
+        }
+
+        async fn scripted_at(
+            gate: SnapshotGate,
+            config: MeshReconnectConfig,
+            heartbeat: HeartbeatBehavior,
+        ) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = "scripted-session".to_owned();
             let transport = TestTransport::new("host-1");
             let runtime = MeshRuntime::new();
-            runtime.set_reconnect_config(quiet_reconnect());
+            runtime.set_reconnect_config(config);
             runtime
                 .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
                 .await;
@@ -5636,12 +7561,14 @@ mod tests {
                 "host-1".into(),
                 remote_session_id.clone(),
                 gate,
+                heartbeat,
             ));
             let connection = client_handshake(
                 client as Arc<dyn MeshConnection>,
                 "viewer-device",
                 "viewer-instance",
                 "host-1",
+                PROTOCOL_MINOR,
             )
             .await?;
             transport.queue(connection);
@@ -5663,13 +7590,93 @@ mod tests {
                 runtime,
                 transport,
                 registry,
+                services: HostServices::default(),
                 remote_session_id,
                 session_id: summary.id,
                 hosts: vec![LoopbackHost {
                     server,
                     task,
                     _presentation: presentation,
+                    // The scripted host speaks the protocol itself instead of
+                    // going through `serve_connection`, so it keeps no ledger.
+                    connections: ConnectionLedger::default(),
+                    connection_id: 0,
                 }],
+                offered_minor: PROTOCOL_MINOR,
+            })
+        }
+
+        /// An open session whose host refuses every attach with `code`.
+        async fn rejecting(code: AttachRejectCode, retryable: bool) -> Result<Self> {
+            Self::rejecting_after(code, retryable, 0).await
+        }
+
+        /// The same, after accepting `accepts` attaches — enough to get a feed
+        /// live so a refusal can land on a secondary.
+        async fn rejecting_after(
+            code: AttachRejectCode,
+            retryable: bool,
+            accepts: usize,
+        ) -> Result<Self> {
+            let registry = Registry::default();
+            let remote_session_id = "rejected-session".to_owned();
+            let transport = TestTransport::new("host-1");
+            let runtime = MeshRuntime::new();
+            runtime.set_reconnect_config(quiet_reconnect());
+            runtime
+                .install_transport(Arc::clone(&transport) as Arc<dyn HostTransport>)
+                .await;
+
+            let (client, server) = loopback_pair();
+            let (presentation, _presentation_rx) = tokio::sync::watch::channel(Arc::new(
+                ghosttea::ConfigSnapshot::default().terminal_presentation(),
+            ));
+            let task = tokio::spawn(serve_rejecting_host(
+                Arc::clone(&server) as Arc<dyn MeshConnection>,
+                "host-1".into(),
+                remote_session_id.clone(),
+                code,
+                retryable,
+                accepts,
+            ));
+            let connection = client_handshake(
+                client as Arc<dyn MeshConnection>,
+                "viewer-device",
+                "viewer-instance",
+                "host-1",
+                PROTOCOL_MINOR,
+            )
+            .await?;
+            transport.queue(connection);
+
+            let summary = runtime
+                .open_session(RemoteSessionOpen {
+                    device_id: TEST_DEVICE.into(),
+                    remote_session_id: remote_session_id.clone(),
+                    cols: 80,
+                    rows: 24,
+                    owner_id: None,
+                    frames: ghosttea::FrameHub::new(8),
+                    text_engine: Arc::new(std::sync::Mutex::new(
+                        ghosttea::TextEngine::discover().context("discover text engine")?,
+                    )),
+                })
+                .await?;
+            Ok(Self {
+                runtime,
+                transport,
+                registry,
+                services: HostServices::default(),
+                remote_session_id,
+                session_id: summary.id,
+                hosts: vec![LoopbackHost {
+                    server,
+                    task,
+                    _presentation: presentation,
+                    connections: ConnectionLedger::default(),
+                    connection_id: 0,
+                }],
+                offered_minor: PROTOCOL_MINOR,
             })
         }
 
@@ -5715,7 +7722,13 @@ mod tests {
 
         /// Queue a fresh host connection for the next dial.
         async fn arm_host(&mut self, host_instance_id: &str) -> Result<()> {
-            let (connection, host) = connect_loopback(&self.registry, host_instance_id).await?;
+            let (connection, host) = connect_loopback_at(
+                &self.registry,
+                host_instance_id,
+                self.offered_minor,
+                self.services.clone(),
+            )
+            .await?;
             self.transport.queue(connection);
             self.hosts.push(host);
             Ok(())
@@ -5893,8 +7906,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn attaching_a_remote_view_reports_live_with_a_wire_identity() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+    async fn a_legacy_pair_rotates_the_wire_identity_per_attempt() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
         let lifecycle = fixture.lifecycle().await;
         assert_eq!(lifecycle.state, RemoteLifecycleState::Live);
         assert_eq!(lifecycle.device_name, "studio-mac");
@@ -5915,6 +7928,1104 @@ mod tests {
             .map(|view| view.wire_view_id.clone())
             .expect("attached view");
         assert_eq!(wire, "r:pane-1#g1");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reconnect_capable_pair_keeps_one_identity_and_advances_the_lineage() -> Result<()> {
+        let mut fixture = Fixture::attached().await?;
+        fixture.await_first_snapshot().await?;
+        let wire = |fixture: &Fixture| {
+            let session_id = fixture.session_id.clone();
+            let views = Arc::clone(&fixture.runtime.views);
+            async move {
+                views
+                    .lock()
+                    .await
+                    .get(&(session_id, "pane-1".to_owned()))
+                    .map(|view| view.wire_view_id.clone())
+            }
+        };
+        // Reused, not rotated: on this path the host mints a fresh epoch for
+        // the same identity, so a new id per attempt would defeat the fence
+        // rather than provide one.
+        assert_eq!(wire(&fixture).await.as_deref(), Some("r:pane-1"));
+        let before = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-1")
+            .await
+            .expect("attached")
+            .0;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        assert_eq!(wire(&fixture).await.as_deref(), Some("r:pane-1"));
+        // The lineage counter still advances — it is what a minor-6 host
+        // orders attempts by, it just stopped riding in the identity.
+        let remote = fixture.remote().await;
+        let generation = remote
+            .lifecycle
+            .state
+            .lock()
+            .unwrap()
+            .views
+            .get("pane-1")
+            .map(|record| record.generation);
+        assert_eq!(generation, Some(2));
+        assert_ne!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-1")
+                .await
+                .expect("resumed")
+                .0,
+            before
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reconnect_capable_host_announces_the_controller_with_a_real_revision() -> Result<()>
+    {
+        let fixture = Fixture::attached().await?;
+        let mut states = fixture.runtime.subscribe_control_state();
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.claim_control("r:pane-1", "truffle:peer:1", 100, 30)?;
+        // The stream's opening frame announces the absence of a controller and
+        // can still be in flight here; the claim is the one being asserted.
+        let claimed = next_control_state(&mut states, |state| state.controller.is_some()).await?;
+        let controller = claimed
+            .controller
+            .clone()
+            .expect("a controller was announced");
+        // Translated back to the local id before it crosses the mesh boundary.
+        assert_eq!(controller.view_id, "pane-1");
+        // A reconnect-capable authority starts at 1, so 0 survives only as the
+        // legacy sentinel a client must never compare-and-swap against.
+        assert!(claimed.control_revision >= 1);
+        assert_eq!(
+            fixture
+                .runtime
+                .last_control_state(&fixture.session_id)
+                .and_then(|state| state.controller)
+                .map(|controller| controller.view_id),
+            Some("pane-1".to_owned()),
+            "reconciliation did not retain the announced controller"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_legacy_host_reports_the_unknown_revision_sentinel() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
+        let mut states = fixture.runtime.subscribe_control_state();
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.claim_control("r:pane-1#g1", "truffle:peer:1", 100, 30)?;
+        let state = tokio::time::timeout(Duration::from_secs(5), states.recv()).await??;
+        assert_eq!(
+            state.controller.map(|controller| controller.view_id),
+            Some("pane-1".to_owned())
+        );
+        // This host cannot report revisions, and a client must never CAS
+        // against the value that says so.
+        assert_eq!(state.control_revision, 0);
+        Ok(())
+    }
+
+    /// Reconnecting is published by the reader that saw the disconnect, and
+    /// arming follows it; a test polling for the state can land inside that
+    /// gap. The claim is that recovery gets armed — not that it is armed in
+    /// the same instant the state is announced.
+    async fn wait_for_engine(lifecycle: &SessionLifecycle) -> Result<()> {
+        for _ in 0..200 {
+            if lifecycle.has_engine() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        bail!("a disconnected session never armed recovery")
+    }
+
+    /// The next announced control state the predicate accepts, or an error
+    /// rather than a hang.
+    async fn next_control_state(
+        states: &mut broadcast::Receiver<RemoteControlState>,
+        accept: impl Fn(&RemoteControlState) -> bool,
+    ) -> Result<RemoteControlState> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = states.recv().await?;
+                if accept(&state) {
+                    return Ok(state);
+                }
+            }
+        })
+        .await
+        .context("no matching control-state announcement arrived")?
+    }
+
+    /// The opening frame of a state stream has to be able to say "nobody holds
+    /// control, at revision N". A viewer that only ever learns control by
+    /// watching it change starts blind, with no revision to claim against.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stream_that_opens_with_no_controller_still_reports_the_revision() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let mut announced = None;
+        for _ in 0..200 {
+            announced = fixture.runtime.last_control_state(&fixture.session_id);
+            if announced.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let announced = announced.context("the opening frame announced no control state")?;
+        assert!(
+            announced.controller.is_none(),
+            "nobody has claimed control on this session"
+        );
+        assert!(
+            announced.control_revision >= 1,
+            "an absent controller was reported at the un-CAS-able sentinel"
+        );
+        Ok(())
+    }
+
+    /// A re-attached feed opening its stream must not tell the viewer less
+    /// than it already knows. The legacy frame carries no revision at all, so
+    /// sending that shape to a reconnect-capable viewer retracts the revision
+    /// the resume path compare-and-swaps against — and it retracts it on the
+    /// resume itself, which is the one path §4.2.3 exists to protect.
+    ///
+    /// The feed is the subject because only the feed's reader publishes
+    /// control state; a secondary's stream is drained without being read into
+    /// mesh state, so it can neither carry this bug nor prove its absence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_re_attached_feed_does_not_retract_the_revision() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+        let mut states = fixture.runtime.subscribe_control_state();
+
+        // Control belongs to a second viewer, which is what makes it outlive
+        // this viewer's re-attach: the feed's fresh stream then opens with a
+        // controller present, the case the legacy frame cannot describe.
+        session.attach_view("peer:pane", "truffle:peer:2")?;
+        session.claim_control("peer:pane", "truffle:peer:2", 100, 30)?;
+        let claimed = next_control_state(&mut states, |state| state.controller.is_some()).await?;
+        assert!(claimed.control_revision >= 1);
+
+        fixture.runtime.refresh_remote(&fixture.session_id).await?;
+        let reopened = next_control_state(&mut states, |_| true).await?;
+        assert!(
+            reopened.controller.is_some(),
+            "the opening frame lost the controller"
+        );
+        assert!(
+            reopened.control_revision >= 1,
+            "re-attaching the feed downgraded the session to the legacy sentinel"
+        );
+        Ok(())
+    }
+
+    /// A secondary tells a reconnect-capable host not to open a state stream,
+    /// and must then not wait for one. Waiting would cost the whole handshake
+    /// timeout and end in a failure that names the wrong thing, so the bound
+    /// here is far below it: this test is about the hang, not the attach.
+    ///
+    /// The third view is the proof the host opened nothing. Every state stream
+    /// for a connection arrives on one accept queue, so an unclaimed stream
+    /// would be handed to the next attach and fail its preface check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_declines_its_state_stream_and_does_not_wait_for_one() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-2"),
+        )
+        .await
+        .context("a secondary attach waited for a stream its host was told not to open")??;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-3"),
+        )
+        .await
+        .context("the attach after a secondary stalled")??;
+        assert_eq!(
+            fixture.feed_reader_count().await,
+            1,
+            "more than one reader is publishing into the replica"
+        );
+        assert_eq!(
+            fixture.view_state("pane-2").await,
+            Some(RemoteViewState::Attached)
+        );
+        assert_eq!(
+            fixture.view_state("pane-3").await,
+            Some(RemoteViewState::Attached)
+        );
+        Ok(())
+    }
+
+    /// The compatibility half: secondaries still attach on a pair that
+    /// negotiated below the reconnect minor.
+    ///
+    /// Scope: this cannot exercise the `!supports_reconnect()` guard on the
+    /// request itself. That guard exists for hosts old enough to predate the
+    /// field and open a stream regardless; the host here is this same
+    /// implementation negotiated down, and it honours the field at any minor,
+    /// so it behaves identically with the guard removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_still_attaches_against_a_legacy_host() -> Result<()> {
+        let fixture = Fixture::attached_legacy().await?;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-2"),
+        )
+        .await
+        .context("a secondary attach against a legacy host stalled")??;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.runtime.attach_view(&fixture.session_id, "pane-3"),
+        )
+        .await
+        .context("the attach after a legacy secondary stalled")??;
+        assert_eq!(
+            fixture.view_state("pane-2").await,
+            Some(RemoteViewState::Attached)
+        );
+        Ok(())
+    }
+
+    /// A lifecycle with no runtime behind it, for the rules that must hold
+    /// under the lock regardless of who is calling.
+    fn test_lifecycle() -> Arc<SessionLifecycle> {
+        SessionLifecycle::new(
+            "session".to_owned(),
+            "device".to_owned(),
+            "device".to_owned(),
+            None,
+            broadcast::channel(8).0,
+            broadcast::channel(8).0,
+        )
+    }
+
+    /// A daemon that always gives the same answer. The real one reads its
+    /// registry and its tombstones; what crosses the seam is only the verdict.
+    struct StaticSessionStatus(ghosttea::SessionStatus);
+
+    impl SessionStatusSource for StaticSessionStatus {
+        fn session_status(&self, _session_id: &str) -> ghosttea::SessionStatus {
+            self.0
+        }
+    }
+
+    fn serving_status(status: ghosttea::SessionStatus) -> HostServices {
+        HostServices {
+            session_status: Some(Arc::new(StaticSessionStatus(status))),
+            shutdown: HostShutdownAnnouncer::new(),
+        }
+    }
+
+    /// The kill-during-outage story: a session that ends while the viewer is
+    /// away is gone from the listing when it comes back, and absence alone
+    /// cannot say why. Without the consult every such session reads as
+    /// "unavailable", which tells a user nothing about what happened to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_killed_during_an_outage_reports_why_not_just_absence() -> Result<()> {
+        let mut fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Ended {
+                cause: ghosttea::SessionEndCause::Exited { code: Some(0) },
+            }),
+        )
+        .await?;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        // The host outlives the session: it comes back as the same instance,
+        // so nothing here can be mistaken for a restart.
+        fixture
+            .registry
+            .write()
+            .unwrap()
+            .remove(&fixture.remote_session_id);
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        let lifecycle = fixture.lifecycle().await;
+        assert_eq!(lifecycle.state, RemoteLifecycleState::Ended);
+        assert_eq!(
+            lifecycle.reason,
+            Some(RemoteEndedReason::SessionExited),
+            "absence was reported without the host's own account of it"
+        );
+        Ok(())
+    }
+
+    /// `Unknown` is the honest answer for a tombstone that expired or was
+    /// never written, and it must never be sharpened into a specific end.
+    ///
+    /// Scope: this pins the no-upgrade rule, not the consult — it passes with
+    /// the consult disabled too, because falling back to the listing's own
+    /// verdict is the same answer arrived at without asking.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unknown_answer_leaves_absence_where_it_was() -> Result<()> {
+        let mut fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Unknown),
+        )
+        .await?;
+
+        fixture.kill_host();
+        fixture
+            .wait_for_state(RemoteLifecycleState::Suspended)
+            .await?;
+        fixture
+            .registry
+            .write()
+            .unwrap()
+            .remove(&fixture.remote_session_id);
+        fixture.arm_host("host-1").await?;
+        fixture
+            .runtime
+            .reconnect_session(&fixture.session_id)
+            .await?;
+
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::SessionUnavailable),
+            "an unknown fate was upgraded to a specific one"
+        );
+        Ok(())
+    }
+
+    /// The drain's first act, seen from the other end. A viewer that is told
+    /// the host is going away stops waiting for it, instead of spending the
+    /// probe window discovering the same thing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_announced_shutdown_reaches_a_connected_viewer() -> Result<()> {
+        let fixture = Fixture::attached_serving(
+            quiet_reconnect(),
+            PROTOCOL_MINOR,
+            serving_status(ghosttea::SessionStatus::Live),
+        )
+        .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        fixture.services.shutdown.announce();
+
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::HostShutdown)
+        );
+        Ok(())
+    }
+
+    /// Heartbeat timings small enough to test, in the same proportion as the
+    /// shipped 3 s / 6 s: probe at one unit of silence, give up at two.
+    fn probing_reconnect() -> MeshReconnectConfig {
+        MeshReconnectConfig {
+            heartbeat_idle: Duration::from_millis(60),
+            heartbeat_fail: Duration::from_millis(120),
+            // Long enough that a failed probe lands in Reconnecting and stays
+            // there to be observed, rather than resting immediately.
+            suspend_after: Duration::from_secs(60),
+            ..quiet_reconnect()
+        }
+    }
+
+    /// The failure the heartbeat exists for: a connection that is up, and a
+    /// host that talks, but no answer to what was actually asked. Without
+    /// this the session sits Live behind a dead host until the transport's
+    /// own idle timeout notices, half a minute later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unanswered_probe_declares_the_connection_dead() -> Result<()> {
+        let gate = SnapshotGate::default();
+        let fixture = Fixture::scripted_at(
+            gate.clone(),
+            probing_reconnect(),
+            HeartbeatBehavior::ReplayStalePongs,
+        )
+        .await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        // The scripted host sends nothing more after its snapshot, so contact
+        // goes quiet, the probe goes out, and the pong that comes back
+        // answers a nonce nobody is holding.
+        fixture
+            .wait_for_state(RemoteLifecycleState::Reconnecting)
+            .await?;
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_none(),
+            "the connection that failed its probe stayed in the cache"
+        );
+        Ok(())
+    }
+
+    /// The false-positive guard. A real host sends nothing unsolicited, so
+    /// every idle session is exactly the quiet a black-holed one presents —
+    /// the only difference is the answer, and answering has to be enough.
+    ///
+    /// The legacy pair is here for symmetry: below the reconnect minor no
+    /// heartbeat is opened at all, so nothing can declare it dead. That half
+    /// cannot fail while the host under test is this implementation, which
+    /// answers probes at any minor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_answered_probe_leaves_a_quiet_session_alone() -> Result<()> {
+        let capable = Fixture::attached_with(probing_reconnect()).await?;
+        let legacy =
+            Fixture::attached_at(probing_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await?;
+        // Four failure windows of silence, with nothing to break it but the
+        // heartbeat's own exchange.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            capable.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "an answering host lost its session to its own liveness check"
+        );
+        assert_eq!(
+            legacy.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "a pair that carries no heartbeat was declared dead by one"
+        );
+        Ok(())
+    }
+
+    /// A host that says it is going away is believed on the spot: waiting for
+    /// the probe to time out would spend six seconds pretending otherwise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_host_shutdown_on_the_heartbeat_stream_ends_the_session() -> Result<()> {
+        let gate = SnapshotGate::default();
+        let fixture = Fixture::scripted_at(
+            gate.clone(),
+            probing_reconnect(),
+            HeartbeatBehavior::AnnounceShutdown,
+        )
+        .await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::HostShutdown)
+        );
+        Ok(())
+    }
+
+    /// §5's commit-time rule, at the only layer that can enforce it: a task
+    /// holding a verdict for a connection that has since been replaced must
+    /// neither vouch for the replacement nor tear it down. Checking currency
+    /// and acting in two steps is what lets a descheduled task do both.
+    #[test]
+    fn a_superseded_connection_can_neither_vouch_nor_terminate() {
+        let lifecycle = test_lifecycle();
+        lifecycle.record_view("pane-1");
+        lifecycle.commit_view_attached("pane-1", 1, true);
+        lifecycle.bind_connection(2);
+        lifecycle.commit_live();
+
+        assert!(
+            !lifecycle.note_contact(1),
+            "a superseded connection refreshed the current one's contact clock"
+        );
+        assert!(lifecycle.note_contact(2));
+        assert!(
+            !lifecycle.commit_host_shutdown(1),
+            "a superseded connection ended a session it no longer serves"
+        );
+        assert_ne!(lifecycle.state_kind(), RemoteLifecycleState::Ended);
+        assert!(lifecycle.commit_host_shutdown(2));
+        assert_eq!(lifecycle.state_kind(), RemoteLifecycleState::Ended);
+    }
+
+    /// Silence is only evidence where the host had a reason to speak. A
+    /// session bound elsewhere, or holding nothing attached, must not be able
+    /// to condemn a connection it is not using.
+    #[test]
+    fn only_an_attached_session_on_this_connection_is_evidence_about_it() {
+        let lifecycle = test_lifecycle();
+        lifecycle.bind_connection(2);
+        lifecycle.commit_live();
+        assert_eq!(
+            lifecycle.contact_age(2),
+            None,
+            "a session with nothing attached vouched for a connection"
+        );
+
+        lifecycle.record_view("pane-1");
+        lifecycle.commit_view_attached("pane-1", 1, true);
+        lifecycle.commit_live();
+        assert!(lifecycle.contact_age(2).is_some());
+        assert_eq!(
+            lifecycle.contact_age(1),
+            None,
+            "a session reported on a connection it is not bound to"
+        );
+    }
+
+    /// The §6.2 table in one place. Each code's action turns on its scope, and
+    /// a code this viewer predates is treated as ambiguous rather than guessed
+    /// at — an unrecognised code must never be read as "just this pane".
+    #[test]
+    fn every_rejection_code_maps_to_its_table_action() {
+        // Session verdicts: terminal, whichever attach surfaced them.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::UnknownSession, false),
+            AttachFailure::Ended(RemoteEndedReason::SessionUnavailable)
+        ));
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::SessionEpochMismatch, false),
+            AttachFailure::Ended(RemoteEndedReason::HostRestarted)
+        ));
+        // Discarded outright: it marks nothing and re-elects nothing.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::StaleResume, true),
+            AttachFailure::Superseded
+        ));
+        // The only view-scoped code, and the only one that keeps its own
+        // variant: the disposition around it differs from a plain failure.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::ViewInvalid, true),
+            AttachFailure::ViewInvalid(_)
+        ));
+        // Definitive refusals: the host has answered, so no redial re-asks.
+        for code in [AttachRejectCode::ViewLimit, AttachRejectCode::AccessDenied] {
+            assert!(
+                matches!(
+                    attach_rejection_outcome(code, false),
+                    AttachFailure::Rejected(_)
+                ),
+                "{} should refuse the attempt without ending the session",
+                code.as_str()
+            );
+        }
+        // A code this viewer predates is the one that stays ambiguous, which
+        // is what earns it the retry the definitive refusals do not get.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::Unknown, false),
+            AttachFailure::Failed(_)
+        ));
+    }
+
+    /// `retryable` is advisory telemetry. A host that sets it on a code the
+    /// table says to give up on must not talk the viewer into a retry loop,
+    /// and the session behind it is not ended by a per-attach refusal.
+    ///
+    /// Scope: this pins the *outcome* end to end, not the connection
+    /// disposition — every caller of a failed attach already retires the
+    /// connection itself, so the table's disposition is only separable on the
+    /// secondary path, which no harness here can reach.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_view_limit_rejection_fails_the_attach_without_ending_the_session() -> Result<()> {
+        let fixture = Fixture::rejecting(AttachRejectCode::ViewLimit, true).await?;
+        let error = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await
+            .err()
+            .context("the host refused this attach")?;
+        assert!(
+            format!("{error:#}").contains("view limit"),
+            "the failure lost the reason: {error:#}"
+        );
+        assert_ne!(
+            fixture.lifecycle().await.state,
+            RemoteLifecycleState::Ended,
+            "a view-scoped refusal ended the whole session"
+        );
+        Ok(())
+    }
+
+    /// The guarantee the takeover path is written against: no write *begins*
+    /// after cancellation is observed. The opening burst is writes like any
+    /// other, so a stream cancelled before it starts must produce nothing —
+    /// otherwise a superseded attachment still receives a snapshot and a
+    /// control frame, which is precisely what the epoch fence exists to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_state_stream_writes_no_setup_frames() -> Result<()> {
+        let registry = Registry::default();
+        let remote_session_id = spawn_host_session(&registry)?;
+        let session = registry
+            .read()
+            .unwrap()
+            .get(&remote_session_id)
+            .cloned()
+            .expect("host session");
+        session.attach_view("r:pane-1", "truffle:peer:1")?;
+
+        let (client, server) = loopback_pair();
+        let (cancel, cancelled) = tokio::sync::watch::channel(false);
+        // Cancelled before the stream is asked for anything at all.
+        cancel.send_replace(true);
+        let (_presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
+            ghosttea::ConfigSnapshot::default().terminal_presentation(),
+        ));
+        spawn_state_stream(
+            Arc::clone(&server) as Arc<dyn MeshConnection>,
+            session,
+            "r:pane-1",
+            cancelled,
+            StateCodec::Json,
+            PROTOCOL_MINOR,
+            presentation_rx,
+        )
+        .await?;
+
+        // The stream itself may be opened — that is not a write — but nothing
+        // may be written on it.
+        let stream = tokio::time::timeout(Duration::from_millis(200), client.accept_stream()).await;
+        let Ok(Ok(Some(stream))) = stream else {
+            return Ok(());
+        };
+        let mut state = ProtocolStream::new(stream);
+        let framed = tokio::time::timeout(Duration::from_millis(200), state.read_preface()).await;
+        assert!(
+            framed.is_err() || framed.unwrap().is_err(),
+            "a cancelled stream still wrote its opening frames"
+        );
+        Ok(())
+    }
+
+    /// A session that ends while a viewer is watching has to say so. The
+    /// tombstone path only covers sessions that died during an outage; with a
+    /// live connection and the heartbeat answering, nothing else would ever
+    /// tell this viewer, and it would sit Live on a session that is gone.
+    ///
+    /// The connection is the second half: one session concluding is not a
+    /// transport fault, and retiring the connection here would take every
+    /// sibling session on the same device down with it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_that_ends_while_watched_reports_it_and_keeps_the_connection() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.terminate(ghosttea::TerminationSource::User)?;
+
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::SessionExited),
+            "the viewer never learned why the session it was watching ended"
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a session ending cleanly retired the connection its siblings ride"
+        );
+        Ok(())
+    }
+
+    /// A secondary declines its state stream, so it has no control channel of
+    /// its own to hear the outcome on. Claiming from one must still work:
+    /// control is a property of the session, not of the pane that asked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_streamless_secondary_can_still_claim_control() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let attachment = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.runtime.claim_control_at(
+                &fixture.session_id,
+                "pane-2",
+                attachment.attachment_epoch,
+                100,
+                30,
+                None,
+            ),
+        )
+        .await
+        .context("claiming from a secondary hung")??;
+
+        let RemoteControlOutcome::Claimed(state) = outcome else {
+            bail!("a secondary's claim was rejected");
+        };
+        assert_eq!(
+            state.controller.map(|controller| controller.view_id),
+            Some("pane-2".to_owned())
+        );
+        Ok(())
+    }
+
+    /// The compare-and-swap the whole reclaim path rests on: a claim naming a
+    /// revision the host has moved past must lose. Discarding the expectation
+    /// host-side would silently turn every reclaim back into last-write-wins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_claim_against_a_stale_revision_is_refused() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let attachment = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+        // Subscribe first, then move the revision on and wait for the viewer
+        // to have seen it: otherwise the announcement below could still be in
+        // flight and settle the swap by arriving, which would let this test
+        // pass on a race rather than on the comparison it is about.
+        let mut states = fixture.runtime.subscribe_control_state();
+        session.claim_control("r:pane-1", "truffle:peer:1", 100, 30)?;
+        let observed = next_control_state(&mut states, |state| {
+            state
+                .controller
+                .as_ref()
+                .is_some_and(|controller| controller.view_id == "pane-1")
+        })
+        .await?;
+        let stale = observed
+            .control_revision
+            .checked_sub(1)
+            .context("the host must be past its first revision for this to be a swap")?;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.runtime.claim_control_at(
+                &fixture.session_id,
+                "pane-2",
+                attachment.attachment_epoch,
+                100,
+                30,
+                Some(stale),
+            ),
+        )
+        .await
+        .context("the swap never settled")??;
+
+        assert!(
+            matches!(outcome, RemoteControlOutcome::Rejected(_)),
+            "a claim against a superseded revision was granted"
+        );
+        Ok(())
+    }
+
+    /// §5's admission rule, at the layer that enforces it: a reader belongs to
+    /// one connection incarnation as well as one generation. Attaching another
+    /// view rebinds the incarnation without advancing the generation, so
+    /// generation alone would still admit a reader from the replaced
+    /// connection — and let it refresh the contact clock on the new one's
+    /// behalf, which is exactly the black hole the heartbeat exists to catch.
+    #[test]
+    fn state_admission_is_scoped_to_the_connection_as_well_as_the_generation() {
+        let lifecycle = test_lifecycle();
+        lifecycle.bind_connection(7);
+        let generation = lifecycle.generation();
+
+        assert!(lifecycle.admit_state(generation, 7));
+        assert!(
+            !lifecycle.admit_state(generation, 6),
+            "a reader from a replaced connection was admitted on generation alone"
+        );
+
+        lifecycle.bind_connection(8);
+        assert!(
+            !lifecycle.admit_state(generation, 7),
+            "rebinding the connection left the old incarnation admitted"
+        );
+        assert!(lifecycle.admit_state(generation, 8));
+    }
+
+    /// The disposition the §6.2 table makes asymmetric: a secondary that hits
+    /// the client's view cap loses that pane and nothing else. Retiring the
+    /// connection here would take down a Live session — and every sibling
+    /// session riding the same transport — over one refused pane.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_view_limit_leaves_the_live_session_and_its_connection() -> Result<()> {
+        let fixture = Fixture::rejecting_after(AttachRejectCode::ViewLimit, true, 1).await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        assert!(
+            fixture
+                .runtime
+                .attach_view(&fixture.session_id, "pane-2")
+                .await
+                .is_err(),
+            "the host refused this pane"
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a refused secondary retired the connection its live session rides"
+        );
+        assert_eq!(
+            fixture.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "a refused secondary took down the session around it"
+        );
+        Ok(())
+    }
+
+    /// `view-invalid` is the one code with an in-place recovery: the refused
+    /// pane is marked and the next eligible view takes the feed on the same
+    /// connection, rather than the session falling out of Live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refused_feed_identity_promotes_the_next_view_in_place() -> Result<()> {
+        let fixture = Fixture::rejecting_after(AttachRejectCode::ViewInvalid, true, 0).await?;
+        // pane-1 is refused; the session keeps no usable feed yet.
+        assert!(
+            fixture
+                .runtime
+                .attach_view(&fixture.session_id, "pane-1")
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a refused identity retired a connection that never failed"
+        );
+        assert_eq!(
+            fixture.view_state("pane-1").await,
+            Some(RemoteViewState::Failed)
+        );
+        // Election must not hand the feed back to the pane the host refused.
+        let remote = fixture.remote().await;
+        remote.lifecycle.record_view("pane-2");
+        assert_eq!(
+            remote.lifecycle.elect_feed().as_deref(),
+            Some("pane-2"),
+            "election re-picked the pane the host had already refused"
+        );
+        Ok(())
+    }
+
+    /// A stale resume is the one rejection that decides nothing: a newer
+    /// attempt is already governing the lineage. It must not retire the
+    /// connection that answered it — that connection is working.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stale_resume_rejection_keeps_the_connection() -> Result<()> {
+        let fixture = Fixture::rejecting(AttachRejectCode::StaleResume, false).await?;
+        let error = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await
+            .err()
+            .context("the host refused this attach")?;
+        assert!(
+            format!("{error:#}").contains("superseded"),
+            "a stale resume was reported as something else: {error:#}"
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a superseded attempt retired a connection that never failed"
+        );
+        // Pending is the honest record: the pane is waiting on the attempt
+        // that superseded this one. Failed would be this attempt claiming a
+        // verdict it does not have.
+        assert_ne!(
+            fixture.view_state("pane-1").await,
+            Some(RemoteViewState::Failed),
+            "a superseded attempt marked the pane it decided nothing about"
+        );
+        Ok(())
+    }
+
+    /// The clear half: a controller that goes away is announced to the views
+    /// that stayed. Only `ControlState` can carry the absence, so this is the
+    /// end-to-end proof that the reconnect shape survives the whole path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_clear_reaches_a_view_whose_stream_was_already_open() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+        let mut states = fixture.runtime.subscribe_control_state();
+
+        // Control goes to the secondary, so releasing it detaches nothing the
+        // feed depends on and pane-1's stream is the one left listening.
+        session.claim_control("r:pane-2", "truffle:peer:1", 100, 30)?;
+        let claimed = next_control_state(&mut states, |state| state.controller.is_some()).await?;
+
+        let (attachment_epoch, _) = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-2")
+            .await
+            .context("pane-2 is attached")?;
+        fixture
+            .runtime
+            .detach_view(&fixture.session_id, "pane-2", attachment_epoch)
+            .await;
+
+        let cleared = next_control_state(&mut states, |state| state.controller.is_none()).await?;
+        assert!(
+            cleared.control_revision > claimed.control_revision,
+            "the clear did not advance the revision"
+        );
+        assert!(
+            fixture
+                .runtime
+                .last_control_state(&fixture.session_id)
+                .is_some_and(|state| state.controller.is_none()),
+            "reconciliation kept a controller that is gone"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_attach_fence_covers_connections_not_yet_bound_to_a_client() {
+        let ledger = ConnectionLedger::default();
+        let mine = ledger.accept();
+        mine.identify("truffle:peer:1");
+        // Accepted after mine and still pre-hello: it may yet turn out to be
+        // this client's, and may already carry a delayed attach.
+        let unidentified = ledger.accept();
+
+        assert!(
+            ledger.highest_for("truffle:peer:1") >= unidentified.id(),
+            "the fence did not cover a connection that could still be this client's"
+        );
+        // The two must agree, or collection stalls rather than slows: the
+        // fence would sit above an id the collector refuses to pass.
+        assert!(ledger.terminated_through("truffle:peer:1") < unidentified.id());
+
+        // Another client's *identified* connection blocks neither.
+        let theirs = ledger.accept();
+        theirs.identify("truffle:peer:2");
+        assert!(ledger.highest_for("truffle:peer:1") < theirs.id());
+
+        drop(unidentified);
+        drop(mine);
+        assert!(ledger.terminated_through("truffle:peer:1") >= 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_superseded_handler_does_not_detach_its_successor() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        let first = fixture
+            .runtime
+            .current_attachment(&fixture.session_id, "pane-2")
+            .await
+            .expect("secondary attached")
+            .0;
+
+        // Strand the host's handler: the viewer drops the view without ever
+        // sending Detach, so that handler keeps running against an attachment
+        // a takeover is about to replace.
+        fixture
+            .runtime
+            .retire_view(&fixture.session_id, "pane-2")
+            .await;
+        fixture
+            .remote()
+            .await
+            .lifecycle
+            .commit_view_failed("pane-2", "stranded".into(), true);
+
+        let record = fixture
+            .runtime
+            .retry_view(&fixture.session_id, "pane-2")
+            .await?;
+        assert_eq!(
+            record.view_state,
+            RemoteViewState::Attached,
+            "the successor never attached: {record:?}"
+        );
+        let second = record.attachment_epoch.expect("successor epoch");
+        assert_ne!(second, first);
+
+        // The stranded handler exits here. Detaching by (view, client) alone
+        // would take the successor's attachment with it — and, landing between
+        // the takeover and its stream registration, would leave the successor
+        // with no state stream at all.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .current_attachment(&fixture.session_id, "pane-2")
+                .await
+                .map(|(epoch, _)| epoch),
+            Some(second),
+            "a superseded handler detached its successor"
+        );
+        assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
         Ok(())
     }
 
@@ -5979,7 +9090,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn one_shot_resume_reattaches_under_a_fresh_epoch_and_generation() -> Result<()> {
-        let mut fixture = Fixture::attached().await?;
+        let mut fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let before = fixture
             .runtime
@@ -6571,10 +9682,12 @@ mod tests {
             Arc::clone(&server) as Arc<dyn MeshConnection>,
             Registry::default(),
             TruffleTerminalConfig::default(),
+            HostServices::default(),
             "host-1".into(),
             Arc::new(RefusingClientResolver) as Arc<dyn ClientResolver>,
             None,
             presentation_rx,
+            ConnectionLedger::default().accept(),
         ));
         // Identity now rides the hello, so an unresolvable device must be
         // refused there rather than being handed a session surface.
@@ -6584,6 +9697,7 @@ mod tests {
                 "viewer-device",
                 "viewer-instance",
                 "host-1",
+                PROTOCOL_MINOR,
             )
             .await
             .is_err()
@@ -6723,7 +9837,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_manual_retries_run_exactly_one_attempt() -> Result<()> {
-        let mut fixture = Fixture::attached().await?;
+        let mut fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         fixture.kill_host();
         fixture
@@ -6865,7 +9979,11 @@ mod tests {
             .runtime
             .retry_view(&fixture.session_id, "pane-2")
             .await?;
-        assert_eq!(record.view_state, RemoteViewState::Attached);
+        assert_eq!(
+            record.view_state,
+            RemoteViewState::Attached,
+            "retry left the view unattached: {record:?}"
+        );
         assert!(record.attachment_epoch.is_some());
         assert_eq!(fixture.lifecycle().await.state, RemoteLifecycleState::Live);
         // Still exactly one publishing stream.
@@ -7020,7 +10138,7 @@ mod tests {
         fixture
             .wait_for_state(RemoteLifecycleState::Reconnecting)
             .await?;
-        assert!(lifecycle.has_engine());
+        wait_for_engine(&lifecycle).await?;
 
         // The pane is gone, so there is nothing left to resume. The view is
         // already out of the map here, which is exactly the case that used to
@@ -7382,7 +10500,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn refreshing_a_live_session_re_attaches_the_feed() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+        let fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let before = fixture
             .runtime
@@ -7462,7 +10580,7 @@ mod tests {
         fixture
             .wait_for_state(RemoteLifecycleState::Reconnecting)
             .await?;
-        assert!(lifecycle.has_engine());
+        wait_for_engine(&lifecycle).await?;
 
         assert!(fixture.runtime.close_session(&fixture.session_id).await);
         assert!(lifecycle.is_ended());
@@ -7483,7 +10601,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_zombie_reader_moves_no_state_after_its_generation_is_retired() -> Result<()> {
-        let fixture = Fixture::attached().await?;
+        let fixture = Fixture::attached_legacy().await?;
         fixture.await_first_snapshot().await?;
         let remote = fixture
             .runtime
@@ -7706,6 +10824,210 @@ mod tests {
         Ok(())
     }
 
+    // ── Tailnet identity binding (§9.1) ──────────────────────────────
+
+    /// A WhoIs answer as the sidecar produces one: an owner, a name, and the
+    /// stable node id that is the only part the peer registry can be matched
+    /// against.
+    fn tailnet_identity(node_id: Option<&str>) -> TailnetWhoIs {
+        TailnetWhoIs::Identity(Box::new(TailscalePeerIdentity {
+            dns_name: Some("viewer.tailnet.ts.net".into()),
+            login_name: Some("owner@example.com".into()),
+            display_name: Some("Owner".into()),
+            node_id: node_id.map(str::to_owned),
+            ..TailscalePeerIdentity::default()
+        }))
+    }
+
+    fn registry_peer(tailscale_id: &str, device_id: Option<&str>) -> PeerBinding {
+        PeerBinding {
+            tailscale_id: tailscale_id.into(),
+            device_id: device_id.map(str::to_owned),
+            peer_ref: format!("{tailscale_id}:3"),
+        }
+    }
+
+    /// The client id is derived from the peer the tailnet authenticated, so a
+    /// peer whose durable id discovery has not published yet still binds:
+    /// there was never anything in the hello for an assertion to steal.
+    #[test]
+    fn a_tailnet_identity_binds_the_client_to_the_peer_it_authenticates() -> Result<()> {
+        let node_id = authenticated_node_id(tailnet_identity(Some("nodeAAAA")))?
+            .context("a WhoIs identity authenticates a node id")?;
+        assert_eq!(node_id, "nodeAAAA");
+        assert_eq!(
+            bind_authenticated_peer(
+                &node_id,
+                Some(&registry_peer("nodeAAAA", Some("device-1"))),
+                "device-1",
+            )?,
+            "truffle:nodeAAAA:3"
+        );
+        assert_eq!(
+            bind_authenticated_peer(&node_id, Some(&registry_peer("nodeAAAA", None)), "device-1")?,
+            "truffle:nodeAAAA:3"
+        );
+        Ok(())
+    }
+
+    /// The Phase 2 caveat, closed: a peer inside the tailnet that asserts
+    /// another device's id is refused instead of inheriting its client id.
+    #[test]
+    fn a_hello_asserting_another_devices_id_is_refused() {
+        assert!(
+            bind_authenticated_peer(
+                "nodeAAAA",
+                Some(&registry_peer("nodeAAAA", Some("device-1"))),
+                "device-2",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_unauthenticated_source_is_refused_rather_than_admitted() {
+        // The tailnet claims no identity for the address at all.
+        assert!(authenticated_node_id(TailnetWhoIs::Anonymous).is_err());
+        // An identity with no stable node id matches no peer, however much
+        // else it carries.
+        assert!(authenticated_node_id(tailnet_identity(None)).is_err());
+        assert!(authenticated_node_id(tailnet_identity(Some("   "))).is_err());
+        // A WhoIs that exists and did not answer is an outage, not licence to
+        // trust the hello.
+        assert!(
+            authenticated_node_id(TailnetWhoIs::Unavailable("sidecar is wedged".into())).is_err()
+        );
+    }
+
+    /// Only a provider with no WhoIs at all — the in-process transports these
+    /// tests run on — falls back to hello-asserted identity.
+    #[test]
+    fn only_a_provider_without_whois_falls_back_to_the_hello() -> Result<()> {
+        assert!(authenticated_node_id(TailnetWhoIs::Unsupported)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn an_authenticated_identity_the_registry_cannot_place_is_refused() {
+        assert!(bind_authenticated_peer("nodeAAAA", None, "device-1").is_err());
+        // `Node::peer` resolves names and device-id prefixes too, so the
+        // resolved peer has to answer to the authenticated stable id itself.
+        assert!(
+            bind_authenticated_peer(
+                "nodeAAAA",
+                Some(&registry_peer("nodeBBBB", Some("device-1"))),
+                "device-1",
+            )
+            .is_err()
+        );
+    }
+
+    // ── Connection ids and termination (§4.2.1) ──────────────────────
+
+    #[test]
+    fn connection_ids_are_stamped_in_acceptance_order() {
+        let ledger = ConnectionLedger::default();
+        let first = ledger.accept();
+        let second = ledger.accept();
+        assert!(second.id() > first.id());
+    }
+
+    /// A fence may only advance past connections that can no longer deliver an
+    /// attach — and a connection that has not yet said whose it is could still
+    /// turn out to be anyone's.
+    #[test]
+    fn a_fence_waits_for_every_connection_that_could_still_attach() {
+        let ledger = ConnectionLedger::default();
+        let older = ledger.accept();
+        older.identify("client-a");
+        let newer = ledger.accept();
+        newer.identify("client-b");
+        let unidentified = ledger.accept();
+        // Ids come from one process-wide sequence, so nothing here may assume
+        // they are consecutive — only that they ascend.
+        let (older_id, newer_id, unidentified_id) = (older.id(), newer.id(), unidentified.id());
+
+        assert_eq!(ledger.terminated_through("client-a"), older_id - 1);
+        assert_eq!(ledger.terminated_through("client-b"), newer_id - 1);
+
+        drop(older);
+        // A's own connection is gone, but the unidentified one might be A's.
+        assert_eq!(ledger.terminated_through("client-a"), unidentified_id - 1);
+        assert_eq!(ledger.terminated_through("client-b"), newer_id - 1);
+
+        drop(newer);
+        assert_eq!(ledger.terminated_through("client-b"), unidentified_id - 1);
+
+        drop(unidentified);
+        // Nothing is in flight, so everything accepted so far is provably gone.
+        assert_eq!(ledger.terminated_through("client-a"), unidentified_id);
+        assert_eq!(ledger.terminated_through("client-b"), unidentified_id);
+    }
+
+    /// "Fully terminated" is transport closed **and** every handler finished:
+    /// an orphaned handler keeps the connection live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_terminates_only_after_its_last_handler_finishes() {
+        let ledger = ConnectionLedger::default();
+        let scope = ledger.accept();
+        let id = scope.id();
+        scope.identify("client-a");
+        let handler = scope.clone();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _handler = handler;
+            let _ = released.await;
+        });
+        // The transport is gone; its handler is not.
+        drop(scope);
+        assert!(!ledger.fully_terminated(id));
+        assert_eq!(ledger.terminated_through("client-a"), id - 1);
+
+        let _ = release.send(());
+        task.await.unwrap();
+        assert!(ledger.fully_terminated(id));
+        assert_eq!(ledger.terminated_through("client-a"), id);
+    }
+
+    /// The same over the real host accept path, and the case the fence turns
+    /// on: the task that owns the transport dies while the view handler it
+    /// spawned keeps running. An orphaned handler can still act on the
+    /// session, so the connection is not terminated until it too unwinds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_served_connection_terminates_only_after_its_view_handler_unwinds() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let host = &fixture.hosts[0];
+        let id = host.connection_id;
+        assert!(!host.connections.fully_terminated(id));
+        assert_eq!(
+            host.connections.terminated_through("truffle:peer:1"),
+            id - 1
+        );
+
+        // The connection's own task is gone; the handlers it spawned are not.
+        host.task.abort();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !host.connections.fully_terminated(id),
+            "an orphaned handler was counted as a terminated connection"
+        );
+
+        // Now the transport dies too, and everything reading it unwinds.
+        host.server.close();
+        for _ in 0..400 {
+            if host.connections.fully_terminated(id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            host.connections.fully_terminated(id),
+            "a dead connection never reported its handlers finished"
+        );
+        assert_eq!(host.connections.terminated_through("truffle:peer:1"), id);
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires TRUFFLE_TEST_AUTHKEY and a reachable Tailscale control plane"]
     async fn latest_truffle_quic_round_trip() -> Result<()> {
@@ -7768,6 +11090,115 @@ mod tests {
             server_stream.read(64).await?.as_deref(),
             Some(b"truffle-0.7.1".as_slice())
         );
+        client.close();
+        server.close();
+        listener.close();
+        tokio::time::timeout(Duration::from_secs(10), node_a.stop())
+            .await
+            .context("timed out stopping Truffle node A")?;
+        tokio::time::timeout(Duration::from_secs(10), node_b.stop())
+            .await
+            .context("timed out stopping Truffle node B")?;
+        Ok(())
+    }
+
+    /// The identity binding on a real tailnet, which is the only place it can
+    /// be proven: WhoIs on the accepted connection's address resolves to the
+    /// dialing node, the resolver derives that peer's client id, and a hello
+    /// asserting a different device id is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires TRUFFLE_TEST_AUTHKEY and a reachable Tailscale control plane"]
+    async fn whois_binds_a_real_quic_connection_to_the_peer_that_dialed_it() -> Result<()> {
+        let _ = dotenvy::dotenv();
+        let auth_key = env::var("TRUFFLE_TEST_AUTHKEY")
+            .context("TRUFFLE_TEST_AUTHKEY is required for this ignored test")?;
+        let sidecar_path = env::var("TRUFFLE_SIDECAR_PATH")
+            .context("TRUFFLE_SIDECAR_PATH is required for this ignored test")?;
+        let a_state = tempfile::tempdir()?;
+        let b_state = tempfile::tempdir()?;
+        let suffix = &Uuid::new_v4().simple().to_string()[..8];
+        let build_a = Node::<TailscaleProvider>::builder()
+            .app_id("ghosttea-test")?
+            .device_name(format!("identity-a-{suffix}"))
+            .state_dir(a_state.path().to_string_lossy().as_ref())
+            .sidecar_path(&sidecar_path)
+            .auth_key(&auth_key)
+            .ephemeral(true)
+            .build();
+        let build_b = Node::<TailscaleProvider>::builder()
+            .app_id("ghosttea-test")?
+            .device_name(format!("identity-b-{suffix}"))
+            .state_dir(b_state.path().to_string_lossy().as_ref())
+            .sidecar_path(&sidecar_path)
+            .auth_key(&auth_key)
+            .ephemeral(true)
+            .build();
+        let (node_a, node_b) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::try_join!(build_a, build_b)
+        })
+        .await
+        .context("timed out starting the two Truffle nodes")??;
+        let node_a = Arc::new(node_a);
+        let node_b = Arc::new(node_b);
+        let a_device_id = node_a.local_info().device_id;
+        let b_device_id = node_b.local_info().device_id;
+        tokio::time::timeout(
+            Duration::from_secs(35),
+            node_b.peer(&a_device_id, Some(30_000)),
+        )
+        .await
+        .context("timed out discovering node A from node B")??
+        .context("node A did not appear in node B's peer registry")?;
+
+        let listener = node_b.listen_quic(19_421).await?;
+        let accept = listener.accept();
+        let connect = node_a.connect_quic(&b_device_id, 19_421);
+        let (accepted, client) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(accept, connect)
+        })
+        .await
+        .context("timed out establishing the Truffle QUIC connection")?;
+        let server = accepted.context("QUIC listener closed")?;
+        let client = client?;
+
+        // The address the connection actually arrived from — whatever path the
+        // tailnet chose, direct or DERP-relayed.
+        let remote = server.remote_address();
+        let identity = tokio::time::timeout(WHOIS_TIMEOUT, node_b.whois(&remote.to_string()))
+            .await
+            .context("timed out asking the tailnet who opened the connection")??
+            .context("the tailnet claimed no identity for the connection's address")?;
+        let node_id = identity
+            .node_id
+            .clone()
+            .context("WhoIs answered without a stable node id")?;
+        let peer = node_b
+            .peer(&a_device_id, Some(PEER_RESOLVE_WAIT_MS))
+            .await?
+            .context("node A left node B's registry")?;
+        assert_eq!(
+            node_id, peer.tailscale_id,
+            "WhoIs authenticated a different node than the one that dialed"
+        );
+
+        // The production resolver, on the production inputs.
+        let resolver = NodeClientResolver {
+            node: Arc::clone(&node_b),
+        };
+        assert_eq!(
+            resolver.resolve(&a_device_id, Some(remote.ip())).await?,
+            format!("truffle:{}", peer.peer_ref)
+        );
+        // §9.1, closed on a real tailnet: node B's own id asserted by node A
+        // no longer buys node B's client id.
+        assert!(
+            resolver
+                .resolve(&b_device_id, Some(remote.ip()))
+                .await
+                .is_err(),
+            "a hello asserting another device's id was accepted"
+        );
+
         client.close();
         server.close();
         listener.close();

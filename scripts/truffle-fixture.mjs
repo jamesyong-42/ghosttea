@@ -566,6 +566,9 @@ export async function up({ build = true, fresh = false, cols = 120, rows = 40 } 
         "session-created",
       );
       state.host.sessionId = created.session.id;
+      // The shell's own pid, so a scenario can kill the session out from under
+      // a frozen host and watch the tombstone answer for it afterwards.
+      state.host.sessionPid = created.session.pid;
     } finally {
       hostControl.close();
     }
@@ -607,6 +610,107 @@ export function thaw() {
 }
 
 /**
+ * Ask the host daemon to leave, and let it.
+ *
+ * Deliberately not `down`'s escalation: this scenario is about a host that gets
+ * the chance to say goodbye, so the viewer can distinguish "the host shut down"
+ * from "the host vanished". If it has to be killed to go, the difference this
+ * exists to observe was never available, and that is reported rather than
+ * papered over.
+ */
+export async function stopHost({ graceMs = 15_000 } = {}) {
+  const state = requireState();
+  const pid = state.host.pid;
+  if (!alive(pid)) throw new Error("the host daemon is not running");
+  if (state.frozen) {
+    // A stopped process cannot act on SIGTERM; waking it first is what makes
+    // this a graceful stop rather than a disguised kill.
+    process.kill(pid, "SIGCONT");
+    state.frozen = false;
+  }
+  process.kill(pid, "SIGTERM");
+  const deadline = Date.now() + graceMs;
+  while (alive(pid) && Date.now() < deadline) await sleep(100);
+  const exited = !alive(pid);
+  if (!exited) {
+    process.kill(pid, "SIGKILL");
+    while (alive(pid) && Date.now() < deadline + 2_000) await sleep(50);
+  }
+  state.host.pid = undefined;
+  state.host.sessionId = undefined;
+  state.host.sessionPid = undefined;
+  writeState(state);
+  return { pid, exitedOnSigterm: exited };
+}
+
+/**
+ * Give the host another shell to serve.
+ *
+ * Each scenario that ends a session needs one of its own: a session can only
+ * reach a terminal state once, and reusing one would have the second scenario
+ * assert against the first one's corpse.
+ */
+export async function newSession({ cols = 120, rows = 40 } = {}) {
+  const state = requireState();
+  if (!alive(state.host.pid)) throw new Error("the host daemon is not running");
+  const hostControl = await openControl(state.host.controlSocket, state.host.token);
+  try {
+    const created = await expect(
+      hostControl,
+      {
+        type: "create-session",
+        options: {
+          executable: "/bin/sh",
+          args: [],
+          env: {},
+          cols,
+          rows,
+          persistence: "terminate-with-app",
+          programKind: "interactive-shell",
+        },
+      },
+      "session-created",
+    );
+    state.host.sessionId = created.session.id;
+    state.host.sessionPid = created.session.pid;
+    writeState(state);
+  } finally {
+    hostControl.close();
+  }
+  // Wait for the viewer to actually see it. Advertisements republish on an
+  // interval, so a session that exists on the host is not yet a session the
+  // viewer can open — and "not in the advertisement I hold" surfaces as "no
+  // longer attachable", which reads like a defect rather than a race.
+  await until("the viewer discovering the new session", BUDGETS.discoveryMs, async () => {
+    const seen = await advertisedHost(state);
+    return seen?.sessions?.some((session) => session.sessionId === state.host.sessionId && session.attachable)
+      ? true
+      : undefined;
+  });
+  return { sessionId: state.host.sessionId, pid: state.host.sessionPid };
+}
+
+/**
+ * Kill the shell the host is serving, not the host.
+ *
+ * Run while the host is frozen, this stages the case the tombstone store exists
+ * for: the session is already gone, but nobody has been able to say so, and the
+ * viewer has to learn it from the host's records once contact returns rather
+ * than inferring it from silence.
+ */
+export function killSession() {
+  const state = requireState();
+  const pid = state.host.sessionPid;
+  if (!pid) throw new Error("the fixture recorded no session process to kill");
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    throw new Error(`the session process ${pid} was already gone`);
+  }
+  return { sessionId: state.host.sessionId, pid };
+}
+
+/**
  * Replace the host process, keeping its tailnet identity.
  *
  * The assertion this enables is `ended{host-restarted}`, which a viewer may
@@ -618,9 +722,21 @@ export function thaw() {
 export async function restartHost() {
   const state = requireState();
   const before = state.host.hostInstanceId ?? (await advertisedHost(state))?.hostInstanceId;
-  stopDaemon(state.host.pid);
+  // Killed outright, never asked to leave. Since the daemon learned to say
+  // goodbye on SIGTERM, a polite restart is a *shutdown* followed by a start,
+  // and the viewer rightly reports host-shutdown — it was told. `host-restarted`
+  // is the conclusion for a host that vanished without a word and came back
+  // wearing a new instance id, so that is what this has to stage: a crash.
+  if (state.frozen) process.kill(state.host.pid, "SIGCONT");
+  try {
+    process.kill(state.host.pid, "SIGKILL");
+  } catch {
+    // Already gone; the restart below still gives the viewer a new instance.
+  }
+  while (alive(state.host.pid)) await sleep(50);
   state.frozen = false;
   state.host.sessionId = undefined;
+  state.host.sessionPid = undefined;
   await startDaemon("host", state);
   const host = await until("the restarted host re-advertising", BUDGETS.restartMs, async () => {
     const seen = await advertisedHost(state);
@@ -690,6 +806,8 @@ const USAGE = `Usage: node scripts/truffle-fixture.mjs <command> [options]
   freeze                     SIGSTOP the host: a silent, still-connected outage
   thaw                       SIGCONT the host
   restart-host               Replace the host process, keeping its device id
+  stop-host                  SIGTERM the host and let it say goodbye
+  kill-session               SIGKILL the shell the host is serving
   down                       Stop both daemons (tailnet profiles are kept)
   status                     Report what is running
 
@@ -732,6 +850,12 @@ async function main(argv) {
       return 0;
     case "restart-host":
       console.log(`host restarted: ${JSON.stringify(await restartHost(), undefined, 2)}`);
+      return 0;
+    case "stop-host":
+      console.log(`host stopped: ${JSON.stringify(await stopHost())}`);
+      return 0;
+    case "kill-session":
+      console.log(`session killed: ${JSON.stringify(killSession())}`);
       return 0;
     case "down":
       console.log(`truffle fixture down: ${JSON.stringify(down())}`);

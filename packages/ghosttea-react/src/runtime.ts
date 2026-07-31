@@ -146,6 +146,7 @@ const FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR = 7;
 const FRAME_BRIDGE_CAPABILITY_VERSION = 1;
 const CONFIG_PROTOCOL_MINOR = 10;
 const REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12;
+const CONTROL_REVISION_CAS_PROTOCOL_MINOR = 13;
 const DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS = 1_000;
 /** A one-shot resume covers a 20 s dial plus the attach handshake. */
 const RECONNECT_REQUEST_TIMEOUT_MS = 60_000;
@@ -205,6 +206,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   /** Sessions whose current outage episode has already produced a full snapshot. */
   readonly #recoveredSessions = new Set<string>();
   #remoteLifecycleSupported = false;
+  #controlRevisionCasSupported = false;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
   #configProtocolSupported = false;
@@ -468,6 +470,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#frameSubscriptionAcksSupported = hello.protocolMinor >= FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR;
     this.#configProtocolSupported = hello.protocolMinor >= CONFIG_PROTOCOL_MINOR;
     this.#remoteLifecycleSupported = hello.protocolMinor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR;
+    this.#controlRevisionCasSupported = hello.protocolMinor >= CONTROL_REVISION_CAS_PROTOCOL_MINOR;
     if (this.#configProtocolSupported && hello.configRevision !== undefined) {
       await this.#refreshConfig();
     }
@@ -1068,10 +1071,20 @@ export class GhostteaTerminalRuntime extends EventTarget {
     revision = 0,
   ): void {
     const previous = this.#controlBySession.get(sessionId);
+    // A revisioned announcement older than what is cached is a queued view of
+    // the past, and must be dropped whole. Keeping its payload while raising
+    // the revision would manufacture a state that never existed — "nobody
+    // holds control, as of the newest revision" — and that reads as an empty
+    // seat the funnel may claim. The compare-and-swap would not catch it
+    // either: the expectation would be genuinely current, so the host would
+    // accept a claim that takes control from the real holder.
+    if (revision >= 1 && previous !== undefined && revision < previous.revision) return;
     this.#controlBySession.set(sessionId, {
       controller,
       // A legacy `control-changed` carries no revision; keep the last one so a
       // downgrade never looks like the controller was cleared at a newer one.
+      // Unrevisioned announcements cannot be ordered against each other, so
+      // they stay last-write-wins — the only semantics available for them.
       revision: Math.max(revision, previous?.revision ?? 0),
     });
     for (const [viewId, view] of this.#views) {
@@ -1109,6 +1122,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
    *
    * At most one claim per attachment epoch, plus one more each time the
    * controller is cleared at a newer revision.
+   *
+   * A host that reports real revisions gets a compare-and-swap, so a claim or
+   * a clear that landed since this client last looked rejects the attempt
+   * instead of silently overwriting it. The outcome is asymmetric and needs no
+   * loop of its own: the daemon announces the resulting controller state, this
+   * funnel re-runs on it, and another pane holding control simply fails the
+   * guard above while an empty seat at a newer revision passes the one below.
    */
   #maybeReclaim(viewId: string): void {
     const view = this.#views.get(viewId);
@@ -1140,6 +1160,13 @@ export class GhostteaTerminalRuntime extends EventTarget {
       attachmentEpoch,
       cols: view.desiredCols,
       rows: view.desiredRows,
+      // Revision 0 is the "legacy, unknown" sentinel, never a real observation
+      // to swap against: a host without revisions only understands the
+      // unconditional claim, so the field stays off. The negotiated minor is
+      // checked too, because a cached revision could outlive a daemon
+      // downgrade and a daemon that predates the field would ignore it —
+      // turning a swap the caller believes in into a silent overwrite.
+      ...(this.#controlRevisionCasSupported && revision >= 1 ? { expectedControlRevision: revision } : {}),
     });
   }
 

@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 use crate::{
     FrameHub, TerminalPresentationConfig,
     service::Registry,
-    session::{SessionActivity, SessionSummary},
+    session::{SessionActivity, SessionStatus, SessionSummary},
     tunnel_protocol::{SharedSessionSummary, TunnelInput},
 };
 
@@ -178,6 +178,44 @@ pub struct RemoteViewRecord {
     pub retryable: Option<bool>,
 }
 
+/// Who holds control, if anyone. `view_id` is a *local* view id: the mesh
+/// translates wire identities at its boundary, so callers never see a rotated
+/// or hashed one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteController {
+    pub view_id: String,
+    pub control_epoch: u64,
+}
+
+/// A session's controller state as of one revision. `controller: None` is
+/// finally expressible — which is the whole reason this exists rather than
+/// another field on [`RemoteControlChanged`].
+#[derive(Clone, Debug)]
+pub struct RemoteControlState {
+    pub session_id: String,
+    pub controller: Option<RemoteController>,
+    /// 0 means "legacy, unknown": the host negotiated below the reconnect
+    /// minor and cannot report revisions or clears. A reconnect-capable
+    /// authority starts at 1, so 0 is unreachable for it — never CAS against
+    /// this value.
+    pub control_revision: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub layout_epoch: u64,
+}
+
+/// The outcome of a compare-and-swap claim.
+///
+/// The asymmetric reclaim rule reads off the announced state: `Rejected`
+/// showing *another* view holding control ends the reclaim — do not retry;
+/// `Rejected` showing *no* controller at a newer revision may be retried with
+/// that revision, while the pane still holds meaningful focus.
+#[derive(Clone, Debug)]
+pub enum RemoteControlOutcome {
+    Claimed(RemoteControlState),
+    Rejected(RemoteControlState),
+}
+
 /// Recovery tunables. These belong to the mesh rather than the local IPC
 /// config: they describe how this viewer treats a host that has gone quiet,
 /// not how clients reach this daemon.
@@ -200,6 +238,14 @@ pub struct MeshReconnectConfig {
     /// acceleration: the host reaps them itself once it notices the abandoned
     /// connection died.
     pub zombie_purge: bool,
+    /// How long a connection carrying an attached view may go without contact
+    /// before the viewer probes it. Idle-triggered, not a fixed interval: a
+    /// session whose state stream never falls quiet never pings at all.
+    pub heartbeat_idle: Duration,
+    /// How long without contact declares the connection dead. Counts from the
+    /// same contact clock as [`Self::heartbeat_idle`], so it is the total
+    /// silence tolerated, not an extra wait after the ping.
+    pub heartbeat_fail: Duration,
 }
 
 impl Default for MeshReconnectConfig {
@@ -212,6 +258,8 @@ impl Default for MeshReconnectConfig {
             synchronize_timeout: Duration::from_secs(10),
             advertisement_fast_path: true,
             zombie_purge: true,
+            heartbeat_idle: Duration::from_secs(3),
+            heartbeat_fail: Duration::from_secs(6),
         }
     }
 }
@@ -326,6 +374,42 @@ pub trait RemoteTerminalRuntime: Send + Sync {
         unavailable()
     }
 
+    /// Every controller change, clears included. The reconnect-capable path
+    /// publishes here; legacy hosts still populate it, but only ever with a
+    /// controller present and `control_revision: 0`.
+    fn subscribe_control_state(&self) -> broadcast::Receiver<RemoteControlState> {
+        closed_channel()
+    }
+
+    /// The last observed controller state — the reconciliation source, so a
+    /// lost clear has a repair path.
+    async fn control_state(&self, _session_id: &str) -> Option<RemoteControlState> {
+        None
+    }
+
+    /// Claim control, optionally compare-and-swapping against the revision the
+    /// caller observed. `expected_control_revision: None` is legacy
+    /// unconditional last-write-wins, which is all a pre-reconnect host
+    /// understands.
+    ///
+    /// On [`RemoteControlOutcome::Rejected`] the announced state is *also*
+    /// published through [`subscribe_control_state`](Self::subscribe_control_state)
+    /// before this returns, so a client's retry rule fires off its own
+    /// subscription rather than depending on the host's frame racing in.
+    /// Duplicate announcements at one revision are expected; consumers are
+    /// idempotent by revision.
+    async fn claim_control_at(
+        &self,
+        _session_id: &str,
+        _view_id: &str,
+        _attachment_epoch: u64,
+        _cols: u16,
+        _rows: u16,
+        _expected_control_revision: Option<u64>,
+    ) -> Result<RemoteControlOutcome> {
+        unavailable()
+    }
+
     /// Re-attach one non-feed view of a live session — the per-pane retry for
     /// a view that failed while the rest of the session kept working. Errors
     /// when the session is not live or the view is the replica's feed; both are
@@ -358,6 +442,56 @@ fn closed_channel<T: Clone>() -> broadcast::Receiver<T> {
     receiver
 }
 
+/// What a host can honestly answer about a session id it is no longer
+/// listing. The daemon owns the evidence — its registry and its tombstones —
+/// and the mesh only asks; nothing about *how* a host remembers crosses this
+/// seam, because a resuming viewer needs the verdict and nothing else.
+pub trait SessionStatusSource: Send + Sync {
+    fn session_status(&self, session_id: &str) -> SessionStatus;
+}
+
+/// Tells every connected viewer, once, that this host is going away.
+///
+/// It exists as a separate handle because [`TerminalMesh::serve`] consumes the
+/// mesh: a drain running long after that still needs something to call, and
+/// this is cheap to clone and safe to hold. Announcing is idempotent, and a
+/// connection accepted after the announcement sees it immediately rather than
+/// missing it.
+#[derive(Clone)]
+pub struct HostShutdownAnnouncer {
+    announced: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for HostShutdownAnnouncer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostShutdownAnnouncer {
+    pub fn new() -> Self {
+        Self {
+            announced: tokio::sync::watch::channel(false).0,
+        }
+    }
+
+    /// Publish the announcement to every connection watching. Returns as soon
+    /// as it is published, not when viewers have acted on it: a drain must not
+    /// be able to stall on a viewer that has stopped reading.
+    pub fn announce(&self) {
+        self.announced.send_replace(true);
+    }
+
+    pub fn announced(&self) -> bool {
+        *self.announced.borrow()
+    }
+
+    /// For the mesh implementation: one receiver per connection handler.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.announced.subscribe()
+    }
+}
+
 #[async_trait]
 pub trait TerminalMesh: Send {
     fn runtime(&self) -> Arc<dyn RemoteTerminalRuntime>;
@@ -366,6 +500,19 @@ pub trait TerminalMesh: Send {
         registry: Registry,
         host_config: tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>,
     ) -> Result<()>;
+
+    /// Hand the mesh the lookup it answers session-status requests from, and
+    /// that a resuming viewer's own consult goes through. Call before `serve`;
+    /// a mesh without one answers `Unknown`, which is the honest reading of
+    /// "this host cannot say".
+    fn set_session_status_source(&mut self, _source: Arc<dyn SessionStatusSource>) {}
+
+    /// The handle a drain keeps to announce shutdown. Defaulted to a detached
+    /// announcer so a mesh that cannot announce is not a special case at the
+    /// call site — announcing into it is a no-op rather than an error.
+    fn shutdown_announcer(&self) -> HostShutdownAnnouncer {
+        HostShutdownAnnouncer::new()
+    }
 }
 
 #[derive(Default)]

@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{Read, Write},
     path::Path,
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, RwLock, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -20,9 +20,10 @@ mod process_tree;
 use anyhow::{Context, Result};
 use ghosttea_config::DEFAULT_SCROLLBACK_BYTES;
 use ghosttea_core::{
-    ClipboardRequest, ControlChanged, ControllerState, InputOrderState, LogicalTerminalSnapshot,
-    RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
-    TerminalUpdate, ViewAccess, ViewAuthority,
+    AttachRejection, ClipboardRequest, ControlChanged, ControlClaim, ControlSnapshot,
+    ControllerState, InputOrderState, LogicalTerminalSnapshot, RenderRequest, ResumeEvidence,
+    StateStreamCancel, TakeOver, TakeOverRequest, TerminalEffect, TerminalModel,
+    TerminalModelOptions, TerminalRuntime, TerminalUpdate, ViewAccess, ViewAuthority,
 };
 use ghosttea_text::TextEngine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -318,6 +319,251 @@ pub struct SessionSummary {
     pub activity: SessionActivity,
 }
 
+/// Why a session ended, decided once — at the moment it left the registry.
+///
+/// The distinction is only truthful if it is computed at a single choke point:
+/// sessions leave through several racing paths (natural exit, explicit close,
+/// owner closure) and letting each path name its own cause would record
+/// `Exited` or `Closed` according to which one happened to win.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "reason", rename_all = "kebab-case")]
+pub enum SessionEndCause {
+    Exited { code: Option<i32> },
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTombstone {
+    pub cause: SessionEndCause,
+    pub ended_at_ms: u64,
+}
+
+/// What a host can honestly say about a session id. `Unknown` covers an
+/// expired or never-written tombstone and must never be upgraded to a
+/// specific end reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum SessionStatus {
+    Live,
+    Ended { cause: SessionEndCause },
+    Unknown,
+}
+
+/// The exit evidence the removal choke point consults.
+///
+/// A trait rather than a direct [`Session`] call so the precedence rules can
+/// be tested without spawning a pty.
+pub trait SessionEndEvidence {
+    /// Whether the child process is already known to have exited.
+    fn has_exited(&self) -> bool;
+    /// The exit code observed for that process, if it reported one.
+    fn observed_exit_code(&self) -> Option<i32>;
+}
+
+impl SessionEndEvidence for Session {
+    fn has_exited(&self) -> bool {
+        Session::has_exited(self)
+    }
+
+    fn observed_exit_code(&self) -> Option<i32> {
+        self.summary.lock().unwrap().exit_code
+    }
+}
+
+/// Injectable so TTL expiry is testable without sleeping.
+pub trait TombstoneClock: Send + Sync {
+    fn now_ms(&self) -> u64;
+}
+
+struct SystemTombstoneClock;
+
+impl TombstoneClock for SystemTombstoneClock {
+    fn now_ms(&self) -> u64 {
+        now_ms()
+    }
+}
+
+pub const TOMBSTONE_CAPACITY: usize = 128;
+pub const TOMBSTONE_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Bounded evidence of why sessions ended, so a viewer that was disconnected
+/// when it happened can still be told the truth instead of a guess.
+///
+/// Sits beside the session registry rather than inside it: the registry is a
+/// bare `HashMap` type alias shared by every caller.
+pub struct SessionTombstones {
+    entries: Mutex<TombstoneEntries>,
+    clock: Arc<dyn TombstoneClock>,
+}
+
+#[derive(Default)]
+struct TombstoneEntries {
+    by_id: HashMap<String, SessionTombstone>,
+    /// Least recently used at the front; the eviction order for the cap.
+    recency: VecDeque<String>,
+}
+
+impl Default for SessionTombstones {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionTombstones {
+    pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemTombstoneClock))
+    }
+
+    pub fn with_clock(clock: Arc<dyn TombstoneClock>) -> Self {
+        Self {
+            entries: Mutex::new(TombstoneEntries::default()),
+            clock,
+        }
+    }
+
+    /// The single removal choke point: take the session out of the registry
+    /// and record why, atomically.
+    ///
+    /// Lock order is registry then tombstones. Callers that already hold the
+    /// registry guard must use [`SessionTombstones::remove_with_cause_locked`]
+    /// instead — calling this while holding it deadlocks.
+    pub fn remove_with_cause<S: SessionEndEvidence>(
+        &self,
+        sessions: &RwLock<HashMap<String, Arc<S>>>,
+        session_id: &str,
+    ) -> Option<Arc<S>> {
+        self.remove_with_cause_locked(&mut sessions.write().unwrap(), session_id)
+    }
+
+    /// [`SessionTombstones::remove_with_cause`] for a caller that already
+    /// holds the registry lock — which is what makes the cause atomic with the
+    /// removal.
+    ///
+    /// Precedence: an observed process exit wins no matter which path
+    /// triggered the removal, so `Closed` is reserved for sessions removed
+    /// while still running. The first writer commits; a later removal of the
+    /// same id finds nothing to remove and overwrites nothing.
+    pub fn remove_with_cause_locked<S: SessionEndEvidence>(
+        &self,
+        sessions: &mut HashMap<String, Arc<S>>,
+        session_id: &str,
+    ) -> Option<Arc<S>> {
+        let removed = sessions.remove(session_id)?;
+        let cause = if removed.has_exited() {
+            SessionEndCause::Exited {
+                code: removed.observed_exit_code(),
+            }
+        } else {
+            SessionEndCause::Closed
+        };
+        self.commit(session_id, cause);
+        Some(removed)
+    }
+
+    /// A session still in the registry is `Live` even if its process has
+    /// exited: it is listed and attachable, which is what a resuming viewer
+    /// is asking about.
+    pub fn session_status<S>(
+        &self,
+        sessions: &RwLock<HashMap<String, Arc<S>>>,
+        session_id: &str,
+    ) -> SessionStatus {
+        let live = sessions.read().unwrap().contains_key(session_id);
+        self.status_after_registry(live, session_id)
+    }
+
+    pub fn session_status_locked<S>(
+        &self,
+        sessions: &HashMap<String, Arc<S>>,
+        session_id: &str,
+    ) -> SessionStatus {
+        self.status_after_registry(sessions.contains_key(session_id), session_id)
+    }
+
+    fn status_after_registry(&self, live: bool, session_id: &str) -> SessionStatus {
+        if live {
+            return SessionStatus::Live;
+        }
+        match self.lookup(session_id) {
+            Some(tombstone) => SessionStatus::Ended {
+                cause: tombstone.cause,
+            },
+            None => SessionStatus::Unknown,
+        }
+    }
+
+    /// Read a tombstone, refreshing its recency. Expired entries are dropped
+    /// on the way past rather than by a timer.
+    pub fn lookup(&self, session_id: &str) -> Option<SessionTombstone> {
+        let now = self.clock.now_ms();
+        let mut entries = self.entries.lock().unwrap();
+        entries.expire(now);
+        let tombstone = *entries.by_id.get(session_id)?;
+        entries.touch(session_id);
+        Some(tombstone)
+    }
+
+    pub fn len(&self) -> usize {
+        let now = self.clock.now_ms();
+        let mut entries = self.entries.lock().unwrap();
+        entries.expire(now);
+        entries.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn commit(&self, session_id: &str, cause: SessionEndCause) {
+        let now = self.clock.now_ms();
+        let mut entries = self.entries.lock().unwrap();
+        entries.expire(now);
+        if entries.by_id.contains_key(session_id) {
+            return;
+        }
+        entries.by_id.insert(
+            session_id.to_owned(),
+            SessionTombstone {
+                cause,
+                ended_at_ms: now,
+            },
+        );
+        entries.recency.push_back(session_id.to_owned());
+        while entries.by_id.len() > TOMBSTONE_CAPACITY {
+            let Some(evicted) = entries.recency.pop_front() else {
+                break;
+            };
+            entries.by_id.remove(&evicted);
+        }
+    }
+}
+
+impl TombstoneEntries {
+    fn expire(&mut self, now_ms: u64) {
+        if self.by_id.is_empty() {
+            return;
+        }
+        self.by_id
+            .retain(|_, tombstone| now_ms.saturating_sub(tombstone.ended_at_ms) < TOMBSTONE_TTL_MS);
+        let by_id = &self.by_id;
+        self.recency
+            .retain(|session_id| by_id.contains_key(session_id));
+    }
+
+    fn touch(&mut self, session_id: &str) {
+        let Some(position) = self
+            .recency
+            .iter()
+            .position(|candidate| candidate == session_id)
+        else {
+            return;
+        };
+        self.recency.remove(position);
+        self.recency.push_back(session_id.to_owned());
+    }
+}
+
 /// Wakes the termination escalator the moment the session concludes, so each
 /// grace period lasts only as long as the child actually needs.
 /// Why a ladder rung stopped waiting.
@@ -439,6 +685,7 @@ pub struct Session {
     requested_termination: Mutex<Option<TerminationSource>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
     control_tx: broadcast::Sender<ControlChanged>,
+    control_state_tx: broadcast::Sender<ControlSnapshot>,
     activity_tx: broadcast::Sender<SessionActivity>,
     program_kind: ResolvedProgramKind,
 }
@@ -967,6 +1214,7 @@ impl Session {
         let created_at_ms = now_ms();
         let (logical_tx, _) = broadcast::channel(8);
         let (control_tx, _) = broadcast::channel(16);
+        let (control_state_tx, _) = broadcast::channel(16);
         let (activity_tx, _) = broadcast::channel(16);
         let runtime = Arc::new(TerminalRuntime::from_shared_text_engine(text_engine));
         let model = TerminalModel::new(
@@ -1028,6 +1276,7 @@ impl Session {
             requested_termination: Mutex::new(None),
             logical_tx,
             control_tx,
+            control_state_tx,
             activity_tx,
             program_kind,
         });
@@ -1401,8 +1650,114 @@ impl Session {
         Ok(attachment_epoch)
     }
 
+    /// Attach with takeover semantics: a fresh attachment epoch even for a
+    /// re-attach of the same view by the same client, ordered by
+    /// `attach_generation` and fenced by `fence_conn_id`.
+    ///
+    /// Unlike [`Session::attach_view_with_access`] this publishes no snapshot;
+    /// the caller decides, because an attach that declined the live-state
+    /// stream must not force a full refresh. Call [`Session::refresh`] after a
+    /// state-carrying takeover.
+    ///
+    /// The session epoch is read before the authority lock is taken, which is
+    /// sound because the model's session epoch is fixed for its lifetime.
+    pub fn take_over_view(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        access: ViewAccess,
+        attach_generation: u64,
+        fence_conn_id: u64,
+        resume: Option<ResumeEvidence>,
+    ) -> std::result::Result<TakeOver, AttachRejection> {
+        let session_epoch = self.session_epoch();
+        let mut authority = self.authority.lock().unwrap();
+        let taken = authority.take_over(TakeOverRequest {
+            view_id,
+            client_id,
+            access,
+            attach_generation,
+            fence_conn_id,
+            session_epoch,
+            resume,
+        })?;
+        if taken.controller_cleared {
+            let snapshot = authority.control_snapshot();
+            drop(authority);
+            self.announce_control_state(snapshot);
+        }
+        Ok(taken)
+    }
+
     pub fn detach_view(&self, view_id: &str, client_id: &str) -> bool {
-        self.authority.lock().unwrap().detach(view_id, client_id)
+        let mut authority = self.authority.lock().unwrap();
+        let revision = authority.control_revision();
+        let detached = authority.detach(view_id, client_id);
+        if authority.control_revision() != revision {
+            let snapshot = authority.control_snapshot();
+            drop(authority);
+            self.announce_control_state(snapshot);
+        }
+        detached
+    }
+
+    /// Detach only the named incarnation, so a cleanup path that fires after a
+    /// takeover cannot evict the attachment that replaced it.
+    pub fn detach_view_if_epoch(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+    ) -> bool {
+        let mut authority = self.authority.lock().unwrap();
+        let revision = authority.control_revision();
+        let detached = authority.detach_view_if_epoch(view_id, client_id, attachment_epoch);
+        if authority.control_revision() != revision {
+            let snapshot = authority.control_snapshot();
+            drop(authority);
+            self.announce_control_state(snapshot);
+        }
+        detached
+    }
+
+    /// Bind a state stream's cancel handle to one attachment incarnation.
+    /// Fails if the incarnation was already superseded, which is how a handler
+    /// that lost the takeover race learns to abort instead of spawning.
+    ///
+    /// The handle is fired with the authority lock held, so it must only
+    /// signal cancellation — it must not call back into the session.
+    pub fn register_state_stream(
+        &self,
+        view_id: &str,
+        attachment_epoch: u64,
+        cancel: StateStreamCancel,
+    ) -> Result<()> {
+        self.authority
+            .lock()
+            .unwrap()
+            .register_state_stream(view_id, attachment_epoch, cancel)
+    }
+
+    /// Release attach watermarks whose fencing connections have all
+    /// terminated. See `ViewAuthority::gc_attach_watermarks`.
+    pub fn gc_attach_watermarks(&self, client_id: &str, terminated_through_conn_id: u64) -> usize {
+        self.authority
+            .lock()
+            .unwrap()
+            .gc_attach_watermarks(client_id, terminated_through_conn_id)
+    }
+
+    /// Outstanding attach watermarks held for a client. See
+    /// `ViewAuthority::attach_watermark_count`.
+    pub fn attach_watermark_count(&self, client_id: &str) -> usize {
+        self.authority
+            .lock()
+            .unwrap()
+            .attach_watermark_count(client_id)
+    }
+
+    pub fn view_attachment_epoch(&self, view_id: &str) -> Option<u64> {
+        self.authority.lock().unwrap().attachment_epoch(view_id)
     }
 
     pub fn has_active_views(&self) -> bool {
@@ -1424,9 +1779,86 @@ impl Session {
             self.apply_resize(cols, rows, changed.layout_epoch, previous_size)?;
         }
         *authority = next;
+        let snapshot = authority.control_snapshot();
         drop(authority);
         let _ = self.control_tx.send(changed.clone());
+        self.announce_control_state(snapshot);
         Ok(changed)
+    }
+
+    /// [`Session::claim_control`] fenced by the claimant's attachment epoch and,
+    /// when `expected_control_revision` is `Some`, by a compare-and-swap on the
+    /// control revision.
+    ///
+    /// A rejection is an `Ok` carrying the state to announce — the loser needs
+    /// to see it to decide between retrying and standing down — and leaves the
+    /// terminal size untouched.
+    pub fn claim_control_checked(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        cols: u16,
+        rows: u16,
+        expected_control_revision: Option<u64>,
+    ) -> Result<ControlClaim> {
+        let mut authority = self.authority.lock().unwrap();
+        let previous_size = authority.size();
+        let mut next = authority.clone();
+        let claim = next.claim_control_checked(
+            view_id,
+            client_id,
+            attachment_epoch,
+            cols,
+            rows,
+            expected_control_revision,
+        )?;
+        let ControlClaim::Granted(changed) = claim else {
+            return Ok(claim);
+        };
+        if changed.size_changed {
+            self.apply_resize(cols, rows, changed.layout_epoch, previous_size)?;
+        }
+        *authority = next;
+        let snapshot = authority.control_snapshot();
+        drop(authority);
+        let _ = self.control_tx.send(changed.clone());
+        self.announce_control_state(snapshot);
+        Ok(ControlClaim::Granted(changed))
+    }
+
+    /// [`Session::resize_view`] with the attachment-epoch check, so a
+    /// superseded incarnation cannot resize the terminal its successor owns.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resize_view_checked(
+        &self,
+        view_id: &str,
+        client_id: &str,
+        attachment_epoch: u64,
+        control_epoch: u64,
+        resize_sequence: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<bool> {
+        let mut authority = self.authority.lock().unwrap();
+        let previous_size = authority.size();
+        let Some(prepared) = authority.prepare_resize_checked(
+            view_id,
+            client_id,
+            attachment_epoch,
+            control_epoch,
+            resize_sequence,
+            cols,
+            rows,
+        )?
+        else {
+            return Ok(false);
+        };
+        if prepared.size_changed() {
+            self.apply_resize(cols, rows, prepared.layout_epoch(), previous_size)?;
+        }
+        authority.commit_resize(view_id, prepared);
+        Ok(prepared.size_changed())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1470,23 +1902,58 @@ impl Session {
         )
     }
 
+    /// The revisioned controller state, including "no controller" — the
+    /// observation [`ControlChanged`] structurally cannot carry.
+    pub fn control_snapshot(&self) -> ControlSnapshot {
+        self.authority.lock().unwrap().control_snapshot()
+    }
+
     pub fn subscribe_control(&self) -> broadcast::Receiver<ControlChanged> {
         self.control_tx.subscribe()
     }
 
+    /// Every controller change, clears included. `subscribe_control` reports
+    /// claims only, so a viewer watching it alone can never learn that the
+    /// controller went away.
+    pub fn subscribe_control_state(&self) -> broadcast::Receiver<ControlSnapshot> {
+        self.control_state_tx.subscribe()
+    }
+
+    fn announce_control_state(&self, snapshot: ControlSnapshot) {
+        let _ = self.control_state_tx.send(snapshot);
+    }
+
+    /// Re-announce the current controller state on **both** channels.
+    ///
+    /// This is the repair path — a rejected resize, a subscriber that lagged —
+    /// so it has to reach the revisioned channel the state streams actually
+    /// watch, not only the legacy one. A repair that publishes solely to
+    /// `control_tx` cannot fix a lagged `control_state_tx` consumer by
+    /// construction.
+    ///
+    /// The snapshot goes out even when there is no controller: that is exactly
+    /// the state the legacy frame cannot express, and therefore the one most
+    /// likely to need repairing. The legacy emission keeps its original
+    /// controller-only behaviour for consumers that cannot represent a clear.
     pub fn announce_control(&self) {
         let authority = self.authority.lock().unwrap();
-        let Some(controller) = authority.controller().cloned() else {
-            return;
-        };
+        let snapshot = authority.control_snapshot();
         let (cols, rows) = authority.size();
-        let _ = self.control_tx.send(ControlChanged {
-            controller,
-            cols,
-            rows,
-            layout_epoch: authority.layout_epoch(),
-            size_changed: false,
-        });
+        let legacy = authority
+            .controller()
+            .cloned()
+            .map(|controller| ControlChanged {
+                controller,
+                cols,
+                rows,
+                layout_epoch: authority.layout_epoch(),
+                size_changed: false,
+            });
+        drop(authority);
+        if let Some(changed) = legacy {
+            let _ = self.control_tx.send(changed);
+        }
+        self.announce_control_state(snapshot);
     }
 
     pub fn refresh(&self) -> Result<()> {
@@ -2034,6 +2501,339 @@ mod tests {
     }
 
     use super::*;
+
+    /// A session whose exit evidence the test controls directly — the pty is
+    /// irrelevant to the precedence rules and would only make them slow.
+    struct FakeSession {
+        exited: bool,
+        exit_code: Option<i32>,
+    }
+
+    impl FakeSession {
+        fn running() -> Arc<Self> {
+            Arc::new(Self {
+                exited: false,
+                exit_code: None,
+            })
+        }
+
+        fn exited(code: Option<i32>) -> Arc<Self> {
+            Arc::new(Self {
+                exited: true,
+                exit_code: code,
+            })
+        }
+    }
+
+    impl SessionEndEvidence for FakeSession {
+        fn has_exited(&self) -> bool {
+            self.exited
+        }
+
+        fn observed_exit_code(&self) -> Option<i32> {
+            self.exit_code
+        }
+    }
+
+    struct TestClock(Mutex<u64>);
+
+    impl TestClock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self(Mutex::new(1_000)))
+        }
+
+        fn advance(&self, millis: u64) {
+            *self.0.lock().unwrap() += millis;
+        }
+    }
+
+    impl TombstoneClock for TestClock {
+        fn now_ms(&self) -> u64 {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    fn registry_of(
+        entries: Vec<(&str, Arc<FakeSession>)>,
+    ) -> RwLock<HashMap<String, Arc<FakeSession>>> {
+        RwLock::new(
+            entries
+                .into_iter()
+                .map(|(id, session)| (id.to_owned(), session))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn an_observed_exit_outranks_the_path_that_removed_the_session() {
+        let tombstones = SessionTombstones::new();
+        // The close command wins the race, but the process is already gone:
+        // the truthful cause is the exit, not the close.
+        let registry = registry_of(vec![("session", FakeSession::exited(Some(3)))]);
+        assert!(tombstones.remove_with_cause(&registry, "session").is_some());
+        assert_eq!(
+            tombstones
+                .lookup("session")
+                .map(|tombstone| tombstone.cause),
+            Some(SessionEndCause::Exited { code: Some(3) })
+        );
+    }
+
+    #[test]
+    fn a_session_removed_while_running_is_recorded_as_closed() {
+        let tombstones = SessionTombstones::new();
+        let registry = registry_of(vec![("session", FakeSession::running())]);
+        assert!(tombstones.remove_with_cause(&registry, "session").is_some());
+        assert_eq!(
+            tombstones
+                .lookup("session")
+                .map(|tombstone| tombstone.cause),
+            Some(SessionEndCause::Closed)
+        );
+    }
+
+    #[test]
+    fn the_first_writer_commits_and_later_removals_do_not_overwrite() {
+        let tombstones = SessionTombstones::new();
+        let registry = registry_of(vec![("session", FakeSession::running())]);
+        tombstones.remove_with_cause(&registry, "session");
+
+        // A racing path arriving late finds nothing to remove...
+        assert!(tombstones.remove_with_cause(&registry, "session").is_none());
+        // ...and even if the id is somehow present again with different
+        // evidence, the first verdict stands.
+        registry
+            .write()
+            .unwrap()
+            .insert("session".to_owned(), FakeSession::exited(Some(9)));
+        assert!(tombstones.remove_with_cause(&registry, "session").is_some());
+        assert_eq!(
+            tombstones
+                .lookup("session")
+                .map(|tombstone| tombstone.cause),
+            Some(SessionEndCause::Closed)
+        );
+    }
+
+    #[test]
+    fn tombstones_are_bounded_and_evict_least_recently_used_first() {
+        let tombstones = SessionTombstones::new();
+        let registry = registry_of(vec![]);
+        for index in 0..TOMBSTONE_CAPACITY {
+            let session_id = format!("session-{index}");
+            registry
+                .write()
+                .unwrap()
+                .insert(session_id.clone(), FakeSession::running());
+            tombstones.remove_with_cause(&registry, &session_id);
+        }
+        assert_eq!(tombstones.len(), TOMBSTONE_CAPACITY);
+
+        // Reading the oldest entry makes it recent, so the next one along is
+        // what the cap sheds.
+        assert!(tombstones.lookup("session-0").is_some());
+        registry
+            .write()
+            .unwrap()
+            .insert("overflow".to_owned(), FakeSession::running());
+        tombstones.remove_with_cause(&registry, "overflow");
+
+        assert_eq!(tombstones.len(), TOMBSTONE_CAPACITY);
+        assert!(tombstones.lookup("session-0").is_some());
+        assert!(tombstones.lookup("session-1").is_none());
+        assert!(tombstones.lookup("overflow").is_some());
+    }
+
+    #[test]
+    fn tombstones_expire_after_their_ttl() {
+        let clock = TestClock::new();
+        let tombstones = SessionTombstones::with_clock(clock.clone());
+        let registry = registry_of(vec![("session", FakeSession::exited(Some(0)))]);
+        tombstones.remove_with_cause(&registry, "session");
+
+        clock.advance(TOMBSTONE_TTL_MS - 1);
+        assert!(tombstones.lookup("session").is_some());
+
+        clock.advance(1);
+        assert!(tombstones.lookup("session").is_none());
+        assert_eq!(tombstones.len(), 0);
+        // An outage longer than the TTL leaves no evidence, and the honest
+        // answer is `Unknown` rather than a guess.
+        assert_eq!(
+            tombstones.session_status(&registry, "session"),
+            SessionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn session_status_prefers_the_registry_over_any_tombstone() {
+        let tombstones = SessionTombstones::new();
+        let registry = registry_of(vec![("session", FakeSession::exited(Some(0)))]);
+        // Still listed and attachable, so still `Live` — a viewer resuming
+        // onto it must not be told the session ended.
+        assert_eq!(
+            tombstones.session_status(&registry, "session"),
+            SessionStatus::Live
+        );
+        assert_eq!(
+            tombstones.session_status(&registry, "never-existed"),
+            SessionStatus::Unknown
+        );
+
+        tombstones.remove_with_cause(&registry, "session");
+        assert_eq!(
+            tombstones.session_status(&registry, "session"),
+            SessionStatus::Ended {
+                cause: SessionEndCause::Exited { code: Some(0) },
+            }
+        );
+    }
+
+    /// §4.2.3: the clear announcement is the entire reason `ControlState`
+    /// exists, and a detach is how a controller most often goes away.
+    #[cfg(unix)]
+    #[test]
+    fn detaching_the_controller_announces_the_clear_on_both_detach_paths() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+
+        let controlling = session.attach_view("a", "client").unwrap();
+        session.claim_control("a", "client", 100, 30).unwrap();
+        let mut states = session.subscribe_control_state();
+        let claimed = session.control_snapshot().control_revision;
+
+        // The epoch-conditional path the host uses.
+        assert!(session.detach_view_if_epoch("a", "client", controlling));
+        let cleared = states
+            .try_recv()
+            .expect("an epoch-conditional detach that clears control must announce it");
+        assert!(cleared.controller.is_none());
+        assert!(
+            cleared.control_revision > claimed,
+            "a clear is a controller change and must move the revision"
+        );
+
+        // The legacy path any other caller may still use.
+        session.attach_view("b", "client").unwrap();
+        session.claim_control("b", "client", 100, 30).unwrap();
+        let claimed = states
+            .try_recv()
+            .expect("a claim announces")
+            .control_revision;
+        assert!(session.detach_view("b", "client"));
+        let cleared = states
+            .try_recv()
+            .expect("the legacy detach path must announce the clear too");
+        assert!(cleared.controller.is_none());
+        assert!(cleared.control_revision > claimed);
+
+        // A detach that clears nothing stays quiet — the guard's actual job,
+        // and the reason it cannot be replaced by announcing unconditionally.
+        session.attach_view("c", "client").unwrap();
+        assert!(session.detach_view("c", "client"));
+        assert!(
+            matches!(
+                states.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "detaching a non-controlling view is not a controller change"
+        );
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+    }
+
+    /// The repair path exists to fix a consumer that missed a change — a
+    /// rejected resize, a lagged state stream. Publishing it only to the
+    /// legacy channel cannot repair the revisioned one that actually lagged.
+    #[cfg(unix)]
+    #[test]
+    fn control_repair_announcements_reach_revisioned_subscribers() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 80,
+                rows: 24,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+
+        session.attach_view("a", "client").unwrap();
+        session.claim_control("a", "client", 100, 30).unwrap();
+        let mut states = session.subscribe_control_state();
+        let mut legacy = session.subscribe_control();
+
+        session.announce_control();
+        let repaired = states
+            .try_recv()
+            .expect("a control repair must reach the revisioned channel");
+        assert_eq!(
+            repaired.controller.map(|controller| controller.view_id),
+            Some("a".to_owned())
+        );
+        assert!(repaired.control_revision >= 1);
+        assert!(
+            legacy.try_recv().is_ok(),
+            "legacy subscribers must keep being served"
+        );
+
+        // The repair a legacy-only announcement can never deliver: after the
+        // controller goes away there is nothing for `ControlChanged` to carry,
+        // so the revisioned channel is the only one that can state it.
+        assert!(session.detach_view("a", "client"));
+        let _ = states.try_recv();
+        let _ = legacy.try_recv();
+
+        session.announce_control();
+        let repaired = states
+            .try_recv()
+            .expect("a no-controller repair must still announce");
+        assert!(repaired.controller.is_none());
+        assert!(
+            matches!(
+                legacy.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "the legacy frame structurally cannot say 'no controller'"
+        );
+
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+    }
 
     #[cfg(unix)]
     fn wait_for_activity(

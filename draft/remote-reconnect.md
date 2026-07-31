@@ -701,6 +701,13 @@ Following the `SESSION_ACTIVITY_PROTOCOL_MINOR` gating pattern
 (`tunnel_protocol.rs:14–16`), bump `PROTOCOL_MINOR` to 5. The negotiated
 minor is **persisted per connection** on both sides (§4.2 step 3).
 
+> **Implementation-time renumbering (Phase 3 start, 2026-07-31):** minor 5
+> was spent by terminal-presentation sync (commit 612af6d) between design
+> freeze and Phase 3 start. Everything this document calls "1.5" ships as
+> **minor 6**, gated by a new `REMOTE_RECONNECT_PROTOCOL_MINOR: u16 = 6`;
+> read "1.4 peers/hosts" as "negotiated minor < 6". Prose below is left
+> unrenumbered — this note governs.
+
 ### 6.1 Liveness
 
 ```rust
@@ -1210,6 +1217,15 @@ every peer trusted. The compact path is unaffected (it has transport
 WhoIs). Proper closure is a Phase 3 item: a WhoIs-equivalent identity on
 QUIC connections from truffle-core, restoring cryptographic binding.
 
+> **Closed at Phase 3 (2026-07-31):** the host resolves
+> `Node::whois(remote_address())` at QUIC accept. Where the provider
+> supports WhoIs, the tailnet-authenticated identity is authoritative and
+> the asserted `ClientHello.local_device_id` must correspond to it;
+> mismatch or an anonymous answer rejects the connection. The Phase-2
+> hello+registry validation remains only as the fallback for providers
+> without WhoIs support (in-process tests). The impersonation caveat
+> above no longer applies to tailnet-backed hosts.
+
 ## 10. Testing strategy
 
 - **Rust (deterministic, loopback mesh — extend the existing in-crate
@@ -1408,6 +1424,16 @@ implies; the heartbeat row applies from Phase 3. Also measured: the first
 `reconnecting` event carries `attempt 0` / `nextRetryMs null` — backoff
 fields appear from attempt 1 — so countdown UIs must tolerate their
 absence on the first event.
+
+Measured reality (Phase 3, real tailnet, minor-6 pair, same path/day as
+the 24.0 s baseline): outage detection **3.5 s** via the heartbeat,
+auto-resume still same-tick on thaw, `ended { session-exited }` delivered
+through the tombstone for a session killed mid-outage, and
+`ended { host-shutdown }` on SIGTERM. One semantic the goodbye exposed:
+a "restart" performed with SIGTERM now correctly concludes
+**host-shutdown** (a polite restart is a shutdown followed by a start);
+**host-restarted** is reserved for a host that vanished without a word —
+the fixture's `restart-host` SIGKILLs to mean exactly that.
 
 | Knob | Default | Rationale |
 | --- | --- | --- |
