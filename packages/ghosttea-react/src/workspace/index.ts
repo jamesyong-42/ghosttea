@@ -99,8 +99,10 @@ export {
 export {
   contactElapsedMs,
   inputSuppressionHint,
+  paneIsFrozen,
   remoteBannerActionLabel,
   remoteBannerContent,
+  retryCountdownMs,
   type RemoteBannerAction,
   type RemoteBannerContent,
 } from "./remote-banner.js";

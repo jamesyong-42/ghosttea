@@ -644,12 +644,23 @@ enum ResponseBody {
     },
     SelectionText {
         text: String,
+        /// How much of the session the answer could reach. A frozen replica
+        /// holds only what was on screen, and a UI that says "copied" without
+        /// saying that would be claiming scrollback it never had. Clients
+        /// treat this as an open hint: an unrecognized scope is ignored, and
+        /// its absence is a daemon that always answered from the host.
+        scope: &'static str,
     },
     Ok,
     Error {
         message: String,
     },
 }
+
+/// Selection answered from the host, which can reach what has scrolled away.
+const SELECTION_SCOPE_SCROLLBACK: &str = "scrollback";
+/// Selection answered from a frozen replica's retained screen.
+const SELECTION_SCOPE_VIEWPORT: &str = "viewport";
 
 /// Who holds terminal control, on the wire.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
@@ -1274,6 +1285,34 @@ async fn read_packet<R: AsyncRead + Unpin>(stream: &mut R, limit: usize) -> Resu
     Ok(bytes)
 }
 
+/// How much a connection reads at once while assembling frames.
+///
+/// Only a buffer size: a frame larger than this is read across several passes,
+/// which is precisely what the assembly above exists to survive.
+const CONTROL_READ_CHUNK: usize = 16 * 1024;
+
+/// Split one complete frame off the front of a connection's read buffer.
+///
+/// `Ok(None)` means the frame is still arriving and the caller should read
+/// more. An error is a client announcing a frame larger than the protocol
+/// allows, which ends the connection exactly as an oversized packet always
+/// did.
+fn take_frame(buffered: &mut Vec<u8>, limit: usize) -> Result<Option<Vec<u8>>> {
+    let Some(header) = buffered.get(..4) else {
+        return Ok(None);
+    };
+    let length = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+    if length > limit {
+        bail!("packet exceeds limit");
+    }
+    if buffered.len() < 4 + length {
+        return Ok(None);
+    }
+    let packet = buffered[4..4 + length].to_vec();
+    buffered.drain(..4 + length);
+    Ok(Some(packet))
+}
+
 async fn write_packet<W: AsyncWrite + Unpin>(stream: &mut W, bytes: &[u8]) -> Result<()> {
     stream.write_u32_le(bytes.len() as u32).await?;
     stream.write_all(bytes).await?;
@@ -1304,8 +1343,15 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// Commands that dial the mesh and may block on the network for as long as a
 /// peer takes to answer. They run off the connection loop so input queued
-/// behind them on the same socket stays latency-clean. None of them touch the
-/// connection's view-attachment bookkeeping.
+/// behind them on the same socket stays latency-clean.
+///
+/// The membership rule is not "it touches the network" but "it touches the
+/// network and nothing per-connection": an off-loop command is handed a fresh,
+/// empty ownership map, so one that read or wrote the connection's real one
+/// would silently see no attachments. Every command here is checked against
+/// that. `refresh-session` qualifies — on a Live remote session it re-attaches
+/// the feed through the mesh, which can take as long as a dial, and it reads
+/// the registry and the mesh runtime only.
 fn runs_off_connection_loop(command: &Command) -> bool {
     matches!(
         command,
@@ -1313,6 +1359,8 @@ fn runs_off_connection_loop(command: &Command) -> bool {
             | Command::ListRemoteSessions { .. }
             | Command::OpenRemoteSession { .. }
             | Command::ReconnectRemoteSession { .. }
+            | Command::RefreshSession { .. }
+            | Command::RetryRemoteView { .. }
     )
 }
 
@@ -1378,43 +1426,83 @@ async fn serve_control(
                     }
                 }
             }));
+            // Frames are assembled here rather than inside the `select!`
+            // below. `read_packet` awaits twice — once for the length, once
+            // for the body — and every pushed event cancels whichever read is
+            // in flight. Cancelled between the two, it would swallow a length
+            // it had already consumed and leave the next read to mistake the
+            // body's first four bytes for the next one, desynchronizing a
+            // connection that did nothing wrong. `read` is cancel-safe and
+            // this buffer outlives the cancellation, so nothing is lost.
+            let mut inbound = Vec::<u8>::new();
+            let mut chunk = vec![0_u8; CONTROL_READ_CHUNK];
             loop {
-                tokio::select! {
-                    packet = read_packet(&mut reader, MAX_CONTROL_BYTES) => {
-                        let Ok(packet) = packet else { break; };
-                        let Ok(command) = serde_json::from_slice::<Envelope>(&packet) else { break; };
-                        let mut negotiated = false;
-                        if let Command::Hello { protocol_major, protocol_minor, .. } = &command.command
-                            && *protocol_major == CONTROL_PROTOCOL_MAJOR
-                        {
-                            client_protocol_minor = (*protocol_minor).min(CONTROL_PROTOCOL_MINOR);
-                            negotiated = true;
-                        }
-                        let notification = command.request_id == 0;
-                        if runs_off_connection_loop(&command.command) {
-                            let context = context.clone();
-                            let client_id = client_id.clone();
-                            let outbound = outbound_tx.clone();
-                            tokio::spawn(async move {
-                                let mut detached_bookkeeping = HashSet::new();
-                                let response = handle_command(command, &client_id, &mut detached_bookkeeping, &context).await;
-                                if !notification {
-                                    let _ = outbound.send(serde_json::to_vec(&response).unwrap()).await;
-                                }
-                            });
-                            continue;
-                        }
-                        let response = handle_command(command, &client_id, &mut attached, &context).await;
-                        if !notification && outbound_tx.send(serde_json::to_vec(&response).unwrap()).await.is_err() { break; }
-                        // After the response, so the client has its negotiated
-                        // minor before the first pushed event arrives.
-                        if negotiated
-                            && client_protocol_minor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR
-                            && !send_remote_lifecycle_snapshot(&context, &outbound_tx).await
-                        {
-                            break;
-                        }
+                let framed = match take_frame(&mut inbound, MAX_CONTROL_BYTES) {
+                    Ok(framed) => framed,
+                    Err(_) => break,
+                };
+                if let Some(packet) = framed {
+                    let Ok(command) = serde_json::from_slice::<Envelope>(&packet) else {
+                        break;
+                    };
+                    let mut negotiated = false;
+                    if let Command::Hello {
+                        protocol_major,
+                        protocol_minor,
+                        ..
+                    } = &command.command
+                        && *protocol_major == CONTROL_PROTOCOL_MAJOR
+                    {
+                        client_protocol_minor = (*protocol_minor).min(CONTROL_PROTOCOL_MINOR);
+                        negotiated = true;
                     }
+                    let notification = command.request_id == 0;
+                    if runs_off_connection_loop(&command.command) {
+                        let context = context.clone();
+                        let client_id = client_id.clone();
+                        let outbound = outbound_tx.clone();
+                        tokio::spawn(async move {
+                            let mut detached_bookkeeping = HashSet::new();
+                            let response = handle_command(
+                                command,
+                                &client_id,
+                                &mut detached_bookkeeping,
+                                &context,
+                            )
+                            .await;
+                            if !notification {
+                                let _ = outbound.send(serde_json::to_vec(&response).unwrap()).await;
+                            }
+                        });
+                        continue;
+                    }
+                    let response =
+                        handle_command(command, &client_id, &mut attached, &context).await;
+                    if !notification
+                        && outbound_tx
+                            .send(serde_json::to_vec(&response).unwrap())
+                            .await
+                            .is_err()
+                    {
+                        break;
+                    }
+                    // After the response, so the client has its negotiated
+                    // minor before the first pushed event arrives.
+                    if negotiated
+                        && client_protocol_minor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR
+                        && !send_remote_lifecycle_snapshot(&context, &outbound_tx).await
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                tokio::select! {
+                    read = reader.read(&mut chunk) => match read {
+                        // Zero is the client's half of the socket closing,
+                        // which is the ordinary way a connection ends.
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => inbound.extend_from_slice(&chunk[..read]),
+                    },
                     event = events.recv() => match event {
                         Ok(event) => {
                             let Some(event) = event_for_client(event, client_protocol_minor) else {
@@ -1998,12 +2086,21 @@ async fn handle_command(
             Command::RefreshSession { session_id } => {
                 if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                     session.refresh()?;
+                } else if remote_lifecycle_state(context, &session_id).await
+                    == Some(mesh::RemoteLifecycleState::Live)
+                {
+                    // A true remote refresh: a generation-advanced re-attach of
+                    // the feed (§7), which passes through Synchronizing and
+                    // mints a fresh attachment epoch. Nothing here may hold an
+                    // epoch across it — every path reads `current_attachment`
+                    // at use time for exactly this reason. Asking the host for
+                    // a second state stream instead would leave two feeds with
+                    // independent patch sequences.
+                    context.mesh_runtime.refresh_remote(&session_id).await?;
                 } else {
-                    // Still a re-render of the local replica. A true remote
-                    // refresh is a generation-advanced re-attach of the feed
-                    // view (§7), which arrives with the promotion machinery in
-                    // Phase 2; asking the host for a second state stream here
-                    // would leave two feeds with independent patch sequences.
+                    // Not live, or a mesh with no lifecycle to report: re-render
+                    // the retained replica and never dial. A frozen session has
+                    // no host to ask, and this is what refresh always did.
                     context.mesh_runtime.refresh(&session_id).await?;
                 }
                 Ok(ResponseBody::Ok)
@@ -2048,29 +2145,47 @@ async fn handle_command(
                 session_id,
                 view_id,
             } => {
-                // Dormant in Phase 1: per-view re-attach arrives with the
-                // promotion machinery (§4.5). The command exists now because
-                // minor 12 is advertised with its complete surface, and it
-                // answers with the view's current record — a real response
-                // shape, with no side effect.
-                let lifecycle = context
+                // The per-pane retry (§4.5): re-attach one view that failed
+                // while the rest of the session kept working. The mesh refuses
+                // the cases it does not own — a session that is not live, or
+                // the feed view, both of which recover through the
+                // session-level paths — and those refusals answer with the
+                // view's current record rather than an error, which is what
+                // this command did for every client before it went live.
+                let record = match context
                     .mesh_runtime
-                    .session_lifecycle(&session_id)
+                    .retry_view(&session_id, &view_id)
                     .await
-                    .context("unknown remote session")?;
-                let record = lifecycle
-                    .views
-                    .iter()
-                    .find(|record| record.local_view_id == view_id)
-                    .context("unknown remote view")?;
+                {
+                    Ok(record) => record,
+                    // Re-read rather than reuse a copy taken before the call:
+                    // an attempt can move the view on its way to failing, and
+                    // reporting the state it held beforehand would describe a
+                    // view that no longer exists in that state. The two
+                    // failures are told apart because they mean different
+                    // things to whoever is reading the error — the session is
+                    // gone, or only this pane is.
+                    Err(_) => {
+                        let lifecycle = context
+                            .mesh_runtime
+                            .session_lifecycle(&session_id)
+                            .await
+                            .context("unknown remote session")?;
+                        lifecycle
+                            .views
+                            .into_iter()
+                            .find(|record| record.local_view_id == view_id)
+                            .context("unknown remote view")?
+                    }
+                };
                 Ok(ResponseBody::ViewState {
                     session_id,
-                    view_id: record.local_view_id.clone(),
+                    view_id: record.local_view_id,
                     view_state_seq: record.view_state_seq,
                     view_state: record.view_state,
                     attachment_epoch: record.attachment_epoch,
                     read_write: record.read_write,
-                    error: record.error.clone(),
+                    error: record.error,
                     retryable: record.retryable,
                 })
             }
@@ -2452,33 +2567,42 @@ async fn handle_command(
                     end_row,
                     select_all,
                 };
-                let text = if let Some(session) = registry.read().unwrap().get(&session_id).cloned()
+                let (text, scope) = if let Some(session) =
+                    registry.read().unwrap().get(&session_id).cloned()
                 {
-                    session.selection_text(
+                    let text = session.selection_text(
                         start_column,
                         start_row,
                         end_column,
                         end_row,
                         select_all,
-                    )?
-                } else if remote_session_is_live(context, &session_id).await {
+                    )?;
+                    (text, SELECTION_SCOPE_SCROLLBACK)
+                } else if remote_lifecycle_state(context, &session_id)
+                    .await
+                    .is_none_or(|state| state == mesh::RemoteLifecycleState::Live)
+                {
                     // Live sessions keep asking the host, which can reach
-                    // scrollback this side does not retain.
-                    context
+                    // scrollback this side does not retain. A mesh with no
+                    // lifecycle to report is the pre-lifecycle one, whose
+                    // selections always went to the host.
+                    let text = context
                         .mesh_runtime
                         .selection_text(&session_id, &view_id, selection)
-                        .await?
+                        .await?;
+                    (text, SELECTION_SCOPE_SCROLLBACK)
                 } else {
                     // §4.4: with no live attachment there is no epoch to fence
                     // against and no host to ask, so the retained replica
                     // viewport answers and the ownership record above is the
                     // authorization. Copying from a frozen tab keeps working.
-                    context
+                    let text = context
                         .mesh_runtime
                         .offline_selection_text(&session_id, selection)
-                        .await?
+                        .await?;
+                    (text, SELECTION_SCOPE_VIEWPORT)
                 };
-                Ok(ResponseBody::SelectionText { text })
+                Ok(ResponseBody::SelectionText { text, scope })
             }
             Command::Interrupt {
                 session_id,
@@ -2768,16 +2892,22 @@ async fn remote_view_state_seq(
         .map(|record| record.view_state_seq)
 }
 
-/// Whether a remote session can still be asked to do things on the wire.
+/// What the mesh says a remote session's lifecycle is, if it says anything.
 ///
-/// A mesh that reports no lifecycle at all is treated as live: that is the
-/// behaviour every path had before lifecycles existed.
-async fn remote_session_is_live(context: &ControlContext, session_id: &str) -> bool {
+/// Returned rather than reduced to a boolean because the two callers want
+/// opposite defaults for "the mesh has nothing to say", and burying that in a
+/// helper is how one of them silently gets the other's answer. A mesh with no
+/// lifecycle is the pre-lifecycle one: `selection-text` still asks the host,
+/// and `refresh-session` still re-renders locally, exactly as each did before.
+async fn remote_lifecycle_state(
+    context: &ControlContext,
+    session_id: &str,
+) -> Option<mesh::RemoteLifecycleState> {
     context
         .mesh_runtime
         .session_lifecycle(session_id)
         .await
-        .is_none_or(|lifecycle| lifecycle.state == mesh::RemoteLifecycleState::Live)
+        .map(|lifecycle| lifecycle.state)
 }
 
 /// The complete reconciliation object for one remote session.
@@ -2834,11 +2964,14 @@ async fn remote_session_state(
     }
 }
 
-/// Claims the one resume attempt a session may have in flight.
+/// Claims the one resume command a session may have in flight.
 ///
-/// The mesh serializes attempts per session but does not merge them, so
-/// without this a second manual retry would wait out the first and then dial
-/// again for an answer it already has. Released on drop, so a failed attempt
+/// The mesh's own engine now takes the same single-flight lock a manual retry
+/// does, so a dial can no longer race a dial. What is left for the daemon is
+/// the queue in front of it: without this, two clicks of Retry would each wait
+/// out the engine's attempt and then ask for one more. The duplicate answers
+/// with the state the running attempt has reached, which is the same
+/// conclusion it would have waited for. Released on drop, so a failed attempt
 /// never locks the session out of the next one.
 struct ReconnectInFlight<'a> {
     context: &'a ControlContext,
@@ -2882,38 +3015,55 @@ async fn serve_frames(mut listener: ipc::Listener, token: String, frames: FrameH
             }
             let (mut reader, mut writer) = tokio::io::split(socket);
             let mut subscription_starts = HashMap::<u64, u64>::new();
+            // Assembled outside the `select!` for the same reason as the
+            // control loop, and with more provocation: frames arrive at render
+            // rate, so a subscription update spanning two reads would be
+            // interrupted almost every time.
+            let mut inbound = Vec::<u8>::new();
+            let mut chunk = vec![0_u8; CONTROL_READ_CHUNK];
             loop {
-                tokio::select! {
-                    packet = read_packet(&mut reader, MAX_FRAME_SUBSCRIPTION_BYTES) => {
-                        let Ok(packet) = packet else { break; };
-                        let Ok(subscription) = serde_json::from_slice::<FrameSubscription>(&packet) else { break; };
-                        if subscription.session_handles.len() > MAX_FRAME_SUBSCRIPTIONS {
-                            break;
-                        }
-                        let Ok(parsed) = subscription
-                            .session_handles
-                            .into_iter()
-                            .map(|handle| handle.parse::<u64>())
-                            .collect::<Result<HashSet<_>, _>>()
-                        else {
-                            break;
-                        };
-                        let subscription_ordinal = frames.current_ordinal();
-                        subscription_starts.retain(|handle, _| parsed.contains(handle));
-                        for handle in parsed {
-                            subscription_starts
-                                .entry(handle)
-                                .or_insert(subscription_ordinal);
-                        }
-                        let acknowledgement = serde_json::to_vec(&json!({
-                            "type": "subscription-ack",
-                            "requestId": subscription.request_id,
-                        }))
-                        .unwrap();
-                        if write_packet(&mut writer, &acknowledgement).await.is_err() {
-                            break;
-                        }
+                let framed = match take_frame(&mut inbound, MAX_FRAME_SUBSCRIPTION_BYTES) {
+                    Ok(framed) => framed,
+                    Err(_) => break,
+                };
+                if let Some(packet) = framed {
+                    let Ok(subscription) = serde_json::from_slice::<FrameSubscription>(&packet)
+                    else {
+                        break;
+                    };
+                    if subscription.session_handles.len() > MAX_FRAME_SUBSCRIPTIONS {
+                        break;
                     }
+                    let Ok(parsed) = subscription
+                        .session_handles
+                        .into_iter()
+                        .map(|handle| handle.parse::<u64>())
+                        .collect::<Result<HashSet<_>, _>>()
+                    else {
+                        break;
+                    };
+                    let subscription_ordinal = frames.current_ordinal();
+                    subscription_starts.retain(|handle, _| parsed.contains(handle));
+                    for handle in parsed {
+                        subscription_starts
+                            .entry(handle)
+                            .or_insert(subscription_ordinal);
+                    }
+                    let acknowledgement = serde_json::to_vec(&json!({
+                        "type": "subscription-ack",
+                        "requestId": subscription.request_id,
+                    }))
+                    .unwrap();
+                    if write_packet(&mut writer, &acknowledgement).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                tokio::select! {
+                    read = reader.read(&mut chunk) => match read {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => inbound.extend_from_slice(&chunk[..read]),
+                    },
                     frame = rx.recv() => match frame {
                         Ok(frame) if frame.len() <= MAX_FRAME_BYTES => {
                             if frame.ordinal <= last_seen_ordinal {
@@ -3987,6 +4137,7 @@ mod protocol_tests {
         calls: Vec<String>,
         next_attachment_epoch: u64,
         reconnect_fails: bool,
+        retry_view_fails: bool,
     }
 
     struct TestRuntime {
@@ -4177,8 +4328,54 @@ mod protocol_tests {
             Ok("from the replica".to_owned())
         }
 
-        async fn refresh(&self, _session_id: &str) -> Result<()> {
+        async fn refresh(&self, session_id: &str) -> Result<()> {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .push(format!("refresh:{session_id}"));
             Ok(())
+        }
+
+        async fn refresh_remote(&self, session_id: &str) -> Result<()> {
+            self.state
+                .lock()
+                .unwrap()
+                .calls
+                .push(format!("refresh-remote:{session_id}"));
+            Ok(())
+        }
+
+        /// Reattaches the named view the way the mesh does: the record comes
+        /// back attached, with a fresh epoch and an advanced sequence.
+        async fn retry_view(
+            &self,
+            session_id: &str,
+            view_id: &str,
+        ) -> Result<mesh::RemoteViewRecord> {
+            let mut state = self.state.lock().unwrap();
+            state
+                .calls
+                .push(format!("retry-view:{session_id}:{view_id}"));
+            if state.retry_view_fails {
+                bail!("remote terminal session is not live");
+            }
+            let lifecycle = state
+                .lifecycles
+                .get_mut(session_id)
+                .context("unknown remote session")?;
+            let record = lifecycle
+                .views
+                .iter_mut()
+                .find(|record| record.local_view_id == view_id)
+                .context("unknown remote view")?;
+            record.view_state = mesh::RemoteViewState::Attached;
+            record.view_state_seq += 1;
+            record.attachment_epoch = Some(42);
+            record.read_write = Some(true);
+            record.error = None;
+            record.retryable = None;
+            Ok(record.clone())
         }
 
         async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64) {
@@ -4793,6 +4990,61 @@ mod protocol_tests {
         }));
     }
 
+    /// Membership in the off-loop set is a claim about what a command touches,
+    /// not only about how slow it is. Off-loop commands are handed an empty
+    /// ownership map, so one that read or wrote the connection's own would
+    /// quietly find nothing attached — which is why the second half of this
+    /// test matters as much as the first.
+    #[test]
+    fn only_commands_that_touch_no_per_connection_state_run_off_the_loop() {
+        for command in [
+            Command::ListRemoteHosts,
+            Command::ListRemoteSessions {
+                device_id: "device-1".to_owned(),
+            },
+            Command::ReconnectRemoteSession {
+                session_id: "session-1".to_owned(),
+            },
+            // Dials on a Live remote session: as slow as any of the above.
+            Command::RefreshSession {
+                session_id: "session-1".to_owned(),
+            },
+            // Re-attaches one pane over the wire, which is a dial too.
+            Command::RetryRemoteView {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+        ] {
+            assert!(
+                runs_off_connection_loop(&command),
+                "a command that can block on a peer must not hold up the loop"
+            );
+        }
+
+        for command in [
+            Command::AttachSession {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+            Command::DetachSession {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+            },
+            Command::FocusAndResize {
+                session_id: "session-1".to_owned(),
+                view_id: "view-1".to_owned(),
+                attachment_epoch: 1,
+                cols: 120,
+                rows: 40,
+            },
+        ] {
+            assert!(
+                !runs_off_connection_loop(&command),
+                "a command that reads or writes the ownership map must stay on the loop that owns it"
+            );
+        }
+    }
+
     /// Both outcomes are states, not errors: the caller needs to know where
     /// the session landed, and a refused dial lands it in Suspended.
     #[tokio::test]
@@ -4845,14 +5097,14 @@ mod protocol_tests {
     /// Dormant in Phase 1: the command exists because minor 12 ships its whole
     /// surface, and it answers with the record it found, untouched.
     #[tokio::test]
-    async fn retrying_a_view_answers_with_its_record_and_changes_nothing() {
+    async fn retrying_a_view_reattaches_it_and_answers_with_the_new_record() {
         let (service, runtime) = start_remote_service("retry-view");
         let mut failed = remote_view("view-1", mesh::RemoteViewState::Failed);
         failed.error = Some("attach refused".to_owned());
         failed.retryable = Some(true);
         runtime.open(remote_lifecycle(
             "session-1",
-            mesh::RemoteLifecycleState::Suspended,
+            mesh::RemoteLifecycleState::Live,
             vec![failed],
         ));
 
@@ -4871,17 +5123,68 @@ mod protocol_tests {
         assert_eq!(response["type"], "view-state");
         assert_eq!(response["sessionId"], "session-1");
         assert_eq!(response["viewId"], "view-1");
+        assert_eq!(response["viewState"], "attached");
+        assert_eq!(response["attachmentEpoch"], 42);
+        assert_eq!(response["readWrite"], json!(true));
+        assert_eq!(
+            response["viewStateSeq"], 5,
+            "a reattach advances the sequence, or the client would drop it"
+        );
+        assert_eq!(response["error"], json!(null));
+        assert_eq!(response["retryable"], json!(null));
+        assert_eq!(
+            runtime.calls(),
+            vec!["retry-view:session-1:view-1".to_owned()]
+        );
+
+        service.serving.abort();
+    }
+
+    /// The mesh refuses what it does not own — a session that is not live, or
+    /// the feed view. Those answer with the view's current record rather than
+    /// an error, which is what every client saw from this command before it
+    /// went live, so nothing regresses for one that has not learned the new
+    /// behaviour.
+    #[tokio::test]
+    async fn a_refused_retry_answers_with_the_view_as_it_stands() {
+        let (service, runtime) = start_remote_service("retry-view-refused");
+        let mut failed = remote_view("view-1", mesh::RemoteViewState::Failed);
+        failed.error = Some("attach refused".to_owned());
+        failed.retryable = Some(true);
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Suspended,
+            vec![failed],
+        ));
+        runtime.state.lock().unwrap().retry_view_fails = true;
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let response = request(
+            &mut client,
+            json!({
+                "requestId": 2,
+                "type": "retry-remote-view",
+                "sessionId": "session-1",
+                "viewId": "view-1",
+            }),
+        )
+        .await;
+        assert_eq!(response["type"], "view-state");
+        assert_eq!(response["viewId"], "view-1");
         assert_eq!(response["viewStateSeq"], 4);
         assert_eq!(response["viewState"], "failed");
         assert_eq!(response["attachmentEpoch"], json!(null));
         assert_eq!(response["readWrite"], json!(null));
         assert_eq!(response["error"], "attach refused");
         assert_eq!(response["retryable"], json!(true));
-        assert!(
-            runtime.calls().is_empty(),
-            "a dormant retry touches the mesh not at all"
+        assert_eq!(
+            runtime.calls(),
+            vec!["retry-view:session-1:view-1".to_owned()],
+            "the refusal is the mesh's to make; nothing else is touched"
         );
 
+        // A view the session has never heard of has no record to fall back to.
         let unknown = request(
             &mut client,
             json!({
@@ -4942,14 +5245,18 @@ mod protocol_tests {
 
         let live = request(&mut client, selection.clone()).await;
         assert_eq!(live["text"], "from the host");
+        assert_eq!(
+            live["scope"], "scrollback",
+            "a live session is answered by the host, which can reach scrollback"
+        );
 
         runtime.set_state("session-1", mesh::RemoteLifecycleState::Suspended);
         let frozen = request(&mut client, selection).await;
         assert_eq!(frozen["type"], "selection-text");
         assert_eq!(frozen["text"], "from the replica");
-        assert!(
-            frozen.get("scope").is_none(),
-            "the response keeps the shape older clients decode strictly"
+        assert_eq!(
+            frozen["scope"], "viewport",
+            "a frozen replica holds only the screen, and the answer has to say so"
         );
         assert_eq!(
             runtime.calls(),
@@ -4958,6 +5265,118 @@ mod protocol_tests {
                 "selection-text:session-1".to_owned(),
                 "offline-selection-text:session-1".to_owned()
             ]
+        );
+
+        service.serving.abort();
+    }
+
+    /// A command whose bytes arrive in pieces must survive the events that
+    /// arrive between them.
+    ///
+    /// The connection loop waits on a read and on the event stream in the same
+    /// `select!`, so every pushed event cancels the read in flight. A reader
+    /// that had already consumed a frame's length would lose it, and the next
+    /// read would take the body's first four bytes for the next length —
+    /// desynchronizing the stream and killing a connection that did nothing
+    /// wrong. A paste during a reconnect storm is exactly that shape: a large
+    /// command split across reads while lifecycle events pour in.
+    #[tokio::test]
+    async fn a_command_split_across_reads_survives_a_burst_of_events() {
+        let (service, runtime) = start_remote_service("fragmented-command");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let _snapshot = pushed_events(&mut client).await;
+
+        let body = serde_json::to_vec(&json!({ "requestId": 9, "type": "list-sessions" })).unwrap();
+        // The length alone, so the daemon is parked mid-frame with four bytes
+        // of this command already consumed.
+        client
+            .write_all(&(body.len() as u32).to_le_bytes())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Now storm it, cancelling that read over and over.
+        for lifecycle_seq in 0..16 {
+            runtime
+                .lifecycles
+                .send(mesh::RemoteLifecycleChanged {
+                    session_id: "session-1".to_owned(),
+                    lifecycle_seq,
+                    device_id: "device-1".to_owned(),
+                    device_name: "studio-mac".to_owned(),
+                    state: mesh::RemoteLifecycleState::Reconnecting,
+                    reason: None,
+                    exit: None,
+                    attempt: 1,
+                    next_retry_ms: Some(250),
+                    last_contact_ms: Some(1_000),
+                })
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.write_all(&body).await.unwrap();
+
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let packet = read_packet(&mut client, MAX_CONTROL_BYTES).await.unwrap();
+                let message: Value = serde_json::from_slice(&packet).unwrap();
+                if message["requestId"] == 9 {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("the daemon dropped a connection that only sent a fragmented command");
+        assert_eq!(response["type"], "sessions");
+
+        service.serving.abort();
+    }
+
+    /// Refresh means two different things either side of an outage: ask the
+    /// host again, or redraw what is left. Dialing a host that is not there
+    /// would turn a redraw into a hang.
+    #[tokio::test]
+    async fn refreshing_a_remote_session_dials_only_while_it_is_live() {
+        let (service, runtime) = start_remote_service("refresh-routing");
+        runtime.open(remote_lifecycle(
+            "session-1",
+            mesh::RemoteLifecycleState::Live,
+            vec![remote_view("view-1", mesh::RemoteViewState::Attached)],
+        ));
+
+        let mut client = connect_control(&service).await;
+        say_hello(&mut client, CONTROL_PROTOCOL_MINOR).await;
+        let refresh = json!({
+            "requestId": 2,
+            "type": "refresh-session",
+            "sessionId": "session-1",
+        });
+
+        let live = request(&mut client, refresh.clone()).await;
+        assert_eq!(live["type"], "ok");
+        assert_eq!(
+            runtime.calls(),
+            vec!["refresh-remote:session-1".to_owned()],
+            "a live session gets the generation-advanced re-attach"
+        );
+
+        runtime.set_state("session-1", mesh::RemoteLifecycleState::Reconnecting);
+        let frozen = request(&mut client, refresh).await;
+        assert_eq!(frozen["type"], "ok");
+        assert_eq!(
+            runtime.calls(),
+            vec![
+                "refresh-remote:session-1".to_owned(),
+                "refresh:session-1".to_owned()
+            ],
+            "a session that is not live re-renders its replica and never dials"
         );
 
         service.serving.abort();

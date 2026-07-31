@@ -31,6 +31,20 @@ export type WorkerToRendererMessage =
   | { type: "scrollbar-state"; sessionHandle: string; scrollbar: TerminalScrollbarState }
   | { type: "frame-resync-needed"; sessionHandle: string }
   | { type: "frame-resync-complete"; sessionHandle: string }
+  /**
+   * A frame has been applied and its invalidation scheduled. Unlike
+   * `frame-resync-complete` this carries the sequence it committed, so a
+   * consumer can tell a recovered frame from the one it replaced.
+   * `fullSnapshot` marks a complete screen — what a resume publishes, and the
+   * only kind of frame that can prove a replica is current again.
+   */
+  | {
+      type: "frame-committed";
+      sessionHandle: string;
+      sessionEpoch: bigint;
+      frameSequence: bigint;
+      fullSnapshot: boolean;
+    }
   | { type: "catalog-pressure"; sessionHandle: string; reason: "working-set-exceeds-budget" }
   | { type: "frame-credit"; bytes: number }
   | { type: "performance-started"; requestId: number }

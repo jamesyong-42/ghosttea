@@ -194,8 +194,14 @@ body {
   border-bottom-color: rgb(255 160 110 / 34%);
 }
 
-.remote-session-banner-glyph {
+/* Only work actually in flight spins; an outcome glyph stays put. */
+.remote-session-banner-glyph.is-spinning {
   animation: remote-session-spin 1.4s linear infinite;
+}
+
+.remote-session-banner.is-live {
+  color: #b6e3c0;
+  border-bottom-color: rgb(140 220 160 / 30%);
 }
 
 .remote-session-banner-message {
@@ -246,7 +252,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .remote-session-banner-glyph {
+  /* Matches the spinning selector's specificity, or it would not win here. */
+  .remote-session-banner-glyph.is-spinning {
     animation: none;
   }
 }

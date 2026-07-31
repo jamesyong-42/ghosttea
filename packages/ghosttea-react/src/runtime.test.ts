@@ -25,6 +25,20 @@ class FakeWorker extends EventTarget {
   terminate(): void {
     this.terminated = true;
   }
+
+  commitFrame(sessionHandle: string, options: { fullSnapshot?: boolean; frameSequence?: bigint } = {}): void {
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "frame-committed",
+          sessionHandle,
+          sessionEpoch: 4n,
+          frameSequence: options.frameSequence ?? 1n,
+          fullSnapshot: options.fullSnapshot ?? true,
+        },
+      }),
+    );
+  }
 }
 
 class FakePort extends EventTarget {
@@ -41,6 +55,7 @@ class FakePort extends EventTarget {
   deferAttachments = false;
   readonly pendingAttachments: Array<{ requestId: number; sessionId: string; viewId: string }> = [];
   attachViewStateSeq: number | undefined;
+  selectionScope: "viewport" | "scrollback" | undefined;
   deferRemoteState = false;
   readonly pendingRemoteStateRequestIds: number[] = [];
   readonly remoteStateRequests: string[] = [];
@@ -111,7 +126,12 @@ class FakePort extends EventTarget {
     } else if (message.type === "selection-text") {
       this.dispatchEvent(
         new MessageEvent("message", {
-          data: { requestId, type: "selection-text", text: "copied from terminal" },
+          data: {
+            requestId,
+            type: "selection-text",
+            text: "copied from terminal",
+            ...(this.selectionScope === undefined ? {} : { scope: this.selectionScope }),
+          },
         }),
       );
     }
@@ -1099,6 +1119,365 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     expect(control.messages.filter((message) => message.type === "send-text")).toMatchObject([
       { text: "typed once live" },
     ]);
+    runtime.dispose();
+  });
+
+  it("keeps a resumed pane cooled until the recovered stream commits a frame", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const states: boolean[] = [];
+    runtime.addEventListener("remote-session-state", (event) =>
+      states.push((event as CustomEvent<{ awaitingRecoveryFrame: boolean }>).detail.awaitingRecoveryFrame),
+    );
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    // Live again, but the screen is still the pre-outage one.
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(true);
+    expect(worker.messages.filter((message) => (message as { type?: string }).type === "cursor-frozen").at(-1)).toEqual(
+      {
+        type: "cursor-frozen",
+        surfaceId: "view-1",
+        frozen: true,
+      },
+    );
+
+    worker.commitFrame(remote.handle);
+
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    expect(states).toEqual([false, true, false]);
+    expect(worker.messages.filter((message) => (message as { type?: string }).type === "cursor-frozen").at(-1)).toEqual(
+      {
+        type: "cursor-frozen",
+        surfaceId: "view-1",
+        frozen: false,
+      },
+    );
+    runtime.dispose();
+  });
+
+  it("claims resize control once per attachment epoch through one funnel", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    // Focus arrives before any geometry, so there is nothing to claim with yet.
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    expect(claims()).toHaveLength(1);
+
+    // The focus setter suppresses repeat `true` updates; the claim is scoped to
+    // an epoch, not to a focus transition, so it must not re-fire either.
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.resize(session.id, "view-1", 100, 30);
+    expect(claims()).toHaveLength(1);
+
+    // A fresh attachment is a new epoch, and worth exactly one more claim.
+    control.emitViewState({ viewStateSeq: 9, attachmentEpoch: 12 });
+    expect(claims()).toHaveLength(2);
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 12, cols: 100, rows: 30 });
+    runtime.dispose();
+  });
+
+  it("thaws an idle pane whose recovery frame committed before the live event", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    // Frames and lifecycle events travel independent channels, so the recovery
+    // snapshot can land first. An idle session then sends nothing further, and
+    // waiting for a later frame would leave the pane frozen for good.
+    worker.commitFrame(remote.handle);
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    expect(worker.messages.filter((message) => (message as { type?: string }).type === "cursor-frozen").at(-1)).toEqual(
+      { type: "cursor-frozen", surfaceId: "view-1", frozen: false },
+    );
+    runtime.dispose();
+  });
+
+  it("does not let a partial repaint of the stale screen pass as recovery", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    // An older queued frame repaints part of the pre-outage screen.
+    worker.commitFrame(remote.handle, { fullSnapshot: false, frameSequence: 7n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(true);
+
+    worker.commitFrame(remote.handle, { frameSequence: 8n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    runtime.dispose();
+  });
+
+  it("requires a fresh snapshot for each outage, not the one that ended the last", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    worker.commitFrame(remote.handle);
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+
+    // A second outage starts its own episode; the previous snapshot proves
+    // nothing about the screen this one left behind.
+    control.emitLifecycle({ lifecycleSeq: 3, state: "reconnecting" });
+    control.emitLifecycle({ lifecycleSeq: 4, state: "live" });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(true);
+
+    worker.commitFrame(remote.handle, { frameSequence: 2n });
+    expect(runtime.remoteSession(remote.id)?.awaitingRecoveryFrame).toBe(false);
+    runtime.dispose();
+  });
+
+  it("claims once when a recovered view is marked attached before its session is live", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const renderWorker = new FakeWorker();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => renderWorker as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+    runtime.setFocused(remote.handle, "view-1", true, 80, 24);
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+    const before = claims().length;
+    control.emitLifecycle({ lifecycleSeq: 1, state: "reconnecting" });
+
+    // Recovery marks the view attached *before* the session reaches live, so a
+    // claim keyed on the attach event alone would fire into a dead session and
+    // never retry.
+    control.emitViewState({ viewStateSeq: 5, attachmentEpoch: 30 });
+    expect(claims()).toHaveLength(before);
+
+    control.emitLifecycle({ lifecycleSeq: 2, state: "live" });
+    // Still showing the pre-outage screen: input is not ready, so neither is a claim.
+    expect(claims()).toHaveLength(before);
+
+    renderWorker.commitFrame(remote.handle, { frameSequence: 2n });
+    expect(claims()).toHaveLength(before + 1);
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 30 });
+
+    // Duplicate events for the same epoch add nothing.
+    control.emitViewState({ viewStateSeq: 6, attachmentEpoch: 30 });
+    control.emitLifecycle({ lifecycleSeq: 3, state: "live" });
+    expect(claims()).toHaveLength(before + 1);
+    runtime.dispose();
+  });
+
+  it("claims nothing for a pane that does not hold meaningful focus", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+
+    runtime.resize(session.id, "view-1", 100, 30);
+    control.emitViewState({ viewStateSeq: 4, attachmentEpoch: 40 });
+    expect(control.messages.filter((message) => message.type === "focus-and-resize")).toHaveLength(0);
+
+    runtime.setFocused(session.handle, "view-1", false, 100, 30);
+    control.emitViewState({ viewStateSeq: 5, attachmentEpoch: 41 });
+    expect(control.messages.filter((message) => message.type === "focus-and-resize")).toHaveLength(0);
+    runtime.dispose();
+  });
+
+  it("never claims control away from another pane, and retries when it is released", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const controlState = (controller: unknown, controlRevision: number): void => {
+      control.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            requestId: 0,
+            type: "control-state",
+            sessionId: session.id,
+            controller,
+            controlRevision,
+            cols: 80,
+            rows: 24,
+            layoutEpoch: 2,
+          },
+        }),
+      );
+    };
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    // Taking focus is a deliberate claim and stays last-write-wins.
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    expect(claims()).toHaveLength(1);
+
+    // Automatic reclaim is the part that must not fight: a fresh epoch while
+    // another view holds control claims nothing.
+    controlState({ viewId: "other-pane", controlEpoch: 3 }, 5);
+    control.emitViewState({ viewStateSeq: 9, attachmentEpoch: 12 });
+    expect(claims()).toHaveLength(1);
+
+    // Released at a newer revision, the pane that still holds focus takes it.
+    controlState(null, 6);
+    expect(claims()).toHaveLength(2);
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 12 });
+
+    // The seat is ours now, so nothing further is claimed for this epoch.
+    controlState({ viewId: "view-1", controlEpoch: 7 }, 7);
+    expect(claims()).toHaveLength(2);
+
+    // After a resume the record still names this view, but that is the
+    // previous incarnation's claim: a fresh epoch has to take it back.
+    control.emitViewState({ viewStateSeq: 14, attachmentEpoch: 20 });
+    expect(claims()).toHaveLength(3);
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 20 });
+    runtime.dispose();
+  });
+
+  it("reports the reach of a selection the daemon answered locally", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.selectionScope = "viewport";
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
+    runtime.mount(remote.id, remote.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const scopes: string[] = [];
+    runtime.addEventListener("selection-scope", (event) =>
+      scopes.push((event as CustomEvent<{ scope: string }>).detail.scope),
+    );
+
+    await runtime.copySelection(remote.id, "view-1", {
+      anchor: { column: 0, row: 0 },
+      focus: { column: 4, row: 0 },
+    });
+    expect(scopes).toEqual(["viewport"]);
+
+    // A daemon that answered from the host says nothing, and neither do we.
+    control.selectionScope = undefined;
+    await runtime.copySelection(remote.id, "view-1", {
+      anchor: { column: 0, row: 0 },
+      focus: { column: 4, row: 0 },
+    });
+    expect(scopes).toEqual(["viewport"]);
     runtime.dispose();
   });
 

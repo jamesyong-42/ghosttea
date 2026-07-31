@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
             compact_port: config.compact_port,
             capability: config.capability,
             allow_tailnet_write: config.allow_tailnet_write,
+            ..TruffleTerminalConfig::default()
         },
     )?;
     service.with_terminal_mesh(terminal_mesh).run().await

@@ -124,6 +124,13 @@ export function unknownSessionActivity(): SessionActivity {
   };
 }
 
+/**
+ * How much of a session a selection could reach. Open by design: a daemon may
+ * report a scope this client predates, and a hint it does not recognize is
+ * ignored rather than treated as a protocol violation.
+ */
+export type SelectionScopeKind = "viewport" | "scrollback" | (string & {});
+
 /** Viewer-side lifecycle of a session replicated from a remote host. */
 export type RemoteSessionState = "opening" | "live" | "synchronizing" | "reconnecting" | "suspended" | "ended";
 
@@ -487,7 +494,17 @@ export type ServerEvent =
       layoutEpoch: number;
     }
   | { requestId: number; type: "automation-state"; sessionId: string; humanInputEpoch: number }
-  | { requestId: number; type: "selection-text"; text: string }
+  | {
+      requestId: number;
+      type: "selection-text";
+      text: string;
+      /**
+       * What the daemon could reach. `viewport` means the answer came from a
+       * frozen replica's retained screen, so scrollback is not included.
+       * Absent from daemons that always answered from the host.
+       */
+      scope?: SelectionScopeKind;
+    }
   | {
       requestId: number;
       type: "automation-input-result";
@@ -908,7 +925,11 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     case "automation-state":
       return typeof candidate.sessionId === "string" && Number.isSafeInteger(candidate.humanInputEpoch);
     case "selection-text":
-      return typeof candidate.text === "string";
+      // Any string is accepted: a scope this client predates is a hint it can
+      // ignore, and rejecting it here would destroy the socket over a copy.
+      return (
+        typeof candidate.text === "string" && (candidate.scope === undefined || typeof candidate.scope === "string")
+      );
     case "automation-input-result":
       return (
         typeof candidate.sessionId === "string" &&
