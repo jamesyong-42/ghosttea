@@ -499,9 +499,7 @@ fn resolve_include_path(
     if path.is_absolute() {
         return Some(path);
     }
-    if !cfg!(windows)
-        && let Some(relative) = value.strip_prefix("~/")
-    {
+    if let Some(relative) = value.strip_prefix("~/") {
         return match state.home_dir.as_ref() {
             Some(home) => Some(home.join(relative)),
             None => {
