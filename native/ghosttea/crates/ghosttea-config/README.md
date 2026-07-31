@@ -8,6 +8,15 @@ settings Ghosttea can currently apply. Its compatibility target and intentional
 gaps are documented in the repository's
 `docs/ghostty-config-compatibility.md`.
 
+`ConfigManager` also owns the lossless editing boundary for an explicitly
+configured final overlay. It can read exact UTF-8 source, validate an in-memory
+candidate through the layered loader, reject a stale raw revision, and install
+the candidate with an atomic same-directory replacement after a second
+revision check. Strict compare-and-swap requires every writer to use this API;
+uncoordinated external editors cannot participate in the manager's lock. The
+manager never rewrites imported Ghostty roots or includes from the resolved
+projection.
+
 The released Ghostty config source is pinned independently from the VT runtime
 in `native/ghostty-config.lock.json`. Regenerate and verify the source-derived
 key catalog and X11 color table with:

@@ -1,5 +1,6 @@
 export {
   GhostteaAutomationClient,
+  GhostteaConfigDocumentConflictError,
   type AutomationInputResult,
   type GhostteaAutomationClientOptions,
   type GhostteaControlCommand,

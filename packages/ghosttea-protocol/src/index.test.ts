@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { isServerEvent, unknownSessionActivity } from "./index";
+import { isRendererClientCommandAllowed, isServerEvent, unknownSessionActivity } from "./index";
 
 describe("isServerEvent", () => {
+  it("allows reviewed renderer commands and rejects privileged or unknown commands", () => {
+    expect(isRendererClientCommandAllowed({ requestId: 1, type: "get-config" })).toBe(true);
+    expect(isRendererClientCommandAllowed({ requestId: 2, type: "replace-config-document" })).toBe(false);
+    expect(isRendererClientCommandAllowed({ requestId: 3, type: "future-command" })).toBe(false);
+  });
+
   const config = {
     schemaVersion: 1,
     revision: "abc123",
@@ -37,6 +43,13 @@ describe("isServerEvent", () => {
       clearKeybindings: false,
     },
   };
+  const document = {
+    schemaVersion: 1,
+    revision: "raw-123",
+    path: "/tmp/config.ghostty",
+    exists: true,
+    contents: "# exact comment\r\nbackground = 112233\r\n",
+  };
 
   it("accepts validated responses and unsolicited lifecycle events", () => {
     expect(
@@ -55,6 +68,17 @@ describe("isServerEvent", () => {
     ).toBe(true);
     expect(isServerEvent({ requestId: 4, type: "config", config })).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "config-changed", config })).toBe(true);
+    expect(isServerEvent({ requestId: 5, type: "config-document", document })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 6,
+        type: "config-document-validation",
+        documentRevision: "candidate-456",
+        config,
+      }),
+    ).toBe(true);
+    expect(isServerEvent({ requestId: 7, type: "config-document-updated", document, config })).toBe(true);
+    expect(isServerEvent({ requestId: 8, type: "config-document-conflict", document })).toBe(true);
     expect(
       isServerEvent({
         requestId: 0,
@@ -168,6 +192,21 @@ describe("isServerEvent", () => {
       }),
     ).toBe(false);
     expect(isServerEvent({ requestId: 4, type: "config", config: { ...config, schemaVersion: 2 } })).toBe(false);
+    expect(
+      isServerEvent({
+        requestId: 5,
+        type: "config-document",
+        document: { ...document, schemaVersion: 2 },
+      }),
+    ).toBe(false);
+    expect(
+      isServerEvent({
+        requestId: 6,
+        type: "config-document-validation",
+        documentRevision: 7,
+        config,
+      }),
+    ).toBe(false);
     expect(
       isServerEvent({
         requestId: 0,

@@ -1,6 +1,7 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 10;
+export const PROTOCOL_MINOR = 11;
 export const CONFIG_SCHEMA_VERSION = 1;
+export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
 export type ConfigDiagnosticSeverity = "info" | "warning" | "error";
 export type ConfigSupport = "applied" | "parsed" | "unsupported";
@@ -77,6 +78,25 @@ export interface ConfigSnapshot {
   workspace: WorkspaceConfig;
 }
 
+/** Exact UTF-8 contents of the daemon's app-owned final overlay. */
+export interface ConfigDocument {
+  schemaVersion: number;
+  revision: string;
+  path: string;
+  exists: boolean;
+  contents: string;
+}
+
+export interface ConfigDocumentValidation {
+  documentRevision: string;
+  config: ConfigSnapshot;
+}
+
+export interface ConfigDocumentUpdate {
+  document: ConfigDocument;
+  config: ConfigSnapshot;
+}
+
 /** How long a session outlives the thing that asked for it. */
 export type SessionPersistence = "terminate-with-app" | "keep-until-exit" | "keep-until-explicit-close";
 
@@ -144,6 +164,14 @@ export type ClientCommand =
   | { requestId: number; type: "hello"; protocolMajor: number; protocolMinor: number; clientBuild: string }
   | { requestId: number; type: "get-config" }
   | { requestId: number; type: "reload-config" }
+  | { requestId: number; type: "get-config-document" }
+  | { requestId: number; type: "validate-config-document"; contents: string }
+  | {
+      requestId: number;
+      type: "replace-config-document";
+      expectedRevision: string;
+      contents: string;
+    }
   | { requestId: number; type: "create-session"; options: CreateSessionOptions }
   | { requestId: number; type: "list-sessions" }
   | { requestId: number; type: "list-remote-hosts" }
@@ -222,6 +250,64 @@ export type ClientCommand =
   | { requestId: number; type: "set-persistence"; sessionId: string; persistence: SessionPersistence }
   | { requestId: number; type: "close-session-owner"; ownerId: string };
 
+export type PrivilegedConfigDocumentCommand = Extract<
+  ClientCommand,
+  {
+    type: "get-config-document" | "validate-config-document" | "replace-config-document";
+  }
+>;
+
+const RENDERER_CLIENT_COMMAND_TYPES = [
+  "hello",
+  "get-config",
+  "reload-config",
+  "create-session",
+  "list-sessions",
+  "list-remote-hosts",
+  "list-remote-sessions",
+  "open-remote-session",
+  "get-session",
+  "refresh-session",
+  "attach-session",
+  "detach-session",
+  "send-text",
+  "paste",
+  "send-key",
+  "send-mouse",
+  "scroll",
+  "scroll-to",
+  "focus",
+  "focus-and-resize",
+  "resize",
+  "set-colors",
+  "selection-text",
+  "interrupt",
+  "get-automation-state",
+  "automation-input",
+  "terminate",
+  "set-persistence",
+  "close-session-owner",
+] as const satisfies readonly ClientCommand["type"][];
+
+/**
+ * Commands accepted from an untrusted renderer through the Electron bridge.
+ *
+ * This is derived from an explicit allowlist so newly added daemon commands
+ * remain unavailable to renderers until their trust boundary has been
+ * reviewed.
+ */
+export type RendererClientCommand = Extract<ClientCommand, { type: (typeof RENDERER_CLIENT_COMMAND_TYPES)[number] }>;
+
+const RENDERER_CLIENT_COMMAND_TYPE_SET: ReadonlySet<string> = new Set(RENDERER_CLIENT_COMMAND_TYPES);
+
+export function isRendererClientCommandAllowed(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    RENDERER_CLIENT_COMMAND_TYPE_SET.has(String((value as { type?: unknown }).type))
+  );
+}
+
 export interface SessionSummary {
   id: string;
   handle: string;
@@ -287,6 +373,24 @@ export type ServerEvent =
       configRevision?: string;
     }
   | { requestId: number; type: "config"; config: ConfigSnapshot }
+  | { requestId: number; type: "config-document"; document: ConfigDocument }
+  | {
+      requestId: number;
+      type: "config-document-validation";
+      documentRevision: string;
+      config: ConfigSnapshot;
+    }
+  | {
+      requestId: number;
+      type: "config-document-updated";
+      document: ConfigDocument;
+      config: ConfigSnapshot;
+    }
+  | {
+      requestId: number;
+      type: "config-document-conflict";
+      document: ConfigDocument;
+    }
   | { requestId: number; type: "session-created"; session: SessionSummary }
   | { requestId: number; type: "session"; session: SessionSummary }
   | { requestId: number; type: "sessions"; sessions: SessionSummary[] }
@@ -569,6 +673,18 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       typeof workspace.clearKeybindings === "boolean"
     );
   };
+  const validConfigDocument = (document: unknown): document is ConfigDocument => {
+    if (!document || typeof document !== "object") return false;
+    const value = document as Record<string, unknown>;
+    return (
+      value.schemaVersion === CONFIG_DOCUMENT_SCHEMA_VERSION &&
+      typeof value.revision === "string" &&
+      value.revision.length > 0 &&
+      typeof value.path === "string" &&
+      typeof value.exists === "boolean" &&
+      typeof value.contents === "string"
+    );
+  };
   switch (candidate.type) {
     case "hello":
       return (
@@ -579,6 +695,13 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       );
     case "config":
       return validConfig(candidate.config);
+    case "config-document":
+    case "config-document-conflict":
+      return validConfigDocument(candidate.document);
+    case "config-document-validation":
+      return typeof candidate.documentRevision === "string" && validConfig(candidate.config);
+    case "config-document-updated":
+      return validConfigDocument(candidate.document) && validConfig(candidate.config);
     case "session-created":
     case "session":
       return validSession(candidate.session);

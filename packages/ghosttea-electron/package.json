@@ -64,7 +64,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@vibecook/ghosttea-client": "0.6.2"
+    "@vibecook/ghosttea-client": "0.6.2",
+    "@vibecook/ghosttea-protocol": "0.6.2"
   },
   "peerDependencies": {
     "electron": ">=35"

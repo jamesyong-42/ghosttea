@@ -1,6 +1,7 @@
 export { GhostteaElectronBackend, type GhostteaElectronBackendOptions } from "./backend.js";
 export {
   GhostteaAutomationClient,
+  GhostteaConfigDocumentConflictError,
   type AutomationInputResult,
   type GhostteaAutomationClientOptions,
   type GhostteaControlCommand,

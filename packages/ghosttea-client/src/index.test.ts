@@ -4,6 +4,48 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const commands: Record<string, unknown>[] = [];
 let socketBehavior: "normal" | "close-during-auth" | "silent-auth" = "normal";
+let serverProtocolMinor = 11;
+
+const config = {
+  schemaVersion: 1,
+  revision: "config-1",
+  compatibility: {
+    ghosttyVersion: "1.3.1",
+    ghosttyCommit: "332b2aef",
+    knownKeyCount: 202,
+  },
+  sources: [],
+  diagnostics: [],
+  configuredKeys: [],
+  terminal: {
+    scrollbackBytes: 10_000_000,
+    foreground: [255, 255, 255],
+    background: [40, 44, 52],
+    cursor: [255, 255, 255],
+  },
+  renderer: {
+    foreground: [255, 255, 255],
+    background: [40, 44, 52],
+    cursor: [255, 255, 255],
+    selectionBackground: [255, 255, 255],
+    selectionForeground: [40, 44, 52],
+    fontSize: 13,
+    fontFamilies: [],
+    paddingX: [2, 2],
+    paddingY: [2, 2],
+    postProcess: "none",
+    customShaderPaths: [],
+  },
+  workspace: { keybindings: [], clearKeybindings: false },
+};
+
+const document = {
+  schemaVersion: 1,
+  revision: "document-1",
+  path: "/tmp/config.ghostty",
+  exists: true,
+  contents: "# exact\r\n",
+};
 
 function packet(value: string | object): Buffer {
   const body = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
@@ -33,9 +75,45 @@ class FakeSocket extends EventEmitter {
       queueMicrotask(() =>
         this.emit(
           "data",
-          packet({ requestId, type: "hello", protocolMajor: 1, protocolMinor: 5, serverBuild: "test" }),
+          packet({
+            requestId,
+            type: "hello",
+            protocolMajor: 1,
+            protocolMinor: serverProtocolMinor,
+            serverBuild: "test",
+          }),
         ),
       );
+    } else if (command.type === "get-config-document") {
+      queueMicrotask(() => this.emit("data", packet({ requestId, type: "config-document", document })));
+    } else if (command.type === "validate-config-document") {
+      queueMicrotask(() =>
+        this.emit(
+          "data",
+          packet({
+            requestId,
+            type: "config-document-validation",
+            documentRevision: "candidate-2",
+            config,
+          }),
+        ),
+      );
+    } else if (command.type === "replace-config-document") {
+      queueMicrotask(() => {
+        if (command.expectedRevision === "stale") {
+          this.emit("data", packet({ requestId, type: "config-document-conflict", document }));
+        } else {
+          this.emit(
+            "data",
+            packet({
+              requestId,
+              type: "config-document-updated",
+              document: { ...document, revision: "document-2", contents: command.contents },
+              config,
+            }),
+          );
+        }
+      });
     } else if (command.type === "get-automation-state") {
       queueMicrotask(() =>
         this.emit(
@@ -127,12 +205,47 @@ vi.mock("node:net", () => ({
   }),
 }));
 
-import { GhostteaAutomationClient } from "./index.js";
+import { GhostteaAutomationClient, GhostteaConfigDocumentConflictError } from "./index.js";
 
 describe("GhostteaAutomationClient", () => {
   beforeEach(() => {
     commands.splice(0);
     socketBehavior = "normal";
+    serverProtocolMinor = 11;
+  });
+
+  it("reads, validates, and compare-and-swaps exact configuration documents", async () => {
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.getConfigDocument()).resolves.toEqual(document);
+    await expect(client.validateConfigDocument("# candidate\r\n")).resolves.toMatchObject({
+      documentRevision: "candidate-2",
+      config: { revision: "config-1" },
+    });
+    await expect(client.replaceConfigDocument("document-1", "# replacement\r\n")).resolves.toMatchObject({
+      document: { revision: "document-2", contents: "# replacement\r\n" },
+      config: { revision: "config-1" },
+    });
+    await expect(client.replaceConfigDocument("stale", "# clobber\r\n")).rejects.toMatchObject({
+      name: "GhostteaConfigDocumentConflictError",
+      document,
+    } satisfies Partial<GhostteaConfigDocumentConflictError>);
+    expect(commands.map((command) => command.type)).toEqual([
+      "hello",
+      "get-config-document",
+      "validate-config-document",
+      "replace-config-document",
+      "replace-config-document",
+    ]);
+    client.dispose();
+  });
+
+  it("rejects document operations locally against an older daemon", async () => {
+    serverProtocolMinor = 10;
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.getConfigDocument()).rejects.toThrow("requires protocol 1.11");
+    await expect(client.request({ type: "get-config-document" })).rejects.toThrow("requires protocol 1.11");
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    client.dispose();
   });
 
   it("closes an application session owner atomically", async () => {

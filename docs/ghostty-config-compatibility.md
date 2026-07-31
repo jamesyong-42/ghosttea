@@ -36,7 +36,8 @@ Ghostty. UTF-8 byte-order marks and bare CLI-style boolean options are
 accepted.
 
 The desktop overlay lives in Electron's profile-specific user-data directory.
-`open_config` creates and opens that file. Existing Ghostty files are read
+`open_config` asks the managed daemon to create that exact file through the
+configuration document API, then opens it. Existing Ghostty files are read
 automatically before it, so users do not need to copy their configuration just
 to try Ghosttea.
 
@@ -90,6 +91,35 @@ The JSON object is `ghosttea-config` schema version 1 and is represented by
 `ConfigSnapshot` in TypeScript and `GhostteaConfigSnapshot` in Swift. Apple
 loads it through `ghosttea_config_load_json`, the same Rust implementation used
 by `ghosttead`.
+
+Protocol 1.11 adds a separate, lossless `ghosttea-config-document` schema:
+
+- `get-config-document` returns the exact UTF-8 app overlay, its path,
+  existence state, and a raw-content revision.
+- `validate-config-document` projects candidate contents through the same
+  layered loader without touching disk or changing the live snapshot.
+- `replace-config-document` requires the revision returned by the last read.
+  It either installs the exact candidate with an atomic same-directory
+  replacement and reloads configuration, or returns
+  `config-document-conflict` with the current document.
+
+The document API never reconstructs source text from `ConfigSnapshot`, so
+comments, ordering, unknown Ghostty keys, includes, line endings, and reset
+expressions survive unchanged. Missing and existing-empty files have different
+revisions. Writes use a private same-directory temporary file and replace the
+destination only after a second revision check; on Unix the resulting overlay
+is mode `0600`. Documents are capped at 64 KiB so requests and worst-case JSON
+escaping stay within the authenticated control protocol's packet quota.
+This is an optimistic concurrency contract: strict compare-and-swap requires
+all writers to use the API, because unrelated editors do not honor its lock.
+
+This is deliberately a privileged local API. It can address only the daemon's
+explicit final overlay, never imported Ghostty roots or included files, and it
+is not exposed over Truffle. The Electron utility bridge uses an explicit
+command allowlist that rejects these operations from renderers. Electron also
+refuses open/reload actions when attached to an externally managed daemon.
+Node hosts use `GhostteaAutomationClient`; Swift embedders continue to load a
+user-selected overlay URL through `GhostteaConfiguration.load`.
 
 Truffle terminal protocol 1.5 adds a host-authoritative
 `TerminalPresentationConfig` at view attachment and a

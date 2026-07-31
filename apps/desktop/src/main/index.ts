@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
   GhostteaElectronBackend,
+  GhostteaConfigDocumentConflictError,
   installGhostteaClipboardHost,
   installGhostteaEditShortcuts,
   type GhostteaElectronBackendOptions,
@@ -30,6 +31,13 @@ if (profile.name !== "default") {
   process.env.GHOSTTEA_TRUFFLE_STATE_DIR = profile.truffleState;
 }
 const terminalConfigPath = join(app.getPath("userData"), "config.ghostty");
+const DEFAULT_TERMINAL_CONFIG = [
+  "# Ghosttea application overrides (Ghostty-compatible syntax).",
+  "# Your existing Ghostty config files are imported before this file.",
+  "# Enable Ghosttea's bundled CRT approximation with:",
+  "# custom-shader = ghosttea:better-crt",
+  "",
+].join("\n");
 
 // Electron keys this lock from the configured user-data directory. Different
 // profiles coexist; launching the same profile again activates its window.
@@ -79,26 +87,7 @@ ipcMain.on("terminal-open-config", (event) => {
     void showExternalConfigOwnershipMessage(event.sender, "open");
     return;
   }
-  if (!existsSync(terminalConfigPath)) {
-    mkdirSync(app.getPath("userData"), { recursive: true, mode: 0o700 });
-    writeFileSync(
-      terminalConfigPath,
-      [
-        "# Ghosttea application overrides (Ghostty-compatible syntax).",
-        "# Your existing Ghostty config files are imported before this file.",
-        "# Enable Ghosttea's bundled CRT approximation with:",
-        "# custom-shader = ghosttea:better-crt",
-        "",
-      ].join("\n"),
-      { encoding: "utf8", mode: 0o600 },
-    );
-  }
-  void shell
-    .openPath(terminalConfigPath)
-    .then((message) => {
-      if (message) console.error("failed to open terminal config", message);
-    })
-    .catch((error) => console.error("failed to open terminal config", error));
+  void openManagedTerminalConfig().catch((error) => console.error("failed to open terminal config", error));
 });
 
 ipcMain.on("terminal-reload-config", (event) => {
@@ -193,6 +182,24 @@ async function showExternalConfigOwnershipMessage(
   };
   if (owner) await dialog.showMessageBox(owner, options);
   else await dialog.showMessageBox(options);
+}
+
+async function openManagedTerminalConfig(): Promise<void> {
+  await ensureBackend();
+  let document = await backend!.automation.getConfigDocument();
+  if (!document.exists) {
+    try {
+      document = (await backend!.automation.replaceConfigDocument(document.revision, DEFAULT_TERMINAL_CONFIG)).document;
+    } catch (error) {
+      if (!(error instanceof GhostteaConfigDocumentConflictError) || !error.document.exists) throw error;
+      document = error.document;
+    }
+  }
+  if (resolve(document.path) !== resolve(terminalConfigPath)) {
+    throw new Error("ghosttead returned a configuration path outside this Electron profile");
+  }
+  const message = await shell.openPath(document.path);
+  if (message) throw new Error(message);
 }
 
 function backendOptions(): GhostteaElectronBackendOptions {

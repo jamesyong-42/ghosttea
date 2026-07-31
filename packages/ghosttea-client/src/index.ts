@@ -7,6 +7,9 @@ import {
   isServerEvent,
   type AutomationInputOperation,
   type ClientCommand,
+  type ConfigDocument,
+  type ConfigDocumentUpdate,
+  type ConfigDocumentValidation,
   type ConfigSnapshot,
   type CreateSessionOptions,
   type ServerEvent,
@@ -44,6 +47,17 @@ export type AutomationInputResult = Extract<ServerEvent, { type: "automation-inp
 export type SessionExitedEvent = Extract<ServerEvent, { type: "session-exited" }>;
 
 const MAX_CONTROL_BYTES = 1024 * 1024;
+const CONFIG_DOCUMENT_PROTOCOL_MINOR = 11;
+
+export class GhostteaConfigDocumentConflictError extends Error {
+  readonly document: ConfigDocument;
+
+  constructor(document: ConfigDocument) {
+    super("Ghosttea configuration changed since it was read");
+    this.name = "GhostteaConfigDocumentConflictError";
+    this.document = document;
+  }
+}
 
 function packet(bytes: Uint8Array): Buffer {
   const output = Buffer.allocUnsafe(4 + bytes.byteLength);
@@ -73,6 +87,7 @@ export class GhostteaAutomationClient extends EventEmitter {
   #connectPromise: Promise<void> | undefined;
   #buffer = Buffer.alloc(0);
   #authenticated = false;
+  #serverProtocolMinor = 0;
   #nextRequestId = 1;
   #disposed = false;
 
@@ -103,6 +118,7 @@ export class GhostteaAutomationClient extends EventEmitter {
     this.#socket = socket;
     this.#buffer = Buffer.alloc(0);
     this.#authenticated = false;
+    this.#serverProtocolMinor = 0;
     socket.on("data", (chunk) => this.#onData(socket, typeof chunk === "string" ? Buffer.from(chunk) : chunk));
     socket.on("error", (error) => this.#onSocketError(socket, error));
     socket.on("close", () => this.#onSocketClose(socket));
@@ -149,6 +165,7 @@ export class GhostteaAutomationClient extends EventEmitter {
       if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR) {
         throw new Error("ghosttead protocol mismatch");
       }
+      this.#serverProtocolMinor = hello.protocolMinor;
     } catch (error) {
       if (this.#socket === socket) {
         this.#socket = undefined;
@@ -175,6 +192,46 @@ export class GhostteaAutomationClient extends EventEmitter {
     const event = await this.request({ type: "reload-config" });
     if (event.type !== "config") throw new Error("ghosttead returned an unexpected configuration response");
     return event.config;
+  }
+
+  async getConfigDocument(): Promise<ConfigDocument> {
+    await this.connect();
+    const event = await this.#requestConnected({ type: "get-config-document" });
+    if (event.type !== "config-document") {
+      throw new Error("ghosttead returned an unexpected configuration document response");
+    }
+    return event.document;
+  }
+
+  async validateConfigDocument(contents: string): Promise<ConfigDocumentValidation> {
+    await this.connect();
+    const event = await this.#requestConnected({ type: "validate-config-document", contents });
+    if (event.type !== "config-document-validation") {
+      throw new Error("ghosttead returned an unexpected configuration validation response");
+    }
+    return {
+      documentRevision: event.documentRevision,
+      config: event.config,
+    };
+  }
+
+  async replaceConfigDocument(expectedRevision: string, contents: string): Promise<ConfigDocumentUpdate> {
+    await this.connect();
+    const event = await this.#requestConnected({
+      type: "replace-config-document",
+      expectedRevision,
+      contents,
+    });
+    if (event.type === "config-document-conflict") {
+      throw new GhostteaConfigDocumentConflictError(event.document);
+    }
+    if (event.type !== "config-document-updated") {
+      throw new Error("ghosttead returned an unexpected configuration document update response");
+    }
+    return {
+      document: event.document,
+      config: event.config,
+    };
   }
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -326,6 +383,13 @@ export class GhostteaAutomationClient extends EventEmitter {
     if (!socket || !this.#authenticated) {
       return Promise.reject(new Error("Ghosttea automation client is not connected"));
     }
+    if (
+      command.type === "get-config-document" ||
+      command.type === "validate-config-document" ||
+      command.type === "replace-config-document"
+    ) {
+      this.#requireProtocolMinor(CONFIG_DOCUMENT_PROTOCOL_MINOR, "configuration documents");
+    }
     const requestId = this.#nextRequestId++;
     const encoded = Buffer.from(JSON.stringify({ ...command, requestId } satisfies ClientCommand));
     if (encoded.byteLength > MAX_CONTROL_BYTES) {
@@ -341,12 +405,21 @@ export class GhostteaAutomationClient extends EventEmitter {
     });
   }
 
+  #requireProtocolMinor(required: number, capability: string): void {
+    if (this.#serverProtocolMinor < required) {
+      throw new Error(
+        `ghosttead does not support ${capability} (requires protocol 1.${required}, server is 1.${this.#serverProtocolMinor})`,
+      );
+    }
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#socket?.destroy();
     this.#socket = undefined;
     this.#authenticated = false;
+    this.#serverProtocolMinor = 0;
     this.#rejectPending(new Error("Ghosttea automation client closed"));
   }
 
@@ -407,6 +480,7 @@ export class GhostteaAutomationClient extends EventEmitter {
     const wasConnected = this.#authenticated;
     this.#socket = undefined;
     this.#authenticated = false;
+    this.#serverProtocolMinor = 0;
     this.#connectPromise = undefined;
     this.#rejectPending(new Error("Ghosttea control connection closed"));
     if (wasConnected && !this.#disposed) this.emit("close");
