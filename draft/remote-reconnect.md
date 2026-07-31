@@ -1435,6 +1435,22 @@ a "restart" performed with SIGTERM now correctly concludes
 **host-restarted** is reserved for a host that vanished without a word —
 the fixture's `restart-host` SIGKILLs to mean exactly that.
 
+Measured reality (Phase 4, cross-language, loopback TCP): the real Swift
+client against the real Rust compact host passed all four interop rows
+on the first joint run — minor-6 freeze/takeover recovery, a legacy pair
+sitting quiet through several heartbeat windows un-probed, control CAS
+against the checked authority, and selection round-trip. Two compact
+asymmetries are deliberate and recorded at the code: a
+`wants_state: false` compact connection still receives `se`/`hs`
+(compact has no second stream, and a secondary told nothing would read a
+closing socket as an ending), and `unknown-session`/`access-denied`
+reach a compact client as bare closes — the honest verdict comes from
+the pre-attach listing, not the §6.2 rejection table, so the
+access-denied suspended state is unreachable on compact. The client
+never probes below the reconnect minor: the compact host closes on a
+below-minor liveness frame, so an ungated heartbeat is an infinite
+reconnect loop against every legacy host.
+
 | Knob | Default | Rationale |
 | --- | --- | --- |
 | Grace window before banner | 2 s | hide sub-perceptual blips |
