@@ -4289,6 +4289,18 @@ struct ConnectionLedgerState {
     highest_accepted: u64,
 }
 
+/// Whether a live connection could still turn out to be this client's.
+///
+/// The fence and its collection must agree on this exactly. If they diverge —
+/// say one counts unidentified connections and the other does not — collection
+/// does not merely slow down, it stalls: the fence settles above an id
+/// `terminated_through` will never pass, the watermark is never collected, and
+/// the per-client cap eventually starts refusing attaches with `view-limit`.
+/// Hence one function, called by both.
+fn could_belong_to(owner: &Option<String>, client_id: &str) -> bool {
+    owner.as_deref().is_none_or(|owner| owner == client_id)
+}
+
 /// Every accepted transport connection, from raw acceptance until it is
 /// **fully terminated** — the transport closed *and* every handler it spawned
 /// finished, not merely orphaned.
@@ -4298,6 +4310,13 @@ struct ConnectionLedgerState {
 /// client's view is detached **and** `terminated_through(client_id) >=
 /// fence_conn_id`: at that point no connection able to carry a lower attach
 /// generation can still deliver one.
+///
+/// That holds because an id leaves `live` in exactly one place — the scope's
+/// `Drop`, once the transport is closed *and* the last handler holding a clone
+/// has finished. Removing at transport close instead would look like a
+/// harmless optimization and would silently break the fence: an orphaned
+/// handler can still drain frames it already received, which is precisely the
+/// weaker argument §4.2.1 rejects.
 #[derive(Clone, Default)]
 pub struct ConnectionLedger {
     state: Arc<SyncMutex<ConnectionLedgerState>>,
@@ -4334,23 +4353,34 @@ impl ConnectionLedger {
         state
             .live
             .iter()
-            .find(|(_, owner)| owner.as_deref().is_none_or(|owner| owner == client_id))
+            .find(|(_, owner)| could_belong_to(owner, client_id))
             .map_or(state.highest_accepted, |(id, _)| id - 1)
     }
 
     /// The highest connection id this client could still be holding.
     ///
-    /// This is the fence an attach is stamped with (§4.2.1). Stamping the
-    /// arriving connection's own id would under-fence: a client with an
-    /// overlapping newer connection could have a delayed attach on it that the
-    /// watermark then fails to cover. Connections not yet bound to a client
-    /// count, for the same reason `terminated_through` counts them.
+    /// **Invariant this returns**: a value greater than or equal to the id of
+    /// every live connection that could belong to `client_id`. That is the
+    /// property the attach fence consumes (§4.2.1), and weakening it — most
+    /// temptingly by dropping the not-yet-identified term — turns a delayed
+    /// attach on an uncovered connection into an accepted one, months later,
+    /// under load.
+    ///
+    /// Stamping the arriving connection's own id instead would under-fence
+    /// whenever an attach lands on an older connection while a newer one is
+    /// open.
+    ///
+    /// An unidentified connection holds every client's fence down, but only
+    /// for a bounded window: a hello that never completes is dropped by the
+    /// handshake path (~38 s worst case — three 10 s stages plus WhoIs and
+    /// peer resolution), after which its scope drops and the id leaves `live`.
+    /// It cannot stall collection indefinitely, so it does not need a timer.
     pub fn highest_for(&self, client_id: &str) -> u64 {
         let state = self.state.lock().unwrap();
         state
             .live
             .iter()
-            .filter(|(_, owner)| owner.as_deref().is_none_or(|owner| owner == client_id))
+            .filter(|(_, owner)| could_belong_to(owner, client_id))
             .map(|(id, _)| *id)
             .next_back()
             .unwrap_or(state.highest_accepted)
@@ -4670,6 +4700,13 @@ async fn handle_application_stream(
     // such attach would be rejected as stale, correctly but uselessly.
     let ordered = protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR && attach_generation > 0;
     let attached = if ordered {
+        // Collect before stamping. Watermarks are only reachable through calls
+        // like this one, so an attach is the natural moment to retire the ones
+        // whose connections have all finished.
+        session.gc_attach_watermarks(
+            &client_id,
+            _connection_scope.ledger().terminated_through(&client_id),
+        );
         let fence_conn_id = _connection_scope.ledger().highest_for(&client_id);
         match session.take_over_view(
             &view_id,
@@ -4802,6 +4839,13 @@ async fn handle_application_stream(
     // takeover and its state-stream registration, the successor never gets a
     // stream at all.
     session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
+    // This handler is finishing, so the fence may have just advanced past the
+    // connection it was holding down. Ask again on the way out rather than
+    // leaving the collection to the client's next attach, which may never come.
+    session.gc_attach_watermarks(
+        &client_id,
+        _connection_scope.ledger().terminated_through(&client_id),
+    );
     result
 }
 
@@ -6922,6 +6966,33 @@ mod tests {
         // against the value that says so.
         assert_eq!(state.control_revision, 0);
         Ok(())
+    }
+
+    #[test]
+    fn the_attach_fence_covers_connections_not_yet_bound_to_a_client() {
+        let ledger = ConnectionLedger::default();
+        let mine = ledger.accept();
+        mine.identify("truffle:peer:1");
+        // Accepted after mine and still pre-hello: it may yet turn out to be
+        // this client's, and may already carry a delayed attach.
+        let unidentified = ledger.accept();
+
+        assert!(
+            ledger.highest_for("truffle:peer:1") >= unidentified.id(),
+            "the fence did not cover a connection that could still be this client's"
+        );
+        // The two must agree, or collection stalls rather than slows: the
+        // fence would sit above an id the collector refuses to pass.
+        assert!(ledger.terminated_through("truffle:peer:1") < unidentified.id());
+
+        // Another client's *identified* connection blocks neither.
+        let theirs = ledger.accept();
+        theirs.identify("truffle:peer:2");
+        assert!(ledger.highest_for("truffle:peer:1") < theirs.id());
+
+        drop(unidentified);
+        drop(mine);
+        assert!(ledger.terminated_through("truffle:peer:1") >= 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
