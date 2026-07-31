@@ -11686,6 +11686,68 @@ mod tests {
         Ok(())
     }
 
+    /// The same legacy path from the other direction: a minor-5 connection that
+    /// simply goes quiet. The host must neither speak first nor hang up.
+    ///
+    /// This is where a real client bug lived. A viewer that probes a legacy host
+    /// gets the connection closed (the test below), redials, and closes again —
+    /// a self-inflicted reconnect loop that reads as a flaky network. The host's
+    /// half of not having that happen is this: silence is a legacy viewer's
+    /// normal resting state, because it has no heartbeat to fill it with. A host
+    /// that sent something unsolicited would be sending a frame the viewer may
+    /// not be able to decode, and one that closed on idle would manufacture the
+    /// very disconnect the gate exists to prevent.
+    ///
+    /// Both halves are falsifiable, which is why the assertions are split:
+    /// deleting the `RequestSnapshot` arm fails the liveness check at the end,
+    /// and emitting one unsolicited frame into the quiet window — a future
+    /// host-initiated keepalive, in miniature — fails the silence check before
+    /// it. The second is the one worth having: no code path can break it today,
+    /// so it exists to make sure none is added quietly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_quiet_legacy_compact_connection_is_left_alone() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect(
+                StreamKind::SessionControl,
+                REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            )
+            .await?;
+        let session_id = host.session_id.clone();
+        peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+
+        // Drain the opening burst without asserting its shape — what this test
+        // is about starts once the host has said everything it volunteers.
+        while peer
+            .frame_within(Duration::from_millis(200))
+            .await?
+            .is_some()
+        {}
+
+        // Now the resting state a legacy viewer sits in indefinitely.
+        assert!(
+            peer.frame_within(Duration::from_millis(700))
+                .await?
+                .is_none(),
+            "the host spoke unprompted to a legacy view that cannot be expected \
+             to decode anything new, or hung up on it for being idle"
+        );
+
+        // Quiet is not the same as dead: the connection has to still be there.
+        peer.write_control(&SessionControlMessage::RequestSnapshot)
+            .await?;
+        assert!(
+            matches!(peer.next_state().await?, StateMessage::Snapshot(_)),
+            "a legacy connection stopped being served after going quiet"
+        );
+        assert!(
+            host.session().view_attachment_epoch("r:pane-1").is_some(),
+            "the view was detached while its connection sat idle"
+        );
+        drop(peer.io);
+        Ok(())
+    }
+
     /// The gate, falsified: `Ping` is not part of the contract a minor-5 pair
     /// negotiated, and a host that answered it there would be telling a viewer
     /// its liveness story works when the rest of the contract behind it does
