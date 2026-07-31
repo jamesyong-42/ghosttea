@@ -19,8 +19,8 @@ pub use ghosttea_config::{
     TerminalPresentationConfig, WorkspaceConfig,
 };
 pub use ghosttea_core::{
-    AttachRejection, AttachRejectionCode, ControlSnapshot, ControllerState, ResumeEvidence,
-    StateStreamCancel, TakeOver, ViewAccess,
+    AttachRejection, AttachRejectionCode, ControlClaim, ControlSnapshot, ControllerState,
+    ResumeEvidence, StateStreamCancel, TakeOver, ViewAccess,
 };
 pub use ghosttea_text::{
     FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,

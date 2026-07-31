@@ -28,7 +28,7 @@ use truffle_core::{
 use uuid::Uuid;
 
 use ghosttea::{
-    AttachRejectionCode, ControlSnapshot, HostShutdownAnnouncer, MeshReconnectConfig,
+    AttachRejectionCode, ControlClaim, ControlSnapshot, HostShutdownAnnouncer, MeshReconnectConfig,
     RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
     RemoteControlOutcome, RemoteControlState, RemoteController, RemoteEndedReason,
     RemoteHostSummary, RemoteLifecycleChanged, RemoteLifecycleState, RemoteReplica, RemoteResize,
@@ -48,6 +48,22 @@ use ghosttea::{
         encode_compact_message, encode_message, encode_preface, encode_state_message,
     },
 };
+
+/// The highest minor the compact endpoint will negotiate.
+///
+/// The compact path implements none of the reconnect contract: its attach
+/// discards `attach_generation`, `resume`, and `wants_state`, it attaches
+/// through the legacy path with no takeover, and it answers no compare-and-swap
+/// on control. Advertising minor 6 there would promise fencing that does not
+/// exist — strictly worse than negotiating down, because a client that trusts
+/// the number stops protecting itself. Phase 4 (iOS/compact parity) is where
+/// the contract and its harness get built; lifting this cap is that work's
+/// first step, not a prerequisite for it.
+const COMPACT_MAX_PROTOCOL_MINOR: u16 = REMOTE_RECONNECT_PROTOCOL_MINOR - 1;
+// A build-time guarantee rather than a test: raising the cap to the reconnect
+// minor without implementing the contract should fail to compile, not fail
+// under a test someone can forget to run.
+const _: () = assert!(COMPACT_MAX_PROTOCOL_MINOR < REMOTE_RECONNECT_PROTOCOL_MINOR);
 
 pub const DEFAULT_QUIC_PORT: u16 = 9420;
 pub const DEFAULT_COMPACT_PORT: u16 = 9421;
@@ -464,7 +480,6 @@ struct RemoteSession {
 
 struct RemoteView {
     session_control: tokio::sync::Mutex<ProtocolStream>,
-    control: tokio::sync::watch::Receiver<Option<RemoteControlClaim>>,
     state_cancel: tokio::sync::watch::Sender<bool>,
     attachment_epoch: u64,
     read_write: bool,
@@ -751,9 +766,15 @@ impl SessionLifecycle {
     /// Gate one state-channel dispatch and refresh contact in the same
     /// critical section. Checking currency and then refreshing separately
     /// would let a superseded connection vouch for the current one.
-    fn admit_state(&self, generation: u64) -> bool {
+    fn admit_state(&self, generation: u64, incarnation: u64) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.generation != generation {
+        // Both identifiers, atomically. The generation alone is not enough:
+        // attaching a second view rebinds the incarnation without advancing
+        // the generation, so a reader left over from a connection that has
+        // been replaced still matches on generation — and would then publish
+        // state and, worse, refresh the contact clock on behalf of the
+        // connection that replaced it, masking a black hole indefinitely.
+        if state.generation != generation || state.incarnation != incarnation {
             return false;
         }
         state.last_contact = Some(Instant::now());
@@ -959,9 +980,18 @@ impl SessionLifecycle {
     /// activation and picks the lexicographically smallest recorded view, so
     /// both ends of a resume agree on which stream owns session state without
     /// coordinating. It is sticky: a smaller id mounted later never re-elects.
+    /// Elect a feed, skipping panes the host has already refused: a view whose
+    /// identity was rejected cannot become the stream the whole session reads
+    /// from, and re-electing it would loop on the same refusal.
     fn elect_feed(&self) -> Option<String> {
         let mut state = self.state.lock().unwrap();
-        let elected = state.views.keys().min().cloned();
+        let elected = state
+            .views
+            .iter()
+            .filter(|(_, record)| record.state != RemoteViewState::Failed)
+            .map(|(local_view_id, _)| local_view_id)
+            .min()
+            .cloned();
         state.feed_view_id.clone_from(&elected);
         elected
     }
@@ -1250,6 +1280,16 @@ enum AttachFailure {
     /// it. It marks nothing and re-elects nothing; whatever the superseding
     /// attempt concludes is the outcome.
     Superseded,
+    /// The one genuinely view-scoped rejection: this pane's identity was
+    /// refused and the session is unharmed. Distinct from `Failed` because the
+    /// disposition turns on it — the connection is kept, and a feed re-elects
+    /// the next eligible view in place rather than tearing anything down.
+    ViewInvalid(anyhow::Error),
+    /// The host refused on grounds a redial cannot change. Distinct from
+    /// `Failed` because `Failed` is the *ambiguous* case, and ambiguity is
+    /// what earns the immediate retry on a fresh connection; re-asking a
+    /// question that has been answered definitively only costs a connection.
+    Rejected(anyhow::Error),
 }
 
 impl From<anyhow::Error> for AttachFailure {
@@ -1268,6 +1308,7 @@ impl From<AttachFailure> for anyhow::Error {
             AttachFailure::Superseded => {
                 anyhow::anyhow!("remote view attach was superseded by a newer attempt")
             }
+            AttachFailure::ViewInvalid(error) | AttachFailure::Rejected(error) => error,
         }
     }
 }
@@ -1280,12 +1321,12 @@ fn attach_rejection_outcome(code: AttachRejectCode, feed: bool) -> AttachFailure
         AttachRejectCode::StaleResume => AttachFailure::Superseded,
         // View-scoped: this pane failed, the session did not.
         AttachRejectCode::ViewInvalid => {
-            AttachFailure::Failed(anyhow::anyhow!("remote host rejected the view identity"))
+            AttachFailure::ViewInvalid(anyhow::anyhow!("remote host rejected the view identity"))
         }
         // Session x client admission. A replacement view hits the same cap, so
         // re-electing is pointless; the feed's caller invalidates the
         // connection so the retry cannot preserve the cap that rejected it.
-        AttachRejectCode::ViewLimit => AttachFailure::Failed(anyhow::anyhow!(
+        AttachRejectCode::ViewLimit => AttachFailure::Rejected(anyhow::anyhow!(
             "remote host is at its view limit for this client"
         )),
         // Session verdicts, whichever attach surfaced them.
@@ -1298,7 +1339,7 @@ fn attach_rejection_outcome(code: AttachRejectCode, feed: bool) -> AttachFailure
             AttachFailure::Ended(RemoteEndedReason::SessionUnavailable)
         }
         AttachRejectCode::AccessDenied => {
-            AttachFailure::Failed(anyhow::anyhow!("remote host denied access to this session"))
+            AttachFailure::Rejected(anyhow::anyhow!("remote host denied access to this session"))
         }
         // A code this viewer predates. Treat it the way an ambiguous failure is
         // treated — the caller closes the connection and advances the
@@ -1624,6 +1665,18 @@ async fn reconnect_engine_inner(runtime: MeshRuntime, session_id: String) {
             // Another attempt is already governing this lineage; nothing to
             // conclude here, so leave the schedule as it is.
             Err(AttachFailure::Superseded) => {}
+            // The feed's identity was refused and re-election inside the
+            // attempt found nothing left to promote. Keep dialing: a later
+            // attempt mints fresh identities.
+            Err(AttachFailure::ViewInvalid(error)) => {
+                eprintln!("[terminal-mesh] resume attempt {attempt} lost its view: {error:#}");
+            }
+            // Definitive, but not permanent: a view limit frees as watermarks
+            // are collected, so the schedule stands rather than the session
+            // being marked over.
+            Err(AttachFailure::Rejected(error)) => {
+                eprintln!("[terminal-mesh] resume attempt {attempt} refused: {error:#}");
+            }
         }
     }
 }
@@ -2071,6 +2124,14 @@ impl MeshRuntime {
             Err(AttachFailure::Superseded) => {
                 bail!("remote view attach was superseded by a newer attempt")
             }
+            // View-scoped: this pane is refused, the session and the
+            // connection are both fine, so neither is touched on the way out.
+            Err(AttachFailure::ViewInvalid(error)) => Err(error),
+            // Definitive. The attempt has already applied whatever connection
+            // disposition the code calls for; retrying on a fresh dial would
+            // re-ask a question the host has answered, and for a secondary it
+            // would take down the connection its live session is using.
+            Err(AttachFailure::Rejected(error)) => Err(error),
             // The initial dial can land on a connection the host has already
             // forgotten. Retrying is safe now only because the second attempt
             // rotates to a fresh wire identity.
@@ -2085,6 +2146,8 @@ impl MeshRuntime {
                     Err(AttachFailure::Superseded) => {
                         bail!("remote view attach was superseded by a newer attempt")
                     }
+                    Err(AttachFailure::ViewInvalid(error))
+                    | Err(AttachFailure::Rejected(error)) => Err(error),
                     Err(AttachFailure::Failed(error)) => Err(anyhow::anyhow!(
                         "remote view attach failed after reconnect: {first_error:#}: {error:#}"
                     )),
@@ -2244,16 +2307,22 @@ impl MeshRuntime {
                 // authoritative, and a host sending a contradictory value must
                 // not change the action taken.
                 let outcome = attach_rejection_outcome(code, feed);
-                if matches!(
-                    code,
-                    AttachRejectCode::ViewLimit
-                        | AttachRejectCode::UnknownSession
-                        | AttachRejectCode::SessionEpochMismatch
-                        | AttachRejectCode::AccessDenied
-                        | AttachRejectCode::Unknown
-                ) {
-                    // Connection disposition per the table: everything except a
-                    // stale response or a bad view id retires this connection.
+                // Connection disposition per the §6.2 table, which turns on the
+                // role as well as the code. `view-limit` is the asymmetric one:
+                // the feed closes the connection before retrying, because
+                // watermark GC cannot free the cap while this connection pins
+                // the fence — but a secondary hitting the same cap must leave
+                // the connection alone, since an already-Live session rides it
+                // and losing one pane is not a reason to drop the rest.
+                let retire = match code {
+                    AttachRejectCode::ViewLimit => feed,
+                    AttachRejectCode::UnknownSession
+                    | AttachRejectCode::SessionEpochMismatch
+                    | AttachRejectCode::AccessDenied
+                    | AttachRejectCode::Unknown => true,
+                    AttachRejectCode::StaleResume | AttachRejectCode::ViewInvalid => false,
+                };
+                if retire {
                     self.note_connection_failure(&remote.device_id, &host).await;
                 }
                 return Err(outcome);
@@ -2301,7 +2370,6 @@ impl MeshRuntime {
         } else {
             None
         };
-        let (control_sender, control) = tokio::sync::watch::channel(None);
         let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
         // A view with no stream has nothing to wait for and is as synchronized
         // as it will ever be; only the feed is ever awaited, and the feed
@@ -2309,7 +2377,6 @@ impl MeshRuntime {
         let (synchronized_tx, synchronized) = tokio::sync::watch::channel(state.is_none());
         let view = Arc::new(RemoteView {
             session_control: tokio::sync::Mutex::new(session_control),
-            control,
             state_cancel,
             attachment_epoch,
             read_write,
@@ -2387,7 +2454,7 @@ impl MeshRuntime {
                 // frames gated could still move controller or activity state
                 // after recovery, or refresh the current connection's contact
                 // clock on its behalf.
-                if !lifecycle.admit_state(state_generation) {
+                if !lifecycle.admit_state(state_generation, incarnation) {
                     continue;
                 }
                 // Contact is refreshed above for any traffic on the current
@@ -2404,10 +2471,17 @@ impl MeshRuntime {
                             SessionEndReason::Exited { .. } => RemoteEndedReason::SessionExited,
                             SessionEndReason::Closed => RemoteEndedReason::SessionClosed,
                         });
+                        // One session concluding says nothing about the
+                        // transport, which is shared: retiring it here would
+                        // tear down every sibling session on this device for
+                        // an event that was clean and expected.
+                        connection_failed = false;
                         break;
                     }
                     StateMessage::HostShutdown {} => {
                         lifecycle.commit_ended(RemoteEndedReason::HostShutdown);
+                        // The host itself is going away, so the connection is
+                        // genuinely finished — left to the failure path.
                         break;
                     }
                     _ => {}
@@ -2445,15 +2519,6 @@ impl MeshRuntime {
                             view_id: lifecycle.local_view_id_for(&controller.controller_view_id),
                             control_epoch: controller.control_epoch,
                         });
-                        control_sender.send_replace(controller.as_ref().map(|controller| {
-                            RemoteControlClaim {
-                                controller_view_id: controller.view_id.clone(),
-                                control_epoch: controller.control_epoch,
-                                cols,
-                                rows,
-                                layout_epoch,
-                            }
-                        }));
                         if let Some(controller) = controller.as_ref() {
                             let _ = remote_control_tx.send(RemoteControlChanged {
                                 session_id: local_session_id.clone(),
@@ -2487,14 +2552,6 @@ impl MeshRuntime {
                         // Controller identities arrive as wire ids; every mesh
                         // consumer above this point speaks local ids.
                         let controller_view_id = lifecycle.local_view_id_for(&controller_view_id);
-                        let claim = RemoteControlClaim {
-                            controller_view_id: controller_view_id.clone(),
-                            control_epoch,
-                            cols,
-                            rows,
-                            layout_epoch,
-                        };
-                        control_sender.send_replace(Some(claim));
                         let _ = remote_control_tx.send(RemoteControlChanged {
                             session_id: local_session_id.clone(),
                             controller_view_id: controller_view_id.clone(),
@@ -2707,6 +2764,9 @@ impl MeshRuntime {
             // would be a lie about a session someone else is busy recovering,
             // so hand back the state as it stands and let them finish.
             Err(AttachFailure::Superseded) => Ok(lifecycle.snapshot()),
+            Err(AttachFailure::ViewInvalid(error)) | Err(AttachFailure::Rejected(error)) => {
+                Err(error)
+            }
         }
     }
 
@@ -2805,6 +2865,18 @@ impl MeshRuntime {
             // a second dial loop behind an attempt that is already running,
             // and the state it would commit is not this promotion's to write.
             Err(AttachFailure::Superseded) => Err(AttachFailure::Superseded),
+            // Nothing eligible was left to promote. The connection is healthy,
+            // so this is a session with no usable pane rather than an outage.
+            Err(AttachFailure::ViewInvalid(error)) => {
+                remote.lifecycle.commit_suspended();
+                Err(AttachFailure::ViewInvalid(error))
+            }
+            Err(AttachFailure::Rejected(error)) => {
+                remote.lifecycle.commit_reconnecting();
+                drop(attempt);
+                self.arm_reconnect(remote).await;
+                Err(AttachFailure::Rejected(error))
+            }
         }
     }
 
@@ -2864,25 +2936,43 @@ impl MeshRuntime {
     /// hold up recovery.
     async fn establish_feed(&self, remote: &RemoteSession) -> Result<(), AttachFailure> {
         let lifecycle = &remote.lifecycle;
-        let Some(feed_view_id) = lifecycle.elect_feed() else {
-            lifecycle.commit_suspended();
-            return Ok(());
-        };
-        let outcome = match self.attach_view_attempt(remote, &feed_view_id, true).await {
-            Ok(outcome) => outcome,
-            Err(AttachFailure::Ended(reason)) => return Err(AttachFailure::Ended(reason)),
-            Err(AttachFailure::Failed(error)) => {
-                lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
-                // The feed could not attach, which is strong evidence this
-                // connection is not usable; retire it so the next attempt
-                // dials rather than reusing it.
-                self.invalidate_connection(&remote.device_id, None).await;
-                return Err(AttachFailure::Failed(error));
+        // §6.2 gives `view-invalid` the only in-place recovery in the table:
+        // the refused pane is marked and the next eligible view takes the feed
+        // on the same connection. Election skips failed panes, so each turn of
+        // this loop removes one candidate and it cannot spin.
+        let (feed_view_id, outcome) = loop {
+            let Some(feed_view_id) = lifecycle.elect_feed() else {
+                lifecycle.commit_suspended();
+                return Ok(());
+            };
+            match self.attach_view_attempt(remote, &feed_view_id, true).await {
+                Ok(outcome) => break (feed_view_id, outcome),
+                Err(AttachFailure::Ended(reason)) => return Err(AttachFailure::Ended(reason)),
+                Err(AttachFailure::Failed(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                    // The feed could not attach, which is strong evidence this
+                    // connection is not usable; retire it so the next attempt
+                    // dials rather than reusing it.
+                    self.invalidate_connection(&remote.device_id, None).await;
+                    return Err(AttachFailure::Failed(error));
+                }
+                // The host answered coherently — it just answered a question a
+                // newer attempt has already asked again. The connection is fine
+                // and the pane is not failed, so mark neither.
+                Err(AttachFailure::Superseded) => return Err(AttachFailure::Superseded),
+                // The identity was refused, not the session and not the
+                // transport. Mark this pane and promote the next one in place.
+                Err(AttachFailure::ViewInvalid(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                }
+                // The connection disposition is already applied; the feed
+                // simply has no attachment, so the session waits for the
+                // engine rather than being torn down here.
+                Err(AttachFailure::Rejected(error)) => {
+                    lifecycle.commit_view_failed(&feed_view_id, format!("{error:#}"), true);
+                    return Err(AttachFailure::Rejected(error));
+                }
             }
-            // The host answered coherently — it just answered a question a
-            // newer attempt has already asked again. The connection is fine
-            // and the pane is not failed, so mark neither.
-            Err(AttachFailure::Superseded) => return Err(AttachFailure::Superseded),
         };
         lifecycle.commit_view_attached(&feed_view_id, outcome.attachment_epoch, outcome.read_write);
         remote.replica.set_read_write(outcome.read_write);
@@ -2959,6 +3049,13 @@ impl MeshRuntime {
                 // Leave the pane pending rather than failed: the attempt that
                 // superseded this one is the one that will resolve it.
                 Err(AttachFailure::Superseded) => {}
+                // The table's secondary column: the pane fails and the Live
+                // session around it is untouched.
+                Err(AttachFailure::ViewInvalid(error)) | Err(AttachFailure::Rejected(error)) => {
+                    remote
+                        .lifecycle
+                        .commit_view_failed(&local_view_id, format!("{error:#}"), true)
+                }
             }
         }
     }
@@ -3046,11 +3143,16 @@ impl MeshRuntime {
         if !view.read_write {
             bail!("remote terminal view is read-only");
         }
-        let mut state = view.control.clone();
-        let previous_epoch = state
-            .borrow()
-            .as_ref()
-            .map_or(0, |current| current.control_epoch);
+        // Session-scoped, deliberately not the view's own control watch: a
+        // secondary declines its state stream, so its per-view sender is
+        // dropped at attach, and awaiting it would report the channel closed —
+        // an error for a claim the host may well have granted. Control is a
+        // property of the session, and the feed's stream is what carries it.
+        let mut states = self.subscribe_control_state();
+        let previous_epoch = self
+            .last_control_state(session_id)
+            .and_then(|state| state.controller)
+            .map_or(0, |controller| controller.control_epoch);
         let wire_view_id = view.wire_view_id.clone();
         view.session_control
             .lock()
@@ -3071,16 +3173,21 @@ impl MeshRuntime {
             .await?;
         tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
             loop {
-                state
-                    .changed()
-                    .await
-                    .context("remote terminal control stream closed")?;
-                let current = state.borrow_and_update().clone();
-                if let Some(current) = current
-                    && current.controller_view_id == view_id
-                    && current.control_epoch > previous_epoch
-                {
-                    return Ok(current);
+                let state = states.recv().await?;
+                if state.session_id != session_id {
+                    continue;
+                }
+                let Some(controller) = state.controller else {
+                    continue;
+                };
+                if controller.view_id == view_id && controller.control_epoch > previous_epoch {
+                    return Ok(RemoteControlClaim {
+                        controller_view_id: controller.view_id,
+                        control_epoch: controller.control_epoch,
+                        cols: state.cols,
+                        rows: state.rows,
+                        layout_epoch: state.layout_epoch,
+                    });
                 }
             }
         })
@@ -3113,11 +3220,13 @@ impl MeshRuntime {
         if !view.read_write {
             bail!("remote terminal view is read-only");
         }
-        let mut state = view.control.clone();
-        let previous_epoch = state
-            .borrow()
-            .as_ref()
-            .map_or(0, |current| current.control_epoch);
+        // Session-scoped for the same reason as the claim above: a secondary
+        // has no per-view control sender to await once it declines its stream.
+        let mut states = self.subscribe_control_state();
+        let previous_epoch = self
+            .last_control_state(session_id)
+            .and_then(|state| state.controller)
+            .map_or(0, |controller| controller.control_epoch);
         let wire_view_id = view.wire_view_id.clone();
         view.session_control
             .lock()
@@ -3135,36 +3244,25 @@ impl MeshRuntime {
             )
             .await?;
 
-        // The first controller change after the request settles it: either it
-        // names this view at a newer epoch, or the swap lost — to another
-        // holder or to a clear. There is nothing to keep waiting for.
-        let claimed = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-            state
-                .changed()
-                .await
-                .context("remote terminal control stream closed")?;
-            let current = state.borrow_and_update().clone();
-            Ok::<bool, anyhow::Error>(current.is_some_and(|current| {
-                current.controller_view_id == view_id && current.control_epoch > previous_epoch
-            }))
+        // The first controller announcement for this session after the request
+        // settles it: either it names this view at a newer epoch, or the swap
+        // lost, to another holder or to a clear. There is nothing further to
+        // wait for.
+        let settled = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            loop {
+                let state = states.recv().await?;
+                if state.session_id == session_id {
+                    return Ok::<RemoteControlState, anyhow::Error>(state);
+                }
+            }
         })
         .await
         .context("timed out claiming remote terminal control")??;
-
-        let announced = self.last_control_state(session_id).unwrap_or_else(|| {
-            let current = state.borrow().clone();
-            RemoteControlState {
-                session_id: session_id.to_owned(),
-                controller: current.as_ref().map(|claim| RemoteController {
-                    view_id: claim.controller_view_id.clone(),
-                    control_epoch: claim.control_epoch,
-                }),
-                control_revision: 0,
-                cols,
-                rows,
-                layout_epoch: current.map_or(0, |claim| claim.layout_epoch),
-            }
+        let claimed = settled.controller.as_ref().is_some_and(|controller| {
+            controller.view_id == view_id && controller.control_epoch > previous_epoch
         });
+
+        let announced = self.last_control_state(session_id).unwrap_or(settled);
         if claimed {
             return Ok(RemoteControlOutcome::Claimed(announced));
         }
@@ -3340,6 +3438,9 @@ impl MeshRuntime {
                 // Suspending here would park a session another attempt is
                 // actively bringing back.
                 AttachFailure::Superseded => {}
+                AttachFailure::ViewInvalid(error) | AttachFailure::Rejected(error) => {
+                    eprintln!("[terminal-mesh] feed promotion found no usable view: {error:#}");
+                }
             }
         }
     }
@@ -4296,7 +4397,7 @@ where
             (
                 nonce,
                 negotiate_state_codec(state_codecs),
-                protocol_minor.min(PROTOCOL_MINOR),
+                protocol_minor.min(COMPACT_MAX_PROTOCOL_MINOR),
             )
         }
         ConnectionMessage::ClientHello { .. } => {
@@ -4477,8 +4578,10 @@ where
         let mut patch_sequence = 0_u64;
         let mut shutdown = services.shutdown.watch();
         // An attachment arriving after the announcement has already gone out
-        // must not be told the host is healthy by omission.
-        if *shutdown.borrow_and_update() {
+        // must not be told the host is healthy by omission. Gated with the
+        // frame itself: below the reconnect minor this is undecodable, and
+        // the compact endpoint is capped there until Phase 4.
+        if *shutdown.borrow_and_update() && protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
             control
                 .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
                 .await?;
@@ -4531,9 +4634,11 @@ where
                     if announced.is_err() || !*shutdown.borrow_and_update() {
                         continue;
                     }
-                    control
-                        .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
-                        .await?;
+                    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                        control
+                            .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                            .await?;
+                    }
                     return Ok(());
                 }
                 changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
@@ -4563,9 +4668,25 @@ where
                             attachment_epoch: epoch,
                             cols,
                             rows,
+                            expected_control_revision,
                             ..
                         } if incoming_view == view_id && epoch == attachment_epoch => {
-                            session.claim_control(&view_id, &client_id, cols, rows)?;
+                            // Same reasoning as the QUIC loop: the epoch this
+                            // handler holds is not authorization on its own.
+                            // Compact carries no swap today (see the minor cap
+                            // above), and `None` is legacy last-write-wins, so
+                            // this is the epoch check arriving early.
+                            match session.claim_control_checked(
+                                &view_id,
+                                &client_id,
+                                attachment_epoch,
+                                cols,
+                                rows,
+                                expected_control_revision,
+                            )? {
+                                ControlClaim::Granted(_) => {}
+                                ControlClaim::Rejected(_) => session.announce_control(),
+                            }
                         }
                         SessionControlMessage::Resize {
                             view_id: incoming_view,
@@ -4575,9 +4696,10 @@ where
                             cols,
                             rows,
                         } if incoming_view == view_id && epoch == attachment_epoch => {
-                            if session.resize_view(
+                            if session.resize_view_checked(
                                 &view_id,
                                 &client_id,
+                                attachment_epoch,
                                 control_epoch,
                                 resize_sequence,
                                 cols,
@@ -5126,6 +5248,19 @@ async fn serve_connection(
     Ok(())
 }
 
+/// Why a concluded session ended, in the wire's vocabulary. Mirrors the
+/// tombstone's own rule (`SessionTombstones::commit`): a process that was
+/// observed to exit reports its code, anything else was closed.
+fn session_end_reason(session: &Session) -> SessionEndReason {
+    if session.has_exited() {
+        SessionEndReason::Exited {
+            code: session.summary().exit_code,
+        }
+    } else {
+        SessionEndReason::Closed
+    }
+}
+
 /// Answer a tombstone lookup. A host with no status source says `Unknown`,
 /// which is the honest reading of "this host cannot say" — never an upgrade to
 /// a specific end reason, and never a downgrade of one it does have.
@@ -5434,9 +5569,30 @@ async fn session_control_loop(
                 attachment_epoch: epoch,
                 cols,
                 rows,
+                expected_control_revision,
                 ..
             } if view_id == attached_view_id && epoch == attachment_epoch => {
-                session.claim_control(&view_id, client_id, cols, rows)?;
+                // The guard above proves only that the command names the epoch
+                // this handler was born with — and a takeover moves the
+                // authority on without telling this loop, so both sides of
+                // that comparison can be stale together. The checked call is
+                // what compares against the *authority's* current attachment,
+                // under its own lock, and applies the client's swap while it
+                // is in there.
+                match session.claim_control_checked(
+                    &view_id,
+                    client_id,
+                    attachment_epoch,
+                    cols,
+                    rows,
+                    expected_control_revision,
+                )? {
+                    ControlClaim::Granted(_) => {}
+                    // The swap lost. Re-announce so the loser learns the
+                    // revision it would have to swap against next; saying
+                    // nothing would leave it retrying against a stale one.
+                    ControlClaim::Rejected(_) => session.announce_control(),
+                }
             }
             SessionControlMessage::Resize {
                 view_id,
@@ -5447,9 +5603,10 @@ async fn session_control_loop(
                 rows,
             } if view_id == attached_view_id && epoch == attachment_epoch => {
                 if session
-                    .resize_view(
+                    .resize_view_checked(
                         &view_id,
                         client_id,
+                        attachment_epoch,
                         control_epoch,
                         resize_sequence,
                         cols,
@@ -5563,6 +5720,12 @@ async fn spawn_state_stream(
     protocol_minor: u16,
     mut host_config: HostConfigReceiver,
 ) -> Result<()> {
+    // Before anything is opened, let alone written: a takeover that fires
+    // between registration and here has already superseded this attachment,
+    // and the cheapest way to write nothing is to start nothing.
+    if *cancelled.borrow_and_update() {
+        return Ok(());
+    }
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
     state
@@ -5575,36 +5738,50 @@ async fn spawn_state_stream(
     let mut controls = session.subscribe_control_state();
     let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
+    let mut concluded = session.subscribe_conclusion();
     let mut previous = session.logical_snapshot();
+    // Setup is not exempt from cancellation. The guarantee this stream is held
+    // to is that no write *begins* after cancellation is observed, and the
+    // opening burst below is writes like any other: a takeover that fires
+    // mid-setup must not have the rest of it land on a superseded attachment.
+    macro_rules! write_setup {
+        ($message:expr) => {
+            if *cancelled.borrow_and_update() {
+                return Ok(());
+            }
+            state.write_state_message($message, state_codec).await?;
+        };
+    }
     if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
         let presentation = host_config.borrow_and_update().as_ref().clone();
-        state
-            .write_state_message(
-                &StateMessage::ConfigurationChanged { presentation },
-                state_codec,
-            )
-            .await?;
+        write_setup!(&StateMessage::ConfigurationChanged { presentation });
     }
     if let Some(snapshot) = previous.as_ref() {
-        state
-            .write_state_message(&StateMessage::Snapshot(snapshot.clone()), state_codec)
-            .await?;
+        write_setup!(&StateMessage::Snapshot(snapshot.clone()));
     }
     // Same contract as the compact path: the opening frame is the live-update
     // shape, so a viewer that opens a stream after a clear learns of it and one
     // that opens with a controller present keeps the real revision.
     if let Some(message) = control_state_message(&session.control_snapshot(), protocol_minor) {
-        state.write_state_message(&message, state_codec).await?;
+        write_setup!(&message);
     }
     if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
-        state
-            .write_state_message(
-                &StateMessage::ActivityChanged {
-                    activity: session.summary().activity,
-                },
-                state_codec,
-            )
-            .await?;
+        write_setup!(&StateMessage::ActivityChanged {
+            activity: session.summary().activity,
+        });
+    }
+    // A session that concluded before this stream opened has to say so here:
+    // the watch below only reports the transition, and a viewer attaching to
+    // an already-dead session would otherwise wait for news that never comes.
+    // Below the reconnect minor the frame is undecodable, so such a viewer
+    // keeps the only signal it has ever had — the stream ending.
+    if *concluded.borrow_and_update() {
+        if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+            write_setup!(&StateMessage::SessionEnded {
+                reason: session_end_reason(&session),
+            });
+        }
+        return Ok(());
     }
     tokio::spawn(async move {
         let mut patch_sequence = 0_u64;
@@ -5644,6 +5821,30 @@ async fn spawn_state_stream(
                         break;
                     }
                     continue;
+                },
+                // §6.3: the host says why a session ended. Without this a
+                // connected viewer keeps a healthy connection to a session
+                // that no longer exists, and stays Live until it is told
+                // something by some other means — which, while attached and
+                // with the heartbeat answering, never comes.
+                ended = concluded.changed() => {
+                    if ended.is_err() {
+                        break;
+                    }
+                    if !*concluded.borrow_and_update() {
+                        continue;
+                    }
+                    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                        let _ = state
+                            .write_state_message(
+                                &StateMessage::SessionEnded {
+                                    reason: session_end_reason(&session),
+                                },
+                                state_codec,
+                            )
+                            .await;
+                    }
+                    break;
                 },
                 snapshot = snapshots.recv() => match snapshot {
                     Ok(snapshot) => {
@@ -6441,11 +6642,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // The client above offered the highest minor this build knows, and is
+        // deliberately answered less: the compact endpoint implements none of
+        // the reconnect contract, and a client that is told 6 would stop
+        // protecting itself in exchange for fencing that is not there.
         assert!(matches!(
             hello,
             ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                protocol_minor: COMPACT_MAX_PROTOCOL_MINOR,
                 ref host_instance_id,
                 ref nonce,
                 state_codec: Some(StateCodec::CompactJsonV1),
@@ -6946,6 +7151,7 @@ mod tests {
         remote_session_id: String,
         code: AttachRejectCode,
         retryable: bool,
+        accepts: usize,
     ) -> Result<()> {
         let control_stream = connection
             .accept_stream()
@@ -6978,31 +7184,88 @@ mod tests {
             .await?;
 
         let streams_connection = Arc::clone(&connection);
+        let session = remote_session_id.clone();
         let streams = tokio::spawn(async move {
+            // Accepting the first `accepts` attaches is what lets a test reach
+            // the secondary path at all: the feed has to be live before a
+            // refusal can be about one pane rather than the whole session.
+            let mut accepted = 0_usize;
+            let mut epoch = 0_u64;
             while let Some(stream) = streams_connection.accept_stream().await? {
                 let mut view_control = ProtocolStream::new(stream);
                 let preface = view_control.read_preface().await?;
                 if preface.stream_kind != StreamKind::SessionControl {
                     continue;
                 }
-                let request_id = match view_control
+                let (request_id, wire_view_id) = match view_control
                     .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
                     .await?
                     .context("rejecting host got no attach")?
                 {
-                    SessionControlMessage::AttachView { request_id, .. } => request_id,
+                    SessionControlMessage::AttachView {
+                        request_id,
+                        view_id,
+                        ..
+                    } => (request_id, view_id),
                     _ => bail!("rejecting host expected an attach"),
                 };
+                if accepted >= accepts {
+                    view_control
+                        .write_message(
+                            &SessionControlMessage::AttachRejected {
+                                request_id,
+                                code,
+                                retryable,
+                            },
+                            MAX_CONTROL_MESSAGE_BYTES,
+                        )
+                        .await?;
+                    continue;
+                }
+                accepted += 1;
+                epoch += 1;
                 view_control
                     .write_message(
-                        &SessionControlMessage::AttachRejected {
+                        &SessionControlMessage::ViewAttached {
                             request_id,
-                            code,
-                            retryable,
+                            session_epoch: 1,
+                            layout_epoch: 1,
+                            attachment_epoch: epoch,
+                            cols: 80,
+                            rows: 24,
+                            read_write: true,
+                            presentation: None,
+                            resumed: false,
+                            controller: None,
+                            control_revision: 1,
                         },
                         MAX_CONTROL_MESSAGE_BYTES,
                     )
                     .await?;
+                let mut state = ProtocolStream::new(streams_connection.open_stream().await?);
+                state
+                    .write_preface(&StreamPreface {
+                        stream_kind: StreamKind::LiveState,
+                        session_id: Some(session.clone()),
+                        view_id: Some(wire_view_id),
+                    })
+                    .await?;
+                tokio::spawn(async move {
+                    let _ = state
+                        .write_state_message(
+                            &StateMessage::Snapshot(logical_snapshot(1, "rejecting")),
+                            StateCodec::CompactJsonV1,
+                        )
+                        .await;
+                    std::future::pending::<()>().await;
+                });
+                tokio::spawn(async move {
+                    while view_control
+                        .read_message::<SessionControlMessage>(MAX_CONTROL_MESSAGE_BYTES)
+                        .await
+                        .is_ok_and(|message| message.is_some())
+                    {}
+                });
             }
             Ok::<(), anyhow::Error>(())
         });
@@ -7337,6 +7600,16 @@ mod tests {
 
         /// An open session whose host refuses every attach with `code`.
         async fn rejecting(code: AttachRejectCode, retryable: bool) -> Result<Self> {
+            Self::rejecting_after(code, retryable, 0).await
+        }
+
+        /// The same, after accepting `accepts` attaches — enough to get a feed
+        /// live so a refusal can land on a secondary.
+        async fn rejecting_after(
+            code: AttachRejectCode,
+            retryable: bool,
+            accepts: usize,
+        ) -> Result<Self> {
             let registry = Registry::default();
             let remote_session_id = "rejected-session".to_owned();
             let transport = TestTransport::new("host-1");
@@ -7356,6 +7629,7 @@ mod tests {
                 remote_session_id.clone(),
                 code,
                 retryable,
+                accepts,
             ));
             let connection = client_handshake(
                 client as Arc<dyn MeshConnection>,
@@ -8245,21 +8519,29 @@ mod tests {
             attach_rejection_outcome(AttachRejectCode::StaleResume, true),
             AttachFailure::Superseded
         ));
-        for code in [
-            AttachRejectCode::ViewInvalid,
-            AttachRejectCode::ViewLimit,
-            AttachRejectCode::AccessDenied,
-            AttachRejectCode::Unknown,
-        ] {
+        // The only view-scoped code, and the only one that keeps its own
+        // variant: the disposition around it differs from a plain failure.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::ViewInvalid, true),
+            AttachFailure::ViewInvalid(_)
+        ));
+        // Definitive refusals: the host has answered, so no redial re-asks.
+        for code in [AttachRejectCode::ViewLimit, AttachRejectCode::AccessDenied] {
             assert!(
                 matches!(
                     attach_rejection_outcome(code, false),
-                    AttachFailure::Failed(_)
+                    AttachFailure::Rejected(_)
                 ),
-                "{} should fail the attempt without ending the session",
+                "{} should refuse the attempt without ending the session",
                 code.as_str()
             );
         }
+        // A code this viewer predates is the one that stays ambiguous, which
+        // is what earns it the retry the definitive refusals do not get.
+        assert!(matches!(
+            attach_rejection_outcome(AttachRejectCode::Unknown, false),
+            AttachFailure::Failed(_)
+        ));
     }
 
     /// `retryable` is advisory telemetry. A host that sets it on a code the
@@ -8287,6 +8569,286 @@ mod tests {
             fixture.lifecycle().await.state,
             RemoteLifecycleState::Ended,
             "a view-scoped refusal ended the whole session"
+        );
+        Ok(())
+    }
+
+    /// The guarantee the takeover path is written against: no write *begins*
+    /// after cancellation is observed. The opening burst is writes like any
+    /// other, so a stream cancelled before it starts must produce nothing —
+    /// otherwise a superseded attachment still receives a snapshot and a
+    /// control frame, which is precisely what the epoch fence exists to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_state_stream_writes_no_setup_frames() -> Result<()> {
+        let registry = Registry::default();
+        let remote_session_id = spawn_host_session(&registry)?;
+        let session = registry
+            .read()
+            .unwrap()
+            .get(&remote_session_id)
+            .cloned()
+            .expect("host session");
+        session.attach_view("r:pane-1", "truffle:peer:1")?;
+
+        let (client, server) = loopback_pair();
+        let (cancel, cancelled) = tokio::sync::watch::channel(false);
+        // Cancelled before the stream is asked for anything at all.
+        cancel.send_replace(true);
+        let (_presentation, presentation_rx) = tokio::sync::watch::channel(Arc::new(
+            ghosttea::ConfigSnapshot::default().terminal_presentation(),
+        ));
+        spawn_state_stream(
+            Arc::clone(&server) as Arc<dyn MeshConnection>,
+            session,
+            "r:pane-1",
+            cancelled,
+            StateCodec::Json,
+            PROTOCOL_MINOR,
+            presentation_rx,
+        )
+        .await?;
+
+        // The stream itself may be opened — that is not a write — but nothing
+        // may be written on it.
+        let stream = tokio::time::timeout(Duration::from_millis(200), client.accept_stream()).await;
+        let Ok(Ok(Some(stream))) = stream else {
+            return Ok(());
+        };
+        let mut state = ProtocolStream::new(stream);
+        let framed = tokio::time::timeout(Duration::from_millis(200), state.read_preface()).await;
+        assert!(
+            framed.is_err() || framed.unwrap().is_err(),
+            "a cancelled stream still wrote its opening frames"
+        );
+        Ok(())
+    }
+
+    /// A session that ends while a viewer is watching has to say so. The
+    /// tombstone path only covers sessions that died during an outage; with a
+    /// live connection and the heartbeat answering, nothing else would ever
+    /// tell this viewer, and it would sit Live on a session that is gone.
+    ///
+    /// The connection is the second half: one session concluding is not a
+    /// transport fault, and retiring the connection here would take every
+    /// sibling session on the same device down with it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_session_that_ends_while_watched_reports_it_and_keeps_the_connection() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+
+        session.terminate(ghosttea::TerminationSource::User)?;
+
+        fixture.wait_for_state(RemoteLifecycleState::Ended).await?;
+        assert_eq!(
+            fixture.lifecycle().await.reason,
+            Some(RemoteEndedReason::SessionExited),
+            "the viewer never learned why the session it was watching ended"
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a session ending cleanly retired the connection its siblings ride"
+        );
+        Ok(())
+    }
+
+    /// A secondary declines its state stream, so it has no control channel of
+    /// its own to hear the outcome on. Claiming from one must still work:
+    /// control is a property of the session, not of the pane that asked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_streamless_secondary_can_still_claim_control() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let attachment = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.runtime.claim_control_at(
+                &fixture.session_id,
+                "pane-2",
+                attachment.attachment_epoch,
+                100,
+                30,
+                None,
+            ),
+        )
+        .await
+        .context("claiming from a secondary hung")??;
+
+        let RemoteControlOutcome::Claimed(state) = outcome else {
+            bail!("a secondary's claim was rejected");
+        };
+        assert_eq!(
+            state.controller.map(|controller| controller.view_id),
+            Some("pane-2".to_owned())
+        );
+        Ok(())
+    }
+
+    /// The compare-and-swap the whole reclaim path rests on: a claim naming a
+    /// revision the host has moved past must lose. Discarding the expectation
+    /// host-side would silently turn every reclaim back into last-write-wins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_claim_against_a_stale_revision_is_refused() -> Result<()> {
+        let fixture = Fixture::attached().await?;
+        let attachment = fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-2")
+            .await?;
+        let session = fixture
+            .registry
+            .read()
+            .unwrap()
+            .get(&fixture.remote_session_id)
+            .cloned()
+            .expect("host session");
+        // Subscribe first, then move the revision on and wait for the viewer
+        // to have seen it: otherwise the announcement below could still be in
+        // flight and settle the swap by arriving, which would let this test
+        // pass on a race rather than on the comparison it is about.
+        let mut states = fixture.runtime.subscribe_control_state();
+        session.claim_control("r:pane-1", "truffle:peer:1", 100, 30)?;
+        let observed = next_control_state(&mut states, |state| {
+            state
+                .controller
+                .as_ref()
+                .is_some_and(|controller| controller.view_id == "pane-1")
+        })
+        .await?;
+        let stale = observed
+            .control_revision
+            .checked_sub(1)
+            .context("the host must be past its first revision for this to be a swap")?;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.runtime.claim_control_at(
+                &fixture.session_id,
+                "pane-2",
+                attachment.attachment_epoch,
+                100,
+                30,
+                Some(stale),
+            ),
+        )
+        .await
+        .context("the swap never settled")??;
+
+        assert!(
+            matches!(outcome, RemoteControlOutcome::Rejected(_)),
+            "a claim against a superseded revision was granted"
+        );
+        Ok(())
+    }
+
+    /// §5's admission rule, at the layer that enforces it: a reader belongs to
+    /// one connection incarnation as well as one generation. Attaching another
+    /// view rebinds the incarnation without advancing the generation, so
+    /// generation alone would still admit a reader from the replaced
+    /// connection — and let it refresh the contact clock on the new one's
+    /// behalf, which is exactly the black hole the heartbeat exists to catch.
+    #[test]
+    fn state_admission_is_scoped_to_the_connection_as_well_as_the_generation() {
+        let lifecycle = test_lifecycle();
+        lifecycle.bind_connection(7);
+        let generation = lifecycle.generation();
+
+        assert!(lifecycle.admit_state(generation, 7));
+        assert!(
+            !lifecycle.admit_state(generation, 6),
+            "a reader from a replaced connection was admitted on generation alone"
+        );
+
+        lifecycle.bind_connection(8);
+        assert!(
+            !lifecycle.admit_state(generation, 7),
+            "rebinding the connection left the old incarnation admitted"
+        );
+        assert!(lifecycle.admit_state(generation, 8));
+    }
+
+    /// The disposition the §6.2 table makes asymmetric: a secondary that hits
+    /// the client's view cap loses that pane and nothing else. Retiring the
+    /// connection here would take down a Live session — and every sibling
+    /// session riding the same transport — over one refused pane.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_secondary_view_limit_leaves_the_live_session_and_its_connection() -> Result<()> {
+        let fixture = Fixture::rejecting_after(AttachRejectCode::ViewLimit, true, 1).await?;
+        fixture
+            .runtime
+            .attach_view(&fixture.session_id, "pane-1")
+            .await?;
+        fixture.wait_for_state(RemoteLifecycleState::Live).await?;
+
+        assert!(
+            fixture
+                .runtime
+                .attach_view(&fixture.session_id, "pane-2")
+                .await
+                .is_err(),
+            "the host refused this pane"
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a refused secondary retired the connection its live session rides"
+        );
+        assert_eq!(
+            fixture.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "a refused secondary took down the session around it"
+        );
+        Ok(())
+    }
+
+    /// `view-invalid` is the one code with an in-place recovery: the refused
+    /// pane is marked and the next eligible view takes the feed on the same
+    /// connection, rather than the session falling out of Live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refused_feed_identity_promotes_the_next_view_in_place() -> Result<()> {
+        let fixture = Fixture::rejecting_after(AttachRejectCode::ViewInvalid, true, 0).await?;
+        // pane-1 is refused; the session keeps no usable feed yet.
+        assert!(
+            fixture
+                .runtime
+                .attach_view(&fixture.session_id, "pane-1")
+                .await
+                .is_err()
+        );
+        assert!(
+            fixture
+                .runtime
+                .cached_connection(TEST_DEVICE)
+                .await
+                .is_some(),
+            "a refused identity retired a connection that never failed"
+        );
+        assert_eq!(
+            fixture.view_state("pane-1").await,
+            Some(RemoteViewState::Failed)
+        );
+        // Election must not hand the feed back to the pane the host refused.
+        let remote = fixture.remote().await;
+        remote.lifecycle.record_view("pane-2");
+        assert_eq!(
+            remote.lifecycle.elect_feed().as_deref(),
+            Some("pane-2"),
+            "election re-picked the pane the host had already refused"
         );
         Ok(())
     }
