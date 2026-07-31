@@ -42,7 +42,7 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 12;
+const CONTROL_PROTOCOL_MINOR: u16 = 13;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
@@ -56,6 +56,19 @@ const CONFIG_DOCUMENT_PROTOCOL_MINOR: u16 = 11;
 /// here even where Phase 1 leaves the behaviour dormant — a client that
 /// negotiated 12 and then hit an unknown command would lose its socket.
 const REMOTE_LIFECYCLE_PROTOCOL_MINOR: u16 = 12;
+/// Compare-and-swap on controller state: `expectedControlRevision` on the
+/// claim, `controlRevision` on its answer, and the `control-rejected` outcome
+/// that a claim can now have.
+///
+/// This is a surface change, so it allocates its own minor rather than riding
+/// on 12 — §7's rule, and here the rule is load-bearing rather than
+/// bookkeeping. Serde ignores fields it does not know, so a minor-12 daemon
+/// handed `expectedControlRevision` would claim control *unconditionally* and
+/// answer `control-claimed`: the client would be told it won a fenced race it
+/// never actually fenced. A silent CAS bypass is worse than the closed socket
+/// the rule usually prevents, because nothing observes it. The negotiated
+/// minor is what lets a client know the daemon can fence at all.
+const CONTROL_REVISION_CAS_PROTOCOL_MINOR: u16 = 13;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
@@ -64,6 +77,7 @@ const _: () = assert!(CONFIG_DOCUMENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(REMOTE_LIFECYCLE_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(CONTROL_REVISION_CAS_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// How long an accepted connection may take to present its token before the
@@ -474,6 +488,16 @@ enum Command {
         attachment_epoch: u64,
         cols: u64,
         rows: u64,
+        /// The controller revision this claim is conditional on (§4.2.3).
+        ///
+        /// Absent is the legacy unconditional claim, which is all a pre-minor-6
+        /// host understands and all a revisionless authority can offer. Present
+        /// means "claim only if nobody has claimed or cleared since I looked" —
+        /// and a daemon that cannot enforce that says so rather than claiming
+        /// anyway. Revisioned authorities start at 1, so the 0 sentinel is
+        /// never a value a client may condition on.
+        #[serde(default)]
+        expected_control_revision: Option<u64>,
     },
     Resize {
         session_id: String,
@@ -627,6 +651,33 @@ enum ResponseBody {
         session_id: String,
         controller_view_id: String,
         control_epoch: u64,
+        /// The revision this claim produced, for the client to condition its
+        /// next claim on. `0` is the legacy/unknown sentinel: a source with no
+        /// revisions of its own, never a value to compare against.
+        control_revision: u64,
+        cols: u16,
+        rows: u16,
+        layout_epoch: u64,
+    },
+    /// A conditional claim that lost: somebody claimed or cleared control
+    /// between the revision the caller observed and this attempt.
+    ///
+    /// Carries the state that beat it, because §4.2.3 makes the response
+    /// asymmetric — a rejection naming another controller ends the reclaim,
+    /// while one showing no controller at a newer revision may be retried
+    /// against that revision. `control-claimed` structurally cannot say "no
+    /// controller", which is exactly why this is its own shape.
+    ///
+    /// Declared with the rest of minor 13 and produced once the claim path
+    /// reaches an authority that keeps revisions; the shape has to exist first,
+    /// because clients are written against the advertised minor, not against
+    /// which parts of it have behaviour yet. Delete this allow when the CAS
+    /// path constructs it.
+    #[allow(dead_code, reason = "minor-13 surface; constructed when CAS lands")]
+    ControlRejected {
+        session_id: String,
+        controller: Option<RemoteControllerInfo>,
+        control_revision: u64,
         cols: u16,
         rows: u16,
         layout_epoch: u64,
@@ -2455,10 +2506,33 @@ async fn handle_command(
                 attachment_epoch,
                 cols,
                 rows,
+                expected_control_revision,
             } => {
                 require_attachment(attached, &session_id, &view_id)?;
                 let cols = checked_dimension(cols, "cols", 2, MAX_TERMINAL_COLS)?;
                 let rows = checked_dimension(rows, "rows", 1, MAX_TERMINAL_ROWS)?;
+                if let Some(expected) = expected_control_revision {
+                    // Refuse rather than claim unconditionally. A caller that
+                    // asked to be fenced and was not is strictly worse off than
+                    // one told no: it believes it holds control it may have
+                    // taken from somebody mid-claim. The revisions this would
+                    // compare against are the minor-6 authority's, so until a
+                    // session is backed by one there is nothing honest to
+                    // answer but this.
+                    //
+                    // Wiring (gated on the mesh's `claim_control_at`): a Live
+                    // remote session routes here, `Claimed` answers
+                    // `control-claimed` with the new revision, and `Rejected`
+                    // answers `control-rejected` with the state that beat it.
+                    if expected == LEGACY_CONTROL_REVISION {
+                        bail!(
+                            "expectedControlRevision must be at least 1; 0 marks a source that has no revisions to compare"
+                        );
+                    }
+                    bail!(
+                        "this session's controller has no revisions to compare against, so the claim cannot be fenced"
+                    );
+                }
                 let (controller_view_id, control_epoch, cols, rows, layout_epoch) =
                     if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                         let changed = session.claim_control(&view_id, client_id, cols, rows)?;
@@ -2486,6 +2560,11 @@ async fn handle_command(
                     session_id,
                     controller_view_id,
                     control_epoch,
+                    // The unconditional path answers with the sentinel: these
+                    // authorities keep no revisions, and reporting one would
+                    // invite a client to condition its next claim on a number
+                    // nothing maintains.
+                    control_revision: LEGACY_CONTROL_REVISION,
                     cols,
                     rows,
                     layout_epoch,
@@ -5036,6 +5115,7 @@ mod protocol_tests {
                 attachment_epoch: 1,
                 cols: 120,
                 rows: 40,
+                expected_control_revision: None,
             },
         ] {
             assert!(
@@ -5458,6 +5538,132 @@ mod protocol_tests {
         assert_eq!(unknown["type"], "error");
 
         service.serving.abort();
+    }
+
+    /// The claim is conditional only when the caller says so, and the field is
+    /// absent for every client that predates it — which is what keeps the
+    /// legacy last-write-wins path reachable rather than accidental.
+    #[test]
+    fn deserializes_conditional_and_unconditional_claims() {
+        let conditional: Envelope = serde_json::from_value(json!({
+            "requestId": 60,
+            "type": "focus-and-resize",
+            "sessionId": "session-1",
+            "viewId": "view-1",
+            "attachmentEpoch": 3,
+            "cols": 120,
+            "rows": 40,
+            "expectedControlRevision": 17,
+        }))
+        .unwrap();
+        assert!(matches!(
+            conditional.command,
+            Command::FocusAndResize {
+                expected_control_revision: Some(17),
+                ..
+            }
+        ));
+
+        let legacy: Envelope = serde_json::from_value(json!({
+            "requestId": 61,
+            "type": "focus-and-resize",
+            "sessionId": "session-1",
+            "viewId": "view-1",
+            "attachmentEpoch": 3,
+            "cols": 120,
+            "rows": 40,
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy.command,
+            Command::FocusAndResize {
+                expected_control_revision: None,
+                ..
+            }
+        ));
+    }
+
+    /// The exact JSON both claim outcomes put on the wire. Clients decode this
+    /// strictly, and `control-rejected` is a shape no older client has ever
+    /// seen — it is reachable only in answer to a request that carried
+    /// `expectedControlRevision`, which is the gate that keeps it away from
+    /// them.
+    #[test]
+    fn serializes_both_outcomes_of_a_claim() {
+        let claimed = serde_json::to_value(ResponseEnvelope {
+            request_id: 7,
+            body: ResponseBody::ControlClaimed {
+                session_id: "session-1".to_owned(),
+                controller_view_id: "view-1".to_owned(),
+                control_epoch: 5,
+                control_revision: 18,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 3,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            claimed,
+            json!({
+                "requestId": 7,
+                "type": "control-claimed",
+                "sessionId": "session-1",
+                "controllerViewId": "view-1",
+                "controlEpoch": 5,
+                "controlRevision": 18,
+                "cols": 120,
+                "rows": 40,
+                "layoutEpoch": 3,
+            })
+        );
+
+        let rejected = serde_json::to_value(ResponseEnvelope {
+            request_id: 8,
+            body: ResponseBody::ControlRejected {
+                session_id: "session-1".to_owned(),
+                controller: Some(RemoteControllerInfo {
+                    view_id: "view-2".to_owned(),
+                    control_epoch: 6,
+                }),
+                control_revision: 19,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 3,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            rejected,
+            json!({
+                "requestId": 8,
+                "type": "control-rejected",
+                "sessionId": "session-1",
+                "controller": { "viewId": "view-2", "controlEpoch": 6 },
+                "controlRevision": 19,
+                "cols": 120,
+                "rows": 40,
+                "layoutEpoch": 3,
+            })
+        );
+
+        // The rejection that says "nobody holds control at a newer revision" —
+        // the one §4.2.3 lets a client retry. `control-claimed` cannot express
+        // it, which is the whole reason this shape exists.
+        let cleared = serde_json::to_value(ResponseEnvelope {
+            request_id: 9,
+            body: ResponseBody::ControlRejected {
+                session_id: "session-1".to_owned(),
+                controller: None,
+                control_revision: 20,
+                cols: 120,
+                rows: 40,
+                layout_epoch: 3,
+            },
+        })
+        .unwrap();
+        assert_eq!(cleared["controller"], json!(null));
+        assert_eq!(cleared["controlRevision"], 20);
     }
 
     #[test]

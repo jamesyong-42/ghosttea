@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 12;
+export const PROTOCOL_MINOR = 13;
 export const CONFIG_SCHEMA_VERSION = 1;
 export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
@@ -273,6 +273,16 @@ export type ClientCommand =
       attachmentEpoch: number;
       cols: number;
       rows: number;
+      /**
+       * Take control only if the controller revision is still the one this
+       * client observed, so a claim or a clear that intervened rejects instead
+       * of silently overwriting. Omitted is an unconditional last-write-wins
+       * claim — the only thing a host without revisions understands, and what
+       * a deliberate user action still sends.
+       *
+       * Never derived from revision 0, which means "legacy, unknown".
+       */
+      expectedControlRevision?: number;
     }
   | {
       requestId: number;
@@ -489,6 +499,25 @@ export type ServerEvent =
       sessionId: string;
       controllerViewId: string;
       controlEpoch: number;
+      /** Absent from daemons before protocol 1.13. */
+      controlRevision?: number;
+      cols: number;
+      rows: number;
+      layoutEpoch: number;
+    }
+  /**
+   * A compare-and-swap claim lost to a change that landed first, answered with
+   * the state that beat it. Distinct from `control-claimed` because that shape
+   * cannot say "nobody holds control" — the one outcome §4.2.3 allows a client
+   * to retry. Reachable only in answer to a claim that carried
+   * `expectedControlRevision`, which keeps it away from clients that predate it.
+   */
+  | {
+      requestId: number;
+      type: "control-rejected";
+      sessionId: string;
+      controller: RemoteControllerInfo | null;
+      controlRevision: number;
       cols: number;
       rows: number;
       layoutEpoch: number;
@@ -918,6 +947,16 @@ export function isServerEvent(value: unknown): value is ServerEvent {
         typeof candidate.sessionId === "string" &&
         typeof candidate.controllerViewId === "string" &&
         Number.isSafeInteger(candidate.controlEpoch) &&
+        (candidate.controlRevision === undefined || Number.isSafeInteger(candidate.controlRevision)) &&
+        Number.isSafeInteger(candidate.cols) &&
+        Number.isSafeInteger(candidate.rows) &&
+        Number.isSafeInteger(candidate.layoutEpoch)
+      );
+    case "control-rejected":
+      return (
+        typeof candidate.sessionId === "string" &&
+        validController(candidate.controller) &&
+        Number.isSafeInteger(candidate.controlRevision) &&
         Number.isSafeInteger(candidate.cols) &&
         Number.isSafeInteger(candidate.rows) &&
         Number.isSafeInteger(candidate.layoutEpoch)

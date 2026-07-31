@@ -1379,6 +1379,187 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.dispose();
   });
 
+  it("swaps against a reported revision and claims unconditionally without one", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    expect(claims()).toHaveLength(1);
+
+    // A host with no revisions has reported none, and 0 is the "unknown"
+    // sentinel — swapping against it would be inventing an observation, so the
+    // funnel's own claim goes out unconditional too.
+    control.emitViewState({ viewStateSeq: 3, attachmentEpoch: 15 });
+    expect(claims()).toHaveLength(2);
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 15 });
+    expect(claims().at(-1)).not.toHaveProperty("expectedControlRevision");
+
+    // Once a revisioned host reports an empty seat, the claim swaps against it.
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "control-state",
+          sessionId: session.id,
+          controller: null,
+          controlRevision: 4,
+          cols: 80,
+          rows: 24,
+          layoutEpoch: 2,
+        },
+      }),
+    );
+    expect(claims()).toHaveLength(3);
+    expect(claims().at(-1)).toMatchObject({ expectedControlRevision: 4, attachmentEpoch: 15 });
+    runtime.dispose();
+  });
+
+  it("withholds the swap from a daemon that predates it, and survives both claim answers", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    // A daemon on the lifecycle minor but before compare-and-swap: it would
+    // ignore the field, turning a swap the caller believes in into a silent
+    // overwrite, so the claim must go out unconditional despite a real revision.
+    control.helloProtocolMinor = 12;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    control.dispatchEvent(
+      new MessageEvent("message", {
+        data: {
+          requestId: 0,
+          type: "control-state",
+          sessionId: session.id,
+          controller: null,
+          controlRevision: 11,
+          cols: 80,
+          rows: 24,
+          layoutEpoch: 2,
+        },
+      }),
+    );
+    expect(claims()).toHaveLength(2);
+    expect(claims().at(-1)).not.toHaveProperty("expectedControlRevision");
+
+    // Whichever way a claim is answered, the control channel survives it: an
+    // undecodable answer would take the socket down, not just the message.
+    for (const answer of [
+      {
+        requestId: 0,
+        type: "control-claimed",
+        sessionId: session.id,
+        controllerViewId: "view-1",
+        controlEpoch: 5,
+        controlRevision: 18,
+        cols: 120,
+        rows: 40,
+        layoutEpoch: 3,
+      },
+      {
+        requestId: 0,
+        type: "control-rejected",
+        sessionId: session.id,
+        controller: null,
+        controlRevision: 20,
+        cols: 120,
+        rows: 40,
+        layoutEpoch: 3,
+      },
+      // "Cannot fence" is refused with a plain error, which must never read as
+      // "you lost the race" — it changes no controller state at all.
+      { requestId: 0, type: "error", message: "control revision fencing unavailable" },
+    ]) {
+      control.dispatchEvent(new MessageEvent("message", { data: answer }));
+    }
+    await flushMicrotasks();
+
+    expect(control.closed).toBe(false);
+    runtime.resize(session.id, "view-1", 90, 26);
+    expect(control.messages.filter((message) => message.type === "resize")).toHaveLength(0);
+    runtime.dispose();
+  });
+
+  it("ignores a controller announcement that repeats a revision it already acted on", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "view-1", canvas());
+    await flushMicrotasks();
+    const announce = (controller: unknown, controlRevision: number): void => {
+      control.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            requestId: 0,
+            type: "control-state",
+            sessionId: session.id,
+            controller,
+            controlRevision,
+            cols: 80,
+            rows: 24,
+            layoutEpoch: 2,
+          },
+        }),
+      );
+    };
+    const claims = (): Record<string, unknown>[] =>
+      control.messages.filter((message) => message.type === "focus-and-resize");
+
+    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    announce(null, 9);
+    expect(claims()).toHaveLength(2);
+    expect(claims().at(-1)).toMatchObject({ expectedControlRevision: 9 });
+
+    // A rejected claim announces the state that rejected it, and the same
+    // state can be announced more than once. Re-running the funnel on an
+    // announcement it has already acted on must not produce a second claim.
+    announce(null, 9);
+    announce(null, 9);
+    expect(claims()).toHaveLength(2);
+    runtime.dispose();
+  });
+
   it("never claims control away from another pane, and retries when it is released", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();
@@ -1425,10 +1606,11 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     control.emitViewState({ viewStateSeq: 9, attachmentEpoch: 12 });
     expect(claims()).toHaveLength(1);
 
-    // Released at a newer revision, the pane that still holds focus takes it.
+    // Released at a newer revision, the pane that still holds focus takes it —
+    // swapping against exactly the revision it saw the seat empty at.
     controlState(null, 6);
     expect(claims()).toHaveLength(2);
-    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 12 });
+    expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 12, expectedControlRevision: 6 });
 
     // The seat is ours now, so nothing further is claimed for this epoch.
     controlState({ viewId: "view-1", controlEpoch: 7 }, 7);

@@ -29,9 +29,12 @@ import {
   REMOTE_LIFECYCLE_PROTOCOL_MINOR,
   down,
   freeze,
+  killSession,
+  newSession,
   openControl,
   readState,
   restartHost,
+  stopHost,
   thaw,
   unavailableReason,
   up,
@@ -83,6 +86,102 @@ function transcript(control, sessionId) {
 
 const isState = (sessionId, state) => (event) =>
   event.type === "remote-session-state-changed" && event.sessionId === sessionId && event.state === state;
+
+/**
+ * The behaviours minor 6 adds on the host: a heartbeat that notices an outage
+ * in seconds rather than waiting out an advertisement, a goodbye on shutdown,
+ * and a tombstone that can still answer for a session that died unobserved.
+ *
+ * They are written now and run on request. Until the host implements them a
+ * viewer cannot produce any of these outcomes, so running them by default would
+ * make this suite fail for something nobody has built yet — and a suite that is
+ * expected to be red teaches everyone to ignore it. `GHOSTTEA_E2E_PHASE3=1`
+ * turns them on; that is the switch integration flips once the host lands.
+ */
+const PHASE3 = process.env.GHOSTTEA_E2E_PHASE3 === "1";
+
+/** Open a fresh remote session and attach one view to it. */
+async function openAndAttach(state, viewer, viewId) {
+  const opened = await viewer.request({
+    type: "open-remote-session",
+    deviceId: state.host.deviceId,
+    remoteSessionId: state.host.sessionId,
+    cols: 120,
+    rows: 40,
+  });
+  if (opened.type !== "session-created") fail(`open-remote-session answered ${JSON.stringify(opened)}`);
+  const sessionId = opened.session.id;
+  await viewer.request({ type: "attach-session", sessionId, viewId });
+  await viewer.waitForEvent(isState(sessionId, "live"), BUDGETS.resumeMs, `${viewId} reaching live`);
+  return sessionId;
+}
+
+async function phase3Scenarios(state, viewer) {
+  const pending = [
+    "heartbeat outage detection (seconds, not an advertisement TTL)",
+    "SIGTERM the host -> ended{host-shutdown}",
+    "session killed during an outage -> ended{session-exited} from the tombstone",
+  ];
+  if (!PHASE3) {
+    console.log(
+      ["", "phase 3 scenarios (set GHOSTTEA_E2E_PHASE3=1 once the minor-6 host behaviours land):"]
+        .concat(pending.map((name) => `  PENDING  ${name}`))
+        .join("\n"),
+    );
+    return;
+  }
+
+  // The session killed while nobody could see it. The viewer must learn how it
+  // ended from what the host recorded, not guess from the silence.
+  log("phase 3: a session that dies during an outage");
+  await newSession();
+  const exitedSessionId = await openAndAttach(state, viewer, "phase3-exit-view");
+  const beforeOutage = viewer.events.length;
+  freeze();
+  await viewer.waitForEvent(
+    isState(exitedSessionId, "reconnecting"),
+    BUDGETS.outageDetectedMs,
+    "reconnecting before the session is killed",
+    beforeOutage,
+  );
+  killSession();
+  const beforeThaw = viewer.events.length;
+  thaw();
+  const exited = await viewer.waitForEvent(
+    isState(exitedSessionId, "ended"),
+    BUDGETS.resumeMs,
+    "the resumed session reporting how it ended",
+    beforeThaw,
+  );
+  if (exited.reason !== "session-exited") {
+    fail(
+      `the session ended as ${exited.reason}; the host outlived it and recorded the exit, ` +
+        "so session-exited is the only reason it has evidence for",
+    );
+  }
+  log(`phase 3: ended as session-exited${exited.exit ? ` with exit ${JSON.stringify(exited.exit)}` : ""}`);
+
+  // A host that gets to say goodbye is distinguishable from one that vanishes;
+  // that difference is the whole point of the shutdown frame.
+  log("phase 3: a host that shuts down cleanly");
+  await newSession();
+  const shutdownSessionId = await openAndAttach(state, viewer, "phase3-shutdown-view");
+  const beforeShutdown = viewer.events.length;
+  const stopped = await stopHost();
+  if (!stopped.exitedOnSigterm) {
+    fail("the host had to be killed, so it never had the chance to announce a shutdown");
+  }
+  const goodbye = await viewer.waitForEvent(
+    isState(shutdownSessionId, "ended"),
+    BUDGETS.outageDetectedMs,
+    "the session ending on host shutdown",
+    beforeShutdown,
+  );
+  if (goodbye.reason !== "host-shutdown") {
+    fail(`the session ended as ${goodbye.reason}, but the host announced a shutdown before leaving`);
+  }
+  log("phase 3: ended as host-shutdown");
+}
 
 async function main() {
   const state = options.reuse ? readState() : await up();
@@ -172,7 +271,21 @@ async function main() {
       "reconnecting after freeze",
       beforeFreeze,
     );
-    log("viewer noticed the outage");
+    const detectionMs = Date.now() - frozenAt;
+    log(`viewer noticed the outage after ${(detectionMs / 1000).toFixed(1)}s`);
+    if (PHASE3) {
+      // Without a heartbeat this costs an advertisement TTL plus a probe —
+      // roughly 25s, measured. A heartbeat that pings at 3s idle and gives up
+      // at 6s should land far below that. The bound is deliberately loose: the
+      // claim worth defending is "seconds, not tens of seconds", and pinning
+      // the exact number would make a slow CI machine look like a regression.
+      if (detectionMs > 15_000) {
+        fail(
+          `the outage took ${(detectionMs / 1000).toFixed(1)}s to notice; ` +
+            "with a heartbeat this should be seconds, not an advertisement TTL",
+        );
+      }
+    }
 
     const backoff = await viewer.waitForEvent(
       (event) =>
@@ -223,6 +336,7 @@ async function main() {
     log("session ended as host-restarted");
 
     console.log(`\n${transcript(viewer, sessionId)}`);
+    await phase3Scenarios(state, viewer);
     console.log("\ntruffle reconnect e2e: PASS");
   } catch (error) {
     if (sessionId) console.error(`\n${transcript(viewer, sessionId)}`);

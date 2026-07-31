@@ -176,6 +176,46 @@ describe("isServerEvent", () => {
         retryable: true,
       }),
     ).toBe(true);
+    // Both outcomes of a compare-and-swap claim, exactly as the daemon writes
+    // them. An answer this client could not decode would destroy the socket.
+    expect(
+      isServerEvent({
+        requestId: 7,
+        type: "control-claimed",
+        sessionId: "session",
+        controllerViewId: "view",
+        controlEpoch: 5,
+        controlRevision: 18,
+        cols: 120,
+        rows: 40,
+        layoutEpoch: 3,
+      }),
+    ).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 8,
+        type: "control-rejected",
+        sessionId: "session",
+        controller: { viewId: "view-2", controlEpoch: 6 },
+        controlRevision: 19,
+        cols: 120,
+        rows: 40,
+        layoutEpoch: 3,
+      }),
+    ).toBe(true);
+    // The retryable rejection: nobody holds control at a newer revision.
+    expect(
+      isServerEvent({
+        requestId: 9,
+        type: "control-rejected",
+        sessionId: "session",
+        controller: null,
+        controlRevision: 20,
+        cols: 120,
+        rows: 40,
+        layoutEpoch: 3,
+      }),
+    ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "control-state", ...controlState })).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "control-state", ...controlState, controller: null })).toBe(true);
     expect(isServerEvent({ requestId: 9, type: "remote-session-state", ...remoteSessionState })).toBe(true);
