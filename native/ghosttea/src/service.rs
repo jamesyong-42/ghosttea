@@ -884,11 +884,22 @@ pub struct ServiceHandle {
 impl ServiceHandle {
     /// How many terminated-but-unregistered sessions are currently tracked.
     ///
-    /// Read only by the Unix drain tests, which are the only ones that drive a
-    /// live service over a socket.
-    #[cfg(all(test, unix))]
-    fn dying_count(&self) -> usize {
-        self.shutdown.dying.lock().unwrap().len()
+    /// How many tracked sessions are still *alive* — the number that would
+    /// keep a PTY open.
+    ///
+    /// Not the map's length: entries are pruned when something else terminates
+    /// or a drain runs, so a dead entry can outlive its session for a while.
+    /// What must never persist is a session the set keeps breathing, and a
+    /// `Weak` that no longer upgrades cannot.
+    #[cfg(test)]
+    fn retained_sessions(&self) -> usize {
+        self.shutdown
+            .dying
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|session| session.upgrade().is_some())
+            .count()
     }
 
     /// Stop admissions, drain every local session, and resolve when they have
@@ -2344,12 +2355,14 @@ mod protocol_tests {
         }
     }
 
-    /// A running service plus the pieces a test needs to talk to it.
-    ///
-    /// Unix-only: the client below speaks to a socket directly rather than
-    /// through the Node client, and a named-pipe dial needs the retry dance
-    /// that `ipc`'s own tests carry.
+    /// The client half of a control endpoint: a socket on Unix, a named pipe
+    /// on Windows.
     #[cfg(unix)]
+    type ControlStream = tokio::net::UnixStream;
+    #[cfg(windows)]
+    type ControlStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+    /// A running service plus the pieces a test needs to talk to it.
     struct TestService {
         handle: ServiceHandle,
         serving: tokio::task::JoinHandle<Result<()>>,
@@ -2359,7 +2372,6 @@ mod protocol_tests {
         _frame_endpoint: Endpoint,
     }
 
-    #[cfg(unix)]
     fn start_test_service(label: &str) -> TestService {
         let control_endpoint = unique_endpoint(&format!("{label}-control"));
         let frame_endpoint = unique_endpoint(&format!("{label}-frames"));
@@ -2382,11 +2394,42 @@ mod protocol_tests {
         }
     }
 
+    /// Dial the control endpoint the way a real client must.
+    ///
+    /// A Unix socket connects once; a named pipe has to retry while the
+    /// listener is between instances or has none idle, mirroring `openEndpoint`
+    /// in the Node client and `ipc`'s own tests.
     #[cfg(unix)]
-    async fn connect_control(service: &TestService) -> tokio::net::UnixStream {
-        let mut stream = tokio::net::UnixStream::connect(&service.control)
+    async fn dial_control(endpoint: &str) -> ControlStream {
+        tokio::net::UnixStream::connect(endpoint)
             .await
-            .expect("control endpoint should accept a client");
+            .expect("control endpoint should accept a client")
+    }
+
+    #[cfg(windows)]
+    async fn dial_control(endpoint: &str) -> ControlStream {
+        /// The pipe exists but every instance is taken.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        /// The listener is between instances, so the name is briefly absent.
+        const ERROR_FILE_NOT_FOUND: i32 = 2;
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
+                Ok(client) => return client,
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(ERROR_PIPE_BUSY) | Some(ERROR_FILE_NOT_FOUND)
+                    ) && Instant::now() < deadline => {}
+                Err(error) => panic!("failed to dial {endpoint}: {error}"),
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn connect_control(service: &TestService) -> ControlStream {
+        let mut stream = dial_control(&service.control).await;
         write_packet(&mut stream, service.token.as_bytes())
             .await
             .unwrap();
@@ -2396,8 +2439,7 @@ mod protocol_tests {
     }
 
     /// Send a command and return its response, skipping pushed events.
-    #[cfg(unix)]
-    async fn request(stream: &mut tokio::net::UnixStream, command: Value) -> Value {
+    async fn request(stream: &mut ControlStream, command: Value) -> Value {
         write_packet(stream, &serde_json::to_vec(&command).unwrap())
             .await
             .unwrap();
@@ -2410,28 +2452,71 @@ mod protocol_tests {
         }
     }
 
-    /// Long enough for the shell below to install its traps.
+    /// Long enough for the child below to become genuinely hard to kill — on
+    /// Unix for the shell to install its traps, on Windows for the shell to
+    /// have started its grandchild.
     ///
-    /// Until it has, the ladder's opening interrupt simply kills it — which
-    /// makes a "stubborn" child conclude in microseconds and quietly turns
-    /// these tests into assertions about nothing.
-    #[cfg(unix)]
-    const TRAP_SETTLE: Duration = Duration::from_millis(600);
+    /// Until then the ladder's opening interrupt simply ends it, which makes a
+    /// "stubborn" child conclude in microseconds and quietly turns these tests
+    /// into assertions about nothing.
+    const CHILD_SETTLE: Duration = Duration::from_millis(600);
 
-    /// A child that ignores both the interrupt and SIGTERM, so terminating it
-    /// has to walk the whole ladder to SIGKILL.
-    #[cfg(unix)]
+    /// Resolve the command shell the way the Windows integration fixtures do,
+    /// so these tests spawn what that suite already proves is spawnable.
+    #[cfg(windows)]
+    fn windows_shell() -> String {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned())
+    }
+
+    /// A child that survives the ladder's opening interrupt, so terminating it
+    /// has to escalate.
+    ///
+    /// On Unix it ignores the interrupt and SIGTERM, forcing the walk to
+    /// SIGKILL. On Windows it is the shell-plus-grandchild shape the Windows
+    /// integration fixture already relies on for exactly this property: the
+    /// interrupt does not end it, and only the process-tree sweep reaches the
+    /// grandchild.
     fn stubborn_session(request_id: u64) -> Value {
+        #[cfg(unix)]
+        let (executable, args) = (
+            "/bin/sh".to_owned(),
+            json!(["-c", "trap '' INT TERM; sleep 30"]),
+        );
+        #[cfg(windows)]
+        let (executable, args) = (
+            windows_shell(),
+            json!(["/d", "/c", "ping", "-n", "60", "127.0.0.1"]),
+        );
         json!({
             "requestId": request_id,
             "type": "create-session",
             "options": {
-                "executable": "/bin/sh",
-                "args": ["-c", "trap '' INT TERM; sleep 30"],
+                "executable": executable,
+                "args": args,
                 "env": {},
-                "environment": { "mode": "clean", "variables": { "PATH": "/usr/bin:/bin" } },
                 "cols": 40,
                 "rows": 10,
+                "persistence": "terminate-with-app",
+                "programKind": "application",
+            },
+        })
+    }
+
+    /// A child that ends on its own the moment it starts.
+    fn short_lived_session(request_id: u64) -> Value {
+        #[cfg(unix)]
+        let (executable, args) = ("/bin/sh".to_owned(), json!(["-c", "exit 0"]));
+        #[cfg(windows)]
+        let (executable, args) = (windows_shell(), json!(["/d", "/c", "exit", "0"]));
+        json!({
+            "requestId": request_id,
+            "type": "create-session",
+            "options": {
+                "executable": executable,
+                "args": args,
+                "env": {},
+                "cols": 20,
+                "rows": 4,
                 "persistence": "terminate-with-app",
                 "programKind": "application",
             },
@@ -2441,23 +2526,26 @@ mod protocol_tests {
     /// The drain ends every live session and says so, and the service refuses
     /// new ones from the moment it starts — including creates carrying no
     /// owner, which the per-owner tombstone would never have caught.
-    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_drains_live_sessions_and_refuses_new_ones() {
         let service = start_test_service("drain");
         let mut client = connect_control(&service).await;
         let created = request(&mut client, stubborn_session(1)).await;
         assert_eq!(created["type"], "session-created");
-        tokio::time::sleep(TRAP_SETTLE).await;
+        tokio::time::sleep(CHILD_SETTLE).await;
+
+        // Connected before the drain starts, so only the create races it —
+        // dialling mid-drain would race the listeners closing instead, and
+        // turn a clean assertion into a connection error.
+        let mut latecomer = connect_control(&service).await;
 
         let handle = service.handle.clone();
         let draining = tokio::spawn(async move { handle.shutdown(Duration::from_secs(8)).await });
 
-        // Mid-drain, on a second connection: the create must be refused, and
-        // refused without an owner id, which is the case per-owner closure
+        // Mid-drain, on that second connection: the create must be refused,
+        // and refused without an owner id, which is the case per-owner closure
         // structurally cannot cover.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let mut latecomer = connect_control(&service).await;
         let refused = request(&mut latecomer, stubborn_session(2)).await;
         assert_eq!(
             refused["type"], "error",
@@ -2497,6 +2585,9 @@ mod protocol_tests {
     /// A budget smaller than the default ladder compresses it rather than
     /// expiring by construction: the ladder alone is 5s, so finishing inside
     /// a 3s budget can only happen if the phases scaled.
+    /// Unix-only by nature, not by convenience: grace scaling exists only on
+    /// the Unix ladder. Windows has a single grace and relies on the deadline
+    /// jump alone, so there is no compression there to assert.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_compresses_the_ladder_to_fit_a_small_budget() {
@@ -2506,7 +2597,7 @@ mod protocol_tests {
             request(&mut client, stubborn_session(1)).await["type"],
             "session-created"
         );
-        tokio::time::sleep(TRAP_SETTLE).await;
+        tokio::time::sleep(CHILD_SETTLE).await;
 
         let started = Instant::now();
         let report = service
@@ -2537,14 +2628,13 @@ mod protocol_tests {
     /// The leak the dying set exists for: a wire `terminate` drops the registry
     /// entry immediately while the child can still take seconds to die, so a
     /// shutdown arriving in that window must still find and await it.
-    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_awaits_sessions_already_dying_outside_the_registry() {
         let service = start_test_service("dying");
         let mut client = connect_control(&service).await;
         let created = request(&mut client, stubborn_session(1)).await;
         let session_id = created["session"]["id"].as_str().unwrap().to_owned();
-        tokio::time::sleep(TRAP_SETTLE).await;
+        tokio::time::sleep(CHILD_SETTLE).await;
 
         // Removed from the registry here, but its ladder is still running.
         let terminated = request(
@@ -2589,31 +2679,13 @@ mod protocol_tests {
     /// of the host — a leak per closed tab, on the ordinary path, with no
     /// shutdown in sight. This drives the wire `terminate` path specifically,
     /// since that is the one that leaked.
-    #[cfg(unix)]
     #[tokio::test]
     async fn terminating_sessions_does_not_accumulate_them() {
         let service = start_test_service("churn");
         let mut client = connect_control(&service).await;
         let mut ids = Vec::new();
         for round in 0..12 {
-            let created = request(
-                &mut client,
-                json!({
-                    "requestId": 100 + round,
-                    "type": "create-session",
-                    "options": {
-                        "executable": "/bin/sh",
-                        "args": ["-c", "exit 0"],
-                        "env": {},
-                        "environment": { "mode": "clean", "variables": { "PATH": "/usr/bin:/bin" } },
-                        "cols": 20,
-                        "rows": 4,
-                        "persistence": "terminate-with-app",
-                        "programKind": "application",
-                    },
-                }),
-            )
-            .await;
+            let created = request(&mut client, short_lived_session(100 + round)).await;
             let session_id = created["session"]["id"].as_str().unwrap().to_owned();
             let _ = request(
                 &mut client,
@@ -2627,21 +2699,21 @@ mod protocol_tests {
             ids.push(session_id);
         }
 
-        // Every one of them has been terminated, so once they conclude the set
-        // must let go of them without a shutdown having to sweep it.
-        let settled = tokio::time::timeout(Duration::from_secs(20), async {
+        // Every one has been terminated, so once they conclude none may still
+        // be held alive — without a shutdown having to sweep the set for it.
+        let settled = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                if service.handle.dying_count() <= 1 {
+                if service.handle.retained_sessions() == 0 {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await;
-        let remaining = service.handle.dying_count();
         assert!(
             settled.is_ok(),
-            "{remaining} of {} terminated sessions were still retained",
+            "{} of {} terminated sessions were still held alive",
+            service.handle.retained_sessions(),
             ids.len()
         );
     }
@@ -2652,7 +2724,6 @@ mod protocol_tests {
     ///
     /// These are the crate's first assertions on `ExitOutcome::ServiceTerminated`,
     /// which until now existed only in its declaration and its mapping.
-    #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_stamps_only_the_sessions_it_actually_ended() {
         let service = start_test_service("stamps");
@@ -2661,7 +2732,7 @@ mod protocol_tests {
         let drained = request(&mut client, stubborn_session(2)).await;
         let user_closed_id = user_closed["session"]["id"].as_str().unwrap().to_owned();
         let drained_id = drained["session"]["id"].as_str().unwrap().to_owned();
-        tokio::time::sleep(TRAP_SETTLE).await;
+        tokio::time::sleep(CHILD_SETTLE).await;
 
         // Starts a ladder under `user` before any shutdown exists.
         assert_eq!(
