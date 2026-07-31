@@ -895,17 +895,20 @@ currently hardcodes `attachable: true` (`lib.rs:1027`). 1.5 hosts set
 
 **The local control protocol is versioned too.** New unsolicited events would
 destroy older clients' sockets (`index.ts:369–371`), so this work bumps
-`CONTROL_PROTOCOL_MINOR` from 10 to **11** and gates every new event behind
-`REMOTE_LIFECYCLE_PROTOCOL_MINOR = 11` — named explicitly because the lower
+`CONTROL_PROTOCOL_MINOR` from 11 to **12** and gates every new event behind
+`REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12` — named explicitly because the lower
 minors are **already spent and keep being consumed by parallel work**:
-`SESSION_CREATED_PROTOCOL_MINOR = 9` and, as of the Ghostty-configuration
-feature, `CONFIG_EVENT_PROTOCOL_MINOR = 10` with the daemon and clients
-both advertising 10 (`service.rs:42–46`, `ghosttea-protocol/src/index.ts:2`).
+`SESSION_CREATED_PROTOCOL_MINOR = 9`, `CONFIG_EVENT_PROTOCOL_MINOR = 10`
+(Ghostty-configuration feature), and `CONFIG_DOCUMENT_PROTOCOL_MINOR = 11`
+(lossless document editing, commit `7035792` — allocated *after* this
+document first pinned 11, proving the re-verify rule below is not
+theoretical), with daemon and clients both advertising 11
+(`service.rs:45–50`, `ghosttea-protocol/src/index.ts:2`).
 Reusing an allocated minor recreates the exact failure this section
-prevents — a released minor-10 client would pass a ≥ 10 lifecycle gate yet
+prevents — a released minor-11 client would pass a ≥ 11 lifecycle gate yet
 be unable to decode the event. Implementers must re-verify the current
-minor at implementation time; this document pins **11** as of the
-config-changed allocation. The
+minor at implementation time; this document pins **12** as of the
+config-document allocation. The
 gate follows the existing `client_accepts_event` mechanism
 (`service.rs:688–690`) and the compile-time
 `assert!(GATE <= CONTROL_PROTOCOL_MINOR)` pattern already in place. The
@@ -914,12 +917,12 @@ on the daemon's negotiated minor and fall back to Phase-0 behavior (frozen
 tab, no lifecycle UI) against an older daemon. §11's "no protocol change"
 phases mean "no **tunnel**-protocol change".
 
-**Minor 11 is advertised only with its complete schema.** A version number
-is a promise about *surface*, not behavior: if Phase 1 advertised 11 with
+**Minor 12 is advertised only with its complete schema.** A version number
+is a promise about *surface*, not behavior: if Phase 1 advertised 12 with
 only the Phase-1 commands implemented, a Phase-2 client and a Phase-1
-daemon would both negotiate 11 and the client's newer command would hit
+daemon would both negotiate 12 and the client's newer command would hit
 the unknown-command path, which closes the socket (`service.rs:1016`).
-Phase 1 therefore ships **every** minor-11 message — all events, all
+Phase 1 therefore ships **every** minor-12 message — all events, all
 commands, `control-state` included — with dormant handlers where behavior
 arrives later, each with an **explicitly named response DTO** (inert means
 "real response shape, no side effect", never an ad-hoc placeholder):
@@ -932,18 +935,18 @@ arrives later, each with an **explicitly named response DTO** (inert means
 
 Events simply do not fire until the phase that produces them. Later phases
 change behavior only, never the negotiated surface; any future surface
-change allocates minor 12. Mixed-version tests must cover the **released
-minor-10 pairings** specifically: a config-changed-era v10 client against
+change allocates minor 13. Mixed-version tests must cover the **released
+minor-11 pairings** specifically: a config-document-era v11 client against
 the new daemon (receives config events, none of the lifecycle events,
-socket survives) and the new client against a released v10 daemon (sends
-none of the minor-11 commands, falls back to Phase-0 behavior).
+socket survives) and the new client against a released v11 daemon (sends
+none of the minor-12 commands, falls back to Phase-0 behavior).
 
 **Downgrade matrix** (the two mixed-version rows implementers will hit):
 
 | Pairing | Behavior |
 | --- | --- |
 | 1.5-capable daemon ⇄ **1.4 host** | No revisions or clears exist on the wire; reconciliation reports last-known controller from legacy `ControlChanged` with `controlRevision: 0` = "legacy, unknown" (unambiguous because 1.5 authorities start at 1) — clients treat control state as advisory (LWW reclaim, §4.2.3's 1.4 row) and never CAS against revision 0. |
-| **minor ≤ 10 local client** ⇄ minor-11 daemon | Client receives none of the new events (gated), sends none of the new commands, and keeps Phase-0 behavior; remote sessions freeze on outage exactly as today — degraded but never socket-fatal. **Controller updates are not lost**: when the daemon's internal state carries `ControlState(Some(...))`, it downgrades the event to legacy `control-changed` for ≤ 10 clients; only clears (`None`) remain invisible to them, exactly as today. |
+| **minor ≤ 11 local client** ⇄ minor-12 daemon | Client receives none of the new events (gated), sends none of the new commands, and keeps Phase-0 behavior; remote sessions freeze on outage exactly as today — degraded but never socket-fatal. **Controller updates are not lost**: when the daemon's internal state carries `ControlState(Some(...))`, it downgrades the event to legacy `control-changed` for ≤ 11 clients; only clears (`None`) remain invisible to them, exactly as today. |
 
 New server events (same JSON envelope as `control-changed`):
 
@@ -955,6 +958,10 @@ New server events (same JSON envelope as `control-changed`):
   "reason": null,                      // ended: session-closed | session-exited | session-unavailable | host-restarted | host-shutdown | closed-locally
   "exit": null,                        // for session-exited: { "code": 1 } when known
   "attempt": 3, "nextRetryMs": 4000, "lastContactMs": 12000 }
+  // attempt, nextRetryMs, lastContactMs are number|null and exit is
+  // {code: number|null}|null — a Phase-1 daemon with no engine sends null
+  // rather than inventing zeros; clients accept null for exactly these
+  // fields and are strict everywhere else.
 
 { "type": "view-state-changed",
   "sessionId": "…", "viewId": "…",
@@ -1028,6 +1035,14 @@ is a lossy broadcast that already emits `events-lost` on lag
   `events-lost` (mirroring `runtime.ts:314–319`).
 - `view-state-changed` remains the low-latency push; it is an optimization,
   not the source of truth.
+- **Hello snapshot**: when a ≥ 12 client completes `hello`, the daemon
+  emits one `remote-session-state-changed` per currently open remote
+  session on that connection. Without this, a workspace restored from
+  persistence after an app restart has no way to learn that an
+  already-open session is remote (it never called `open-remote-session`
+  and no lifecycle transition may occur for hours) — it would fall back to
+  local-session input queueing and show no banner for an already-offline
+  session.
 
 Commands (gated on the local control minor):
 
