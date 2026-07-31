@@ -11698,6 +11698,12 @@ mod tests {
     /// not be able to decode, and one that closed on idle would manufacture the
     /// very disconnect the gate exists to prevent.
     ///
+    /// "Quiet" is deliberately host→client only. The shipped client acks every
+    /// frame it applies, on every negotiated minor, so a resting legacy
+    /// connection still carries `StateAck` in the other direction — and the
+    /// silence asserted here has to hold *while* that traffic arrives, which is
+    /// why the window below is not an empty one.
+    ///
     /// Both halves are falsifiable, which is why the assertions are split:
     /// deleting the `RequestSnapshot` arm fails the liveness check at the end,
     /// and emitting one unsolicited frame into the quiet window — a future
@@ -11714,7 +11720,15 @@ mod tests {
             )
             .await?;
         let session_id = host.session_id.clone();
-        peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+        let attached = peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+        let SessionControlMessage::ViewAttached {
+            session_epoch,
+            layout_epoch,
+            ..
+        } = attached
+        else {
+            bail!("the legacy attach was refused: {attached:?}");
+        };
 
         // Drain the opening burst without asserting its shape — what this test
         // is about starts once the host has said everything it volunteers.
@@ -11723,6 +11737,19 @@ mod tests {
             .await?
             .is_some()
         {}
+
+        // What a real client does in this window rather than nothing at all:
+        // acknowledge what it applied. An ack must move the host to neither
+        // answer nor act — it is bookkeeping the host does not keep.
+        for terminal_revision in 1..=3 {
+            peer.write_control(&SessionControlMessage::StateAck {
+                session_epoch,
+                layout_epoch,
+                patch_sequence: 0,
+                terminal_revision,
+            })
+            .await?;
+        }
 
         // Now the resting state a legacy viewer sits in indefinitely.
         assert!(
