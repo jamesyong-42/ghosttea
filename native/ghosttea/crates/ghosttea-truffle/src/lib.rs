@@ -11252,6 +11252,19 @@ mod tests {
         /// connection and identified with the client the WhoIs lookup ahead of
         /// it would have resolved, then the real handler.
         async fn connect(&mut self, kind: StreamKind, offered_minor: u16) -> Result<CompactPeer> {
+            self.connect_prefacing(kind, offered_minor, None).await
+        }
+
+        /// As [`CompactHost::connect`], with control over what the preface
+        /// announces as its view. Real clients write the preface *before* the
+        /// hello, so what goes in there is their local view id — settled before
+        /// the negotiated minor that decides the wire id is known.
+        async fn connect_prefacing(
+            &mut self,
+            kind: StreamKind,
+            offered_minor: u16,
+            preface_view_id: Option<&str>,
+        ) -> Result<CompactPeer> {
             let (server_io, client_io) = tokio::io::duplex(256 * 1024);
             let scope = self.connections.accept();
             scope.identify(COMPACT_CLIENT);
@@ -11281,7 +11294,7 @@ mod tests {
                     stream_kind: kind,
                     session_id: (kind == StreamKind::SessionControl)
                         .then(|| self.session_id.clone()),
-                    view_id: None,
+                    view_id: preface_view_id.map(str::to_owned),
                 })?)
                 .await?;
             peer.write_raw(&ConnectionMessage::ClientHello {
@@ -11482,6 +11495,58 @@ mod tests {
             "a generation below the watermark was accepted: {refused:?}"
         );
         drop(current.io);
+        Ok(())
+    }
+
+    /// The view id comes from `AttachView` and from nowhere else — the preface
+    /// contributes the session id only, and the two view ids are *expected* to
+    /// differ.
+    ///
+    /// This is a real client's ordering, not a hypothetical: the compact client
+    /// writes its preface before the hello, so the preface carries the id it
+    /// had at the time — the **local** one — while the attach that follows
+    /// carries the **wire** id chosen from the minor the hello went on to
+    /// negotiate (`r:pane-1` at >= 6, `r:pane-1#g{n}` rotated below it). So on
+    /// every minor-6 attach the preface and the attach disagree, by design.
+    ///
+    /// Pinned because the seam looks like a missing validation and reads as an
+    /// invitation to "harden" it. A cross-check here would break every iOS
+    /// minor-6 attach, and — the reason this test has to exist rather than
+    /// relying on the others — it would break *nothing else in this suite*:
+    /// every other compact test leaves the preface's view id absent, which any
+    /// plausible comparison would wave through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_attach_takes_its_view_id_from_the_attach_not_the_preface() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect_prefacing(StreamKind::SessionControl, PROTOCOL_MINOR, Some("pane-1"))
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = peer.attach(&session_id, "r:pane-1", 1, None, true).await?;
+        assert!(
+            matches!(attached, SessionControlMessage::ViewAttached { .. }),
+            "an attach whose wire id differs from its preface was refused: {attached:?}"
+        );
+        // Accepted is not enough — the state feed has to follow, or the client
+        // is attached to something it will never hear from.
+        assert!(
+            matches!(
+                peer.next_state().await?,
+                StateMessage::ConfigurationChanged { .. }
+            ),
+            "the attach was accepted but its state channel stayed shut"
+        );
+        // And the authority holds the wire id, which is the one every later
+        // epoch check, takeover and detach will name.
+        assert!(
+            host.session().view_attachment_epoch("r:pane-1").is_some(),
+            "the host attached something other than the id the attach named"
+        );
+        assert!(
+            host.session().view_attachment_epoch("pane-1").is_none(),
+            "the host attached the preface's local id, which no later message will ever name"
+        );
+        drop(peer.io);
         Ok(())
     }
 
