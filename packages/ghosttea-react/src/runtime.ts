@@ -7,7 +7,6 @@ import {
   type RemoteControllerInfo,
   type RemoteHostSummary,
   type RemoteSessionLifecycle,
-  type RemoteSessionStateSnapshot,
   type RemoteViewRecord,
   type SessionActivity,
   type ServerEvent,
@@ -1020,12 +1019,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     return this.#remoteSessions.get(sessionId);
   }
 
-  #applyController(
-    sessionId: string,
-    controller: RemoteControllerInfo | null,
-    cols: number,
-    rows: number,
-  ): void {
+  #applyController(sessionId: string, controller: RemoteControllerInfo | null, cols: number, rows: number): void {
     for (const [viewId, view] of this.#views) {
       if (view.sessionId !== sessionId) continue;
       if (!controller || controller.viewId !== viewId) {

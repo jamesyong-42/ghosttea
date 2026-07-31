@@ -119,9 +119,7 @@ class FakePort extends EventTarget {
 
   start(): void {}
 
-  completeAttachment(
-    attachment = this.pendingAttachments.shift(),
-  ): void {
+  completeAttachment(attachment = this.pendingAttachments.shift()): void {
     if (!attachment) throw new Error("No pending view attachment");
     this.dispatchEvent(
       new MessageEvent("message", {
@@ -1260,9 +1258,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
       states.push((event as CustomEvent<{ state: string }>).detail.state),
     );
     control.remoteState = remoteSessionState({ lifecycleSeq: 9, state: "ended", reason: "host-restarted" });
-    control.dispatchEvent(
-      new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 3 } }),
-    );
+    control.dispatchEvent(new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 3 } }));
     await flushMicrotasks();
 
     expect(control.remoteStateRequests).toEqual(["get-remote-session-state"]);
@@ -1320,9 +1316,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     await expect(runtime.getRemoteSessionState(remote.id)).resolves.toBeUndefined();
     await expect(runtime.reconnectRemoteSession(remote.id)).resolves.toBeUndefined();
     await runtime.retryRemoteView(remote.id, "view-1");
-    control.dispatchEvent(
-      new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 1 } }),
-    );
+    control.dispatchEvent(new MessageEvent("message", { data: { requestId: 0, type: "events-lost", skipped: 1 } }));
     await flushMicrotasks();
 
     expect(control.remoteStateRequests).toEqual([]);

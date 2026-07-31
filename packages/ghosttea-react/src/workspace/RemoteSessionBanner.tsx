@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useGhostteaRuntime } from "../context.js";
 import type { RemoteInputSuppression, RemoteSessionRuntimeState } from "../runtime.js";
 import {
@@ -10,20 +10,25 @@ import {
 
 const SUPPRESSION_HINT_MS = 4_000;
 
-/** Tracks one session's lifecycle, seeded from what the runtime already knows. */
+/**
+ * Tracks one session's lifecycle. The runtime is the external store: it keeps
+ * one stable record per session, so the snapshot's identity only changes when
+ * a lifecycle event replaces it.
+ */
 export function useRemoteSessionLifecycle(sessionId: string): RemoteSessionRuntimeState | undefined {
   const terminalRuntime = useGhostteaRuntime();
-  const [state, setState] = useState(() => terminalRuntime.remoteSession(sessionId));
-  useEffect(() => {
-    setState(terminalRuntime.remoteSession(sessionId));
-    const update = (event: Event): void => {
-      const detail = (event as CustomEvent<RemoteSessionRuntimeState>).detail;
-      if (detail.sessionId === sessionId) setState(detail);
-    };
-    terminalRuntime.addEventListener("remote-session-state", update);
-    return () => terminalRuntime.removeEventListener("remote-session-state", update);
-  }, [sessionId, terminalRuntime]);
-  return state;
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const update = (event: Event): void => {
+        const detail = (event as CustomEvent<RemoteSessionRuntimeState>).detail;
+        if (detail.sessionId === sessionId) onStoreChange();
+      };
+      terminalRuntime.addEventListener("remote-session-state", update);
+      return () => terminalRuntime.removeEventListener("remote-session-state", update);
+    },
+    [sessionId, terminalRuntime],
+  );
+  return useSyncExternalStore(subscribe, () => terminalRuntime.remoteSession(sessionId));
 }
 
 /**
@@ -60,7 +65,14 @@ export interface RemoteSessionBannerProps {
   onBrowse: () => void;
 }
 
-export function RemoteSessionBanner({ lifecycle, hint, retrying, onRetry, onClose, onBrowse }: RemoteSessionBannerProps) {
+export function RemoteSessionBanner({
+  lifecycle,
+  hint,
+  retrying,
+  onRetry,
+  onClose,
+  onBrowse,
+}: RemoteSessionBannerProps) {
   const [now, setNow] = useState(() => performance.now());
   const ticking = lifecycle.state === "reconnecting" && lifecycle.lastContactMs !== null;
   useEffect(() => {

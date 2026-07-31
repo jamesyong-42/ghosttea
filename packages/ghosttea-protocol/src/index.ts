@@ -129,12 +129,7 @@ export type RemoteSessionState = "live" | "synchronizing" | "reconnecting" | "su
 
 /** Why a remote session reached its terminal state. Claimed only on evidence. */
 export type RemoteSessionEndReason =
-  | "session-closed"
-  | "session-exited"
-  | "session-unavailable"
-  | "host-restarted"
-  | "host-shutdown"
-  | "closed-locally";
+  "session-closed" | "session-exited" | "session-unavailable" | "host-restarted" | "host-shutdown" | "closed-locally";
 
 export interface RemoteSessionExit {
   code: number | null;

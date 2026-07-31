@@ -74,15 +74,14 @@ describe("isServerEvent", () => {
     error: null,
     retryable: null,
   };
-  const controlState = {
-    sessionId: "session",
+  const controlFields = {
     controller: { viewId: "view", controlEpoch: 5 },
     controlRevision: 17,
     cols: 120,
     rows: 40,
     layoutEpoch: 3,
   };
-  const { sessionId: _sessionId, ...controlFields } = controlState;
+  const controlState = { sessionId: "session", ...controlFields };
   const remoteSessionState = { ...lifecycle, ...controlFields, views: [viewRecord] };
 
   it("accepts validated responses and unsolicited lifecycle events", () => {
@@ -299,17 +298,29 @@ describe("isServerEvent", () => {
     expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, state: "dozing" })).toBe(
       false,
     );
-    expect(
-      isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, reason: "bored" }),
-    ).toBe(false);
+    expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, reason: "bored" })).toBe(
+      false,
+    );
     expect(
       isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, deviceName: undefined }),
     ).toBe(false);
     expect(
-      isServerEvent({ requestId: 0, type: "view-state-changed", sessionId: "session", ...viewRecord, viewStateSeq: "1" }),
+      isServerEvent({
+        requestId: 0,
+        type: "view-state-changed",
+        sessionId: "session",
+        ...viewRecord,
+        viewStateSeq: "1",
+      }),
     ).toBe(false);
     expect(
-      isServerEvent({ requestId: 0, type: "view-state-changed", sessionId: "session", ...viewRecord, viewState: "gone" }),
+      isServerEvent({
+        requestId: 0,
+        type: "view-state-changed",
+        sessionId: "session",
+        ...viewRecord,
+        viewState: "gone",
+      }),
     ).toBe(false);
     expect(
       isServerEvent({ requestId: 0, type: "control-state", ...controlState, controller: { viewId: "view" } }),
