@@ -7748,6 +7748,35 @@ mod tests {
         Ok(())
     }
 
+    /// The false-positive guard. A real host sends nothing unsolicited, so
+    /// every idle session is exactly the quiet a black-holed one presents —
+    /// the only difference is the answer, and answering has to be enough.
+    ///
+    /// The legacy pair is here for symmetry: below the reconnect minor no
+    /// heartbeat is opened at all, so nothing can declare it dead. That half
+    /// cannot fail while the host under test is this implementation, which
+    /// answers probes at any minor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_answered_probe_leaves_a_quiet_session_alone() -> Result<()> {
+        let capable = Fixture::attached_with(probing_reconnect()).await?;
+        let legacy =
+            Fixture::attached_at(probing_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await?;
+        // Four failure windows of silence, with nothing to break it but the
+        // heartbeat's own exchange.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            capable.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "an answering host lost its session to its own liveness check"
+        );
+        assert_eq!(
+            legacy.lifecycle().await.state,
+            RemoteLifecycleState::Live,
+            "a pair that carries no heartbeat was declared dead by one"
+        );
+        Ok(())
+    }
+
     /// A host that says it is going away is believed on the spot: waiting for
     /// the probe to time out would spend six seconds pretending otherwise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
