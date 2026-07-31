@@ -9,6 +9,7 @@
 		100000000000000000000001 /* GhostteaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* GhostteaApp.swift */; };
 		100000000000000000000002 /* GhostteaAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* GhostteaAppModel.swift */; };
 		100000000000000000000003 /* GhostteaContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* GhostteaContentView.swift */; };
+		10000000000000000000001D /* GhostteaAttachmentBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* GhostteaAttachmentBannerView.swift */; };
 		100000000000000000000004 /* GhostteaSharedTerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* GhostteaSharedTerminalSurface.swift */; };
 		100000000000000000000005 /* GhostteaCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000001 /* GhostteaCore */; };
 		100000000000000000000006 /* GhostteaTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000002 /* GhostteaTerminal */; };
@@ -39,6 +40,7 @@
 		200000000000000000000001 /* GhostteaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaApp.swift; sourceTree = "<group>"; };
 		200000000000000000000002 /* GhostteaAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaAppModel.swift; sourceTree = "<group>"; };
 		200000000000000000000003 /* GhostteaContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaContentView.swift; sourceTree = "<group>"; };
+		20000000000000000000001D /* GhostteaAttachmentBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaAttachmentBannerView.swift; sourceTree = "<group>"; };
 		200000000000000000000004 /* GhostteaSharedTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSharedTerminalSurface.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Ghosttea.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ghosttea.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		200000000000000000000006 /* GhostteaSSHAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSSHAppModel.swift; sourceTree = "<group>"; };
@@ -92,6 +94,7 @@
 				200000000000000000000001 /* GhostteaApp.swift */,
 				200000000000000000000002 /* GhostteaAppModel.swift */,
 				200000000000000000000003 /* GhostteaContentView.swift */,
+				20000000000000000000001D /* GhostteaAttachmentBannerView.swift */,
 				200000000000000000000004 /* GhostteaSharedTerminalSurface.swift */,
 				200000000000000000000006 /* GhostteaSSHAppModel.swift */,
 				200000000000000000000007 /* GhostteaSSHView.swift */,
@@ -205,6 +208,7 @@
 				100000000000000000000001 /* GhostteaApp.swift in Sources */,
 				100000000000000000000002 /* GhostteaAppModel.swift in Sources */,
 				100000000000000000000003 /* GhostteaContentView.swift in Sources */,
+				10000000000000000000001D /* GhostteaAttachmentBannerView.swift in Sources */,
 				100000000000000000000004 /* GhostteaSharedTerminalSurface.swift in Sources */,
 				100000000000000000000008 /* GhostteaSSHAppModel.swift in Sources */,
 				100000000000000000000009 /* GhostteaSSHView.swift in Sources */,

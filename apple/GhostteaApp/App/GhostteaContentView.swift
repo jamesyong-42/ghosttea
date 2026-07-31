@@ -174,14 +174,34 @@ struct GhostteaContentView: View {
           onMouseInput: model.handleMouse,
           onScrollRows: model.handleScroll,
           onSelectionCommit: model.copySelection,
-          onSelectAll: model.copyAll)
+          onSelectAll: model.copyAll
+        )
+        // §8.1's "cooled" treatment: the retained frame stays legible and
+        // copyable, but plainly is not live. No animation — the state it
+        // reports is not a transition worth watching.
+        .saturation(isCooled ? 0.2 : 1)
+        .opacity(isCooled ? 0.65 : 1)
       } else {
         ProgressView(model.status)
           .tint(model.presentationConfiguration.terminalForegroundColor)
           .foregroundStyle(model.presentationConfiguration.terminalForegroundColor)
       }
     }
+    .overlay(alignment: .top) {
+      if let banner = model.banner {
+        GhostteaAttachmentBannerView(banner: banner, onAction: model.perform)
+      }
+    }
+    .overlay(alignment: .bottom) {
+      if let cue = model.inputCue {
+        GhostteaAttachmentInputCueView(cue: cue)
+          .padding(.bottom, 24)
+      }
+    }
   }
+
+  /// Whether the frame on screen is retained rather than live.
+  private var isCooled: Bool { model.banner?.coolsTerminal == true }
 
   private var phaseIcon: String {
     switch model.phase {

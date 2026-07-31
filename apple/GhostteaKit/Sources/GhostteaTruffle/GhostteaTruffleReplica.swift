@@ -22,12 +22,8 @@ public enum GhostteaRenderedAttachmentEvent: Sendable {
 /// state is read, instead of an unbounded buffering stream.
 public actor GhostteaTruffleReplicaPump {
   public let attachment: GhostteaTruffleAttachment
-  public private(set) var replica: GhostteaLogicalReplica
 
-  private let encoder = JSONEncoder()
-  private let sessionHandle: UInt64
-  private var renderRuntime: GhostteaRuntime
-  private var presentation: GhostteaTerminalPresentationConfig?
+  private let publisher: GhostteaReplicaPublisher
 
   public init(
     attachment: GhostteaTruffleAttachment,
@@ -36,10 +32,14 @@ public actor GhostteaTruffleReplicaPump {
     presentation: GhostteaTerminalPresentationConfig? = nil
   ) throws {
     self.attachment = attachment
-    self.sessionHandle = sessionHandle
-    renderRuntime = runtime
-    self.presentation = presentation
-    replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: sessionHandle)
+    publisher = try GhostteaReplicaPublisher(
+      runtime: runtime, sessionHandle: sessionHandle, presentation: presentation)
+  }
+
+  /// The replica this pump renders into. Replaced whenever the host
+  /// re-specifies the presentation, so read it rather than holding it.
+  public var replica: GhostteaLogicalReplica {
+    get async { await publisher.replica }
   }
 
   public func next() async throws -> GhostteaRenderedAttachmentEvent {
@@ -90,19 +90,10 @@ public actor GhostteaTruffleReplicaPump {
     case .state(.activityChanged(let activity)):
       return .activityChanged(activity)
     case .state(.configurationChanged(let presentation)):
-      if self.presentation != presentation {
-        let runtime = try GhostteaRuntime(presentation: presentation)
-        replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: sessionHandle)
-        renderRuntime = runtime
-        self.presentation = presentation
-      }
+      try await publisher.adopt(presentation)
       return .configurationChanged(presentation)
     case .state(.snapshot(let snapshot)):
-      let update = try await GhostteaPerformanceRecorder.shared.measure(
-        .truffleReplicaPublication
-      ) {
-        try await replica.publishSnapshotJSON(encoder.encode(snapshot))
-      }
+      let update = try await publisher.publish(snapshot)
       try await attachment.acknowledge(
         sessionEpoch: snapshot.sessionEpoch,
         layoutEpoch: snapshot.layoutEpoch,
@@ -113,19 +104,12 @@ public actor GhostteaTruffleReplicaPump {
     case .state(.patch(let patch)):
       let update: GhostteaUpdate
       do {
-        update = try await GhostteaPerformanceRecorder.shared.measure(
-          .truffleReplicaPublication
-        ) {
-          try await replica.publishPatchJSON(encoder.encode(patch))
-        }
-      } catch {
-        if await replica.isPoisoned {
-          // The ABI contract permits only destruction after a caught panic;
-          // surface this as attachment/session death rather than retrying.
-          throw error
-        }
+        update = try await publisher.publish(patch)
+      } catch GhostteaAttachmentApplyFailure.needsSnapshot {
         // A logical discontinuity is recoverable only through an authoritative
-        // snapshot. Never apply or acknowledge the rejected patch.
+        // snapshot. Never apply or acknowledge the rejected patch. A poisoned
+        // replica does not come through here — that failure propagates, since
+        // the ABI contract permits only destruction after a caught panic.
         try await attachment.requestSnapshot()
         return .resynchronizing
       }
