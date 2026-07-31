@@ -54,6 +54,8 @@
     "fixture:truffle:restart-host": "node scripts/truffle-fixture.mjs restart-host",
     "fixture:truffle:status": "node scripts/truffle-fixture.mjs status",
     "test:truffle:e2e": "node tests/integration/truffle-reconnect-e2e.mjs",
+    "test:truffle:compact-interop": "node scripts/compact-interop-e2e.mjs",
+    "test:truffle:compact-interop:smoke": "node scripts/compact-interop-e2e.mjs --smoke",
     "test:ghostty-vt:apple": "node scripts/test-ghostty-vt-apple.mjs",
     "test:fuzz:ffi": "cargo test -p ghosttea-ffi deterministic_ffi_state_machine_fuzz_smoke",
     "test:fuzz:trf1": "node scripts/test-ios-trf1-fuzz-smoke.mjs",

@@ -697,17 +697,24 @@ public actor GhostteaTruffleAttachment {
   /// real `attachGeneration`, against a legacy host it is rotated per attempt
   /// and the generation stays `0`. Without a plan this attaches the way it
   /// always did — `viewID` verbatim, unordered.
+  ///
+  /// `offeredMinor` is the minor this attempt announces. It exists so a test
+  /// can stage a legacy pair against a current host — the host answers
+  /// `min(offered, its own)`, so nothing else can produce that pairing — and
+  /// defaults to the contract minor, which is what production always sends.
   public static func connect(
     over connection: any MeshConnection, localDeviceID: String, sessionID: String, viewID: String,
     cols: UInt16, rows: UInt16, accessToken: String? = nil, nonce: String = UUID().uuidString,
-    requestID: String = UUID().uuidString, plan: GhostteaAttachPlanner? = nil
+    requestID: String = UUID().uuidString, plan: GhostteaAttachPlanner? = nil,
+    offeredMinor: UInt16 = GhostteaTruffleContract.protocolMinor
   ) async throws -> GhostteaTruffleAttachment {
     let wire = GhostteaAttachmentHandshake(connection: connection)
     do {
       let hello: GhostteaCompactHello
       do {
         hello = try await wire.handshake(
-          localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce)
+          localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce,
+          offeredMinor: offeredMinor)
       } catch {
         throw GhostteaTruffleError.handshakeRejected(
           "session hello failed: \(String(describing: error))")
@@ -928,9 +935,9 @@ private actor GhostteaAttachmentHandshake {
   var buffer = Data()
   init(connection: any MeshConnection) { self.connection = connection }
 
-  func handshake(localDeviceID: String, sessionID: String, viewID: String, nonce: String)
-    async throws -> GhostteaCompactHello
-  {
+  func handshake(
+    localDeviceID: String, sessionID: String, viewID: String, nonce: String, offeredMinor: UInt16
+  ) async throws -> GhostteaCompactHello {
     try await connection.write(
       try GhostteaTerminalProtocolCodec.encodePreface(
         .init(streamKind: .sessionControl, sessionID: sessionID, viewID: viewID)))
@@ -938,7 +945,7 @@ private actor GhostteaAttachmentHandshake {
       try GhostteaTerminalProtocolCodec.encodeFrame(
         GhostteaConnectionMessage.clientHello(
           protocolMajor: GhostteaTruffleContract.protocolMajor,
-          protocolMinor: GhostteaTruffleContract.protocolMinor, hostInstanceID: "",
+          protocolMinor: offeredMinor, hostInstanceID: "",
           localDeviceID: localDeviceID, nonce: nonce,
           stateCodecs: [.compactJSONV1])))
     let response: GhostteaConnectionMessage = try await readFrame()

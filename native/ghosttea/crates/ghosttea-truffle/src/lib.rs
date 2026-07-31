@@ -4258,6 +4258,86 @@ async fn request_advertisements_from_online_peers(
     }
 }
 
+/// Serve the compact protocol over an already-bound TCP listener, so a client
+/// in another language can be driven against the real host off a tailnet.
+///
+/// **What this is not.** [`handle_compact_connection`] resolves the peer through
+/// Tailscale WhoIs and checks the result against the node's live peer list, and
+/// that cannot run without a tailnet. This skips exactly that prologue and
+/// nothing else: `client_id` stands in for the WhoIs result, and every
+/// connection is attributed to it. From the client hello onward — negotiation,
+/// preface routing, attach, both multiplexed channels, the session control loop
+/// — a caller reaches the same code the tailnet listener reaches, by the same
+/// path, over a real socket. So a run built on this proves the protocol and the
+/// serve loop against a foreign client, and proves nothing about identity
+/// binding, which stays covered only by the tailnet e2e.
+///
+/// Feature-gated: a compact endpoint that serves whoever connects, with the
+/// identity check standing in rather than performed, is not something a
+/// production build should be able to reach by accident.
+#[cfg(feature = "interop-fixture")]
+pub async fn serve_compact_loopback(
+    listener: tokio::net::TcpListener,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    expected_device_id: String,
+    client_id: String,
+    shutdown: HostShutdownAnnouncer,
+) -> Result<()> {
+    let services = HostServices {
+        session_status: None,
+        shutdown,
+    };
+    // The sender has to outlive every connection: the serve loop treats a
+    // closed configuration publisher as a fault, so dropping it here would
+    // break each connection at the presentation minor instead of leaving it
+    // quiet.
+    let (_host_config_tx, host_config) = tokio::sync::watch::channel(Arc::new(
+        ghosttea::ConfigSnapshot::default().terminal_presentation(),
+    ));
+    loop {
+        let (stream, _) = listener.accept().await?;
+        // Same invariant as both production accept loops: the id is the
+        // connection's place in the accept order, so it is taken here and
+        // nowhere later. Identified immediately, because off a tailnet there is
+        // no hello-time resolution left to wait for.
+        let scope = services_scope(&client_id);
+        let registry = registry.clone();
+        let config = config.clone();
+        let services = services.clone();
+        let expected_device_id = expected_device_id.clone();
+        let client_id = client_id.clone();
+        let host_config = host_config.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle_compact_protocol(
+                stream,
+                registry,
+                config,
+                services,
+                "compact-interop-host".to_owned(),
+                Some(expected_device_id),
+                client_id,
+                host_config,
+                scope,
+            )
+            .await
+            {
+                eprintln!("[compact-interop] connection ended: {error:#}");
+            }
+        });
+    }
+}
+
+/// One ledger for the fixture's lifetime, so connection ids order across every
+/// connection a client opens — which is what the attach fence reads.
+#[cfg(feature = "interop-fixture")]
+fn services_scope(client_id: &str) -> ConnectionScope {
+    static LEDGER: std::sync::OnceLock<ConnectionLedger> = std::sync::OnceLock::new();
+    let scope = LEDGER.get_or_init(ConnectionLedger::default).accept();
+    scope.identify(client_id);
+    scope
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn compact_accept_loop(
     node: Arc<Node<TailscaleProvider>>,

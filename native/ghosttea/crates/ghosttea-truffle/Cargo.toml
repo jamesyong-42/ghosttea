@@ -9,6 +9,16 @@ repository.workspace = true
 description = "Truffle transport adapter for Ghosttea"
 readme = "README.md"
 
+[features]
+# The loopback compact host used by the cross-language interop run. Off by
+# default: it serves whoever connects, with the tailnet identity check standing
+# in rather than performed, so it must not be reachable from a shipped build.
+interop-fixture = []
+
+[[bin]]
+name = "compact-interop-host"
+required-features = ["interop-fixture"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

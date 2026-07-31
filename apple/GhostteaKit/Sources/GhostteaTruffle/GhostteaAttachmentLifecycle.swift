@@ -166,6 +166,9 @@ public actor GhostteaAttachmentLifecycle {
   private let jitter: GhostteaJitterSource
   private let config: GhostteaReconnectConfig
   private let accessToken: String?
+  /// The minor each attempt announces. Present so a test can stage a legacy
+  /// pair against a current host; production sends the contract minor.
+  private let offeredMinor: UInt16
 
   private var phase: GhostteaAttachmentPhase = .opening
   private var lifecycleSeq: UInt64 = 1
@@ -179,6 +182,12 @@ public actor GhostteaAttachmentLifecycle {
   /// included: a timed-out initial attach that reached the host leaves the
   /// same same-epoch collision a resume would.
   private var attachGeneration: UInt64 = 0
+  /// What the most recent attach actually put on the wire. Kept because a
+  /// client can see what it sent but not what the host concluded from it —
+  /// whether a takeover *displaced* anything depends on whether the host had
+  /// reaped the previous attachment yet, which no client can observe.
+  private var lastAttachGeneration: UInt64 = 0
+  private var lastAttachCarriedResume = false
   private var inputSequence: UInt64 = 0
   /// Separate sequence spaces, as the wire defines them: input, control
   /// claims, and resizes are ordered independently of one another.
@@ -222,6 +231,7 @@ public actor GhostteaAttachmentLifecycle {
     dialer: any GhostteaAttachmentDialer,
     sink: (any GhostteaAttachmentStateSink)? = nil,
     accessToken: String? = nil,
+    offeredMinor: UInt16 = GhostteaTruffleContract.protocolMinor,
     config: GhostteaReconnectConfig = GhostteaReconnectConfig(),
     clock: any GhostteaLifecycleClock = GhostteaSystemClock(),
     jitter: @escaping GhostteaJitterSource = GhostteaBackoff.uniformJitter
@@ -233,6 +243,7 @@ public actor GhostteaAttachmentLifecycle {
     self.dialer = dialer
     self.sink = sink
     self.accessToken = accessToken
+    self.offeredMinor = offeredMinor
     self.config = config
     self.clock = clock
     self.jitter = jitter
@@ -581,7 +592,8 @@ public actor GhostteaAttachmentLifecycle {
         cols: cols,
         rows: rows,
         accessToken: accessToken,
-        plan: planner)
+        plan: planner,
+        offeredMinor: offeredMinor)
     } catch GhostteaTruffleError.attachRejected(let code) {
       switch GhostteaAttachRejectAction(code: code) {
       // The host answered a question a newer attempt has already asked again.
@@ -614,6 +626,8 @@ public actor GhostteaAttachmentLifecycle {
       await attachment.detach()
       return .retry
     }
+    lastAttachGeneration = info.supportsReconnect ? lineageGeneration : 0
+    lastAttachCarriedResume = info.supportsReconnect && hint != nil
     if hostInstanceID == nil { hostInstanceID = info.hostInstanceID }
     if sessionEpoch == nil { sessionEpoch = info.sessionEpoch }
 
@@ -801,6 +815,13 @@ public actor GhostteaAttachmentLifecycle {
       if case .snapshot = message { signalSynchronized(generation: generation) }
       return true
     }
+  }
+
+  /// What the last attach announced: the lineage generation and whether it
+  /// carried resume evidence. Internal so the interop rows can assert the
+  /// client half of a takeover, which is the half a client can actually see.
+  var lastAttachOnTheWire: (generation: UInt64, carriedResume: Bool) {
+    (lastAttachGeneration, lastAttachCarriedResume)
   }
 
   /// The identifiers a state dispatch must carry to be admitted. Internal
