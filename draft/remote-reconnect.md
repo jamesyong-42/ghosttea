@@ -1038,6 +1038,13 @@ is a lossy broadcast that already emits `events-lost` on lag
   `events-lost` (mirroring `runtime.ts:314–319`).
 - `view-state-changed` remains the low-latency push; it is an optimization,
   not the source of truth.
+- **Advisory fields are open, never strict**: the validator tolerates
+  unknown *extra* fields (pinned by test), so optional advisory additions
+  (e.g. `scope` on `selection-text`) ship without a minor bump — but their
+  *values* must be open enums on the client (`known | (string & {})`),
+  never strict unions: a strict enum on an advisory field turns a future
+  value into socket destruction for every released client. Same principle
+  as `AttachRejectCode`'s `#[serde(other)] Unknown` (§6.2).
 - **Hello snapshot**: when a ≥ 12 client completes `hello`, the daemon
   emits one `remote-session-state-changed` per currently open remote
   session on that connection. Without this, a workspace restored from
@@ -1095,10 +1102,15 @@ through the existing `role="status"` live-region pattern
   the existing `frame-resync-complete` cannot serve here because it carries
   no sequence and fires before invalidation
   (`terminal-render.worker.ts:823–825`). The runtime removes the cooling
-  class on the first `frame-committed` whose `frameSequence` ≥ the recovery
-  snapshot's sequence. The guarantee is commit-level ("after the worker
-  commits the full frame"), not GPU-paint-level. Banner swaps to
-  `✓ Reconnected` for 2 s. Control reclaim per §4.2.3 requires no user
+  class on the **first `frame-committed` after the session reaches live** —
+  not a raw "frameSequence ≥ recovery sequence" comparison, because
+  per-stream patch sequences restart at 0 on re-attach (§0) and a
+  pre-outage baseline is not comparable. The specialization is sound
+  because live is only committed after the recovery snapshot is ingested
+  (§3's Live invariant), making the first post-live commit the recovery
+  frame or later by construction. The guarantee is commit-level ("after
+  the worker commits the full frame"), not GPU-paint-level. Banner swaps
+  to `✓ Reconnected` for 2 s. Control reclaim per §4.2.3 requires no user
   action.
 - **Suspended**: persistent, actionable banner:
   `⟨device⟩ is offline · waiting for it to return  [Retry now] [Close]`.
@@ -1179,6 +1191,24 @@ through the existing `role="status"` live-region pattern
 - **Concurrent multi-pane**: shared connection-level reconnect; per-view
   re-attach serialized; views added during Reconnecting park until Live;
   per-view readiness per §4.5.
+
+### 9.1 QUIC connection identity (Phase 2 measured finding and decision)
+
+Real-tailnet testing exposed that the host's QUIC identity binding — match
+the connection's source IP against the peer registry — silently rots:
+durable profiles receive fresh ephemeral tailnet IPs per incarnation, so a
+registry-stale address rejects every connection from a legitimate peer
+("QUIC source is not a current Truffle peer"), which surfaces on the
+viewer as dead-on-arrival dials. Phase 2 therefore binds identity from
+`ClientHello.local_device_id`, validated against the live registry
+(current, online, same-app), with the source IP demoted to corroboration.
+**Documented caveat**: within the authenticated tailnet + app set, one
+peer may now assert another's device id and inherit its `client_id` —
+affecting view bookkeeping generally, and input only under
+`allow_tailnet_write`/shared-capability configs, which already declare
+every peer trusted. The compact path is unaffected (it has transport
+WhoIs). Proper closure is a Phase 3 item: a WhoIs-equivalent identity on
+QUIC connections from truffle-core, restoring cryptographic binding.
 
 ## 10. Testing strategy
 
@@ -1371,10 +1401,18 @@ Knobs live in a new `MeshReconnectConfig` embedded in `TruffleTerminalConfig`
 `TerminalServiceConfig`, which is strictly local-IPC endpoints and auth
 (`service.rs:376–380`).
 
+Measured reality (Phase 2, real tailnet): on a 1.4 pair — i.e. until the
+Phase 3 heartbeat ships — outage detection costs **~24 s** (advertisement
+TTL 15 s + expiry sweep + probe), not the seconds the heartbeat row
+implies; the heartbeat row applies from Phase 3. Also measured: the first
+`reconnecting` event carries `attempt 0` / `nextRetryMs null` — backoff
+fields appear from attempt 1 — so countdown UIs must tolerate their
+absence on the first event.
+
 | Knob | Default | Rationale |
 | --- | --- | --- |
 | Grace window before banner | 2 s | hide sub-perceptual blips |
-| Heartbeat (idle-triggered) | Ping after 3 s idle / fail after 6 s idle | contact = state traffic or matched Pong on the current incarnation; busy streams never ping |
+| Heartbeat (idle-triggered) | Ping after 3 s idle / fail after 6 s idle | contact = state traffic or matched Pong on the current incarnation; busy streams never ping — **Phase 3+; see measured note above** |
 | Backoff | full jitter: `uniform(0, min(10 s, 0.5 s · 2ⁿ))`, floor 250 ms | fast first retry, kind to hosts |
 | `suspend_after` | 10 min | laptop-lid realism before going quiet |
 | Advertisement fast path | always on | primary resume trigger |
