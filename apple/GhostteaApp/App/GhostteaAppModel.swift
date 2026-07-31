@@ -14,6 +14,7 @@ final class GhostteaAppModel: ObservableObject {
   @Published private(set) var selectedSession: GhostteaSharedSessionSummary?
   @Published private(set) var selectedActivity = GhostteaSessionActivity.unknown
   @Published private(set) var frame: Data?
+  @Published private(set) var presentationConfiguration: GhostteaTerminalPresentationConfig
   @Published private(set) var hasControl = false
   @Published private(set) var readWriteAllowed = false
   @Published private var localStatus: String?
@@ -56,6 +57,7 @@ final class GhostteaAppModel: ObservableObject {
     self.sharedRuntime = sharedRuntime
     self.diagnostics = diagnostics
     self.configuration = configuration
+    presentationConfiguration = configuration.terminalPresentation
     sceneIdentity = GhostteaSceneTerminalIdentity(sceneID: sceneID)
     runtimeObservation = sharedRuntime.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
@@ -129,7 +131,7 @@ final class GhostteaAppModel: ObservableObject {
     guard
       let directory = sharedRuntime.directory,
       let selectedHost,
-      let renderRuntime,
+      renderRuntime != nil,
       !isBusy
     else { return }
     localBusy = true
@@ -153,11 +155,17 @@ final class GhostteaAppModel: ObservableObject {
           pendingAttachmentTask = nil
           return
         }
+        let attachmentInfo = await attached.info
+        let presentation =
+          attachmentInfo.presentation ?? configuration.terminalPresentation
+        let attachmentRuntime = try GhostteaRuntime(presentation: presentation)
         let pump = try GhostteaTruffleReplicaPump(
           attachment: attached,
-          runtime: renderRuntime,
-          sessionHandle: handle)
-        let attachmentInfo = await attached.info
+          runtime: attachmentRuntime,
+          sessionHandle: handle,
+          presentation: presentation)
+        renderRuntime = attachmentRuntime
+        presentationConfiguration = presentation
         attachment = attached
         replicaPump = pump
         selectedSession = session
@@ -377,6 +385,8 @@ final class GhostteaAppModel: ObservableObject {
       localStatus = "Copied \(text.utf8.count) bytes"
     case .activityChanged(let activity):
       selectedActivity = activity
+    case .configurationChanged(let presentation):
+      presentationConfiguration = presentation
     case .resynchronizing:
       localStatus = "Resynchronizing terminal state…"
     }
@@ -404,6 +414,7 @@ final class GhostteaAppModel: ObservableObject {
     replicaPump = nil
     await current?.detach()
     frame = nil
+    presentationConfiguration = configuration.terminalPresentation
     localBusy = false
     hasControl = false
     readWriteAllowed = false

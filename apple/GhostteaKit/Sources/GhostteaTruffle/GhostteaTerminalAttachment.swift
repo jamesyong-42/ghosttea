@@ -1,4 +1,5 @@
 import Foundation
+import GhostteaCore
 import GhostteaPerformance
 import Truffle
 
@@ -165,12 +166,14 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
     layoutEpoch: UInt64
   )
   case activityChanged(GhostteaSessionActivity)
+  case configurationChanged(GhostteaTerminalPresentationConfig)
 
   private enum CodingKeys: String, CodingKey {
     case type
     case controllerViewID = "controllerViewId"
     case controlEpoch, cols, rows, layoutEpoch
     case activity
+    case presentation
   }
 
   public init(from decoder: Decoder) throws {
@@ -188,6 +191,11 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
       )
     case "activity-changed":
       self = try .activityChanged(values.decode(GhostteaSessionActivity.self, forKey: .activity))
+    case "configuration-changed":
+      let presentation = try values.decode(
+        GhostteaTerminalPresentationConfig.self, forKey: .presentation)
+      guard presentation.isValid else { throw GhostteaTruffleError.malformedMessage }
+      self = .configurationChanged(presentation)
     default: throw GhostteaTruffleError.malformedMessage
     }
   }
@@ -214,6 +222,10 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
       var values = encoder.container(keyedBy: CodingKeys.self)
       try values.encode("activity-changed", forKey: .type)
       try values.encode(activity, forKey: .activity)
+    case .configurationChanged(let presentation):
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("configuration-changed", forKey: .type)
+      try values.encode(presentation, forKey: .presentation)
     }
   }
 }
@@ -347,7 +359,8 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
     rows: UInt16)
   case viewAttached(
     requestID: String, sessionEpoch: UInt64, layoutEpoch: UInt64, attachmentEpoch: UInt64,
-    cols: UInt16, rows: UInt16, readWrite: Bool)
+    cols: UInt16, rows: UInt16, readWrite: Bool,
+    presentation: GhostteaTerminalPresentationConfig?)
   case focusAndResize(
     viewID: String, attachmentEpoch: UInt64, cols: UInt16, rows: UInt16, clientSequence: UInt64)
   case resize(
@@ -372,7 +385,7 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
     case accessToken, cols, rows, sessionEpoch,
       layoutEpoch, attachmentEpoch, readWrite, controlEpoch, clientSequence,
       resizeSequence, inputSequence, operation, patchSequence, terminalRevision,
-      startColumn, startRow, endColumn, endRow, selectAll, text
+      startColumn, startRow, endColumn, endRow, selectAll, text, presentation
   }
 
   public init(from decoder: Decoder) throws {
@@ -392,7 +405,9 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
         layoutEpoch: v.decode(UInt64.self, forKey: .layoutEpoch),
         attachmentEpoch: v.decode(UInt64.self, forKey: .attachmentEpoch),
         cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows),
-        readWrite: v.decode(Bool.self, forKey: .readWrite))
+        readWrite: v.decode(Bool.self, forKey: .readWrite),
+        presentation: v.decodeIfPresent(
+          GhostteaTerminalPresentationConfig.self, forKey: .presentation))
     case "focus-and-resize":
       self = try .focusAndResize(
         viewID: v.decode(String.self, forKey: .viewID),
@@ -453,7 +468,8 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       try v.encode(cols, forKey: .cols)
       try v.encode(rows, forKey: .rows)
     case .viewAttached(
-      let request, let session, let layout, let attachment, let cols, let rows, let write):
+      let request, let session, let layout, let attachment, let cols, let rows, let write,
+      let presentation):
       try v.encode("view-attached", forKey: .type)
       try v.encode(request, forKey: .requestID)
       try v.encode(session, forKey: .sessionEpoch)
@@ -462,6 +478,7 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       try v.encode(cols, forKey: .cols)
       try v.encode(rows, forKey: .rows)
       try v.encode(write, forKey: .readWrite)
+      try v.encodeIfPresent(presentation, forKey: .presentation)
     case .focusAndResize(let view, let attachment, let cols, let rows, let sequence):
       try v.encode("focus-and-resize", forKey: .type)
       try v.encode(view, forKey: .viewID)
@@ -522,6 +539,7 @@ public struct GhostteaAttachmentInfo: Equatable, Sendable {
   public let cols: UInt16
   public let rows: UInt16
   public let readWrite: Bool
+  public let presentation: GhostteaTerminalPresentationConfig?
 }
 
 public enum GhostteaAttachmentEvent: Equatable, Sendable {
@@ -587,7 +605,8 @@ public actor GhostteaTruffleAttachment {
       guard
         case .viewAttached(
           let responseID, let sessionEpoch, let layoutEpoch, let attachmentEpoch, let actualCols,
-          let actualRows, let readWrite) = response, responseID == requestID
+          let actualRows, let readWrite, let presentation) = response, responseID == requestID,
+        presentation?.isValid != false
       else {
         throw GhostteaTruffleError.mismatchedResponse
       }
@@ -596,7 +615,9 @@ public actor GhostteaTruffleAttachment {
         connection: connection, sessionID: sessionID, viewID: viewID,
         info: GhostteaAttachmentInfo(
           hostInstanceID: hello.host, sessionEpoch: sessionEpoch, layoutEpoch: layoutEpoch,
-          attachmentEpoch: attachmentEpoch, cols: actualCols, rows: actualRows, readWrite: readWrite
+          attachmentEpoch: attachmentEpoch, cols: actualCols, rows: actualRows,
+          readWrite: readWrite,
+          presentation: presentation
         ), stateCodec: hello.stateCodec, buffer: remainder)
     } catch {
       await connection.close()

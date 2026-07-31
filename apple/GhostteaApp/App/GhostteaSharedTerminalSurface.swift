@@ -5,7 +5,7 @@ import SwiftUI
 struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   let frame: Data
   let visible: Bool
-  let configuration: GhostteaConfigSnapshot
+  let configuration: GhostteaTerminalPresentationConfig
   var controlsGridSize = true
   var accessibilityTitle = "Shared terminal"
   var accessibilityConnectionState = "Connected through Truffle"
@@ -73,13 +73,13 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   }
 }
 
-extension GhostteaConfigSnapshot {
+extension GhostteaTerminalPresentationConfig {
   var terminalBackgroundColor: Color {
-    color(renderer.background, fallback: [0x28, 0x2c, 0x34])
+    color(background, fallback: [0x28, 0x2c, 0x34])
   }
 
   var terminalForegroundColor: Color {
-    color(renderer.foreground, fallback: [0xff, 0xff, 0xff])
+    color(foreground, fallback: [0xff, 0xff, 0xff])
   }
 
   private func color(_ components: [UInt8], fallback: [UInt8]) -> Color {

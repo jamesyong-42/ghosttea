@@ -158,12 +158,12 @@ private struct GhostteaSSHWorkspacePane: View {
 
   var body: some View {
     ZStack {
-      model.configuration.terminalBackgroundColor
+      model.configuration.terminalPresentation.terminalBackgroundColor
       if let frame {
         GhostteaSharedTerminalSurface(
           frame: frame,
           visible: visible,
-          configuration: model.configuration,
+          configuration: model.configuration.terminalPresentation,
           controlsGridSize: controlsGridSize,
           accessibilityTitle: model.title(for: sessionID),
           accessibilityConnectionState: status,
@@ -177,9 +177,10 @@ private struct GhostteaSSHWorkspacePane: View {
           onSelectAll: { model.copyAll(sessionID: sessionID) })
       } else {
         VStack(spacing: 12) {
-          ProgressView().tint(model.configuration.terminalForegroundColor)
+          ProgressView().tint(model.configuration.terminalPresentation.terminalForegroundColor)
           Text(status).font(.caption)
-            .foregroundStyle(model.configuration.terminalForegroundColor.opacity(0.8))
+            .foregroundStyle(
+              model.configuration.terminalPresentation.terminalForegroundColor.opacity(0.8))
           if status == "Reconnect available" || status == "Disconnected" {
             Button("Reconnect") { model.reconnect(sessionID) }
               .buttonStyle(.borderedProminent)

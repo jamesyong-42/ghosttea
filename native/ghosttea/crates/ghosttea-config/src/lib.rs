@@ -96,6 +96,33 @@ impl ConfigSnapshot {
             .iter()
             .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
     }
+
+    /// Return the presentation settings that are safe and meaningful to send
+    /// to a remote terminal view.
+    ///
+    /// This deliberately excludes source and diagnostic paths, workspace
+    /// keybindings, scrollback policy, and custom shader paths. Those values
+    /// are either host-private or owned by a different runtime boundary.
+    pub fn terminal_presentation(&self) -> TerminalPresentationConfig {
+        let mut presentation = TerminalPresentationConfig {
+            schema_version: self.schema_version,
+            revision: String::new(),
+            foreground: self.renderer.foreground,
+            background: self.renderer.background,
+            cursor: self.renderer.cursor,
+            selection_background: self.renderer.selection_background,
+            selection_foreground: self.renderer.selection_foreground,
+            font_size: self.renderer.font_size,
+            font_families: self.renderer.font_families.clone(),
+            padding_x: self.renderer.padding_x,
+            padding_y: self.renderer.padding_y,
+            post_process: self.renderer.post_process,
+            custom_shader_count: u32::try_from(self.renderer.custom_shader_paths.len())
+                .unwrap_or(u32::MAX),
+        };
+        presentation.revision = stable_json_revision(&presentation);
+        presentation
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -182,6 +209,29 @@ pub struct RendererConfig {
     pub padding_y: [f32; 2],
     pub post_process: RendererPostProcess,
     pub custom_shader_paths: Vec<String>,
+}
+
+/// A redacted, renderer-owned projection for remote terminal views.
+///
+/// The session host is authoritative for this projection. View-local input
+/// bindings and retention policy are intentionally not part of it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalPresentationConfig {
+    pub schema_version: u32,
+    pub revision: String,
+    pub foreground: [u8; 3],
+    pub background: [u8; 3],
+    pub cursor: [u8; 3],
+    pub selection_background: [u8; 3],
+    pub selection_foreground: [u8; 3],
+    pub font_size: f32,
+    pub font_families: Vec<String>,
+    pub padding_x: [f32; 2],
+    pub padding_y: [f32; 2],
+    pub post_process: RendererPostProcess,
+    /// Number of host-local shader paths omitted from this projection.
+    pub custom_shader_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1148,7 +1198,11 @@ fn snapshot_revision(snapshot: &ConfigSnapshot) -> String {
     // revision field itself while hashing.
     let mut clone = snapshot.clone();
     clone.revision.clear();
-    let bytes = serde_json::to_vec(&clone).unwrap_or_default();
+    stable_json_revision(&clone)
+}
+
+fn stable_json_revision(value: &impl Serialize) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
     let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     });
@@ -1178,6 +1232,44 @@ mod tests {
         assert_eq!(snapshot.renderer.post_process, RendererPostProcess::None);
         assert_eq!(snapshot.compatibility.known_key_count, 202);
         assert!(!snapshot.has_errors());
+    }
+
+    #[test]
+    fn remote_presentation_excludes_host_private_configuration() {
+        let mut snapshot = ConfigSnapshot::default();
+        snapshot.revision = "revision-1".into();
+        let baseline = snapshot.terminal_presentation();
+        snapshot.sources.push(ConfigSource {
+            path: "/Users/example/.config/ghostty/config".into(),
+            kind: ConfigSourceKind::GhosttyDefault,
+        });
+        snapshot.workspace.keybindings.push(KeybindingConfig {
+            trigger: "super+x".into(),
+            action: "close_surface".into(),
+        });
+
+        let private_only = snapshot.terminal_presentation();
+        assert_eq!(private_only.revision, baseline.revision);
+
+        snapshot.renderer.custom_shader_paths = vec!["/Users/example/private.glsl".into()];
+        let presentation = snapshot.terminal_presentation();
+        let json = serde_json::to_value(&presentation).unwrap();
+
+        assert!(!presentation.revision.is_empty());
+        assert_ne!(presentation.revision, baseline.revision);
+        assert_eq!(presentation.custom_shader_count, 1);
+        assert_eq!(presentation.background, snapshot.renderer.background);
+        assert!(json.get("sources").is_none());
+        assert!(json.get("diagnostics").is_none());
+        assert!(json.get("workspace").is_none());
+        assert!(json.get("customShaderPaths").is_none());
+        assert!(!json.to_string().contains("/Users/example"));
+
+        snapshot.renderer.background = [1, 2, 3];
+        assert_ne!(
+            snapshot.terminal_presentation().revision,
+            presentation.revision
+        );
     }
 
     #[test]

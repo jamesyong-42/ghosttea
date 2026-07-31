@@ -24,15 +24,15 @@ use ghosttea::{
     RemoteActivityChanged, RemoteAttachment, RemoteControlChanged, RemoteControlClaim,
     RemoteHostSummary, RemoteReplica, RemoteResize, RemoteSelection, RemoteSessionOpen,
     RemoteTerminalRuntime, Session, SessionRegistry as Registry, SessionSummary, TerminalMesh,
-    ViewAccess,
+    TerminalPresentationConfig, ViewAccess,
     tunnel_protocol::{
         CompactChannel, ConnectionMessage, LogicalTerminalPatch, LogicalTerminalSnapshot,
         MAX_CONTROL_MESSAGE_BYTES, MAX_STATE_MESSAGE_BYTES, PROTOCOL_MAJOR, PROTOCOL_MINOR,
         RowReplacement, SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage,
         SharedSessionSummary, StateCodec, StateMessage, StreamKind, StreamPreface,
-        TerminalHostAdvertisement, TunnelInput, decode_compact_message, decode_message,
-        decode_preface, decode_state_message, encode_compact_message, encode_message,
-        encode_preface, encode_state_message,
+        TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement, TunnelInput,
+        decode_compact_message, decode_message, decode_preface, decode_state_message,
+        encode_compact_message, encode_message, encode_preface, encode_state_message,
     },
 };
 
@@ -44,6 +44,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 type HostStore = truffle::synced_store::SyncedStore<TerminalHostAdvertisement>;
+type HostConfigReceiver = tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>;
 type RemoteViews = Arc<tokio::sync::Mutex<HashMap<(String, String), Arc<RemoteView>>>>;
 type RemoteConnections = Arc<tokio::sync::Mutex<HashMap<String, Arc<RemoteHostConnection>>>>;
 
@@ -448,6 +449,11 @@ impl MeshRuntime {
                             activity,
                         });
                     }
+                    // The daemon-to-daemon replica currently keeps desktop
+                    // presentation view-local. Compact Apple clients consume
+                    // this projection directly; desktop per-pane presentation
+                    // is a separate UI boundary.
+                    Ok(Some(StateMessage::ConfigurationChanged { .. })) => {}
                     Ok(None) => break,
                     Err(error) => {
                         eprintln!("[terminal-mesh] remote state stream closed: {error:#}");
@@ -923,7 +929,7 @@ impl TruffleTerminalMesh {
         self.runtime.clone()
     }
 
-    pub async fn serve(self, registry: Registry) -> Result<()> {
+    pub async fn serve(self, registry: Registry, host_config: HostConfigReceiver) -> Result<()> {
         let Self {
             node,
             config,
@@ -978,6 +984,7 @@ impl TruffleTerminalMesh {
             registry.clone(),
             config.clone(),
             host_instance_id.clone(),
+            host_config.clone(),
         );
         let compact_accept = compact_accept_loop(
             Arc::clone(&node),
@@ -985,6 +992,7 @@ impl TruffleTerminalMesh {
             registry,
             config.clone(),
             host_instance_id,
+            host_config,
         );
         let result = tokio::select! {
             result = advertise => result,
@@ -1089,15 +1097,24 @@ async fn compact_accept_loop(
     registry: Registry,
     config: TruffleTerminalConfig,
     host_instance_id: String,
+    host_config: HostConfigReceiver,
 ) -> Result<()> {
     while let Some(incoming) = listener.accept().await {
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
         let host_instance_id = host_instance_id.clone();
+        let host_config = host_config.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                handle_compact_connection(node, incoming, registry, config, host_instance_id).await
+            if let Err(error) = handle_compact_connection(
+                node,
+                incoming,
+                registry,
+                config,
+                host_instance_id,
+                host_config,
+            )
+            .await
             {
                 eprintln!("[terminal-mesh] rejected compact-stream connection: {error:#}");
             }
@@ -1112,6 +1129,7 @@ async fn handle_compact_connection(
     registry: Registry,
     config: TruffleTerminalConfig,
     host_instance_id: String,
+    host_config: HostConfigReceiver,
 ) -> Result<()> {
     let authenticated_node_id = incoming
         .remote_identity
@@ -1132,6 +1150,7 @@ async fn handle_compact_connection(
         host_instance_id,
         peer.device_id,
         client_id,
+        host_config,
     )
     .await
 }
@@ -1143,6 +1162,7 @@ async fn handle_compact_protocol<S>(
     host_instance_id: String,
     expected_device_id: Option<String>,
     client_id: String,
+    host_config: HostConfigReceiver,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -1241,6 +1261,7 @@ where
                 client_id,
                 state_codec,
                 protocol_minor,
+                host_config,
             )
             .await?;
         }
@@ -1257,6 +1278,7 @@ async fn handle_compact_session_protocol<S>(
     client_id: String,
     state_codec: StateCodec,
     protocol_minor: u16,
+    mut host_config: HostConfigReceiver,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -1297,6 +1319,8 @@ where
         .attach_view_with_access(&view_id, &client_id, access)
         .context("attach compact terminal view")?;
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
+    let presentation = (protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR)
+        .then(|| host_config.borrow().as_ref().clone());
     control
         .write_compact_message(
             CompactChannel::Control,
@@ -1308,6 +1332,7 @@ where
                 cols: canonical_cols,
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
+                presentation,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1320,6 +1345,15 @@ where
         let mut snapshots = session.subscribe_logical();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
+        if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
+            let presentation = host_config.borrow_and_update().as_ref().clone();
+            control
+                .write_compact_state_message(
+                    &StateMessage::ConfigurationChanged { presentation },
+                    state_codec,
+                )
+                .await?;
+        }
         if let Some(snapshot) = previous.as_ref() {
             control
                 .write_compact_state_message(
@@ -1356,6 +1390,23 @@ where
 
         loop {
             tokio::select! {
+                biased;
+                changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
+                    changed.context("host configuration publisher closed")?;
+                    let presentation = host_config.borrow_and_update().as_ref().clone();
+                    control.write_compact_state_message(
+                        &StateMessage::ConfigurationChanged { presentation },
+                        state_codec,
+                    ).await?;
+                    if let Some(snapshot) = session.logical_snapshot() {
+                        previous = Some(snapshot.clone());
+                        patch_sequence = 0;
+                        control.write_compact_state_message(
+                            &StateMessage::Snapshot(snapshot),
+                            state_codec,
+                        ).await?;
+                    }
+                }
                 incoming = control.read_compact_message::<SessionControlMessage>(
                     CompactChannel::Control,
                     MAX_CONTROL_MESSAGE_BYTES,
@@ -1552,12 +1603,14 @@ async fn accept_loop(
     registry: Registry,
     config: TruffleTerminalConfig,
     host_instance_id: String,
+    host_config: HostConfigReceiver,
 ) -> Result<()> {
     while let Some(connection) = listener.accept().await {
         let node = Arc::clone(&node);
         let registry = registry.clone();
         let config = config.clone();
         let host_instance_id = host_instance_id.clone();
+        let host_config = host_config.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(
                 node,
@@ -1565,6 +1618,7 @@ async fn accept_loop(
                 registry,
                 config,
                 host_instance_id,
+                host_config,
             )
             .await
             {
@@ -1581,6 +1635,7 @@ async fn handle_connection(
     registry: Registry,
     config: TruffleTerminalConfig,
     host_instance_id: String,
+    host_config: HostConfigReceiver,
 ) -> Result<()> {
     let remote_ip = connection.remote_address().ip();
     let peer = node
@@ -1652,6 +1707,7 @@ async fn handle_connection(
     let streams_config = config.clone();
     let streams_client_id = client_id.clone();
     let streams_state_codec = state_codec;
+    let streams_host_config = host_config;
     let streams = tokio::spawn(async move {
         while let Some(stream) = streams_connection.accept_stream().await? {
             let registry = streams_registry.clone();
@@ -1659,6 +1715,7 @@ async fn handle_connection(
             let client_id = streams_client_id.clone();
             let state_codec = streams_state_codec;
             let protocol_minor = protocol_minor;
+            let host_config = streams_host_config.clone();
             let connection = Arc::clone(&streams_connection);
             tokio::spawn(async move {
                 if let Err(error) = handle_application_stream(
@@ -1669,6 +1726,7 @@ async fn handle_connection(
                     client_id,
                     state_codec,
                     protocol_minor,
+                    host_config,
                 )
                 .await
                 {
@@ -1723,6 +1781,7 @@ async fn handle_application_stream(
     client_id: String,
     state_codec: StateCodec,
     protocol_minor: u16,
+    host_config: HostConfigReceiver,
 ) -> Result<()> {
     let mut control = ProtocolStream::new(stream);
     let preface = control.read_preface().await?;
@@ -1760,6 +1819,8 @@ async fn handle_application_stream(
     let attachment_epoch = session.attach_view_with_access(&view_id, &client_id, access)?;
     session.refresh()?;
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
+    let presentation = (protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR)
+        .then(|| host_config.borrow().as_ref().clone());
     control
         .write_message(
             &SessionControlMessage::ViewAttached {
@@ -1770,6 +1831,7 @@ async fn handle_application_stream(
                 cols: canonical_cols,
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
+                presentation,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
@@ -1782,6 +1844,7 @@ async fn handle_application_stream(
         state_cancelled.clone(),
         state_codec,
         protocol_minor,
+        host_config.clone(),
     )
     .await?;
 
@@ -1796,6 +1859,7 @@ async fn handle_application_stream(
             cancelled: state_cancelled,
             codec: state_codec,
             protocol_minor,
+            host_config,
         },
     )
     .await;
@@ -1808,6 +1872,7 @@ struct StateStreamContext {
     cancelled: tokio::sync::watch::Receiver<bool>,
     codec: StateCodec,
     protocol_minor: u16,
+    host_config: HostConfigReceiver,
 }
 
 async fn session_control_loop(
@@ -1910,6 +1975,7 @@ async fn session_control_loop(
                     state_stream.cancelled.clone(),
                     state_stream.codec,
                     state_stream.protocol_minor,
+                    state_stream.host_config.clone(),
                 )
                 .await?;
             }
@@ -1955,6 +2021,7 @@ async fn spawn_state_stream(
     mut cancelled: tokio::sync::watch::Receiver<bool>,
     state_codec: StateCodec,
     protocol_minor: u16,
+    mut host_config: HostConfigReceiver,
 ) -> Result<()> {
     let stream = connection.open_stream().await?;
     let mut state = ProtocolStream::new(stream);
@@ -1969,6 +2036,15 @@ async fn spawn_state_stream(
     let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
     let mut previous = session.logical_snapshot();
+    if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
+        let presentation = host_config.borrow_and_update().as_ref().clone();
+        state
+            .write_state_message(
+                &StateMessage::ConfigurationChanged { presentation },
+                state_codec,
+            )
+            .await?;
+    }
     if let Some(snapshot) = previous.as_ref() {
         state
             .write_state_message(&StateMessage::Snapshot(snapshot.clone()), state_codec)
@@ -2003,6 +2079,35 @@ async fn spawn_state_stream(
         let mut patch_sequence = 0_u64;
         loop {
             let message = tokio::select! {
+                biased;
+                changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let presentation = host_config.borrow_and_update().as_ref().clone();
+                    if state
+                        .write_state_message(
+                            &StateMessage::ConfigurationChanged { presentation },
+                            state_codec,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if let Some(snapshot) = session.logical_snapshot() {
+                        previous = Some(snapshot.clone());
+                        patch_sequence = 0;
+                        if state
+                            .write_state_message(&StateMessage::Snapshot(snapshot), state_codec)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    continue;
+                },
                 changed = cancelled.changed() => {
                     if changed.is_err() || *cancelled.borrow() {
                         break;
@@ -2529,8 +2634,12 @@ impl TerminalMesh for TruffleTerminalMesh {
         Arc::new(self.runtime())
     }
 
-    async fn serve(self: Box<Self>, registry: Registry) -> Result<()> {
-        TruffleTerminalMesh::serve(*self, registry).await
+    async fn serve(
+        self: Box<Self>,
+        registry: Registry,
+        host_config: HostConfigReceiver,
+    ) -> Result<()> {
+        TruffleTerminalMesh::serve(*self, registry, host_config).await
     }
 }
 
@@ -2643,6 +2752,10 @@ mod tests {
             "desktop-instance".into(),
             Some("ios-device".into()),
             "truffle:peer:1".into(),
+            tokio::sync::watch::channel(Arc::new(
+                ghosttea::ConfigSnapshot::default().terminal_presentation(),
+            ))
+            .1,
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client
@@ -2718,6 +2831,10 @@ mod tests {
             "desktop-instance".into(),
             Some("expected-device".into()),
             "truffle:peer:1".into(),
+            tokio::sync::watch::channel(Arc::new(
+                ghosttea::ConfigSnapshot::default().terminal_presentation(),
+            ))
+            .1,
         ));
         let mut client = CompactProtocolStream::new(client_io);
         client

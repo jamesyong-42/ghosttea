@@ -44,7 +44,7 @@ to try Ghosttea.
 
 | Area                                             | Daemon / Electron                                                                                                                                     | Swift / Metal                                                                                                                                                        |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Loaded once by the iOS app and applied to SSH terminal models, shared-session presentation, and Metal surfaces                                                               |
+| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Device config applies to local SSH; shared desktop sessions use the host's presentation projection and update live over Truffle                                                 |
 | `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                        | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget |
 | `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied  | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                      |
 | `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                               | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                        |
@@ -91,17 +91,30 @@ The JSON object is `ghosttea-config` schema version 1 and is represented by
 loads it through `ghosttea_config_load_json`, the same Rust implementation used
 by `ghosttead`.
 
+Truffle terminal protocol 1.5 adds a host-authoritative
+`TerminalPresentationConfig` at view attachment and a
+`configuration-changed` state message. The projection contains only colors,
+font size and family names, padding, and the supported post-process mode. It
+never exposes host configuration paths, diagnostics, keybindings, scrollback
+policy, or custom shader paths; only a count is retained so Apple can surface
+that those shaders are unavailable. A configuration change is followed by a
+full logical snapshot so a client can rebuild its shaping runtime before
+accepting more patches. Clients connected to pre-1.5 hosts retain their
+device-local presentation.
+
 Reload immediately updates model colors and desktop presentation. Scrollback
 limits apply only to new sessions. Parsed startup-only settings remain visible
 so a settings UI can explain that a restart or future implementation is
 required.
 
-The iOS app loads one immutable snapshot at launch from
+The iOS app loads one immutable device snapshot at launch from
 `Library/Application Support/Ghosttea/config.ghostty` inside its container,
-after the standard Ghostty-compatible layers. That same revision configures
-shared-session rendering and every local SSH pane. The configured scrollback
-limit is honored up to the app's device-specific memory cap. iOS reload and a
-document-picker import flow remain future work.
+after the standard Ghostty-compatible layers. That revision configures every
+local SSH pane. Shared desktop sessions instead adopt the desktop host's
+redacted presentation at attach and on reload, while their input bindings and
+retention policy remain local to the appropriate owner. The configured
+scrollback limit is honored up to the app's device-specific memory cap. iOS
+reload and a document-picker import flow remain future work.
 
 ## Upgrade discipline
 

@@ -12,6 +12,7 @@ public enum GhostteaRenderedAttachmentEvent: Sendable {
     layoutEpoch: UInt64
   )
   case activityChanged(GhostteaSessionActivity)
+  case configurationChanged(GhostteaTerminalPresentationConfig)
   case selectionText(requestID: String, text: String)
   case resynchronizing
 }
@@ -21,16 +22,23 @@ public enum GhostteaRenderedAttachmentEvent: Sendable {
 /// state is read, instead of an unbounded buffering stream.
 public actor GhostteaTruffleReplicaPump {
   public let attachment: GhostteaTruffleAttachment
-  public let replica: GhostteaLogicalReplica
+  public private(set) var replica: GhostteaLogicalReplica
 
   private let encoder = JSONEncoder()
+  private let sessionHandle: UInt64
+  private var renderRuntime: GhostteaRuntime
+  private var presentation: GhostteaTerminalPresentationConfig?
 
   public init(
     attachment: GhostteaTruffleAttachment,
     runtime: GhostteaRuntime,
-    sessionHandle: UInt64
+    sessionHandle: UInt64,
+    presentation: GhostteaTerminalPresentationConfig? = nil
   ) throws {
     self.attachment = attachment
+    self.sessionHandle = sessionHandle
+    renderRuntime = runtime
+    self.presentation = presentation
     replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: sessionHandle)
   }
 
@@ -48,6 +56,14 @@ public actor GhostteaTruffleReplicaPump {
       )
     case .state(.activityChanged(let activity)):
       return .activityChanged(activity)
+    case .state(.configurationChanged(let presentation)):
+      if self.presentation != presentation {
+        let runtime = try GhostteaRuntime(presentation: presentation)
+        replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: sessionHandle)
+        renderRuntime = runtime
+        self.presentation = presentation
+      }
+      return .configurationChanged(presentation)
     case .state(.snapshot(let snapshot)):
       let update = try await GhostteaPerformanceRecorder.shared.measure(
         .truffleReplicaPublication

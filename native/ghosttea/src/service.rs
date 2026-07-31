@@ -8,7 +8,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use ghosttea_config::{ConfigLoadOptions, ConfigManager, ConfigSnapshot};
+use ghosttea_config::{
+    ConfigLoadOptions, ConfigManager, ConfigSnapshot, TerminalPresentationConfig,
+};
 use ghosttea_text::{FontMode, TextEngine};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -418,6 +420,7 @@ struct ControlContext {
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
     private_env_prefixes: Arc<[String]>,
     config: ConfigManager,
+    host_config_tx: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
     shutdown: Arc<ShutdownState>,
 }
 
@@ -710,6 +713,8 @@ impl TerminalService {
     ) -> Result<()> {
         let configured_text_engine = self.text_engine;
         let config = ConfigManager::load(self.config_load_options);
+        let initial_presentation = Arc::new(config.snapshot().terminal_presentation());
+        let (host_config_tx, host_config_rx) = tokio::sync::watch::channel(initial_presentation);
         let ready = self.ready;
         let auth_token = self.config.auth_token;
         let TerminalServiceListeners { control, frames } = listeners;
@@ -798,7 +803,7 @@ impl TerminalService {
         let _mesh_task = self.mesh.map(|mesh| {
             let mesh_registry = Arc::clone(&registry);
             TaskGuard(tokio::spawn(async move {
-                if let Err(error) = mesh.serve(mesh_registry).await {
+                if let Err(error) = mesh.serve(mesh_registry, host_config_rx).await {
                     eprintln!("[terminal-mesh] stopped: {error:#}");
                 }
             }))
@@ -812,6 +817,7 @@ impl TerminalService {
             closed_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
             config,
+            host_config_tx,
             shutdown: Arc::clone(&shutdown),
         };
         // Spawned rather than joined in place: the drain has to run *while*
@@ -1272,6 +1278,14 @@ async fn handle_command(
             Command::ReloadConfig => {
                 let (config, changed) = context.config.reload();
                 if changed {
+                    let presentation = config.terminal_presentation();
+                    let presentation_changed = {
+                        let current = context.host_config_tx.borrow();
+                        current.as_ref() != &presentation
+                    };
+                    if presentation_changed {
+                        context.host_config_tx.send_replace(Arc::new(presentation));
+                    }
                     let colors = &config.terminal;
                     let sessions = registry
                         .read()

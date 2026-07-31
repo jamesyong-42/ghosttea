@@ -1109,7 +1109,15 @@
     /// Unsupported post-process shaders are surfaced rather than silently
     /// approximated on Metal.
     public func applyConfiguration(_ config: GhostteaConfigSnapshot) {
-      let nextMetrics = GhostteaTextMetrics(config: config)
+      applyConfiguration(config.terminalPresentation)
+    }
+
+    public func applyConfiguration(_ config: GhostteaTerminalPresentationConfig) {
+      guard config.isValid else {
+        configurationWarnings = ["remote terminal presentation configuration is invalid"]
+        return
+      }
+      let nextMetrics = GhostteaTextMetrics(presentation: config)
       let metricsChanged =
         nextMetrics.cellWidthPixels != terminalTextMetrics.cellWidthPixels
         || nextMetrics.lineHeightPixels != terminalTextMetrics.lineHeightPixels
@@ -1131,11 +1139,11 @@
           alpha: 1
         )
       }
-      if let background = color(config.renderer.background),
-        let foreground = color(config.renderer.foreground),
-        let cursor = color(config.renderer.cursor),
-        let selection = color(config.renderer.selectionBackground),
-        let selectionForeground = color(config.renderer.selectionForeground)
+      if let background = color(config.background),
+        let foreground = color(config.foreground),
+        let cursor = color(config.cursor),
+        let selection = color(config.selectionBackground),
+        let selectionForeground = color(config.selectionForeground)
       {
         terminalTheme = GhostteaMetalTheme(
           background: background,
@@ -1163,20 +1171,24 @@
           alpha: CGFloat(foreground.alpha)
         )
       }
-      if config.renderer.paddingX.count == 2, config.renderer.paddingY.count == 2 {
+      if config.paddingX.count == 2, config.paddingY.count == 2 {
         terminalContentInsets = UIEdgeInsets(
-          top: CGFloat(config.renderer.paddingY[0]),
-          left: CGFloat(config.renderer.paddingX[0]),
-          bottom: CGFloat(config.renderer.paddingY[1]),
-          right: CGFloat(config.renderer.paddingX[1])
+          top: CGFloat(config.paddingY[0]),
+          left: CGFloat(config.paddingX[0]),
+          bottom: CGFloat(config.paddingY[1]),
+          right: CGFloat(config.paddingX[1])
         )
       }
       configurationWarnings = []
-      if config.renderer.postProcess != .none {
+      if config.postProcess != .none {
         configurationWarnings.append(
           "custom-shader post-processing is not available in the Swift Metal renderer")
       }
-      if !config.renderer.fontFamilies.isEmpty {
+      if config.customShaderCount > 0 {
+        configurationWarnings.append(
+          "host-local custom-shader paths are not available in the Swift Metal renderer")
+      }
+      if !config.fontFamilies.isEmpty {
         configurationWarnings.append(
           "font-family is not available in the bundled-font Apple runtime")
       }

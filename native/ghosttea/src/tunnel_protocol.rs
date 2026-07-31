@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use ghosttea_config::TerminalPresentationConfig;
 pub use ghosttea_core::{
     LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,
     LogicalTerminalPatch, LogicalTerminalSnapshot, RowReplacement,
@@ -12,8 +13,9 @@ use serde::{
 use crate::session::{KeyInput, MouseInput, SessionActivity};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 4;
+pub const PROTOCOL_MINOR: u16 = 5;
 pub const SESSION_ACTIVITY_PROTOCOL_MINOR: u16 = 4;
+pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -288,6 +290,8 @@ pub enum SessionControlMessage {
         cols: u16,
         rows: u16,
         read_write: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presentation: Option<TerminalPresentationConfig>,
     },
     FocusAndResize {
         view_id: String,
@@ -368,7 +372,7 @@ pub enum TunnelInput {
     Interrupt,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -386,6 +390,9 @@ pub enum StateMessage {
     },
     ActivityChanged {
         activity: SessionActivity,
+    },
+    ConfigurationChanged {
+        presentation: TerminalPresentationConfig,
     },
 }
 
@@ -437,6 +444,9 @@ impl Serialize for CompactStateMessageRef<'_> {
             ),
             StateMessage::ActivityChanged { activity } => {
                 serializer.serialize_newtype_variant("CompactStateMessage", 3, "a", activity)
+            }
+            StateMessage::ConfigurationChanged { presentation } => {
+                serializer.serialize_newtype_variant("CompactStateMessage", 4, "g", presentation)
             }
         }
     }
@@ -612,6 +622,8 @@ enum CompactStateMessage {
     ControlChanged(CompactControlChanged),
     #[serde(rename = "a")]
     ActivityChanged(SessionActivity),
+    #[serde(rename = "g")]
+    ConfigurationChanged(TerminalPresentationConfig),
 }
 
 #[derive(Deserialize)]
@@ -751,6 +763,9 @@ impl TryFrom<CompactStateMessage> for StateMessage {
                 layout_epoch: control.4,
             },
             CompactStateMessage::ActivityChanged(activity) => Self::ActivityChanged { activity },
+            CompactStateMessage::ConfigurationChanged(presentation) => {
+                Self::ConfigurationChanged { presentation }
+            }
         })
     }
 }
@@ -1046,6 +1061,21 @@ mod tests {
                 foreground_process_group_id: Some(43),
                 observed_at_ms: 100,
             },
+        };
+        for codec in [StateCodec::Json, StateCodec::CompactJsonV1] {
+            let encoded = encode_state_message(&message, codec, 4096).unwrap();
+            let (decoded, consumed) = decode_state_message(&encoded, codec, 4096).unwrap();
+            assert_eq!(decoded, message);
+            assert_eq!(consumed, encoded.len());
+        }
+    }
+
+    #[test]
+    fn presentation_changes_round_trip_in_json_and_compact_state_codecs() {
+        let mut snapshot = ghosttea_config::ConfigSnapshot::default();
+        snapshot.revision = "remote-revision".into();
+        let message = StateMessage::ConfigurationChanged {
+            presentation: snapshot.terminal_presentation(),
         };
         for codec in [StateCodec::Json, StateCodec::CompactJsonV1] {
             let encoded = encode_state_message(&message, codec, 4096).unwrap();

@@ -160,13 +160,13 @@ struct GhostteaContentView: View {
 
   private var terminal: some View {
     ZStack {
-      model.configuration.terminalBackgroundColor
+      model.presentationConfiguration.terminalBackgroundColor
         .ignoresSafeArea()
       if let frame = model.frame {
         GhostteaSharedTerminalSurface(
           frame: frame,
           visible: scenePhase == .active,
-          configuration: model.configuration,
+          configuration: model.presentationConfiguration,
           onGridSize: model.updateGrid,
           onNeedsFullRefresh: model.requestFullRefresh,
           onHardwareInput: model.handleHardwareKey,
@@ -177,8 +177,8 @@ struct GhostteaContentView: View {
           onSelectAll: model.copyAll)
       } else {
         ProgressView(model.status)
-          .tint(model.configuration.terminalForegroundColor)
-          .foregroundStyle(model.configuration.terminalForegroundColor)
+          .tint(model.presentationConfiguration.terminalForegroundColor)
+          .foregroundStyle(model.presentationConfiguration.terminalForegroundColor)
       }
     }
   }
