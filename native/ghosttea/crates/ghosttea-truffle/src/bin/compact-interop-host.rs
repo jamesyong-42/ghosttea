@@ -9,6 +9,7 @@
 //! Everything a driver needs comes out on one line of stdout and nothing else
 //! does, so the port and session id can be read without parsing prose.
 
+#[cfg(unix)]
 use std::{
     collections::HashMap,
     io::Write,
@@ -16,25 +17,41 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
 use anyhow::{Context, Result};
+#[cfg(unix)]
 use ghosttea::{
     FrameHub, HostShutdownAnnouncer, Session, SessionProgramKind, SessionRegistry, TextEngine,
     session::{Persistence, SpawnOptions},
 };
+#[cfg(unix)]
 use ghosttea_truffle::{TruffleTerminalConfig, serve_compact_loopback};
 
 /// The device id the client must assert in its hello. Checked by the host, so a
 /// client that gets it wrong is refused — the one piece of the identity story
 /// that survives off a tailnet.
+#[cfg(unix)]
 const DEVICE_ID: &str = "compact-interop-device";
 /// Stands in for the WhoIs result. Every connection is attributed to it, which
 /// is what makes generation ordering across reconnects meaningful.
+#[cfg(unix)]
 const CLIENT_ID: &str = "truffle:compact-interop";
 
 /// Two deterministic lines for the selection row to select, then an idle read on
 /// stdin so the session outlives every test rather than exiting underneath one.
+#[cfg(unix)]
 const SESSION_SCRIPT: &str = "printf 'interop-line-1\\ninterop-line-2\\n'; exec cat";
 
+/// The scenarios this fixture stages — SIGSTOP freezes, SIGCONT thaws, SIGTERM
+/// goodbyes — are Unix signal semantics; there is nothing for it to prove on
+/// Windows, but `--all-targets --all-features` must still compile there.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("compact-interop-host is unix-only: it stages SIGSTOP/SIGCONT/SIGTERM scenarios");
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let registry = SessionRegistry::default();
@@ -121,6 +138,7 @@ async fn main() -> Result<()> {
 
 /// Resolves on SIGTERM or SIGINT — how the driver stops this, and how a test
 /// asks for the goodbye frame.
+#[cfg(unix)]
 async fn terminated() -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
