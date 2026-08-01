@@ -149,9 +149,7 @@ async function smokeCheck({ port, sessionId, deviceId }) {
   });
   const nextFrame = framer(socket);
   try {
-    socket.write(
-      encodePreface({ streamKind: "session-control", sessionId, viewId: "pane-1" }),
-    );
+    socket.write(encodePreface({ streamKind: "session-control", sessionId, viewId: "pane-1" }));
     socket.write(
       encodeMessage({
         type: "client-hello",
@@ -211,15 +209,7 @@ async function smokeCheck({ port, sessionId, deviceId }) {
 function buildFixture() {
   const built = spawnSync(
     "cargo",
-    [
-      "build",
-      "-p",
-      "ghosttea-truffle",
-      "--features",
-      "interop-fixture",
-      "--bin",
-      "compact-interop-host",
-    ],
+    ["build", "-p", "ghosttea-truffle", "--features", "interop-fixture", "--bin", "compact-interop-host"],
     { cwd: resolve(root, "native/ghosttea"), stdio: "inherit" },
   );
   if (built.status !== 0) throw new Error("could not build the compact interop fixture");
@@ -241,10 +231,7 @@ function startFixture() {
   });
   return new Promise((ok, no) => {
     let stdout = "";
-    const timer = setTimeout(
-      () => no(new Error("the fixture never announced itself")),
-      30_000,
-    );
+    const timer = setTimeout(() => no(new Error("the fixture never announced itself")), 30_000);
     fixture.stdout.on("data", (chunk) => {
       stdout += chunk;
       const line = stdout.split("\n").find((l) => l.startsWith(READY_PREFIX));
@@ -267,37 +254,29 @@ function startFixture() {
  * the shutdown row gets its own.
  */
 function runSwift({ filter, started, extraEnv = {} }) {
-  return spawnSync(
-    "swift",
-    ["test", "--disable-sandbox", "--package-path", "apple/GhostteaKit", "--filter", filter],
-    {
-      cwd: root,
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
-        GHOSTTEA_COMPACT_INTEROP_PORT: String(started.port),
-        GHOSTTEA_COMPACT_INTEROP_SESSION: started.sessionId,
-        GHOSTTEA_COMPACT_INTEROP_DEVICE: started.deviceId,
-        GHOSTTEA_COMPACT_INTEROP_PID: String(started.pid),
-        ...extraEnv,
-      },
+  return spawnSync("swift", ["test", "--disable-sandbox", "--package-path", "apple/GhostteaKit", "--filter", filter], {
+    cwd: root,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
+      GHOSTTEA_COMPACT_INTEROP_PORT: String(started.port),
+      GHOSTTEA_COMPACT_INTEROP_SESSION: started.sessionId,
+      GHOSTTEA_COMPACT_INTEROP_DEVICE: started.deviceId,
+      GHOSTTEA_COMPACT_INTEROP_PID: String(started.pid),
+      ...extraEnv,
     },
-  ).status;
+  }).status;
 }
 
 let started;
 try {
   buildFixture();
   started = await startFixture();
-  console.log(
-    `[compact-interop] fixture up on 127.0.0.1:${started.port}, session ${started.sessionId}`,
-  );
+  console.log(`[compact-interop] fixture up on 127.0.0.1:${started.port}, session ${started.sessionId}`);
 
   const attached = await smokeCheck(started);
-  console.log(
-    `[compact-interop] smoke check attached at epoch ${attached.attachmentEpoch} and saw session output`,
-  );
+  console.log(`[compact-interop] smoke check attached at epoch ${attached.attachmentEpoch} and saw session output`);
 
   if (smokeOnly) {
     console.log("[compact-interop] --smoke: stopping before the Swift run");
