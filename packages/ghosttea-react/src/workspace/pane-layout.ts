@@ -23,14 +23,23 @@ export type PaneNode = PaneLeaf | PaneSplit;
 export const layoutId = (prefix: string): string => `${prefix}-${crypto.randomUUID()}`;
 export const pane = (id: string, session: SessionSummary): PaneLeaf => ({ kind: "pane", id, session });
 
-export function restoreNode(value: unknown, sessions: Map<string, SessionSummary>): PaneNode | null {
+function savedPaneSessionId(candidate: Record<string, unknown>): string | undefined {
+  if (typeof candidate.sessionId === "string") return candidate.sessionId;
+  const savedSession = candidate.session as { id?: unknown } | undefined;
+  return typeof savedSession?.id === "string" ? savedSession.id : undefined;
+}
+
+export function restoreNode(
+  value: unknown,
+  sessions: Map<string, SessionSummary>,
+  revivals?: ReadonlyMap<string, SessionSummary>,
+): PaneNode | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Record<string, unknown>;
   if (candidate.kind === "pane" && typeof candidate.id === "string") {
-    const savedSession = candidate.session as { id?: unknown } | undefined;
-    const sessionId = typeof candidate.sessionId === "string" ? candidate.sessionId : savedSession?.id;
-    if (typeof sessionId !== "string") return null;
-    const session = sessions.get(sessionId);
+    const sessionId = savedPaneSessionId(candidate);
+    if (sessionId === undefined) return null;
+    const session = sessions.get(sessionId) ?? revivals?.get(candidate.id);
     return session ? pane(candidate.id, session) : null;
   }
   if (
@@ -39,8 +48,8 @@ export function restoreNode(value: unknown, sessions: Map<string, SessionSummary
     (candidate.axis !== "horizontal" && candidate.axis !== "vertical")
   )
     return null;
-  const first = restoreNode(candidate.first, sessions);
-  const second = restoreNode(candidate.second, sessions);
+  const first = restoreNode(candidate.first, sessions, revivals);
+  const second = restoreNode(candidate.second, sessions, revivals);
   if (!first) return second;
   if (!second) return first;
   const ratio =
@@ -48,6 +57,30 @@ export function restoreNode(value: unknown, sessions: Map<string, SessionSummary
       ? Math.max(0.1, Math.min(0.9, candidate.ratio))
       : 0.5;
   return { kind: "split", id: candidate.id, axis: candidate.axis, ratio, first, second };
+}
+
+export interface DeadPane {
+  paneId: string;
+  sessionId: string;
+  meta: unknown;
+}
+
+/** Persisted panes that restoreNode would drop, in tree order. Mirrors restoreNode's parsing. */
+export function collectDeadPanes(value: unknown, sessions: ReadonlyMap<string, SessionSummary>): DeadPane[] {
+  if (!value || typeof value !== "object") return [];
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind === "pane" && typeof candidate.id === "string") {
+    const sessionId = savedPaneSessionId(candidate);
+    if (sessionId === undefined || sessions.has(sessionId)) return [];
+    return [{ paneId: candidate.id, sessionId, meta: candidate.meta }];
+  }
+  if (
+    candidate.kind !== "split" ||
+    typeof candidate.id !== "string" ||
+    (candidate.axis !== "horizontal" && candidate.axis !== "vertical")
+  )
+    return [];
+  return [...collectDeadPanes(candidate.first, sessions), ...collectDeadPanes(candidate.second, sessions)];
 }
 
 export function appendPane(root: PaneNode, next: PaneLeaf): PaneNode {
@@ -153,17 +186,21 @@ export function persistedWorkspace(
   root: PaneNode,
   activePaneId: string,
   zoomedPaneId: string | null,
+  paneMeta?: (session: SessionSummary, paneId: string) => unknown,
 ): WorkspaceDocumentV1 {
-  const persistNode = (node: PaneNode): WorkspaceNode =>
-    node.kind === "pane"
-      ? { kind: "pane", id: node.id, sessionId: node.session.id }
-      : {
-          kind: "split",
-          id: node.id,
-          axis: node.axis,
-          ratio: node.ratio,
-          first: persistNode(node.first),
-          second: persistNode(node.second),
-        };
+  const persistNode = (node: PaneNode): WorkspaceNode => {
+    if (node.kind === "pane") {
+      const meta = paneMeta?.(node.session, node.id);
+      return { kind: "pane", id: node.id, sessionId: node.session.id, ...(meta !== undefined ? { meta } : {}) };
+    }
+    return {
+      kind: "split",
+      id: node.id,
+      axis: node.axis,
+      ratio: node.ratio,
+      first: persistNode(node.first),
+      second: persistNode(node.second),
+    };
+  };
   return { version: WORKSPACE_SCHEMA_VERSION, root: persistNode(root), activePaneId, zoomedPaneId };
 }

@@ -19,6 +19,7 @@ import { paneIsFrozen } from "./remote-banner.js";
 import { TERMINAL_THEMES } from "./themes.js";
 import {
   appendPane,
+  collectDeadPanes,
   containsPane,
   equalize,
   insertPane,
@@ -104,12 +105,29 @@ export interface GhostteaWorkspacePaneDecoration {
   label?: string;
 }
 
+export interface GhostteaPaneRehydration {
+  /** The value `paneMeta` returned for this pane when the workspace was persisted, if any. */
+  meta: unknown;
+  /** The session id the pane referenced when it was persisted; it is no longer live. */
+  sessionId: string;
+  paneId: string;
+}
+
 export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
   sidebar?: ComponentType<{ workspace: GhostteaWorkspaceContext }>;
   theme?: TerminalTheme;
   decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
+  /** Attach durable, embedder-defined data to a pane as it is persisted; opaque to Ghosttea. */
+  paneMeta?: ((session: SessionSummary, paneId: string) => unknown) | undefined;
+  /**
+   * Called at load for a persisted pane whose session is no longer live. Return a live session
+   * to keep the pane (and its splits) in place, or null to drop it (the default behavior).
+   * Panes are resolved concurrently and applied in tree order.
+   */
+  onRehydratePane?:
+    ((context: GhostteaPaneRehydration) => Promise<SessionSummary | null> | SessionSummary | null) | undefined;
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
@@ -134,12 +152,13 @@ function windowTitle(session: SessionSummary | undefined): string {
   return executable || "Ghosttea";
 }
 
-async function initializeWorkspace(
+export async function initializeWorkspace(
   terminalRuntime: ReturnType<typeof useGhostteaRuntime>,
   storageKey: string,
   defaultShell: string,
   claimExistingSessions: boolean,
   initialCwd: string | undefined,
+  rehydratePane: (context: GhostteaPaneRehydration) => Promise<SessionSummary | null> | SessionSummary | null,
 ): Promise<InitialWorkspace> {
   await terminalRuntime.connect();
   const sessions = await terminalRuntime.listSessions();
@@ -158,7 +177,19 @@ async function initializeWorkspace(
   }
   const decodedSaved = decodeWorkspaceDocument(saved);
   const savedRoot = decodedSaved?.root ?? (saved?.version === undefined ? saved?.layout : undefined);
-  let layout = restoreNode(savedRoot, byId);
+  const revivals = new Map<string, SessionSummary>();
+  await Promise.all(
+    collectDeadPanes(savedRoot, byId).map(async (dead) => {
+      try {
+        const session = await rehydratePane({ meta: dead.meta, sessionId: dead.sessionId, paneId: dead.paneId });
+        if (session) revivals.set(dead.paneId, session);
+      } catch (cause) {
+        console.warn("[terminal-runtime] pane rehydration failed; dropping pane", cause);
+      }
+    }),
+  );
+  for (const session of revivals.values()) terminalRuntime.registerSession(session);
+  let layout = restoreNode(savedRoot, byId, revivals);
   const attached = new Set(leaves(layout ?? undefined).map((leaf) => leaf.session.id));
   for (const session of sessionsToClaim(sessions, attached, claimExistingSessions && !hasSavedWorkspace)) {
     const next = pane(layoutId("pane"), session);
@@ -193,10 +224,11 @@ function sharedInitialization(
   defaultShell: string,
   claimExistingSessions: boolean,
   initialCwd: string | undefined,
+  rehydratePane: (context: GhostteaPaneRehydration) => Promise<SessionSummary | null> | SessionSummary | null,
 ): Promise<InitialWorkspace> {
   const key = `${storageKey}\u0000${defaultShell}\u0000${claimExistingSessions}\u0000${initialCwd ?? ""}`;
   return initializations.get(terminalRuntime, key, () =>
-    initializeWorkspace(terminalRuntime, storageKey, defaultShell, claimExistingSessions, initialCwd),
+    initializeWorkspace(terminalRuntime, storageKey, defaultShell, claimExistingSessions, initialCwd, rehydratePane),
   );
 }
 
@@ -429,6 +461,8 @@ export function GhostteaWorkspace({
   sidebar,
   theme,
   decoratePane,
+  paneMeta,
+  onRehydratePane,
   onActiveSessionChange,
   createSplitSession,
   enableRemoteSessions = true,
@@ -488,6 +522,17 @@ export function GhostteaWorkspace({
     return () => terminalRuntime.removeEventListener("config-changed", update);
   }, [terminalRuntime]);
 
+  // The initialization promise is cached per (runtime, key); keep the rehydrate callback out of
+  // the effect deps via a stable wrapper so an unstable prop identity cannot re-run initialization.
+  const onRehydratePaneRef = useRef(onRehydratePane);
+  useEffect(() => {
+    onRehydratePaneRef.current = onRehydratePane;
+  }, [onRehydratePane]);
+  const rehydratePane = useCallback(
+    (context: GhostteaPaneRehydration) => onRehydratePaneRef.current?.(context) ?? null,
+    [],
+  );
+
   useEffect(() => {
     let mounted = true;
     mountedRef.current = true;
@@ -497,6 +542,7 @@ export function GhostteaWorkspace({
       platform.defaultShell,
       claimExistingSessions,
       initialCwd,
+      rehydratePane,
     ).then(
       (workspace) => {
         if (!mounted) return;
@@ -512,18 +558,21 @@ export function GhostteaWorkspace({
       mounted = false;
       mountedRef.current = false;
     };
-  }, [claimExistingSessions, initialCwd, platform.defaultShell, storageKey, terminalRuntime]);
+  }, [claimExistingSessions, initialCwd, platform.defaultShell, rehydratePane, storageKey, terminalRuntime]);
 
   useEffect(() => {
     layoutRef.current = layout;
     activePaneIdRef.current = activePaneId;
     if (!layout || !activePaneId) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify(persistedWorkspace(layout, activePaneId, zoomedPaneId)));
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify(persistedWorkspace(layout, activePaneId, zoomedPaneId, paneMeta)),
+      );
     } catch (cause) {
       console.warn("[terminal-runtime] failed to save workspace", cause);
     }
-  }, [activePaneId, layout, storageKey, zoomedPaneId]);
+  }, [activePaneId, layout, paneMeta, storageKey, zoomedPaneId]);
 
   useEffect(() => {
     const update = (event: Event): void => {

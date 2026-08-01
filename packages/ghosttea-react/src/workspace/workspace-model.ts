@@ -7,6 +7,8 @@ export interface WorkspacePaneNode {
   kind: "pane";
   id: string;
   sessionId: string;
+  /** Opaque to Ghosttea; persisted verbatim and handed back at rehydration. */
+  meta?: unknown;
 }
 
 export interface WorkspaceSplitNode {
@@ -272,7 +274,12 @@ export function decodeWorkspaceDocument(value: unknown): WorkspaceDocumentV1 | n
     if (node.kind === "pane") {
       if (typeof node.sessionId !== "string" || !node.sessionId || paneIds.has(node.id)) return null;
       paneIds.add(node.id);
-      return { kind: "pane", id: node.id, sessionId: node.sessionId };
+      return {
+        kind: "pane",
+        id: node.id,
+        sessionId: node.sessionId,
+        ...(node.meta !== undefined ? { meta: node.meta } : {}),
+      };
     }
     if (node.kind !== "split" || (node.axis !== "horizontal" && node.axis !== "vertical")) return null;
     const first = decodeNode(node.first);
