@@ -8634,6 +8634,32 @@ mod tests {
         }
     }
 
+    /// The same probe cadence as [`probing_reconnect`], with the give-up
+    /// window widened far past it.
+    ///
+    /// A test that asserts a session *dies* is safe at any margin, because a
+    /// stalled runner only kills it sooner. A test that asserts a healthy
+    /// session *survives* is the opposite: its margin is not the shipped
+    /// proportion but the gap between a stalled runner and `heartbeat_fail`,
+    /// and at 120 ms that gap is smaller than a scheduler hiccup. A runner
+    /// that deschedules the exchange for longer than the whole window starves
+    /// a probe the host would have answered, and the viewer correctly kills a
+    /// session that was never sick — which is the flake, not the behavior.
+    ///
+    /// Two seconds is far past any stall this suite has produced, while the
+    /// unchanged probe cadence still drives a dozen exchanges through the
+    /// window under test.
+    fn patient_reconnect() -> MeshReconnectConfig {
+        MeshReconnectConfig {
+            heartbeat_idle: Duration::from_millis(150),
+            heartbeat_fail: Duration::from_secs(2),
+            // As in `probing_reconnect`: if the probe does fail, the session
+            // stays in Reconnecting to be observed rather than resting.
+            suspend_after: Duration::from_secs(60),
+            ..quiet_reconnect()
+        }
+    }
+
     /// The failure the heartbeat exists for: a connection that is up, and a
     /// host that talks, but no answer to what was actually asked. Without
     /// this the session sits Live behind a dead host until the transport's
@@ -8680,12 +8706,16 @@ mod tests {
     /// answers probes at any minor.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_answered_probe_leaves_a_quiet_session_alone() -> Result<()> {
-        let capable = Fixture::attached_with(probing_reconnect()).await?;
+        let capable = Fixture::attached_with(patient_reconnect()).await?;
         let legacy =
-            Fixture::attached_at(probing_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await?;
-        // Four failure windows of silence, with nothing to break it but the
-        // heartbeat's own exchange.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+            Fixture::attached_at(patient_reconnect(), REMOTE_RECONNECT_PROTOCOL_MINOR - 1).await?;
+        // Past the window that declares an unanswered session dead, with
+        // nothing to break the silence but the heartbeat's own exchange — so
+        // the exchange is what these assertions are reading. Held for one
+        // window rather than several: crossing the same threshold repeatedly
+        // adds no claim, and every extra window is more exposure to the
+        // runner stall that made this test flake.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
         assert_eq!(
             capable.lifecycle().await.state,
             RemoteLifecycleState::Live,

@@ -1,6 +1,6 @@
 # Publishing Ghosttea
 
-Ghosttea publishes one shared version across ten npm packages and six Rust
+Ghosttea publishes one shared version across ten npm packages and seven Rust
 crates. The `ghosttead`, `ghosttea-ffi`, `ghosttea-font-fixture-ffi`, and
 `ghosttea-apple-ffi` Rust packages and both desktop applications are private
 integration targets and must never be published to crates.io.
@@ -30,9 +30,10 @@ Publish Rust crates in dependency order:
 1. `ghosttea-vt-sys`
 2. `ghosttea-text`
 3. `ghosttea-vt`
-4. `ghosttea-core`
-5. `ghosttea`
-6. `ghosttea-truffle`
+4. `ghosttea-config`
+5. `ghosttea-core`
+6. `ghosttea`
+7. `ghosttea-truffle`
 
 Publish npm packages in dependency order. The binary packages go first and
 the resolver goes last: every publish waits until the registry can resolve
@@ -101,6 +102,7 @@ npm ci --ignore-scripts
 npm audit --audit-level=high
 npm run bootstrap:ghostty-vt:apple
 npm run ci:desktop
+npm run check:first-publishes
 cargo audit
 ```
 
@@ -108,6 +110,12 @@ The desktop gate builds and tests every workspace, validates npm and Rust
 package archives, builds external consumers exclusively from those archives,
 and runs the native lifecycle soak. GitHub separately checks the declared Rust
 1.88 minimum and extends the lifecycle soak on its weekly schedule.
+
+`check:first-publishes` is the one gate step that is not in `ci:desktop`, and
+deliberately: it asks crates.io and npm what they already hold, so it needs the
+network and it answers differently before and after a release. It belongs to
+the tag, not to a commit. Run it last, immediately before tagging — see
+“First manual publish” for what it catches.
 
 Before publishing, perform Cargo's atomic workspace dry-run. This uses Cargo's
 temporary registry to verify the unpublished synchronized dependency graph
@@ -203,6 +211,30 @@ publisher can be configured. Authenticate interactively with npm and
 crates.io, then create and push the signed release tag. Never move the tag
 after publishing any artifact.
 
+This is a rule about each artifact, not about the repository's first release. A
+crate or package added between releases has never been published either, so the
+release that first ships it cannot use trusted publishing for it. crates.io
+refuses with:
+
+```
+Trusted Publishing tokens do not support creating new crates. Publish the crate manually, first
+```
+
+and it refuses partway through, once the crates ahead of it have already
+uploaded and the tag can no longer be reused. 0.7.0 shipped `ghosttea-config`,
+created after 0.6.2, so `v0.7.0` was its first publish: the workflow failed on
+`Publish ghosttea-config` with `ghosttea-vt-sys`, `ghosttea-text`, and
+`ghosttea-vt` already on the registry, and recovery cost a manual publish and a
+`v0.7.0-retry.1` tag. Nothing warned before the tag, because nothing asked.
+
+`npm run check:first-publishes` asks. It derives the publishable crates and
+packages from the manifests that declare them, checks that the release workflow
+uploads exactly those, and queries both registries for each one — failing if any
+has never been published. An artifact that exists but lacks the version being
+released is not a finding; shipping that version is what the release is for.
+Run it before tagging, publish anything it names using the commands below, and
+configure that artifact's trusted publisher before the tag exists.
+
 Publish one Rust crate at a time in the order above. Wait for
 `cargo info NAME@VERSION` to succeed before publishing its dependents:
 
@@ -210,6 +242,7 @@ Publish one Rust crate at a time in the order above. Wait for
 cargo publish --locked --package ghosttea-vt-sys
 cargo publish --locked --package ghosttea-text
 cargo publish --locked --package ghosttea-vt
+cargo publish --locked --package ghosttea-config
 cargo publish --locked --package ghosttea-core
 cargo publish --locked --package ghosttea
 cargo publish --locked --package ghosttea-truffle

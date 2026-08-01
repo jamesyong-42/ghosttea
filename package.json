@@ -121,6 +121,7 @@
     "package:check": "npm run build:sdk && npm run package:check:built",
     "package:check:built": "npm run fetch:ghostty-vt && node scripts/check-packages.mjs",
     "check:workspace-names": "node scripts/check-workspace-names.mjs",
+    "check:first-publishes": "node scripts/check-first-publishes.mjs",
     "test:release-notes": "node --test tests/release-notes.test.mjs",
     "check:desktop": "npm run format:check && npm run lint && npm run check:workspace-names && npm run build:sdk && npm run check --workspaces --if-present && cargo check --workspace --all-targets --all-features --locked && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
     "test:desktop": "npm run build:sdk && npm run test --workspaces --if-present && cargo test --workspace --locked && npm run test:ghosttea-core:ffi && npm run test:release-notes && npm run test:integration:built && npm run test:bench:lib && npm run test:bench:render && npm run test:bench:truffle",
