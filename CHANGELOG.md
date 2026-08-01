@@ -3,6 +3,32 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.8.0 - 2026-08-01
+
+### Added
+
+- Saved workspace layouts survive an application restart. `GhostteaWorkspace`
+  persisted geometry plus a session id per pane and silently dropped any pane
+  whose session was no longer alive — after a restart that was every pane, and
+  the whole saved layout resolved to nothing. Two optional props close the
+  gap: `paneMeta` attaches durable, embedder-defined data to a pane as it is
+  persisted, and `onRehydratePane` is asked — before the split collapse — to
+  supply a live replacement session for a pane whose saved session is gone.
+  A revived pane keeps its exact place, splits, and saved ratios, because
+  Ghosttea keeps doing the restoring; the embedder only answers what session
+  goes where. Dead panes resolve concurrently and apply in tree order, and
+  declining (or failing) falls back to the previous drop-and-collapse. With
+  the props unset, the persisted document and restore behavior are unchanged
+  byte for byte, so no schema version bump. (#48)
+
+### Changed
+
+- The GhostteaKit native artifact is republished as
+  `ghosttea-apple-native-e464e4ac38c4` and pinned by the root `Package.swift`.
+  Content addressing covers the crate manifests compiled into the artifact,
+  so the workspace version bump moves the digest even though no Rust source
+  changed in this release.
+
 ## 0.7.0 - 2026-08-01
 
 ### Added
