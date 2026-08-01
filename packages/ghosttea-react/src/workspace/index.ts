@@ -1,5 +1,6 @@
 export {
   GhostteaWorkspace,
+  type GhostteaPaneRehydration,
   type GhostteaWorkspaceContext,
   type GhostteaWorkspacePane,
   type GhostteaWorkspacePaneDecoration,
@@ -46,6 +47,7 @@ export {
 } from "../bindings/index.js";
 export {
   appendPane,
+  collectDeadPanes,
   containsPane,
   equalize,
   layoutId,
@@ -60,6 +62,7 @@ export {
   restoreNode,
   updateSession,
   updateSplit,
+  type DeadPane,
   type PaneLeaf,
   type PaneNode,
   type PaneSplit,

@@ -5,6 +5,7 @@ import {
   decodeWorkspaceDocument,
   type WorkspaceAction,
   type WorkspaceDocumentV1,
+  type WorkspaceSplitNode,
   type WorkspaceTransition,
 } from "./workspace-model";
 
@@ -67,6 +68,31 @@ describe("workspace model", () => {
     });
     expect((decodeWorkspaceDocument(split(4))!.root as { ratio: number }).ratio).toBe(0.9);
     expect((decodeWorkspaceDocument(split("bad"))!.root as { ratio: number }).ratio).toBe(0.5);
+  });
+
+  it("preserves opaque pane meta through decode and omits the key when absent", () => {
+    const document = decodeWorkspaceDocument({
+      version: 1,
+      root: {
+        kind: "split",
+        id: "split",
+        axis: "horizontal",
+        ratio: 0.5,
+        first: { kind: "pane", id: "pane-1", sessionId: "one", meta: { cwd: "/repo", nested: [1, "a"] } },
+        second: { kind: "pane", id: "pane-2", sessionId: "two" },
+      },
+      activePaneId: "pane-1",
+      zoomedPaneId: null,
+    });
+    expect(document).not.toBeNull();
+    const root = document!.root as WorkspaceSplitNode;
+    expect(root.first).toEqual({
+      kind: "pane",
+      id: "pane-1",
+      sessionId: "one",
+      meta: { cwd: "/repo", nested: [1, "a"] },
+    });
+    expect("meta" in root.second).toBe(false);
   });
 
   it("keeps a mirrored session alive until its final pane closes", () => {
