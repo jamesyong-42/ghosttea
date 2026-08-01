@@ -4275,6 +4275,14 @@ async fn request_advertisements_from_online_peers(
 /// Feature-gated: a compact endpoint that serves whoever connects, with the
 /// identity check standing in rather than performed, is not something a
 /// production build should be able to reach by accident.
+/// `host_config` is supplied by the caller rather than made here, and that is
+/// load-bearing rather than stylistic. A serve loop dropped at shutdown takes
+/// everything it owns with it, and a connection handler reads a closed
+/// configuration publisher as a fault and hangs up — so a publisher owned here
+/// would cut every live connection the instant this future is dropped, before
+/// the drain could announce itself, turning a clean goodbye into what a viewer
+/// can only read as an outage. The caller keeps it alive across its own
+/// shutdown path.
 #[cfg(feature = "interop-fixture")]
 pub async fn serve_compact_loopback(
     listener: tokio::net::TcpListener,
@@ -4283,18 +4291,12 @@ pub async fn serve_compact_loopback(
     expected_device_id: String,
     client_id: String,
     shutdown: HostShutdownAnnouncer,
+    host_config: tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>,
 ) -> Result<()> {
     let services = HostServices {
         session_status: None,
         shutdown,
     };
-    // The sender has to outlive every connection: the serve loop treats a
-    // closed configuration publisher as a fault, so dropping it here would
-    // break each connection at the presentation minor instead of leaving it
-    // quiet.
-    let (_host_config_tx, host_config) = tokio::sync::watch::channel(Arc::new(
-        ghosttea::ConfigSnapshot::default().terminal_presentation(),
-    ));
     loop {
         let (stream, _) = listener.accept().await?;
         // Same invariant as both production accept loops: the id is the

@@ -34,6 +34,11 @@ private enum Interop {
     ProcessInfo.processInfo.environment["GHOSTTEA_COMPACT_INTEROP_PID"].flatMap(Int32.init)
   }
   static var isAvailable: Bool { port != nil }
+  /// The shutdown row kills the fixture, so it is opt-in: a driver that wants
+  /// it runs it as its own invocation once the other rows are done.
+  static var allowsShutdownRow: Bool {
+    isAvailable && ProcessInfo.processInfo.environment["GHOSTTEA_COMPACT_INTEROP_SHUTDOWN"] != nil
+  }
 }
 
 // MARK: - Rows
@@ -75,6 +80,43 @@ struct GhostteaCompactInteropTests {
       await waitFor(lifecycle, seconds: 60) { $0.phase == .live && $0.lifecycleSeq > live.lifecycleSeq
       })
     #expect(resumed.negotiatedMinor == 6)
+
+    // What a client can see: the recovery attach announced a *later* lineage
+    // generation and carried resume evidence. What it deliberately does not
+    // assert is the host's `resumed` flag — on thaw the host processes both the
+    // abandoned socket's close and this attach, and if the reap wins the race
+    // the takeover correctly reports no displacement. Asserting that would be
+    // asserting a scheduling order, not a contract.
+    let sent = await lifecycle.lastAttachOnTheWire
+    #expect(sent.generation >= 2, "a resume must advance the lineage generation")
+    #expect(sent.carriedResume, "a resume must carry the previous epochs")
+  }
+
+  /// The clean goodbye, gated separately because it ends the fixture: the
+  /// driver runs it as its own invocation after the other rows, or not at all.
+  /// Falsifiable in the strong sense — the client must decode the `hs` frame
+  /// and conclude host-shutdown rather than reading the close as an outage.
+  @Test(.enabled(if: Interop.allowsShutdownRow))
+  func aHostShutdownGoodbyeEndsTheSessionRatherThanLookingLikeAnOutage() async throws {
+    let events = InteropEvents()
+    let lifecycle = try interopLifecycle(localViewID: "interop-goodbye", events: events)
+    await lifecycle.start()
+    defer { Task { await lifecycle.close() } }
+    _ = try #require(await waitFor(lifecycle, seconds: 30) { $0.phase == .live })
+
+    let pid = try #require(Interop.hostPID)
+    #expect(kill(pid, SIGTERM) == 0)
+    let ended = await waitFor(lifecycle, seconds: 30) {
+      if case .ended = $0.phase { return true }
+      return false
+    }
+    // Report where it actually landed: "never reached host-shutdown" and
+    // "ended as something else" are different bugs on different sides of the
+    // wire, and a bare nil cannot tell them apart.
+    let reached = await lifecycle.currentSnapshot.phase
+    #expect(
+      ended?.phase == .ended(.hostShutdown),
+      "a drained host must read as host-shutdown, never as a dropped socket — reached \(reached)")
   }
 
   /// Row 2. The pair-level version of `aLegacyHostIsNeverProbed` and the host's

@@ -30,6 +30,9 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const READY_PREFIX = "GHOSTTEA_COMPACT_INTEROP_READY ";
 const smokeOnly = process.argv.includes("--smoke");
+/** Runs alone and last: it stops the fixture as the thing under test. */
+const SHUTDOWN_ROW = "aHostShutdownGoodbyeEndsTheSessionRatherThanLookingLikeAnOutage";
+let shutdownRowRan = false;
 
 const MAGIC = Buffer.from("TSP1");
 const PROTOCOL_MAJOR = 1;
@@ -227,6 +230,15 @@ function startFixture() {
     cwd: root,
     stdio: ["ignore", "pipe", "inherit"],
   });
+  // The shutdown row stops the fixture on purpose, so its exit is a normal
+  // outcome here rather than a failure. Recording it is what lets teardown tell
+  // "the shutdown row consumed it" from "it died on its own".
+  const exited = {};
+  fixture.once("exit", (code, signal) => {
+    exited.code = code;
+    exited.signal = signal;
+    exited.happened = true;
+  });
   return new Promise((ok, no) => {
     let stdout = "";
     const timer = setTimeout(
@@ -238,13 +250,40 @@ function startFixture() {
       const line = stdout.split("\n").find((l) => l.startsWith(READY_PREFIX));
       if (!line) return;
       clearTimeout(timer);
-      ok({ fixture, ...JSON.parse(line.slice(READY_PREFIX.length)) });
+      ok({ fixture, exited, ...JSON.parse(line.slice(READY_PREFIX.length)) });
     });
     fixture.once("exit", (code) => {
       clearTimeout(timer);
       no(new Error(`the fixture exited before announcing itself (code ${code})`));
     });
   });
+}
+
+/**
+ * One `swift test` invocation against the running fixture.
+ *
+ * `extraEnv` is how the opt-in rows are turned on. A row that consumes the
+ * fixture cannot share an invocation with rows that still need it, which is why
+ * the shutdown row gets its own.
+ */
+function runSwift({ filter, started, extraEnv = {} }) {
+  return spawnSync(
+    "swift",
+    ["test", "--disable-sandbox", "--package-path", "apple/GhostteaKit", "--filter", filter],
+    {
+      cwd: root,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
+        GHOSTTEA_COMPACT_INTEROP_PORT: String(started.port),
+        GHOSTTEA_COMPACT_INTEROP_SESSION: started.sessionId,
+        GHOSTTEA_COMPACT_INTEROP_DEVICE: started.deviceId,
+        GHOSTTEA_COMPACT_INTEROP_PID: String(started.pid),
+        ...extraEnv,
+      },
+    },
+  ).status;
 }
 
 let started;
@@ -262,39 +301,68 @@ try {
 
   if (smokeOnly) {
     console.log("[compact-interop] --smoke: stopping before the Swift run");
+  } else if (runSwift({ filter: "GhostteaCompactInteropTests", started }) !== 0) {
+    fail("the Swift interop tests failed");
   } else {
-    const swift = spawnSync(
-      "swift",
-      [
-        "test",
-        "--disable-sandbox",
-        "--package-path",
-        "apple/GhostteaKit",
-        "--filter",
-        "GhostteaCompactInteropTests",
-      ],
-      {
-        cwd: root,
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          DEVELOPER_DIR: process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer",
-          GHOSTTEA_COMPACT_INTEROP_PORT: String(started.port),
-          GHOSTTEA_COMPACT_INTEROP_SESSION: started.sessionId,
-          GHOSTTEA_COMPACT_INTEROP_DEVICE: started.deviceId,
-          GHOSTTEA_COMPACT_INTEROP_PID: String(started.pid),
-        },
-      },
-    );
-    if (swift.status !== 0) fail("the Swift interop tests failed");
-    else console.log("[compact-interop] swift interop tests passed");
+    console.log("[compact-interop] swift interop rows passed");
+
+    // The shutdown row runs last and alone, because it ends the fixture: it
+    // SIGTERMs the host and asserts the goodbye reads as host-shutdown rather
+    // than as a dropped socket. It is opt-in on the Swift side, so without this
+    // second invocation it could only ever skip — a row that never runs proves
+    // nothing while looking like coverage.
+    console.log("[compact-interop] running the shutdown row (consumes the fixture)");
+    const shutdownStatus = runSwift({
+      filter: SHUTDOWN_ROW,
+      started,
+      extraEnv: { GHOSTTEA_COMPACT_INTEROP_SHUTDOWN: "1" },
+    });
+    shutdownRowRan = true;
+    if (shutdownStatus !== 0) fail("the Swift host-shutdown row failed");
+    else console.log("[compact-interop] swift host-shutdown row passed");
   }
 } catch (error) {
   fail(error.message);
 } finally {
-  if (started?.fixture) {
-    // SIGTERM rather than SIGKILL: the fixture announces its shutdown on the
-    // way out, which is the drain path and the last thing worth exercising.
+  // `spawnSync` blocks the event loop, so a fixture the shutdown row killed has
+  // its `exit` event still queued when we arrive here. Waiting for it only when
+  // it is expected keeps the check from racing the notification and reporting a
+  // live fixture that is already gone.
+  if (shutdownRowRan && started && !started.exited.happened) {
+    await new Promise((settled) => {
+      const timer = setTimeout(settled, 2_000);
+      started.fixture.once("exit", () => {
+        clearTimeout(timer);
+        settled();
+      });
+    });
+  }
+
+  if (started?.exited?.happened) {
+    // Already gone. Which is expected exactly once — the shutdown row stops it
+    // deliberately — and a bug any other time, so the two are told apart rather
+    // than both passing quietly as "nothing left to clean up".
+    const { code, signal } = started.exited;
+    if (!shutdownRowRan) {
+      fail(`the fixture exited before the run finished (code ${code}, signal ${signal})`);
+    } else if (code !== 0) {
+      fail(`the shutdown row left the fixture exiting badly (code ${code}, signal ${signal})`);
+    } else {
+      console.log("[compact-interop] fixture exited cleanly, consumed by the shutdown row");
+    }
+  } else if (started?.fixture) {
+    // SIGCONT first, unconditionally. The freeze row stops this process with
+    // SIGSTOP, and a stopped process does not act on SIGTERM — it queues it and
+    // stays stopped. A test that dies between its stop and its resume would
+    // otherwise strand the fixture here forever, holding its port, and the
+    // teardown that was supposed to clean up would be the thing that hangs.
+    try {
+      started.fixture.kill("SIGCONT");
+    } catch {
+      // Already gone; nothing to resume.
+    }
+    // Then SIGTERM rather than SIGKILL: the fixture announces its shutdown on
+    // the way out, which is the drain path and the last thing worth exercising.
     started.fixture.kill("SIGTERM");
   }
 }

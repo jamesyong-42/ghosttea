@@ -86,6 +86,15 @@ async fn main() -> Result<()> {
         allow_tailnet_write: true,
         ..TruffleTerminalConfig::default()
     };
+    // Owned here, not by the serve loop. The select below drops the losing
+    // future, and a connection handler treats a closed configuration publisher
+    // as a fault and hangs up — so a publisher living inside the serve loop
+    // would cut every connection at the instant of SIGTERM, before the drain
+    // announced anything, and the goodbye would reach nobody. Held by main, it
+    // outlives the announcement.
+    let (_host_config, host_config) = tokio::sync::watch::channel(Arc::new(
+        ghosttea::ConfigSnapshot::default().terminal_presentation(),
+    ));
 
     tokio::select! {
         served = serve_compact_loopback(
@@ -95,6 +104,7 @@ async fn main() -> Result<()> {
             DEVICE_ID.to_owned(),
             CLIENT_ID.to_owned(),
             shutdown.clone(),
+            host_config,
         ) => served,
         signal = terminated() => {
             signal?;
