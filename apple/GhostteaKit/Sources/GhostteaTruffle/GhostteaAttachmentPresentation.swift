@@ -112,6 +112,14 @@ public struct GhostteaAttachmentBannerPresenter: Sendable {
     }
   }
 
+  /// Raise a cue the scene decided on itself. Offline copy is the case this
+  /// exists for: it is answered from the retained screen without touching the
+  /// wire, so the lifecycle has no event to report and the scene would
+  /// otherwise have no way to say what happened.
+  public mutating func noteCue(_ text: String, at nowMs: UInt64) {
+    cue = PendingCue(text: text, atMs: nowMs)
+  }
+
   private mutating func applyState(_ next: GhostteaAttachmentSnapshot, at nowMs: UInt64) {
     // §3: every transition carries a monotonic `lifecycleSeq`, so an event that
     // lost a race is discarded rather than re-applied. Equal sequences are

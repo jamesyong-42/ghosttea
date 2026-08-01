@@ -28,6 +28,12 @@ public enum GhostteaReconnectDefaults {
   /// How long a synchronizing attachment waits for its recovery snapshot
   /// before abandoning the attempt.
   public static let synchronizeTimeoutMs: UInt64 = 10_000
+  /// How long one attempt may spend dialing, listing, and handshaking before
+  /// its transport is dropped. Nothing in that stretch has a deadline of its
+  /// own — the heartbeat only exists once an attachment does — so without this
+  /// a black-holed host parks the engine forever. Mirrors the Rust host's
+  /// `HANDSHAKE_TIMEOUT`.
+  public static let attemptTimeoutMs: UInt64 = 10_000
   /// The minor that gates every reconnect behaviour: ordered takeover,
   /// heartbeats, `ControlState`, `SessionEnded`/`HostShutdown`. The design doc
   /// calls this family "1.5"; minor 5 was spent by presentation sync.
@@ -45,6 +51,7 @@ public struct GhostteaReconnectConfig: Sendable, Equatable {
   public var backoffFloorMs: UInt64
   public var suspendAfterMs: UInt64
   public var synchronizeTimeoutMs: UInt64
+  public var attemptTimeoutMs: UInt64
   /// How long a blip may last before the UI is allowed to show a banner
   /// (§12). Purely presentational, and the one knob here with no Rust
   /// counterpart — the daemon never renders anything.
@@ -63,6 +70,7 @@ public struct GhostteaReconnectConfig: Sendable, Equatable {
     backoffFloorMs: UInt64 = GhostteaReconnectDefaults.backoffFloorMs,
     suspendAfterMs: UInt64 = GhostteaReconnectDefaults.suspendAfterMs,
     synchronizeTimeoutMs: UInt64 = GhostteaReconnectDefaults.synchronizeTimeoutMs,
+    attemptTimeoutMs: UInt64 = GhostteaReconnectDefaults.attemptTimeoutMs,
     bannerGraceMs: UInt64 = 2_000
   ) {
     self.heartbeatIdleMs = heartbeatIdleMs
@@ -72,6 +80,7 @@ public struct GhostteaReconnectConfig: Sendable, Equatable {
     self.backoffFloorMs = backoffFloorMs
     self.suspendAfterMs = suspendAfterMs
     self.synchronizeTimeoutMs = synchronizeTimeoutMs
+    self.attemptTimeoutMs = attemptTimeoutMs
     self.bannerGraceMs = bannerGraceMs
   }
 }

@@ -16,6 +16,10 @@ import GhostteaPerformance
 actor GhostteaReplicaPublisher {
   private(set) var replica: GhostteaLogicalReplica
   private(set) var presentation: GhostteaTerminalPresentationConfig?
+  /// The rows the replica is currently showing, kept alongside it so a frozen
+  /// frame can still be copied from (§4.4). Retained *after* a successful
+  /// publish, never before: rows the replica rejected were never on screen.
+  private(set) var retainedRows: [GhostteaLogicalRow] = []
 
   private let encoder = JSONEncoder()
   private let sessionHandle: UInt64
@@ -31,11 +35,13 @@ actor GhostteaReplicaPublisher {
   }
 
   func publish(_ snapshot: GhostteaLogicalSnapshot) async throws -> GhostteaUpdate {
-    try await GhostteaPerformanceRecorder.shared.measure(
+    let update = try await GhostteaPerformanceRecorder.shared.measure(
       .truffleReplicaPublication
     ) {
       try await replica.publishSnapshotJSON(encoder.encode(snapshot))
     }
+    retainedRows = snapshot.rows
+    return update
   }
 
   /// Throws ``GhostteaAttachmentApplyFailure/needsSnapshot`` when only an
@@ -44,11 +50,19 @@ actor GhostteaReplicaPublisher {
   /// whatever their own surface calls them; neither may acknowledge the frame.
   func publish(_ patch: GhostteaLogicalPatch) async throws -> GhostteaUpdate {
     do {
-      return try await GhostteaPerformanceRecorder.shared.measure(
+      let update = try await GhostteaPerformanceRecorder.shared.measure(
         .truffleReplicaPublication
       ) {
         try await replica.publishPatchJSON(encoder.encode(patch))
       }
+      // Same row indices the replica just applied. A replacement past the
+      // retained width is ignored rather than grown into: the rows are a
+      // mirror of what was published, not a buffer of their own.
+      for replacement in patch.rowReplacements
+      where Int(replacement.rowIndex) < retainedRows.count {
+        retainedRows[Int(replacement.rowIndex)] = replacement.row
+      }
+      return update
     } catch {
       if await replica.isPoisoned { throw error }
       throw GhostteaAttachmentApplyFailure.needsSnapshot
@@ -64,6 +78,9 @@ actor GhostteaReplicaPublisher {
     replica = try GhostteaLogicalReplica(
       runtime: try GhostteaRuntime(presentation: next), sessionHandle: sessionHandle)
     presentation = next
+    // The new replica has painted nothing yet, so nothing is on screen to
+    // copy until the host's next frame arrives.
+    retainedRows = []
     return true
   }
 }

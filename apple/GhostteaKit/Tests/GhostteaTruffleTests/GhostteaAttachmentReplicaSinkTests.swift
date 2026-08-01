@@ -53,6 +53,8 @@ private func patchJSON(sequence: UInt64, terminalRevision: UInt64) -> String {
   """
 }
 
+private let token = GhostteaAttachmentStateToken(generation: 1, incarnation: 1)
+
 private func decoded(_ json: String) throws -> GhostteaTerminalStateMessage {
   try GhostteaTerminalStateCodec.decode(Data(json.utf8), codec: .json)
 }
@@ -88,7 +90,7 @@ private func makeSink(
     runtime: runtime,
     sessionHandle: 4_201,
     presentation: presentation
-  ) { event in
+  ) { event, _ in
     await output.record(event)
   }
 }
@@ -97,8 +99,8 @@ private func makeSink(
   let output = SinkOutput()
   let sink = try makeSink(output: output)
 
-  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)))
-  try await sink.apply(decoded(patchJSON(sequence: 1, terminalRevision: 14)))
+  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
+  try await sink.apply(decoded(patchJSON(sequence: 1, terminalRevision: 14)), from: token)
 
   let frames = await output.frames
   #expect(frames.count == 2)
@@ -111,14 +113,14 @@ private func makeSink(
 @Test func aDiscontinuousPatchRefusesTheFrameRatherThanRenderingIt() async throws {
   let output = SinkOutput()
   let sink = try makeSink(output: output)
-  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)))
+  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
 
   // Sequence 2 with 1 missing is the gap only an authoritative snapshot can
   // bridge. The sink says so with the typed failure and reports no frame — the
   // lifecycle turns that into a snapshot request and, critically, no ack.
   var refusal: GhostteaAttachmentApplyFailure?
   do {
-    try await sink.apply(decoded(patchJSON(sequence: 2, terminalRevision: 14)))
+    try await sink.apply(decoded(patchJSON(sequence: 2, terminalRevision: 14)), from: token)
   } catch let failure as GhostteaAttachmentApplyFailure {
     refusal = failure
   }
@@ -139,7 +141,7 @@ private func makeSink(
 
   // The presentation it already has re-specifies nothing, so nothing is
   // rebuilt and the scene is not told about a change that did not happen.
-  try await sink.apply(.configurationChanged(initial))
+  try await sink.apply(.configurationChanged(initial), from: token)
   #expect(await output.presentations.isEmpty)
   #expect(await sink.replica === original)
 
@@ -152,7 +154,7 @@ private func makeSink(
     fontFamilies: initial.fontFamilies, paddingX: initial.paddingX,
     paddingY: initial.paddingY, postProcess: initial.postProcess,
     customShaderCount: initial.customShaderCount)
-  try await sink.apply(.configurationChanged(next))
+  try await sink.apply(.configurationChanged(next), from: token)
   #expect(await output.presentations == [next])
   // A presentation re-specifies the grid, so the replica is rebuilt rather
   // than reconfigured in place.
@@ -164,10 +166,12 @@ private func makeSink(
   let sink = try makeSink(output: output)
 
   try await sink.apply(
-    .controlState(controller: nil, controlRevision: 4, cols: 120, rows: 40, layoutEpoch: 1))
+    .controlState(controller: nil, controlRevision: 4, cols: 120, rows: 40, layoutEpoch: 1),
+    from: token)
   try await sink.apply(
     .controlChanged(
-      controllerViewID: "r:pane-1", controlEpoch: 9, cols: 120, rows: 40, layoutEpoch: 1))
+      controllerViewID: "r:pane-1", controlEpoch: 9, cols: 120, rows: 40, layoutEpoch: 1),
+    from: token)
 
   let controllers = await output.events.compactMap { event -> GhostteaControllerInfo?? in
     if case .controller(let info) = event { return .some(info) }
@@ -176,4 +180,68 @@ private func makeSink(
   #expect(controllers.count == 2)
   #expect(controllers.first == .some(nil))
   #expect(controllers.last == .some(GhostteaControllerInfo(controllerViewID: "r:pane-1", controlEpoch: 9)))
+}
+
+// MARK: - P2-6: offline copy from the retained frame (§4.4)
+
+private func row(_ text: String) -> GhostteaLogicalRow {
+  GhostteaLogicalRow(text: text, cells: [])
+}
+
+@Test func viewportSelectionExtractsWholeAndPartialSpans() {
+  let rows = [row("interop-line-1"), row("middle row here   "), row("interop-line-2")]
+
+  #expect(
+    GhostteaViewportSelection.extract(GhostteaSelectionRequest(selectAll: true), from: rows)
+      == "interop-line-1\nmiddle row here\ninterop-line-2")
+
+  // A single row clips at both ends.
+  #expect(
+    GhostteaViewportSelection.extract(
+      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 14, endRow: 0),
+      from: rows) == "line-1")
+
+  // A span keeps its middle rows whole and clips only the ends — how a
+  // terminal selection reads.
+  #expect(
+    GhostteaViewportSelection.extract(
+      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 7, endRow: 2),
+      from: rows) == "line-1\nmiddle row here\ninterop")
+
+  // Nothing retained is not an empty selection: there is no screen to select.
+  #expect(GhostteaViewportSelection.extract(GhostteaSelectionRequest(selectAll: true), from: []) == nil)
+
+  // A column past the row's width clips rather than failing — the selection
+  // describes a screen that is simply shorter there.
+  #expect(
+    GhostteaViewportSelection.extract(
+      GhostteaSelectionRequest(startColumn: 0, startRow: 0, endColumn: 900, endRow: 0),
+      from: rows) == "interop-line-1")
+}
+
+@Test func theSinkRetainsRowsThroughSnapshotsAndPatchesForOfflineCopy() async throws {
+  let output = SinkOutput()
+  let sink = try makeSink(output: output)
+  #expect(await sink.retainedSelection(GhostteaSelectionRequest(selectAll: true)) == nil)
+
+  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
+  #expect(await sink.retainedSelection(GhostteaSelectionRequest(selectAll: true)) == "shared")
+
+  // A patch mutates the retained rows the same way it mutates the replica, so
+  // a frozen frame copies what is actually on screen rather than what the
+  // last snapshot said.
+  let patched = """
+    {
+      "type": "patch", "sessionEpoch": 7, "layoutEpoch": 4, "patchSequence": 1,
+      "terminalRevision": 14,
+      "rowReplacements": [{
+        "rowIndex": 0, "rowRevision": 14,
+        "row": {"text": "after the patch", "cells": []}
+      }],
+      "cursor": null, "mouseTracking": null, "scrollbar": null
+    }
+    """
+  try await sink.apply(decoded(patched), from: token)
+  #expect(
+    await sink.retainedSelection(GhostteaSelectionRequest(selectAll: true)) == "after the patch")
 }

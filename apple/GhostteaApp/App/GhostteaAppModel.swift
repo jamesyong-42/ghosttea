@@ -29,11 +29,18 @@ final class GhostteaAppModel: ObservableObject {
   let configuration: GhostteaConfigSnapshot
   private let sceneIdentity: GhostteaSceneTerminalIdentity
   private var runtimeObservation: AnyCancellable?
+  private var hostObservation: AnyCancellable?
   private var selectedHost: GhostteaTruffleHostCandidate?
+  /// The device the attached session lives on, so a peer set that regains it
+  /// can wake the reconnect engine.
+  private var attachedHostDeviceID: String?
   /// The §3 state machine for the attached session. It owns the connection, the
   /// heartbeat, and every sequence space the wire orders; this model owns only
   /// the presentation of what it reports.
   private var lifecycle: GhostteaAttachmentLifecycle?
+  /// Held for §4.4's offline copy: it retains the rows that are on screen, so
+  /// a frozen session stays copyable without the wire.
+  private var replicaSink: GhostteaAttachmentReplicaSink?
   private var pendingAttachmentTask: Task<Void, Never>?
   private var lifecycleTask: Task<Void, Never>?
   /// Wakes the banner when it would change without a new event — the grace
@@ -43,10 +50,25 @@ final class GhostteaAppModel: ObservableObject {
   private let clock = GhostteaSystemClock()
   private var renderRuntime: GhostteaRuntime?
   private var nextSessionHandle: UInt64 = 1
-  private var hasRequestedControl = false
+  /// Identifies the current attach. A sink outlives the attachment it was built
+  /// for by however long its last callback takes to land, and without this a
+  /// retired sink can repaint a session it has nothing to do with.
+  private var attachID: UInt64 = 0
+  /// The highest state generation already applied for ``attachID``. Generations
+  /// only ever advance inside the lifecycle, so anything lower is a frame from
+  /// a reader that has since been retired.
+  private var appliedGeneration: UInt64 = 0
+  /// Bumped each time a *new* attachment reaches Live, which is what a reclaim
+  /// is single-flighted against (§4.2.3).
+  private var attachmentGeneration: UInt64 = 0
+  private var lastControlClaim: GhostteaControlReclaimAttempt?
+  /// Meaningful focus, iOS-shaped: this scene shows one session at a time, so
+  /// focus is "the session is on screen and the app is frontmost".
+  private var sceneIsActive = true
   /// The lifecycle's own verdict on whether input would land, cached from the
   /// last snapshot so a gesture does not have to await the actor to be dropped.
   private var inputAccepted = false
+  private var currentPhase: GhostteaAttachmentPhase?
   private var grid = GhostteaTerminalGridSize(columns: 80, rows: 24)
 
   var phase: GhostteaTruffleRuntimePhase { sharedRuntime.phase }
@@ -72,6 +94,13 @@ final class GhostteaAppModel: ObservableObject {
     sceneIdentity = GhostteaSceneTerminalIdentity(sceneID: sceneID)
     runtimeObservation = sharedRuntime.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
+    }
+    // §12's advertisement fast path, and the only thing that ends a
+    // `suspended(.hostAbsent)` rest without the user tapping Retry: the engine
+    // stops dialing after `suspendAfterMs` and waits to be told the host is
+    // back. Nothing else in the app tells it.
+    hostObservation = sharedRuntime.$hosts.sink { [weak self] hosts in
+      self?.hostsChanged(hosts)
     }
   }
 
@@ -165,12 +194,15 @@ final class GhostteaAppModel: ObservableObject {
         let presentation = configuration.terminalPresentation
         let attachmentRuntime = try GhostteaRuntime(presentation: presentation)
         let localDeviceID = try await directory.localDeviceID()
+        attachID &+= 1
+        let attach = attachID
+        appliedGeneration = 0
         let sink = try GhostteaAttachmentReplicaSink(
           runtime: attachmentRuntime,
           sessionHandle: handle,
           presentation: presentation
-        ) { [weak self] event in
-          await self?.handle(event)
+        ) { [weak self] event, token in
+          await self?.handle(event, token: token, attach: attach)
         }
         let engine = GhostteaAttachmentLifecycle(
           sessionID: session.sessionID,
@@ -189,6 +221,7 @@ final class GhostteaAppModel: ObservableObject {
         renderRuntime = attachmentRuntime
         presentationConfiguration = presentation
         lifecycle = engine
+        replicaSink = sink
         bannerPresenter = GhostteaAttachmentBannerPresenter(
           deviceName: selectedHost.displayName)
         selectedSession = session
@@ -196,7 +229,9 @@ final class GhostteaAppModel: ObservableObject {
         readWriteAllowed = false
         frame = nil
         hasControl = false
-        hasRequestedControl = false
+        attachmentGeneration = 0
+        lastControlClaim = nil
+        attachedHostDeviceID = hostReference.deviceID
         banner = nil
         inputCue = nil
         trace("opening \(session.sessionID) on \(selectedHost.displayName)")
@@ -258,12 +293,15 @@ final class GhostteaAppModel: ObservableObject {
       // Recorded first so a resize typed during an outage still shapes the
       // attach that ends it, rather than being lost with the connection.
       await lifecycle.setViewport(cols: value.columns, rows: value.rows)
+      guard await lifecycle.heldControlEpoch != nil else {
+        // Not ours to resize. Claiming here unconditionally would take control
+        // from whichever view legitimately holds it; the funnel decides whether
+        // a claim is allowed at all (§4.2.3).
+        self.reevaluateReclaim()
+        return
+      }
       do {
-        if await lifecycle.heldControlEpoch == nil {
-          try await lifecycle.claimControl(cols: value.columns, rows: value.rows)
-        } else {
-          try await lifecycle.resize(cols: value.columns, rows: value.rows)
-        }
+        try await lifecycle.resize(cols: value.columns, rows: value.rows)
       } catch {
         // Control refusals are thrown to the caller and deliberately kept off
         // the event stream, so this is the only place they can become visible.
@@ -351,6 +389,10 @@ final class GhostteaAppModel: ObservableObject {
     switch scenePhase {
     case .active:
       record(.applicationBecameActive, severity: .info)
+      sceneIsActive = true
+      // Focus is a reclaim input: coming back frontmost is when this pane's
+      // claim becomes due again (§4.2.3).
+      reevaluateReclaim()
       guard let lifecycle else { return }
       Task {
         // §8.2: foreground dials immediately rather than waiting out a
@@ -363,6 +405,7 @@ final class GhostteaAppModel: ObservableObject {
       }
     case .background:
       record(.applicationEnteredBackground, severity: .info)
+      sceneIsActive = false
       // §8.2: an orderly suspend, not a connection left to rot — the heartbeat
       // stops, the compact connection closes, and the reason is recorded.
       guard let lifecycle else { return }
@@ -401,21 +444,45 @@ final class GhostteaAppModel: ObservableObject {
     send(operation)
   }
 
+  /// §4.4. Live copy is a host RPC because only the host can reach scrollback;
+  /// anything else is answered from the retained screen, so a frozen session
+  /// stays copyable. A live copy that fails falls back rather than losing the
+  /// selection — the usual reason it fails is the connection dying, which is
+  /// exactly when the retained screen becomes the right answer — but it says
+  /// so, because viewport-only is a smaller promise than the user asked for.
   private func copy(_ request: GhostteaSelectionRequest, failure: String) {
-    guard let lifecycle else { return }
-    Task {
-      do {
-        let text = try await lifecycle.selectionText(request)
-        UIPasteboard.general.string = text
-        localStatus = "Copied \(text.utf8.count) bytes"
-      } catch {
-        record(.truffleSelectionFailed)
-        localStatus = failure
-        // The status line is not on screen while a frame is, so the cue is the
-        // only way a failed copy reaches someone looking at the terminal.
-        note(error)
+    guard let sink = replicaSink else { return }
+    let isLive: Bool
+    if case .live = currentPhase { isLive = true } else { isLive = false }
+    Task { [weak self] in
+      guard let self else { return }
+      if isLive, let lifecycle {
+        do {
+          commit(try await lifecycle.selectionText(request), scopedToViewport: false)
+          return
+        } catch {
+          record(.truffleSelectionFailed)
+        }
       }
+      guard let text = await sink.retainedSelection(request) else {
+        // No frame has ever arrived, so there is no screen to have selected.
+        // Distinct from an empty string, which is a real selection over blank
+        // cells and copies normally.
+        localStatus = failure
+        bannerPresenter?.noteCue("Nothing to copy yet.", at: clock.nowMs)
+        republishBanner()
+        return
+      }
+      commit(text, scopedToViewport: true)
     }
+  }
+
+  private func commit(_ text: String, scopedToViewport: Bool) {
+    UIPasteboard.general.string = text
+    localStatus = "Copied \(text.utf8.count) bytes"
+    guard scopedToViewport else { return }
+    bannerPresenter?.noteCue("Copied the visible screen.", at: clock.nowMs)
+    republishBanner()
   }
 
   /// Surface a refusal the lifecycle threw rather than published. Keystroke
@@ -439,9 +506,14 @@ final class GhostteaAppModel: ObservableObject {
     if case .state(let snapshot) = event {
       readWriteAllowed = snapshot.readWrite
       inputAccepted = snapshot.acceptsInput
+      currentPhase = snapshot.phase
       switch snapshot.phase {
       case .live:
-        claimControlOnFirstLive(engine)
+        // A resume invalidates this view's controller record, so every new
+        // attachment re-arms the claim rather than trusting a once-per-session
+        // flag (§4.2.1 takeover, §4.2.3 reclaim).
+        attachmentGeneration &+= 1
+        reevaluateReclaim()
       case .ended(let reason):
         trace("session \(snapshot.sessionID) ended: \(reason.rawValue)")
         // Only the endings nobody asked for are diagnostics. A process that
@@ -461,19 +533,90 @@ final class GhostteaAppModel: ObservableObject {
     republishBanner()
   }
 
-  /// Take resize control once, when the session first goes live. The attach
-  /// path used to claim unconditionally; doing it again on every resume would
-  /// be a takeover from whichever view holds it now, which §4.2.3 reserves for
-  /// the focus-owning layer.
-  private func claimControlOnFirstLive(_ engine: GhostteaAttachmentLifecycle) {
-    guard readWriteAllowed, !hasRequestedControl else { return }
-    hasRequestedControl = true
+  /// §4.2.3's reclaim funnel. Every input that can change the answer — the
+  /// session lifecycle, controller state, focus, and pane dimensions — calls
+  /// this; ``GhostteaControlReclaim`` decides, and the single-flight record
+  /// keeps re-evaluation idempotent rather than chatty.
+  ///
+  /// Passing the observation in, rather than reading it here, keeps the one
+  /// unavoidable actor hop at the call sites that already had one.
+  private func maybeReclaim(
+    observing state: (controller: GhostteaControllerInfo?, revision: UInt64),
+    held: Bool
+  ) {
+    guard let lifecycle, let phase = currentPhase else { return }
+    let observation: GhostteaControlObservation
+    if held {
+      observation = .selfHolds
+    } else if state.controller == nil {
+      // Revision 0 is the legacy "cannot report revisions" sentinel, which
+      // nothing may compare-and-swap against.
+      observation = .noController(revision: state.revision == 0 ? nil : state.revision)
+    } else {
+      observation = .otherHolds
+    }
+    let decision = GhostteaControlReclaim.decide(
+      phase: phase,
+      readWrite: readWriteAllowed,
+      hasFocus: sceneIsActive && selectedSession != nil,
+      observation: observation,
+      attachmentGeneration: attachmentGeneration,
+      lastClaim: lastControlClaim)
+    guard case .claim(let expected) = decision else { return }
+    lastControlClaim = GhostteaControlReclaimAttempt(
+      attachmentGeneration: attachmentGeneration, expectedRevision: expected)
     let size = grid
-    Task { try? await engine.claimControl(cols: size.columns, rows: size.rows) }
+    Task { [weak self] in
+      do {
+        try await lifecycle.claimControl(cols: size.columns, rows: size.rows)
+      } catch {
+        self?.note(error)
+      }
+    }
+  }
+
+  /// A refreshed peer set. When it contains the attached session's host, the
+  /// engine is told the device is reachable so it can short-circuit its backoff
+  /// — or leave `suspended(.hostAbsent)`, which it otherwise never does on its
+  /// own.
+  private func hostsChanged(_ hosts: [GhostteaTruffleHostCandidate]) {
+    guard let attachedHostDeviceID, let lifecycle else { return }
+    guard
+      hosts.contains(where: {
+        $0.isOnline && $0.persistentReference?.deviceID == attachedHostDeviceID
+      })
+    else { return }
+    Task { await lifecycle.noteDeviceReachable() }
+  }
+
+  /// Read the controller state and run the funnel. Used by the inputs that do
+  /// not already hold an observation.
+  private func reevaluateReclaim() {
+    guard let lifecycle else { return }
+    let attach = attachID
+    Task { [weak self] in
+      let held = await lifecycle.heldControlEpoch != nil
+      let state = await lifecycle.currentControlState
+      guard let self, attach == attachID else { return }
+      maybeReclaim(observing: state, held: held)
+    }
   }
 
   /// One applied frame, or one thing the frame said about the session.
-  private func handle(_ event: GhostteaAttachmentSinkEvent) {
+  ///
+  /// Nothing here mutates before the event is proved current. Two things can
+  /// make it stale: the sink may belong to a previous attach entirely, and even
+  /// within one attach a retired reader's frame can still be in flight — so the
+  /// attach identity and the state generation are both checked. Comparing the
+  /// generation against the highest already applied, rather than asking the
+  /// actor for its current token, keeps this off the actor for every frame.
+  private func handle(
+    _ event: GhostteaAttachmentSinkEvent,
+    token: GhostteaAttachmentStateToken,
+    attach: UInt64
+  ) {
+    guard attach == attachID, token.generation >= appliedGeneration else { return }
+    appliedGeneration = token.generation
     switch event {
     case .frame(let update, _):
       if let rendered = update.effects.last(where: { $0.kind == .frameReady })?.payload {
@@ -486,9 +629,13 @@ final class GhostteaAppModel: ObservableObject {
         // view id rotates under the stable one this model knows, and only the
         // lifecycle knows which identity is currently attached.
         let held = await lifecycle.heldControlEpoch != nil
-        guard let self, self.lifecycle === lifecycle else { return }
+        let state = await lifecycle.currentControlState
+        guard let self, attach == attachID else { return }
         hasControl = held
         localStatus = held ? "Read-write control" : "Read-only · another view has control"
+        // Controller state is one of the funnel's inputs (§4.2.3): a clear that
+        // arrives while this pane is focused is exactly when a reclaim is due.
+        maybeReclaim(observing: state, held: held)
       }
     case .activity(let activity):
       selectedActivity = activity
@@ -532,6 +679,7 @@ final class GhostteaAppModel: ObservableObject {
     bannerRefreshTask = nil
     let current = lifecycle
     lifecycle = nil
+    replicaSink = nil
     bannerPresenter = nil
     banner = nil
     inputCue = nil
@@ -542,6 +690,10 @@ final class GhostteaAppModel: ObservableObject {
     hasControl = false
     readWriteAllowed = false
     inputAccepted = false
+    currentPhase = nil
+    attachedHostDeviceID = nil
+    attachmentGeneration = 0
+    lastControlClaim = nil
     if clearSelection {
       selectedSession = nil
       selectedActivity = .unknown

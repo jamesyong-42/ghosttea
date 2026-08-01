@@ -327,6 +327,29 @@ func attachmentEndedRejectionIsItsOwnSentence() {
   #expect(subject.inputCue(at: 0)?.text == "The connection dropped before that finished.")
 }
 
+/// §4.4's offline copy never touches the wire, so there is no lifecycle event
+/// to carry its feedback — the scene raises the cue itself.
+@Test("A scene-raised cue behaves like any other, including expiring")
+func sceneRaisedCueIsShownAndExpires() {
+  var subject = livePresenter()
+  subject.noteCue("Copied the visible screen.", at: 1_000)
+
+  #expect(subject.inputCue(at: 1_000)?.text == "Copied the visible screen.")
+  #expect(subject.inputCue(at: 3_000) != nil)
+  #expect(subject.inputCue(at: 3_500) == nil)
+}
+
+@Test("A rejection raised later replaces a scene cue rather than queueing behind it")
+func lifecycleRejectionSupersedesASceneCue() {
+  var subject = livePresenter()
+  subject.noteCue("Copied the visible screen.", at: 0)
+  subject.apply(
+    .inputRejected(GhostteaAttachmentInputRejection(phase: .live, reason: .readOnly)),
+    at: 500)
+
+  #expect(subject.inputCue(at: 500)?.text == "This session is read-only.")
+}
+
 @Test("The dropped-keystroke note is transient")
 func inputCueExpires() {
   var subject = livePresenter()

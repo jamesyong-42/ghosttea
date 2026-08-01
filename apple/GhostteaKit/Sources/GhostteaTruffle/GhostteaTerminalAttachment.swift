@@ -415,8 +415,13 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
   /// on one control channel, so heartbeats ride it directly.
   case ping(nonce: UInt64)
   case pong(nonce: UInt64)
+  /// `expectedControlRevision` is the compare-and-swap: the host rejects the
+  /// claim if any claim *or clear* has intervened since that revision was
+  /// observed. `nil` is the legacy last-write-wins claim, which is all a host
+  /// below the reconnect minor understands.
   case focusAndResize(
-    viewID: String, attachmentEpoch: UInt64, cols: UInt16, rows: UInt16, clientSequence: UInt64)
+    viewID: String, attachmentEpoch: UInt64, cols: UInt16, rows: UInt16, clientSequence: UInt64,
+    expectedControlRevision: UInt64?)
   case resize(
     viewID: String, attachmentEpoch: UInt64, controlEpoch: UInt64, resizeSequence: UInt64,
     cols: UInt16, rows: UInt16)
@@ -440,7 +445,7 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       layoutEpoch, attachmentEpoch, readWrite, controlEpoch, clientSequence,
       resizeSequence, inputSequence, operation, patchSequence, terminalRevision,
       startColumn, startRow, endColumn, endRow, selectAll, text, presentation
-    case attachGeneration, resume, wantsState
+    case attachGeneration, resume, wantsState, expectedControlRevision
     case resumed, controller, controlRevision
     case code, retryable, nonce
   }
@@ -486,7 +491,9 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
         viewID: v.decode(String.self, forKey: .viewID),
         attachmentEpoch: v.decode(UInt64.self, forKey: .attachmentEpoch),
         cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows),
-        clientSequence: v.decode(UInt64.self, forKey: .clientSequence))
+        clientSequence: v.decode(UInt64.self, forKey: .clientSequence),
+        expectedControlRevision: v.decodeIfPresent(
+          UInt64.self, forKey: .expectedControlRevision))
     case "resize":
       self = try .resize(
         viewID: v.decode(String.self, forKey: .viewID),
@@ -571,13 +578,15 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
     case .pong(let nonce):
       try v.encode("pong", forKey: .type)
       try v.encode(nonce, forKey: .nonce)
-    case .focusAndResize(let view, let attachment, let cols, let rows, let sequence):
+    case .focusAndResize(
+      let view, let attachment, let cols, let rows, let sequence, let expectedRevision):
       try v.encode("focus-and-resize", forKey: .type)
       try v.encode(view, forKey: .viewID)
       try v.encode(attachment, forKey: .attachmentEpoch)
       try v.encode(cols, forKey: .cols)
       try v.encode(rows, forKey: .rows)
       try v.encode(sequence, forKey: .clientSequence)
+      try v.encodeIfPresent(expectedRevision, forKey: .expectedControlRevision)
     case .resize(let view, let attachment, let control, let sequence, let cols, let rows):
       try v.encode("resize", forKey: .type)
       try v.encode(view, forKey: .viewID)
@@ -802,11 +811,13 @@ public actor GhostteaTruffleAttachment {
 
   public func pong(nonce: UInt64) async throws { try await write(.pong(nonce: nonce)) }
 
-  public func claimControl(cols: UInt16, rows: UInt16, sequence: UInt64) async throws {
+  public func claimControl(
+    cols: UInt16, rows: UInt16, sequence: UInt64, expectedControlRevision: UInt64? = nil
+  ) async throws {
     try await write(
       .focusAndResize(
         viewID: viewID, attachmentEpoch: info.attachmentEpoch, cols: cols, rows: rows,
-        clientSequence: sequence))
+        clientSequence: sequence, expectedControlRevision: expectedControlRevision))
   }
 
   public func resize(cols: UInt16, rows: UInt16, controlEpoch: UInt64, sequence: UInt64)

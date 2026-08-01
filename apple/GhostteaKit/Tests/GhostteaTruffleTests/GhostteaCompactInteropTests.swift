@@ -174,6 +174,32 @@ struct GhostteaCompactInteropTests {
     await #expect(throws: GhostteaAttachmentControlRejection.self) {
       try await lifecycle.resize(cols: 120, rows: 40)
     }
+
+    // The claim was *fenced*, which is the half of P1-1 this row exists to
+    // catch: an unfenced claim resolves `.unfenced` and never reaches
+    // `.claimed`, so this outcome can only come from a compare-and-swap the
+    // host's authority accepted against a revision it agreed was current.
+    let outcome = await waitForValue(seconds: 30) { await lifecycle.lastClaimOutcome }
+    guard case .claimed(_, let grantedRevision)? = outcome else {
+      Issue.record("expected a fenced claim to be granted, got \(String(describing: outcome))")
+      return
+    }
+    #expect(grantedRevision >= 1)
+
+    // The rejection half is deliberately not staged here. This client cannot
+    // emit a stale expectation through its public API — it tracks every
+    // announcement, so its expectation is current by construction — and the
+    // only way to force one would be test-only surface on a production claim.
+    // `aRejectedClaimEndsTheReclaimOrOffersARetryPerTheAsymmetry` proves the
+    // asymmetric handling against scripted frames instead.
+    try await rival.claimControl(cols: 95, rows: 26)
+    let regranted: UInt64? = await waitForValue(seconds: 30) {
+      guard case .claimed(_, let revision)? = await rival.lastClaimOutcome else {
+        return UInt64?.none
+      }
+      return revision
+    }
+    #expect(regranted != nil, "a current expectation must be granted at the next revision")
   }
 
   /// Row 4. `SelectionText` matched back to its request id, answered by the
@@ -209,7 +235,7 @@ private func interopLifecycle(
       runtime: GhostteaRuntime(),
       sessionHandle: UInt64.random(in: 1...UInt64(UInt32.max)),
       presentation: nil
-    ) { event in await events.record(event) },
+    ) { event, _ in await events.record(event) },
     offeredMinor: offeredMinor)
 }
 

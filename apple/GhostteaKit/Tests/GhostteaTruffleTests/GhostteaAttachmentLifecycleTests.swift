@@ -517,7 +517,8 @@ import Truffle
   #expect(refusal == .noControl)
 
   try? await lifecycle.claimControl(cols: 120, rows: 40)
-  guard case .focusAndResize(let viewID, let epoch, let cols, let rows, _)? = await nextControl(peer)
+  guard
+    case .focusAndResize(let viewID, let epoch, let cols, let rows, _, _)? = await nextControl(peer)
   else {
     Issue.record("expected a control claim")
     return
@@ -1095,12 +1096,17 @@ private actor RecordingSink: GhostteaAttachmentStateSink {
     refusal = failure
   }
 
-  func apply(_ message: GhostteaTerminalStateMessage) async throws {
+  private(set) var tokens: [GhostteaAttachmentStateToken] = []
+
+  func apply(_ message: GhostteaTerminalStateMessage, from token: GhostteaAttachmentStateToken)
+    async throws
+  {
     if let refusal {
       self.refusal = nil
       throw refusal
     }
     applied.append(message)
+    tokens.append(token)
   }
 }
 
@@ -1340,11 +1346,17 @@ private actor ScriptedDialer: GhostteaAttachmentDialer {
 
   private var ready: [ScriptedPeer] = []
   private var listing: [GhostteaSharedSessionSummary]?
+  private var listingHostInstanceID = "desktop-instance"
+  private var listingStalled = false
+  private var listingWaiters: [CheckedContinuation<Void, Never>] = []
   private var failingDials = 0
   private(set) var dialCount = 0
 
-  func setListing(_ sessions: [GhostteaSharedSessionSummary]) {
+  func setListing(
+    _ sessions: [GhostteaSharedSessionSummary], hostInstanceID: String = "desktop-instance"
+  ) {
     listing = sessions
+    listingHostInstanceID = hostInstanceID
   }
 
   /// The next `count` dials throw, the way an unreachable device presents.
@@ -1363,8 +1375,27 @@ private actor ScriptedDialer: GhostteaAttachmentDialer {
     return client
   }
 
-  func listSessions() async throws -> [GhostteaSharedSessionSummary]? {
-    listing
+  /// Holds the listing open, the way a host that has stopped answering does.
+  func stallListing() {
+    listingStalled = true
+  }
+
+  func releaseListing() {
+    listingStalled = false
+    let waiting = listingWaiters
+    listingWaiters.removeAll()
+    for waiter in waiting { waiter.resume() }
+  }
+
+  var listingIsStalled: Bool { listingStalled && !listingWaiters.isEmpty }
+
+  func listSessions() async throws -> GhostteaSessionListing? {
+    if listingStalled {
+      await withCheckedContinuation { listingWaiters.append($0) }
+    }
+    return listing.map {
+      GhostteaSessionListing(hostInstanceID: listingHostInstanceID, sessions: $0)
+    }
   }
 
   /// The next dial, or — if none arrives — a peer whose connection is already
@@ -1386,4 +1417,170 @@ private actor ScriptedDialer: GhostteaAttachmentDialer {
   func takePeer() -> ScriptedPeer? {
     ready.isEmpty ? nil : ready.removeFirst()
   }
+}
+
+// MARK: - Review round: P1-1, P1-2, P1-3, P2-5, P2-7
+
+@Test func aFencedClaimCarriesTheObservedRevisionAndNeverTheZeroSentinel() async {
+  let dialer = ScriptedDialer()
+  let lifecycle = makeLifecycle(dialer: dialer)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  // Nothing revisioned observed yet beyond the attach's own revision 1, which
+  // IS compare-and-swappable — a revisioned authority initializes at 1.
+  try? await lifecycle.claimControl(cols: 100, rows: 30)
+  guard case .focusAndResize(_, _, _, _, _, let expected)? = await nextControl(peer) else {
+    Issue.record("expected a control claim")
+    return
+  }
+  #expect(expected == 1)
+
+  // A legacy host reports revision 0, which is the "unknown" sentinel and is
+  // never CAS-able: the claim must go out unfenced rather than asking the host
+  // to compare against a premise that was never true.
+  let legacyDialer = ScriptedDialer()
+  let legacy = makeLifecycle(dialer: legacyDialer)
+  let legacyRecorder = await PhaseRecorder.watching(legacy)
+  await legacy.start()
+  let legacyPeer = await legacyDialer.nextPeer()
+  try? await legacyPeer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 5)
+  _ = await legacyRecorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(legacyPeer)
+  try? await legacy.claimControl(cols: 100, rows: 30)
+  guard case .focusAndResize(_, _, _, _, _, let legacyExpected)? = await nextControl(legacyPeer)
+  else {
+    Issue.record("expected a legacy control claim")
+    return
+  }
+  #expect(legacyExpected == nil)
+  #expect(await legacy.lastClaimOutcome == .unfenced)
+  await lifecycle.close()
+  await legacy.close()
+}
+
+@Test func aRejectedClaimEndsTheReclaimOrOffersARetryPerTheAsymmetry() async {
+  let dialer = ScriptedDialer()
+  let lifecycle = makeLifecycle(dialer: dialer)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  // Rejected with another view holding control: the reclaim is over. Retrying
+  // is the fight the compare-and-swap exists to prevent.
+  try? await lifecycle.claimControl(cols: 100, rows: 30)
+  _ = await nextControl(peer)
+  try? await peer.writeState(#"{"cs":[["r:rival",8],4,100,30,1]}"#)
+  let lost = await poll { await lifecycle.lastClaimOutcome }
+  #expect(lost == .lostToAnotherView(controllerViewID: "r:rival", revision: 4))
+  #expect(lost?.isRetryable == false)
+
+  // Rejected with nobody holding it at a newer revision: retryable, and the
+  // caller is told so rather than the lifecycle retrying behind the focus
+  // layer's back.
+  try? await lifecycle.claimControl(cols: 100, rows: 30)
+  _ = await nextControl(peer)
+  try? await peer.writeState(#"{"cs":[null,6,100,30,1]}"#)
+  let cleared = await poll {
+    let outcome = await lifecycle.lastClaimOutcome
+    if case .clearedAtNewerRevision = outcome { return outcome }
+    return nil
+  }
+  #expect(cleared == .clearedAtNewerRevision(revision: 6))
+  #expect(cleared?.isRetryable == true)
+  await lifecycle.close()
+}
+
+@Test func backgroundingDuringAListingNeitherEndsTheSessionNorKeepsAttaching() async {
+  let dialer = ScriptedDialer()
+  await dialer.setListing([])
+  await dialer.stallListing()
+  let lifecycle = makeLifecycle(dialer: dialer)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  _ = await poll { await dialer.listingIsStalled ? true : nil }
+
+  // The listing would answer "no such session" — a verdict this attempt must
+  // no longer be allowed to commit, because the user backgrounded while it was
+  // in flight.
+  await lifecycle.suspendForBackground()
+  await dialer.releaseListing()
+
+  #expect(await recorder.wait { $0.phase == .suspended(.suspendedByApp) } != nil)
+  for _ in 0..<40 { await Task.yield() }
+  #expect(await lifecycle.currentSnapshot.phase == .suspended(.suspendedByApp))
+  #expect(await recorder.phases.contains { $0.isTerminal } == false)
+  #expect(await dialer.dialCount == 0)
+}
+
+@Test func aRetiredSinkPublicationIsIdentifiableAsStale() async {
+  let dialer = ScriptedDialer()
+  let sink = RecordingSink()
+  let clock = ManualClock()
+  let lifecycle = makeLifecycle(dialer: dialer, sink: sink, clock: clock)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6)
+  let live = await recorder.wait { $0.phase == .live }
+  #expect(live != nil)
+
+  let first = await sink.tokens.last
+  let liveToken = await lifecycle.currentStateToken
+  #expect(first == liveToken)
+
+  // A new incarnation publishes under a new token, so anything still carrying
+  // the old one is identifiable as belonging to a session that has moved on —
+  // which is the only guarantee available once a call is already inside the
+  // sink.
+  await peer.close()
+  _ = await recorder.wait {
+    if case .reconnecting = $0.phase { return true }
+    return false
+  }
+  await clock.advance(250)
+  let second = await dialer.nextPeer()
+  try? await second.goLive(snapshot: snapshotJSON(terminalRevision: 2), minor: 6)
+  _ = await recorder.wait { $0.phase == .live && $0.lifecycleSeq > (live?.lifecycleSeq ?? 0) }
+  let reattached = await sink.tokens.last
+  let reattachedToken = await lifecycle.currentStateToken
+  #expect(reattached != first)
+  #expect(reattached == reattachedToken)
+  await lifecycle.close()
+}
+
+@Test func aRestartedHostOutranksAnAbsentListing() async {
+  let dialer = ScriptedDialer()
+  let clock = ManualClock()
+  await dialer.setListing(
+    [
+      GhostteaSharedSessionSummary(
+        sessionID: "session-1", title: "shell", cwdLabel: nil, running: true, attachable: true,
+        readWrite: true, createdAtMs: 0)
+    ], hostInstanceID: "desktop-a")
+  let lifecycle = makeLifecycle(dialer: dialer, clock: clock)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 1), minor: 6, host: "desktop-a")
+  _ = await recorder.wait { $0.phase == .live }
+
+  // The host restarts: new instance, and its listing truthfully has no such
+  // session. Absence is a consequence of the restart, not evidence about the
+  // session, so the verdict must be host-restarted.
+  await peer.close()
+  await dialer.setListing([], hostInstanceID: "desktop-b")
+  _ = await recorder.wait {
+    if case .reconnecting = $0.phase { return true }
+    return false
+  }
+  await clock.advance(250)
+  #expect(await recorder.wait { $0.phase == .ended(.hostRestarted) } != nil)
 }

@@ -226,13 +226,17 @@ public struct GhostteaTruffleAttachmentDialer: GhostteaAttachmentDialer {
     return try await directory.dialCompact(to: candidate)
   }
 
-  public func listSessions() async throws -> [GhostteaSharedSessionSummary]? {
+  public func listSessions() async throws -> GhostteaSessionListing? {
     guard listsSessions else { return nil }
     let candidate = try await directory.resolve(host)
     let client = try await directory.connect(to: candidate)
     let sessions = try await client.listSessions()
+    // The identity this listing came from travels with it: the hello that
+    // opened this connection is the only place the answer's provenance
+    // exists, and an absence means nothing without it.
+    let hostInstanceID = await client.hostInstanceID
     await client.close()
-    return sessions
+    return GhostteaSessionListing(hostInstanceID: hostInstanceID, sessions: sessions)
   }
 }
 

@@ -4717,22 +4717,28 @@ where
         .await
         .context("write compact view-attached response")?;
 
-    // The compact analogue of the QUIC state stream is this connection's State
-    // channel, so registration binds the channel — not a second stream — to
-    // this attachment incarnation. A registration that finds the epoch already
-    // superseded aborts the handler, which is the half of the takeover race
-    // cancellation alone cannot win.
+    // What registration binds on this transport is the *connection*, not a
+    // feed, which is why it is unconditional here where QUIC makes it depend on
+    // wanting state. There the two are separable: a streamless secondary owns
+    // no stream to cancel, and needs none cancelled, because its control stream
+    // is one of many on a connection whose heartbeat lives elsewhere. Here the
+    // connection is the view. A superseded handler nobody cancelled would go on
+    // answering heartbeats and selection requests against an attachment the
+    // authority has already replaced — telling its client a dead view is alive
+    // through the very mechanism meant to detect the opposite.
+    //
+    // A registration that finds the epoch already superseded aborts the
+    // handler, which is the half of the takeover race cancellation alone
+    // cannot win.
     let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
-    if wants_state {
-        let registration_cancel = state_cancel.clone();
-        session.register_state_stream(
-            &view_id,
-            attachment_epoch,
-            StateStreamCancel::new(move || {
-                registration_cancel.send_replace(true);
-            }),
-        )?;
-    }
+    let registration_cancel = state_cancel.clone();
+    session.register_state_stream(
+        &view_id,
+        attachment_epoch,
+        StateStreamCancel::new(move || {
+            registration_cancel.send_replace(true);
+        }),
+    )?;
 
     let result = async {
         let mut controls = session.subscribe_control_state();
@@ -12197,6 +12203,86 @@ mod tests {
         Ok(())
     }
 
+    /// And a view that declined state has to be retired by the takeover too.
+    ///
+    /// This is where compact and QUIC genuinely differ rather than merely being
+    /// shaped differently. On QUIC a streamless secondary owns no state stream,
+    /// so there is nothing for a takeover to cancel — and nothing is lost,
+    /// because its session-control stream is one of many on a connection whose
+    /// heartbeat lives elsewhere. On compact the connection *is* the view: a
+    /// superseded handler nobody cancelled keeps answering heartbeats and
+    /// selection requests on an attachment the authority has already replaced,
+    /// so its client is told a dead view is alive by the very mechanism that
+    /// exists to detect the opposite.
+    ///
+    /// Registration therefore cannot be conditional on wanting state. What it
+    /// binds on this transport is the connection, not a feed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_superseded_streamless_compact_connection_is_retired_too() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut superseded = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = superseded
+            .attach(&session_id, "r:pane-1#g1", 1, None, false)
+            .await?;
+        assert!(
+            matches!(attached, SessionControlMessage::ViewAttached { .. }),
+            "the streamless attach was refused: {attached:?}"
+        );
+        // It answers while it is current. The assertion below is that it stops,
+        // not that it never could — without this the test would pass against a
+        // host that had simply broken streamless attach outright.
+        superseded
+            .write_control(&SessionControlMessage::Ping { nonce: 1 })
+            .await?;
+        assert!(
+            matches!(
+                superseded.next_control().await?,
+                SessionControlMessage::Pong { nonce: 1 }
+            ),
+            "a streamless view could not answer a probe even while current"
+        );
+
+        let mut successor = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        successor
+            .attach(&session_id, "r:pane-1#g1", 2, None, false)
+            .await?;
+
+        // Probe the loser. A Pong here is the bug in its most direct form: the
+        // superseded connection vouching for an attachment it no longer holds.
+        // The write may lose a race with the close, which is why its failure is
+        // tolerated and only the answer is asserted on.
+        let _ = superseded
+            .write_control(&SessionControlMessage::Ping { nonce: 2 })
+            .await;
+        let frames = superseded
+            .frames_until(|frame| matches!(frame, CompactFrame::Closed))
+            .await?;
+        assert!(
+            !frames.iter().any(|frame| matches!(
+                frame,
+                CompactFrame::Control(SessionControlMessage::Pong { .. })
+            )),
+            "a superseded streamless connection answered a heartbeat: {frames:?}"
+        );
+        assert!(
+            matches!(frames.last(), Some(CompactFrame::Closed)),
+            "the superseded streamless connection was left running: {frames:?}"
+        );
+        assert!(
+            host.session()
+                .view_attachment_epoch("r:pane-1#g1")
+                .is_some(),
+            "the superseded handler took its successor's attachment with it"
+        );
+        drop(successor.io);
+        Ok(())
+    }
+
     /// §6.4's consult, on the transport that has no second stream to ask on.
     /// Verified rather than built: the arm landed in the Phase 3 review.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -12282,7 +12368,7 @@ mod tests {
     #[test]
     fn the_swift_reconnect_constants_match_their_rust_counterparts() {
         let rust = MeshReconnectConfig::default();
-        let pinned: [(&str, u64); 8] = [
+        let pinned: [(&str, u64); 9] = [
             ("heartbeatIdleMs", rust.heartbeat_idle.as_millis() as u64),
             ("heartbeatFailMs", rust.heartbeat_fail.as_millis() as u64),
             ("backoffBaseMs", rust.backoff_base.as_millis() as u64),
@@ -12297,6 +12383,14 @@ mod tests {
                 "remoteReconnectProtocolMinor",
                 u64::from(REMOTE_RECONNECT_PROTOCOL_MINOR),
             ),
+            // The one row whose Rust side is a host constant rather than a
+            // viewer default, pinned because the Swift declaration says it
+            // mirrors this one. The binding is worth keeping even though the
+            // two are enforced in different processes: a client whose whole
+            // attempt budget is shorter than the host's handshake budget gives
+            // up while the host is still mid-handshake, so raising one without
+            // considering the other is the mistake this catches.
+            ("attemptTimeoutMs", HANDSHAKE_TIMEOUT.as_millis() as u64),
         ];
         let swift = swift_reconnect_defaults();
 

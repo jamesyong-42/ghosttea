@@ -96,6 +96,32 @@ public struct GhostteaAttachmentInputRejection: Error, Equatable, Sendable {
 /// it is the same type the input path uses, deliberately.
 public typealias GhostteaAttachmentControlRejection = GhostteaAttachmentInputRejection
 
+/// What became of a compare-and-swap claim, per §4.2.3's asymmetry.
+///
+/// The asymmetry is the point: losing to *another view* ends the reclaim,
+/// because two panes retrying at each other is the fight the CAS exists to
+/// prevent. Losing to a *clear* is retryable, because nobody holds the seat
+/// and the pane may still want it — but only the layer that owns focus truth
+/// can decide that, so this reports rather than retries.
+public enum GhostteaControlClaimOutcome: Equatable, Sendable {
+  /// The host announced this view as the controller.
+  case claimed(controlEpoch: UInt64, revision: UInt64)
+  /// Another view holds control as of a newer revision. Do not retry.
+  case lostToAnotherView(controllerViewID: String, revision: UInt64)
+  /// Nobody holds control at a newer revision than the one claimed against.
+  /// Retryable with the updated expectation while focus is still meaningful.
+  case clearedAtNewerRevision(revision: UInt64)
+  /// The claim went out as legacy last-write-wins because no revisioned
+  /// observation existed to compare against — a `0` sentinel is never a
+  /// compare-and-swappable observation.
+  case unfenced
+
+  public var isRetryable: Bool {
+    if case .clearedAtNewerRevision = self { return true }
+    return false
+  }
+}
+
 /// How a sink refuses one frame.
 ///
 /// The distinction is load-bearing: a discontinuity the replica cannot bridge
@@ -114,6 +140,22 @@ public enum GhostteaAttachmentLifecycleEvent: Equatable, Sendable {
   case inputRejected(GhostteaAttachmentInputRejection)
 }
 
+/// What a host answered when asked what it is serving.
+///
+/// The host identity travels with the list because absence is only evidence
+/// about a session once you know it is the *same host* that used to hold it: a
+/// restarted host answers truthfully that it has no such session, and reading
+/// that as "the session is gone" turns a restart into a wrong verdict.
+public struct GhostteaSessionListing: Sendable {
+  public let hostInstanceID: String
+  public let sessions: [GhostteaSharedSessionSummary]
+
+  public init(hostInstanceID: String, sessions: [GhostteaSharedSessionSummary]) {
+    self.hostInstanceID = hostInstanceID
+    self.sessions = sessions
+  }
+}
+
 /// One dial's worth of transport, plus the evidence the resume handshake reads
 /// before it trusts an absence.
 public protocol GhostteaAttachmentDialer: Sendable {
@@ -124,11 +166,28 @@ public protocol GhostteaAttachmentDialer: Sendable {
   func dial() async throws -> any MeshConnection
   /// What the host says it is serving (§4.2 step 4). `nil` from a client with
   /// no listing path: absence then proves nothing and no verdict is drawn.
-  func listSessions() async throws -> [GhostteaSharedSessionSummary]?
+  func listSessions() async throws -> GhostteaSessionListing?
 }
 
 extension GhostteaAttachmentDialer {
-  public func listSessions() async throws -> [GhostteaSharedSessionSummary]? { nil }
+  public func listSessions() async throws -> GhostteaSessionListing? { nil }
+}
+
+/// Which attachment incarnation a state frame belongs to.
+///
+/// Carried on every sink callback because cancellation cannot recall a call
+/// already inside `apply`: the achievable guarantee is not that a retired
+/// reader never publishes, but that anything it publishes is *identifiable* as
+/// stale. This is the §4.2.2 gate extended past the actor's edge — the last
+/// point where the lifecycle can vouch for a frame is before it hands it over.
+public struct GhostteaAttachmentStateToken: Hashable, Sendable {
+  public let generation: UInt64
+  public let incarnation: UInt64
+
+  public init(generation: UInt64, incarnation: UInt64) {
+    self.generation = generation
+    self.incarnation = incarnation
+  }
 }
 
 /// Where admitted state frames go. Awaited in order: the lifecycle reports Live
@@ -142,7 +201,11 @@ extension GhostteaAttachmentDialer {
 /// snapshot requested and no ack for the frame it refused, which is exactly
 /// what "never apply or acknowledge the rejected patch" requires.
 public protocol GhostteaAttachmentStateSink: Sendable {
-  func apply(_ message: GhostteaTerminalStateMessage) async throws
+  /// `token` names the attachment incarnation this frame came from. A sink
+  /// that forwards anywhere shared must pass it on: a slow publication can
+  /// land after its session is gone, and by then only the token can say so.
+  func apply(_ message: GhostteaTerminalStateMessage, from token: GhostteaAttachmentStateToken)
+    async throws
 }
 
 /// The §3 state machine for one compact attachment.
@@ -207,6 +270,10 @@ public actor GhostteaAttachmentLifecycle {
   private var exitCode: Int32?
   private var controller: GhostteaControllerInfo?
   private var controlRevision: UInt64 = 0
+  /// The revision a claim was compare-and-swapped against, kept until the
+  /// host's answering announcement lands so the outcome can be read off it.
+  private var claimedAgainstRevision: UInt64?
+  private var claimOutcome: GhostteaControlClaimOutcome?
 
   private var lastContactMs: UInt64?
   private var outstandingPing: UInt64?
@@ -218,6 +285,12 @@ public actor GhostteaAttachmentLifecycle {
   private var backgrounded = false
 
   private var current: GhostteaTruffleAttachment?
+  /// The connection an in-flight attempt is still negotiating on. It is not
+  /// `current` yet — nothing is attached — but it is the only handle that can
+  /// unblock a read that has no deadline of its own, so suspension and
+  /// teardown need it.
+  private var attemptConnection: (any MeshConnection)?
+  private var attemptWatchdog: Task<Void, Never>?
   private var engineTask: Task<Void, Never>?
   private var readerTask: Task<Void, Never>?
   private var heartbeatTask: Task<Void, Never>?
@@ -382,10 +455,23 @@ public actor GhostteaAttachmentLifecycle {
     self.cols = cols
     self.rows = rows
     clientSequence &+= 1
+    // Revision 0 is the "legacy host, controller state unknown" sentinel and
+    // is never compare-and-swappable: a revisioned authority initializes at 1,
+    // so 0 means we have observed nothing to swap against. Sending it would
+    // ask the host to compare against a premise that was never true.
+    let expected = attachment.info.supportsReconnect && controlRevision >= 1
+      ? controlRevision : nil
+    claimedAgainstRevision = expected
+    claimOutcome = expected == nil ? .unfenced : nil
     try await write(sequence: clientSequence, to: attachment) { attachment, sequence in
-      try await attachment.claimControl(cols: cols, rows: rows, sequence: sequence)
+      try await attachment.claimControl(
+        cols: cols, rows: rows, sequence: sequence, expectedControlRevision: expected)
     }
   }
+
+  /// The outcome of the most recent claim, once the host's announcement has
+  /// landed. `nil` while a fenced claim is still outstanding.
+  public var lastClaimOutcome: GhostteaControlClaimOutcome? { claimOutcome }
 
   /// Resize the shared terminal. Only the controlling pane may: the epoch is
   /// read from the controller state this attachment last observed, never
@@ -424,16 +510,34 @@ public actor GhostteaAttachmentLifecycle {
   public func selectionText(_ selection: GhostteaSelectionRequest) async throws -> String {
     let attachment = try requireLiveAttachment()
     let requestID = UUID().uuidString
+    // Register *before* sending. Writing first opens a window in which the
+    // answer — or a teardown — arrives while no waiter is installed: the
+    // answer finds nothing to resume and is dropped, and the continuation
+    // registered a moment later waits for a reply that already came and went.
+    return try await withCheckedThrowingContinuation { continuation in
+      selectionWaiters[requestID] = continuation
+      Task { await self.sendSelectionRequest(selection, requestID: requestID, to: attachment) }
+    }
+  }
+
+  /// The send half of ``selectionText``, split out so the waiter can be
+  /// installed first. A write that fails rolls the waiter back rather than
+  /// leaving the caller suspended on a request that never left.
+  private func sendSelectionRequest(
+    _ selection: GhostteaSelectionRequest,
+    requestID: String,
+    to attachment: GhostteaTruffleAttachment
+  ) async {
     let sentGeneration = generation
     let sentIncarnation = incarnation
     do {
       _ = try await attachment.requestSelectionText(selection, requestID: requestID)
     } catch {
       commitDisconnect(generation: sentGeneration, incarnation: sentIncarnation)
-      throw GhostteaAttachmentControlRejection(phase: phase, reason: .writeFailed)
-    }
-    return try await withCheckedThrowingContinuation { continuation in
-      selectionWaiters[requestID] = continuation
+      if let waiter = selectionWaiters.removeValue(forKey: requestID) {
+        waiter.resume(
+          throwing: GhostteaAttachmentControlRejection(phase: phase, reason: .writeFailed))
+      }
     }
   }
 
@@ -442,6 +546,11 @@ public actor GhostteaAttachmentLifecycle {
   public func suspendForBackground() {
     guard !phase.isTerminal else { return }
     backgrounded = true
+    // Advance the generation so an attempt already in flight is superseded by
+    // the same mechanism everything else is, and drop the transport it is
+    // waiting on — cancelling its task cannot unblock a socket read.
+    generation &+= 1
+    abandonAnyAttempt()
     teardownCurrent()
     engineTask?.cancel()
     engineTask = nil
@@ -480,6 +589,8 @@ public actor GhostteaAttachmentLifecycle {
   public func close() async {
     guard !phase.isTerminal else { return }
     let attachment = current
+    generation &+= 1
+    abandonAnyAttempt()
     teardownCurrent()
     engineTask?.cancel()
     engineTask = nil
@@ -539,6 +650,51 @@ public actor GhostteaAttachmentLifecycle {
     case ended
   }
 
+  /// Whether the attempt that started under `generation` may still act.
+  ///
+  /// Invariant (b) of §4.2.1 applied to this engine: a stalled attempt
+  /// re-checks that it is still its lineage's current one immediately before
+  /// it acts, rather than trusting the world it was started in. Suspension and
+  /// cancellation count as superseding it, which is why they are here and not
+  /// only in the generation.
+  private func attemptIsCurrent(_ generation: UInt64) -> Bool {
+    self.generation == generation && !phase.isTerminal && !backgrounded && !Task.isCancelled
+  }
+
+  /// Bounds an attempt that would otherwise wait forever: no read in the
+  /// handshake carries a deadline of its own, and until an attachment exists
+  /// there is no heartbeat to notice. Closing the connection is what unblocks
+  /// them — cancellation cannot reach a socket read.
+  private func armAttemptWatchdog(_ generation: UInt64) {
+    let clock = self.clock
+    let bound = config.attemptTimeoutMs
+    attemptWatchdog?.cancel()
+    attemptWatchdog = Task { [weak self] in
+      do { try await clock.sleep(millis: bound) } catch { return }
+      await self?.abandonAttempt(generation)
+    }
+  }
+
+  /// Close whatever the attempt is waiting on. Safe to call from anywhere: it
+  /// compares the generation at commit like every other liveness effect.
+  private func abandonAttempt(_ generation: UInt64) {
+    guard self.generation == generation, let connection = attemptConnection else { return }
+    attemptConnection = nil
+    Task { await connection.close() }
+  }
+
+  /// Drop the in-flight attempt's transport whatever generation it belongs to.
+  /// Used by suspension and local close, where the point is that *nothing*
+  /// continues, not that a particular attempt does not.
+  private func abandonAnyAttempt() {
+    attemptWatchdog?.cancel()
+    attemptWatchdog = nil
+    if let connection = attemptConnection {
+      attemptConnection = nil
+      Task { await connection.close() }
+    }
+  }
+
   private func runAttempt() async -> AttemptOutcome {
     // Activation is early and Live is late (§4.2.2). The moment this advances,
     // every in-flight reader is stale and its late publishes drop — before any
@@ -547,11 +703,22 @@ public actor GhostteaAttachmentLifecycle {
     let attemptGeneration = generation
     teardownCurrent()
 
-    if let verdict = await listingVerdict() {
+    armAttemptWatchdog(attemptGeneration)
+    defer {
+      attemptWatchdog?.cancel()
+      attemptWatchdog = nil
+      attemptConnection = nil
+    }
+
+    let verdict = await listingVerdict()
+    // The verdict is only actionable if this attempt still speaks for the
+    // session: backgrounding during a listing must not end the session behind
+    // the user's back.
+    guard attemptIsCurrent(attemptGeneration) else { return .retry }
+    if let verdict {
       commitEnded(verdict)
       return .ended
     }
-    guard generation == attemptGeneration, !phase.isTerminal else { return .retry }
 
     let connection: any MeshConnection
     do {
@@ -559,10 +726,11 @@ public actor GhostteaAttachmentLifecycle {
     } catch {
       return .retry
     }
-    guard generation == attemptGeneration, !phase.isTerminal else {
+    guard attemptIsCurrent(attemptGeneration) else {
       await connection.close()
       return .retry
     }
+    attemptConnection = connection
 
     // Both shapes are computed before the dial and chosen after the hello: the
     // planner runs inside the handshake, where the actor cannot be consulted,
@@ -622,7 +790,7 @@ public actor GhostteaAttachmentLifecycle {
       commitEnded(.hostRestarted)
       return .ended
     }
-    guard generation == attemptGeneration, !phase.isTerminal else {
+    guard attemptIsCurrent(attemptGeneration) else {
       await attachment.detach()
       return .retry
     }
@@ -647,13 +815,18 @@ public actor GhostteaAttachmentLifecycle {
     startReader(
       attachment: attachment, generation: attemptGeneration, incarnation: attemptIncarnation)
 
+    // The attach is done, so the watchdog's job is over: from here the
+    // heartbeat is the bound.
+    attemptWatchdog?.cancel()
+    attemptWatchdog = nil
+    attemptConnection = nil
     guard await awaitFirstSnapshot(generation: attemptGeneration) else {
       // Leaving this attempt's reader alive under the current generation would
       // let it mutate a replica the user has already been told is frozen.
       teardownCurrent()
       return .retry
     }
-    guard generation == attemptGeneration, !phase.isTerminal else { return .retry }
+    guard attemptIsCurrent(attemptGeneration) else { return .retry }
 
     attempt = 0
     absentSinceMs = nil
@@ -681,14 +854,21 @@ public actor GhostteaAttachmentLifecycle {
   /// that throws, yields no verdict at all — absence only counts when the host
   /// answered.
   private func listingVerdict() async -> GhostteaAttachmentEndReason? {
-    let sessions: [GhostteaSharedSessionSummary]?
+    let listing: GhostteaSessionListing?
     do {
-      sessions = try await dialer.listSessions()
+      listing = try await dialer.listSessions()
     } catch {
       return nil
     }
-    guard let sessions else { return nil }
-    guard let entry = sessions.first(where: { $0.sessionID == sessionID }) else {
+    guard let listing else { return nil }
+    // Evidence order, §4.2 step 2 before step 4: a different host instance is
+    // a new world, and every absence it reports is a consequence of the
+    // restart rather than evidence about the session. Comparing identity
+    // second would end a recoverable session as "unavailable".
+    if let recorded = hostInstanceID, recorded != listing.hostInstanceID {
+      return .hostRestarted
+    }
+    guard let entry = listing.sessions.first(where: { $0.sessionID == sessionID }) else {
       // The host answered and does not hold it. Without a tombstone lookup on
       // the compact path, unavailable is the honest name for that.
       return .sessionUnavailable
@@ -795,7 +975,9 @@ public actor GhostteaAttachmentLifecycle {
         break
       }
       do {
-        try await sink?.apply(message)
+        try await sink?.apply(
+          message,
+          from: GhostteaAttachmentStateToken(generation: generation, incarnation: incarnation))
       } catch GhostteaAttachmentApplyFailure.needsSnapshot {
         // A discontinuity is recoverable only through an authoritative
         // snapshot. The rejected frame is neither applied nor acknowledged.
@@ -815,6 +997,12 @@ public actor GhostteaAttachmentLifecycle {
       if case .snapshot = message { signalSynchronized(generation: generation) }
       return true
     }
+  }
+
+  /// The token frames are currently published under. A consumer holding an
+  /// older one is looking at a session this attachment has moved past.
+  public var currentStateToken: GhostteaAttachmentStateToken {
+    GhostteaAttachmentStateToken(generation: generation, incarnation: incarnation)
   }
 
   /// What the last attach announced: the lineage generation and whether it
@@ -840,6 +1028,7 @@ public actor GhostteaAttachmentLifecycle {
   /// Internal rather than private for the same reason ``admitState`` is: the
   /// drop rule below is worth a direct test.
   func applyController(_ controller: GhostteaControllerInfo?, revision: UInt64) {
+    resolveClaim(against: controller, revision: revision)
     // A revisioned announcement older than what is cached is a queued view of
     // the past and is dropped whole. Keeping its payload while raising the
     // revision would manufacture a state that never existed — "nobody holds
@@ -850,6 +1039,31 @@ public actor GhostteaAttachmentLifecycle {
     // A legacy announcement carries no revision; keep the last one so a
     // downgrade never looks like a clear at a newer revision.
     controlRevision = max(revision, controlRevision)
+  }
+
+  /// Reads a claim's fate off the announcement that answers it. The host
+  /// announces current state whether it accepted or rejected — the
+  /// `ResizeRejected` pattern — so the announcement *is* the reply, and which
+  /// of §4.2.3's asymmetric outcomes it is depends only on who holds control
+  /// now and at which revision.
+  private func resolveClaim(against controller: GhostteaControllerInfo?, revision: UInt64) {
+    guard let claimedAgainst = claimedAgainstRevision, revision >= claimedAgainst else { return }
+    guard let attachment = current else { return }
+    if let controller {
+      if controller.controllerViewID == attachment.viewID {
+        claimOutcome = .claimed(controlEpoch: controller.controlEpoch, revision: revision)
+      } else {
+        // Another view holds it. Retrying here is the fight the CAS exists to
+        // prevent, so the reclaim ends.
+        claimOutcome = .lostToAnotherView(
+          controllerViewID: controller.controllerViewID, revision: revision)
+      }
+    } else if revision > claimedAgainst {
+      claimOutcome = .clearedAtNewerRevision(revision: revision)
+    } else {
+      return
+    }
+    claimedAgainstRevision = nil
   }
 
   // MARK: - Heartbeat (§5)
