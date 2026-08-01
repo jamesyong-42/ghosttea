@@ -49,22 +49,6 @@ use ghosttea::{
     },
 };
 
-/// The highest minor the compact endpoint will negotiate.
-///
-/// The compact path implements none of the reconnect contract: its attach
-/// discards `attach_generation`, `resume`, and `wants_state`, it attaches
-/// through the legacy path with no takeover, and it answers no compare-and-swap
-/// on control. Advertising minor 6 there would promise fencing that does not
-/// exist — strictly worse than negotiating down, because a client that trusts
-/// the number stops protecting itself. Phase 4 (iOS/compact parity) is where
-/// the contract and its harness get built; lifting this cap is that work's
-/// first step, not a prerequisite for it.
-const COMPACT_MAX_PROTOCOL_MINOR: u16 = REMOTE_RECONNECT_PROTOCOL_MINOR - 1;
-// A build-time guarantee rather than a test: raising the cap to the reconnect
-// minor without implementing the contract should fail to compile, not fail
-// under a test someone can forget to run.
-const _: () = assert!(COMPACT_MAX_PROTOCOL_MINOR < REMOTE_RECONNECT_PROTOCOL_MINOR);
-
 pub const DEFAULT_QUIC_PORT: u16 = 9420;
 pub const DEFAULT_COMPACT_PORT: u16 = 9421;
 const ADVERTISEMENT_INTERVAL: Duration = Duration::from_secs(5);
@@ -4274,6 +4258,88 @@ async fn request_advertisements_from_online_peers(
     }
 }
 
+/// Serve the compact protocol over an already-bound TCP listener, so a client
+/// in another language can be driven against the real host off a tailnet.
+///
+/// **What this is not.** [`handle_compact_connection`] resolves the peer through
+/// Tailscale WhoIs and checks the result against the node's live peer list, and
+/// that cannot run without a tailnet. This skips exactly that prologue and
+/// nothing else: `client_id` stands in for the WhoIs result, and every
+/// connection is attributed to it. From the client hello onward — negotiation,
+/// preface routing, attach, both multiplexed channels, the session control loop
+/// — a caller reaches the same code the tailnet listener reaches, by the same
+/// path, over a real socket. So a run built on this proves the protocol and the
+/// serve loop against a foreign client, and proves nothing about identity
+/// binding, which stays covered only by the tailnet e2e.
+///
+/// Feature-gated: a compact endpoint that serves whoever connects, with the
+/// identity check standing in rather than performed, is not something a
+/// production build should be able to reach by accident.
+/// `host_config` is supplied by the caller rather than made here, and that is
+/// load-bearing rather than stylistic. A serve loop dropped at shutdown takes
+/// everything it owns with it, and a connection handler reads a closed
+/// configuration publisher as a fault and hangs up — so a publisher owned here
+/// would cut every live connection the instant this future is dropped, before
+/// the drain could announce itself, turning a clean goodbye into what a viewer
+/// can only read as an outage. The caller keeps it alive across its own
+/// shutdown path.
+#[cfg(feature = "interop-fixture")]
+pub async fn serve_compact_loopback(
+    listener: tokio::net::TcpListener,
+    registry: Registry,
+    config: TruffleTerminalConfig,
+    expected_device_id: String,
+    client_id: String,
+    shutdown: HostShutdownAnnouncer,
+    host_config: tokio::sync::watch::Receiver<Arc<TerminalPresentationConfig>>,
+) -> Result<()> {
+    let services = HostServices {
+        session_status: None,
+        shutdown,
+    };
+    loop {
+        let (stream, _) = listener.accept().await?;
+        // Same invariant as both production accept loops: the id is the
+        // connection's place in the accept order, so it is taken here and
+        // nowhere later. Identified immediately, because off a tailnet there is
+        // no hello-time resolution left to wait for.
+        let scope = services_scope(&client_id);
+        let registry = registry.clone();
+        let config = config.clone();
+        let services = services.clone();
+        let expected_device_id = expected_device_id.clone();
+        let client_id = client_id.clone();
+        let host_config = host_config.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle_compact_protocol(
+                stream,
+                registry,
+                config,
+                services,
+                "compact-interop-host".to_owned(),
+                Some(expected_device_id),
+                client_id,
+                host_config,
+                scope,
+            )
+            .await
+            {
+                eprintln!("[compact-interop] connection ended: {error:#}");
+            }
+        });
+    }
+}
+
+/// One ledger for the fixture's lifetime, so connection ids order across every
+/// connection a client opens — which is what the attach fence reads.
+#[cfg(feature = "interop-fixture")]
+fn services_scope(client_id: &str) -> ConnectionScope {
+    static LEDGER: std::sync::OnceLock<ConnectionLedger> = std::sync::OnceLock::new();
+    let scope = LEDGER.get_or_init(ConnectionLedger::default).accept();
+    scope.identify(client_id);
+    scope
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn compact_accept_loop(
     node: Arc<Node<TailscaleProvider>>,
@@ -4397,7 +4463,7 @@ where
             (
                 nonce,
                 negotiate_state_codec(state_codecs),
-                protocol_minor.min(COMPACT_MAX_PROTOCOL_MINOR),
+                protocol_minor.min(PROTOCOL_MINOR),
             )
         }
         ConnectionMessage::ClientHello { .. } => {
@@ -4505,7 +4571,10 @@ where
         state_codec,
         protocol_minor,
         mut host_config,
-        connection: _connection_scope,
+        // Held for the life of the handler, as on the QUIC path: the fence may
+        // not treat this connection as dead while it can still deliver an
+        // attach, and this is where this attach's fence id comes from.
+        connection: connection_scope,
     } = context;
     let session_id = preface
         .session_id
@@ -4520,14 +4589,24 @@ where
     .await
     .context("timed out reading compact session attach")??
     .context("compact session stream closed before attach")?;
-    let (request_id, view_id, access_token) = match attach {
+    let (request_id, view_id, access_token, attach_generation, resume, wants_state) = match attach {
         SessionControlMessage::AttachView {
             request_id,
             session_id: requested_session,
             view_id,
             access_token,
+            attach_generation,
+            resume,
+            wants_state,
             ..
-        } if requested_session == session_id => (request_id, view_id, access_token),
+        } if requested_session == session_id => (
+            request_id,
+            view_id,
+            access_token,
+            attach_generation,
+            resume,
+            wants_state,
+        ),
         _ => bail!("expected matching compact attach-view message"),
     };
     let session = registry
@@ -4537,11 +4616,75 @@ where
         .cloned()
         .context("unknown shared terminal session")?;
     let access = config.access_for(access_token.as_deref());
-    // Attaching already performs and publishes a full refresh; render the
-    // state once before acknowledging the new compact view.
-    let attachment_epoch = session
-        .attach_view_with_access(&view_id, &client_id, access)
-        .context("attach compact terminal view")?;
+    // The same rule the QUIC path applies, for the same reason: a zero
+    // generation is a viewer that fences by rotating its wire id, so it has no
+    // lineage to order and must not go through takeover — the second such
+    // attach would be rejected as stale, correctly but uselessly.
+    let ordered = protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR && attach_generation > 0;
+    let attached = if ordered {
+        // Collect before stamping, so the watermarks whose connections have all
+        // finished are retired at the natural moment.
+        session.gc_attach_watermarks(
+            &client_id,
+            connection_scope.ledger().terminated_through(&client_id),
+        );
+        let fence_conn_id = connection_scope.ledger().highest_for(&client_id);
+        match session.take_over_view(
+            &view_id,
+            &client_id,
+            access,
+            attach_generation,
+            fence_conn_id,
+            resume.map(|hint| ResumeEvidence {
+                previous_session_epoch: hint.previous_session_epoch,
+                previous_attachment_epoch: hint.previous_attachment_epoch,
+                previous_terminal_revision: hint.previous_terminal_revision,
+            }),
+        ) {
+            Ok(taken) => taken,
+            Err(rejection) => {
+                // Without this the stream just closes, which a viewer cannot
+                // tell from a transport failure. On compact the connection
+                // carries this one view, so the close that follows *is* the
+                // per-code connection disposition (§6.2).
+                let _ = control
+                    .write_compact_message(
+                        CompactChannel::Control,
+                        &SessionControlMessage::AttachRejected {
+                            request_id,
+                            code: attach_reject_code(rejection.code),
+                            retryable: matches!(
+                                rejection.code,
+                                AttachRejectionCode::ViewInvalid | AttachRejectionCode::ViewLimit
+                            ),
+                        },
+                        MAX_CONTROL_MESSAGE_BYTES,
+                    )
+                    .await;
+                return Err(anyhow::Error::new(rejection));
+            }
+        }
+    } else {
+        // Attaching already performs and publishes a full refresh; render the
+        // state once before acknowledging the new compact view.
+        let attachment_epoch = session
+            .attach_view_with_access(&view_id, &client_id, access)
+            .context("attach compact terminal view")?;
+        let snapshot = session.control_snapshot();
+        TakeOver {
+            attachment_epoch,
+            resumed: false,
+            controller_cleared: false,
+            control_revision: snapshot.control_revision,
+            controller: snapshot.controller,
+        }
+    };
+    let attachment_epoch = attached.attachment_epoch;
+    // Takeover deliberately publishes nothing, so a `wants_state: false` attach
+    // creates no snapshot at all — that is its entire purpose.
+    if wants_state {
+        session.refresh()?;
+    }
     let (_, canonical_cols, canonical_rows, layout_epoch) = session.control_state();
     let presentation = (protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR)
         .then(|| host_config.borrow().as_ref().clone());
@@ -4557,72 +4700,129 @@ where
                 rows: canonical_rows,
                 read_write: access == ViewAccess::ReadWrite,
                 presentation,
-                // The authority does not yet mint fresh epochs on takeover or
-                // report controller state at attach, so these stay at their
-                // pre-takeover values rather than asserting a capability the
-                // host does not have. Revision 0 is the "unknown" sentinel.
-                resumed: false,
-                controller: None,
-                control_revision: 0,
+                resumed: attached.resumed,
+                // Read under the same lock the takeover mutated, so the viewer
+                // cannot observe a controller torn between two reads.
+                controller: attached
+                    .controller
+                    .as_ref()
+                    .map(|controller| ControllerInfo {
+                        controller_view_id: controller.view_id.clone(),
+                        control_epoch: controller.control_epoch,
+                    }),
+                control_revision: attached.control_revision,
             },
             MAX_CONTROL_MESSAGE_BYTES,
         )
         .await
         .context("write compact view-attached response")?;
 
+    // What registration binds on this transport is the *connection*, not a
+    // feed, which is why it is unconditional here where QUIC makes it depend on
+    // wanting state. There the two are separable: a streamless secondary owns
+    // no stream to cancel, and needs none cancelled, because its control stream
+    // is one of many on a connection whose heartbeat lives elsewhere. Here the
+    // connection is the view. A superseded handler nobody cancelled would go on
+    // answering heartbeats and selection requests against an attachment the
+    // authority has already replaced — telling its client a dead view is alive
+    // through the very mechanism meant to detect the opposite.
+    //
+    // A registration that finds the epoch already superseded aborts the
+    // handler, which is the half of the takeover race cancellation alone
+    // cannot win.
+    let (state_cancel, mut state_cancelled) = tokio::sync::watch::channel(false);
+    let registration_cancel = state_cancel.clone();
+    session.register_state_stream(
+        &view_id,
+        attachment_epoch,
+        StateStreamCancel::new(move || {
+            registration_cancel.send_replace(true);
+        }),
+    )?;
+
     let result = async {
         let mut controls = session.subscribe_control_state();
         let mut activities = session.subscribe_activity();
         let mut snapshots = session.subscribe_logical();
+        let mut concluded = session.subscribe_conclusion();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
         let mut shutdown = services.shutdown.watch();
         // An attachment arriving after the announcement has already gone out
         // must not be told the host is healthy by omission. Gated with the
-        // frame itself: below the reconnect minor this is undecodable, and
-        // the compact endpoint is capped there until Phase 4.
+        // frame itself: below the reconnect minor this is undecodable, so such
+        // a viewer keeps the only signal it has ever had — the stream ending.
         if *shutdown.borrow_and_update() && protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
             control
                 .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
                 .await?;
             return Ok(());
         }
-        if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
-            let presentation = host_config.borrow_and_update().as_ref().clone();
-            control
-                .write_compact_state_message(
-                    &StateMessage::ConfigurationChanged { presentation },
-                    state_codec,
-                )
-                .await?;
+        // And a session that concluded before this view attached has to say so
+        // here: the watch below only reports the transition, so a viewer
+        // attaching to an already-dead session would otherwise wait for news
+        // that never comes.
+        if *concluded.borrow_and_update() {
+            if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                control
+                    .write_compact_state_message(
+                        &StateMessage::SessionEnded {
+                            reason: session_end_reason(&session),
+                        },
+                        state_codec,
+                    )
+                    .await?;
+            }
+            return Ok(());
         }
-        if let Some(snapshot) = previous.as_ref() {
-            control
-                .write_compact_state_message(
-                    &StateMessage::Snapshot(snapshot.clone()),
-                    state_codec,
-                )
-                .await?;
-        }
-        // The opening state of a stream has to carry the same shape the live
-        // updates below do. At minor >= 6 that means `ControlState` with the
-        // revision: a stream that opens while nobody holds control must still
-        // say so, and one that opens while somebody does must not hand the
-        // viewer a revisionless frame it would read as the 0 sentinel.
-        if let Some(message) = control_state_message(&session.control_snapshot(), protocol_minor) {
-            control
-                .write_compact_state_message(&message, state_codec)
-                .await?;
-        }
-        if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
-            control
-                .write_compact_state_message(
-                    &StateMessage::ActivityChanged {
-                        activity: session.summary().activity,
-                    },
-                    state_codec,
-                )
-                .await?;
+        // Everything below is the state feed, which a `wants_state: false`
+        // attach declined. What the State channel still carries for such a view
+        // is the two lifecycle frames above and their live counterparts in the
+        // loop: compact has no second stream to put them on — QUIC announces
+        // shutdown on the heartbeat stream, which a streamless secondary keeps
+        // — and a view told nothing would have to read a closing socket as an
+        // ending, the ambiguity §6.2 exists to remove.
+        if wants_state {
+            if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
+                let presentation = host_config.borrow_and_update().as_ref().clone();
+                control
+                    .write_compact_state_message(
+                        &StateMessage::ConfigurationChanged { presentation },
+                        state_codec,
+                    )
+                    .await?;
+            }
+            if let Some(snapshot) = previous.as_ref() {
+                control
+                    .write_compact_state_message(
+                        &StateMessage::Snapshot(snapshot.clone()),
+                        state_codec,
+                    )
+                    .await?;
+            }
+            // The opening state of a stream has to carry the same shape the
+            // live updates below do. At minor >= 6 that means `ControlState`
+            // with the revision: a stream that opens while nobody holds control
+            // must still say so, and one that opens while somebody does must
+            // not hand the viewer a revisionless frame it would read as the 0
+            // sentinel.
+            if let Some(message) =
+                control_state_message(&session.control_snapshot(), protocol_minor)
+            {
+                control
+                    .write_compact_state_message(&message, state_codec)
+                    .await?;
+            }
+            if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
+                control
+                    .write_compact_state_message(
+                        &StateMessage::ActivityChanged {
+                            activity: session.summary().activity,
+                        },
+                        state_codec,
+                    )
+                    .await?;
+            }
         }
 
         loop {
@@ -4641,7 +4841,41 @@ where
                     }
                     return Ok(());
                 }
-                changed = host_config.changed(), if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
+                // §6.3's other half. Without it a connected viewer keeps a
+                // healthy connection to a session that no longer exists, and
+                // stays Live until something else tells it — which, while
+                // attached and with the heartbeat answering, never comes.
+                ended = concluded.changed() => {
+                    if ended.is_err() {
+                        break;
+                    }
+                    if !*concluded.borrow_and_update() {
+                        continue;
+                    }
+                    if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
+                        control
+                            .write_compact_state_message(
+                                &StateMessage::SessionEnded {
+                                    reason: session_end_reason(&session),
+                                },
+                                state_codec,
+                            )
+                            .await?;
+                    }
+                    return Ok(());
+                }
+                // A takeover has replaced this attachment. On QUIC only the
+                // state stream ends here and the control stream outlives it;
+                // compact multiplexes both onto one socket, so the whole
+                // connection ends — which is all a superseded attachment could
+                // do anyway, every command on it now failing the authority's
+                // epoch check.
+                cancelled = state_cancelled.changed() => {
+                    if cancelled.is_err() || *state_cancelled.borrow_and_update() {
+                        return Ok(());
+                    }
+                }
+                changed = host_config.changed(), if wants_state && protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR => {
                     changed.context("host configuration publisher closed")?;
                     let presentation = host_config.borrow_and_update().as_ref().clone();
                     control.write_compact_state_message(
@@ -4671,11 +4905,15 @@ where
                             expected_control_revision,
                             ..
                         } if incoming_view == view_id && epoch == attachment_epoch => {
-                            // Same reasoning as the QUIC loop: the epoch this
-                            // handler holds is not authorization on its own.
-                            // Compact carries no swap today (see the minor cap
-                            // above), and `None` is legacy last-write-wins, so
-                            // this is the epoch check arriving early.
+                            // Same reasoning as the QUIC loop: the guard above
+                            // proves only that the command names the epoch this
+                            // handler was born with, and a takeover moves the
+                            // authority on without telling this loop, so both
+                            // sides of that comparison can be stale together.
+                            // The checked call compares against the authority's
+                            // current attachment under its own lock, and applies
+                            // the client's swap while it is in there — `None`
+                            // stays legacy last-write-wins.
                             match session.claim_control_checked(
                                 &view_id,
                                 &client_id,
@@ -4747,6 +4985,10 @@ where
                                 &view_id, &client_id, attachment_epoch, input_sequence,
                             )?,
                         },
+                        // Answered whatever the view said at attach: an asked-for
+                        // snapshot overrides a standing decline, exactly as the
+                        // QUIC arm opens a stream for one. `wants_state: false`
+                        // is what the host volunteers, not a mute button.
                         SessionControlMessage::RequestSnapshot => {
                             let snapshot = session
                                 .logical_snapshot()
@@ -4759,6 +5001,19 @@ where
                             ).await?;
                         }
                         SessionControlMessage::StateAck { .. } => {}
+                        // §5's compact framing: this transport has no heartbeat
+                        // stream, so liveness rides the control channel of the
+                        // one view this connection carries. Stateless, like the
+                        // QUIC responder — `Pong` is only ever an answer, and
+                        // the viewer's own contact clock does the deciding.
+                        SessionControlMessage::Ping { nonce }
+                            if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR => {
+                            control.write_compact_message(
+                                CompactChannel::Control,
+                                &SessionControlMessage::Pong { nonce },
+                                MAX_CONTROL_MESSAGE_BYTES,
+                            ).await?;
+                        }
                         SessionControlMessage::SelectionText {
                             request_id,
                             view_id: incoming_view,
@@ -4789,7 +5044,7 @@ where
                         _ => bail!("invalid, stale, or misrouted compact session message"),
                     }
                 }
-                snapshot = snapshots.recv() => {
+                snapshot = snapshots.recv(), if wants_state => {
                     let message = match snapshot {
                         Ok(snapshot) => {
                             let next_sequence = patch_sequence.saturating_add(1);
@@ -4821,7 +5076,7 @@ where
                         state_codec,
                     ).await?;
                 }
-                changed = controls.recv() => {
+                changed = controls.recv(), if wants_state => {
                     let changed = match changed {
                         Ok(changed) => changed,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -4834,7 +5089,7 @@ where
                         control.write_compact_state_message(&message, state_codec).await?;
                     }
                 }
-                changed = activities.recv(), if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
+                changed = activities.recv(), if wants_state && protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
                     let activity = match changed {
                         Ok(activity) => activity,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -4853,12 +5108,22 @@ where
         Ok(())
     }
     .await;
+    // Nothing further may be written for this attachment, and a takeover that
+    // fires after this point must find the registration already spent.
+    state_cancel.send_replace(true);
     // Epoch-conditional, because a handler outlives its attachment: once a
     // takeover has replaced this view, detaching by (view, client) alone would
     // destroy the successor's attachment — and if it lands between that
     // takeover and its state-stream registration, the successor never gets a
     // stream at all.
     session.detach_view_if_epoch(&view_id, &client_id, attachment_epoch);
+    // This handler is finishing, so the fence may have just advanced past the
+    // connection it was holding down. Ask again on the way out rather than
+    // leaving the collection to the client's next attach, which may never come.
+    session.gc_attach_watermarks(
+        &client_id,
+        connection_scope.ledger().terminated_through(&client_id),
+    );
     result
 }
 
@@ -6650,15 +6915,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        // The client above offered the highest minor this build knows, and is
-        // deliberately answered less: the compact endpoint implements none of
-        // the reconnect contract, and a client that is told 6 would stop
-        // protecting itself in exchange for fencing that is not there.
+        // The client above offered the highest minor this build knows, and the
+        // compact endpoint now implements that contract, so it is answered in
+        // full. `the_compact_hello_answers_the_negotiated_minimum` covers the
+        // other direction, where the client offers less.
         assert!(matches!(
             hello,
             ConnectionMessage::ServerHello {
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: COMPACT_MAX_PROTOCOL_MINOR,
+                protocol_minor: PROTOCOL_MINOR,
                 ref host_instance_id,
                 ref nonce,
                 state_codec: Some(StateCodec::CompactJsonV1),
@@ -10822,6 +11087,1338 @@ mod tests {
             .await?;
         assert!(text.lines().count() >= 1);
         Ok(())
+    }
+
+    // ── Phase-4 compact serve loop (§6.2's compact rules) ────────────
+    //
+    // The compact endpoint speaks plain framed TCP on `DEFAULT_COMPACT_PORT` in
+    // production; an in-process duplex carries byte-identical framing, so this
+    // drives the real `handle_compact_protocol` — hello negotiation, attach,
+    // both multiplexed channels, and connection close — with nothing stubbed
+    // but the socket.
+    //
+    // What it *can* falsify that the QUIC loopback harness could not: the peer
+    // here is scripted test code rather than this same implementation
+    // negotiated down, so a connection can offer minor 5 and then send a
+    // minor-6 frame, and the host's own compatibility guard is what decides the
+    // outcome. Tests that turn on a minor gate say so at the test.
+    //
+    // What it cannot reach: `compact_accept_loop` and
+    // `handle_compact_connection` — raw TCP acceptance, the WhoIs identity
+    // resolution and the peer lookup — need a live tailnet. This picks up at
+    // the same seam the two older compact tests do, and mints its ledger ids
+    // the way the accept loop does, but that the *production* listener does so
+    // is not proven here.
+
+    const COMPACT_DEVICE: &str = "ios-device";
+    const COMPACT_CLIENT: &str = "truffle:peer:compact";
+
+    /// One frame off a compact connection, tagged with the channel it arrived
+    /// on. Which channel carried a frame is half the contract the Swift client
+    /// implements, so tests assert on it rather than on the message alone.
+    #[derive(Debug)]
+    enum CompactFrame {
+        Control(SessionControlMessage),
+        State(StateMessage),
+        /// The host closed. An ordinary outcome here: on compact a refused
+        /// attach, a concluded session and a superseded view all end with one.
+        Closed,
+    }
+
+    /// The viewer half of a compact connection, with its own reader and writer
+    /// for the wire format — the host's codec is not the thing vouching for the
+    /// host's framing.
+    struct CompactPeer {
+        io: tokio::io::DuplexStream,
+        negotiated_minor: u16,
+        state_codec: StateCodec,
+        /// This connection's place in the host's ledger, so a test can order
+        /// attaches against it and ask when it has fully terminated.
+        connection_id: u64,
+    }
+
+    impl CompactPeer {
+        async fn write_raw<T: serde::Serialize>(&mut self, message: &T) -> Result<()> {
+            self.io
+                .write_all(&encode_message(message, MAX_CONTROL_MESSAGE_BYTES)?)
+                .await?;
+            Ok(())
+        }
+
+        async fn read_raw<T: serde::de::DeserializeOwned>(&mut self) -> Result<T> {
+            let mut header = [0_u8; 4];
+            self.io.read_exact(&mut header).await?;
+            let mut payload = vec![0_u8; u32::from_be_bytes(header) as usize];
+            self.io.read_exact(&mut payload).await?;
+            Ok(serde_json::from_slice(&payload)?)
+        }
+
+        async fn write_control(&mut self, message: &SessionControlMessage) -> Result<()> {
+            self.io
+                .write_all(&encode_compact_message(
+                    CompactChannel::Control,
+                    message,
+                    MAX_CONTROL_MESSAGE_BYTES,
+                )?)
+                .await?;
+            Ok(())
+        }
+
+        async fn read_frame(&mut self) -> Result<CompactFrame> {
+            let mut header = [0_u8; 4];
+            match self.io.read_exact(&mut header).await {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(CompactFrame::Closed);
+                }
+                Err(error) => return Err(error.into()),
+            }
+            let mut framed = vec![0_u8; u32::from_be_bytes(header) as usize];
+            self.io.read_exact(&mut framed).await?;
+            let payload = &framed[1..];
+            Ok(match CompactChannel::from_byte(framed[0])? {
+                CompactChannel::Control => CompactFrame::Control(serde_json::from_slice(payload)?),
+                // `write_compact_state_message` strips the state codec's own
+                // length prefix before framing, so put it back to decode.
+                CompactChannel::State => {
+                    let mut prefixed = Vec::with_capacity(4 + payload.len());
+                    prefixed.extend_from_slice(&u32::try_from(payload.len())?.to_be_bytes());
+                    prefixed.extend_from_slice(payload);
+                    CompactFrame::State(
+                        decode_state_message(&prefixed, self.state_codec, MAX_STATE_MESSAGE_BYTES)?
+                            .0,
+                    )
+                }
+            })
+        }
+
+        /// The next frame, on whichever channel. Bounded, so no assertion in
+        /// this file can hang the suite waiting for a frame that never comes.
+        async fn next_frame(&mut self) -> Result<CompactFrame> {
+            tokio::time::timeout(Duration::from_secs(5), self.read_frame())
+                .await
+                .context("timed out waiting for a compact frame")?
+        }
+
+        /// The next frame if one arrives inside `window`, `None` if the host
+        /// stayed silent. Absence is the whole assertion for a view that
+        /// declined state, so it gets a bounded wait rather than a read that
+        /// would hang.
+        async fn frame_within(&mut self, window: Duration) -> Result<Option<CompactFrame>> {
+            match tokio::time::timeout(window, self.read_frame()).await {
+                Err(_) => Ok(None),
+                Ok(frame) => frame.map(Some),
+            }
+        }
+
+        async fn next_control(&mut self) -> Result<SessionControlMessage> {
+            match self.next_frame().await? {
+                CompactFrame::Control(message) => Ok(message),
+                other => bail!("expected a control frame, got {other:?}"),
+            }
+        }
+
+        async fn next_state(&mut self) -> Result<StateMessage> {
+            match self.next_frame().await? {
+                CompactFrame::State(message) => Ok(message),
+                other => bail!("expected a state frame, got {other:?}"),
+            }
+        }
+
+        /// The next control frame, letting the state feed flow past it. The
+        /// control channel carries no unsolicited host traffic of its own, so
+        /// an answer is identifiable wherever in the interleaving it lands.
+        async fn next_control_amid_state(&mut self) -> Result<SessionControlMessage> {
+            loop {
+                match self.next_frame().await? {
+                    CompactFrame::Control(message) => return Ok(message),
+                    CompactFrame::State(_) => continue,
+                    CompactFrame::Closed => bail!("the host closed before answering"),
+                }
+            }
+        }
+
+        /// Read past the opening state burst up to and including the frame
+        /// `stop` accepts, returning everything seen. Tests assert on the whole
+        /// run, so a frame arriving in the wrong place cannot be skipped into
+        /// looking right.
+        async fn frames_until(
+            &mut self,
+            stop: impl Fn(&CompactFrame) -> bool,
+        ) -> Result<Vec<CompactFrame>> {
+            let mut seen = Vec::new();
+            loop {
+                let frame = self.next_frame().await?;
+                let done = stop(&frame) || matches!(frame, CompactFrame::Closed);
+                seen.push(frame);
+                if done {
+                    return Ok(seen);
+                }
+            }
+        }
+
+        async fn attach(
+            &mut self,
+            session_id: &str,
+            view_id: &str,
+            attach_generation: u64,
+            resume: Option<ResumeHint>,
+            wants_state: bool,
+        ) -> Result<SessionControlMessage> {
+            self.write_control(&SessionControlMessage::AttachView {
+                request_id: "attach-1".into(),
+                session_id: session_id.to_owned(),
+                view_id: view_id.to_owned(),
+                access_token: None,
+                cols: 80,
+                rows: 24,
+                attach_generation,
+                resume,
+                wants_state,
+            })
+            .await?;
+            self.next_control().await
+        }
+    }
+
+    /// A compact host: one real session in a real registry, served by the
+    /// production protocol handler over the production framing.
+    struct CompactHost {
+        registry: Registry,
+        services: HostServices,
+        connections: ConnectionLedger,
+        presentation: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
+        session_id: String,
+        served: Vec<tokio::task::JoinHandle<Result<()>>>,
+    }
+
+    impl CompactHost {
+        fn new() -> Result<Self> {
+            Self::serving(HostServices::default())
+        }
+
+        fn serving(services: HostServices) -> Result<Self> {
+            let registry = Registry::default();
+            let session_id = spawn_host_session(&registry)?;
+            Ok(Self {
+                registry,
+                services,
+                connections: ConnectionLedger::default(),
+                presentation: tokio::sync::watch::channel(Arc::new(
+                    ghosttea::ConfigSnapshot::default().terminal_presentation(),
+                ))
+                .0,
+                session_id,
+                served: Vec::new(),
+            })
+        }
+
+        fn session(&self) -> Arc<Session> {
+            self.registry
+                .read()
+                .unwrap()
+                .get(&self.session_id)
+                .cloned()
+                .expect("host session")
+        }
+
+        async fn attached(&mut self, view_id: &str, generation: u64) -> Result<CompactPeer> {
+            let mut peer = self
+                .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+                .await?;
+            let session_id = self.session_id.clone();
+            let attached = peer
+                .attach(&session_id, view_id, generation, None, true)
+                .await?;
+            if !matches!(attached, SessionControlMessage::ViewAttached { .. }) {
+                bail!("compact host refused the harness attach: {attached:?}");
+            }
+            Ok(peer)
+        }
+
+        /// Dial the way the accept loop does: a ledger id minted on the raw
+        /// connection and identified with the client the WhoIs lookup ahead of
+        /// it would have resolved, then the real handler.
+        async fn connect(&mut self, kind: StreamKind, offered_minor: u16) -> Result<CompactPeer> {
+            self.connect_prefacing(kind, offered_minor, None).await
+        }
+
+        /// As [`CompactHost::connect`], with control over what the preface
+        /// announces as its view. Real clients write the preface *before* the
+        /// hello, so what goes in there is their local view id — settled before
+        /// the negotiated minor that decides the wire id is known.
+        async fn connect_prefacing(
+            &mut self,
+            kind: StreamKind,
+            offered_minor: u16,
+            preface_view_id: Option<&str>,
+        ) -> Result<CompactPeer> {
+            let (server_io, client_io) = tokio::io::duplex(256 * 1024);
+            let scope = self.connections.accept();
+            scope.identify(COMPACT_CLIENT);
+            let connection_id = scope.id();
+            self.served.push(tokio::spawn(handle_compact_protocol(
+                server_io,
+                self.registry.clone(),
+                TruffleTerminalConfig {
+                    allow_tailnet_write: true,
+                    ..TruffleTerminalConfig::default()
+                },
+                self.services.clone(),
+                "compact-host".into(),
+                Some(COMPACT_DEVICE.into()),
+                COMPACT_CLIENT.to_owned(),
+                self.presentation.subscribe(),
+                scope,
+            )));
+            let mut peer = CompactPeer {
+                io: client_io,
+                negotiated_minor: 0,
+                state_codec: StateCodec::Json,
+                connection_id,
+            };
+            peer.io
+                .write_all(&encode_preface(&StreamPreface {
+                    stream_kind: kind,
+                    session_id: (kind == StreamKind::SessionControl)
+                        .then(|| self.session_id.clone()),
+                    view_id: preface_view_id.map(str::to_owned),
+                })?)
+                .await?;
+            peer.write_raw(&ConnectionMessage::ClientHello {
+                protocol_major: PROTOCOL_MAJOR,
+                protocol_minor: offered_minor,
+                host_instance_id: String::new(),
+                local_device_id: COMPACT_DEVICE.into(),
+                nonce: "compact-nonce".into(),
+                state_codecs: Some(vec![StateCodec::CompactJsonV1]),
+            })
+            .await?;
+            let ConnectionMessage::ServerHello {
+                protocol_minor,
+                state_codec,
+                ..
+            } = peer.read_raw::<ConnectionMessage>().await?
+            else {
+                bail!("compact host did not answer with a server hello");
+            };
+            peer.negotiated_minor = protocol_minor;
+            peer.state_codec = state_codec.unwrap_or(StateCodec::Json);
+            Ok(peer)
+        }
+    }
+
+    /// The cap is gone, so the compact endpoint answers what the pair actually
+    /// has in common. Both halves matter: answering the host's own minor to a
+    /// client that offered less is the bug Phase 3 found on the QUIC side, and
+    /// answering less than the pair share is the cap this phase removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_compact_hello_answers_the_negotiated_minimum() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let full = host
+            .connect(StreamKind::ConnectionControl, PROTOCOL_MINOR)
+            .await?;
+        assert_eq!(
+            full.negotiated_minor, PROTOCOL_MINOR,
+            "a compact client offering everything this host has was answered less"
+        );
+        assert!(
+            full.negotiated_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR,
+            "the compact endpoint still negotiates below the reconnect minor"
+        );
+
+        let legacy = host
+            .connect(
+                StreamKind::ConnectionControl,
+                REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            )
+            .await?;
+        assert_eq!(
+            legacy.negotiated_minor,
+            REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            "a compact client that offered less was told it got more"
+        );
+        Ok(())
+    }
+
+    /// §4.2.1 on compact: an attach that carries a lineage goes through the
+    /// authority's takeover, which mints a *fresh* epoch for the same view and
+    /// says so. The pre-takeover path returns the epoch the view already had,
+    /// which is what a resuming viewer cannot distinguish a stale attachment by.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_generational_compact_attach_routes_through_takeover() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let first = host.attached("r:pane-1#g1", 1).await?;
+        let session = host.session();
+        let opening = session
+            .view_attachment_epoch("r:pane-1#g1")
+            .context("the first attach left no attachment")?;
+
+        let mut second = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = second
+            .attach(&session_id, "r:pane-1#g1", 2, None, true)
+            .await?;
+
+        let SessionControlMessage::ViewAttached {
+            attachment_epoch,
+            resumed,
+            ..
+        } = attached
+        else {
+            bail!("the second compact attach was not accepted: {attached:?}");
+        };
+        assert!(
+            attachment_epoch > opening,
+            "the takeover reused epoch {opening} instead of minting a fresh one"
+        );
+        assert!(
+            resumed,
+            "the host did not report that it had taken the view over"
+        );
+        assert_eq!(
+            session.attach_watermark_count(COMPACT_CLIENT),
+            1,
+            "the compact takeover left no watermark for the fence to order by"
+        );
+        drop(first.io);
+        drop(second.io);
+        Ok(())
+    }
+
+    /// The compatibility half. A zero generation has no lineage to order, so it
+    /// must keep the pre-takeover path — the second such attach would otherwise
+    /// be refused as stale, correctly and uselessly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_attach_without_a_lineage_keeps_the_legacy_path() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+        assert!(
+            matches!(
+                attached,
+                SessionControlMessage::ViewAttached { resumed: false, .. }
+            ),
+            "a generation-0 attach was reported as a resume: {attached:?}"
+        );
+        assert_eq!(
+            host.session().attach_watermark_count(COMPACT_CLIENT),
+            0,
+            "a viewer with no lineage was given a watermark it can never advance"
+        );
+        drop(peer.io);
+        Ok(())
+    }
+
+    /// §6.2: a refusal has to be *named* before the connection goes. Closing
+    /// alone is what a transport fault looks like, and it sends the viewer down
+    /// the ambiguous path instead of the terminal one this code demands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_compact_attach_is_named_before_the_close() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let refused = peer
+            .attach(
+                &session_id,
+                "r:pane-1",
+                1,
+                Some(ResumeHint {
+                    // A resume against a host that has restarted since.
+                    previous_session_epoch: host.session().session_epoch() + 1,
+                    previous_attachment_epoch: 1,
+                    previous_terminal_revision: 1,
+                }),
+                true,
+            )
+            .await?;
+        assert!(
+            matches!(
+                refused,
+                SessionControlMessage::AttachRejected {
+                    code: AttachRejectCode::SessionEpochMismatch,
+                    retryable: false,
+                    ref request_id,
+                } if request_id == "attach-1"
+            ),
+            "the host did not name the refusal: {refused:?}"
+        );
+        assert!(
+            matches!(peer.next_frame().await?, CompactFrame::Closed),
+            "a terminal refusal left the compact connection open"
+        );
+        Ok(())
+    }
+
+    /// The ordering fence, seen from the wire: once a generation has been
+    /// accepted, a lower one is a delayed attempt from a connection that has
+    /// already been superseded, and the host refuses it by name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_compact_generation_is_refused_by_name() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let current = host.attached("r:pane-1#g5", 5).await?;
+
+        let mut delayed = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let refused = delayed
+            .attach(&session_id, "r:pane-1#g5", 3, None, true)
+            .await?;
+        assert!(
+            matches!(
+                refused,
+                SessionControlMessage::AttachRejected {
+                    code: AttachRejectCode::StaleResume,
+                    ..
+                }
+            ),
+            "a generation below the watermark was accepted: {refused:?}"
+        );
+        drop(current.io);
+        Ok(())
+    }
+
+    /// The view id comes from `AttachView` and from nowhere else — the preface
+    /// contributes the session id only, and the two view ids are *expected* to
+    /// differ.
+    ///
+    /// This is a real client's ordering, not a hypothetical: the compact client
+    /// writes its preface before the hello, so the preface carries the id it
+    /// had at the time — the **local** one — while the attach that follows
+    /// carries the **wire** id chosen from the minor the hello went on to
+    /// negotiate (`r:pane-1` at >= 6, `r:pane-1#g{n}` rotated below it). So on
+    /// every minor-6 attach the preface and the attach disagree, by design.
+    ///
+    /// Pinned because the seam looks like a missing validation and reads as an
+    /// invitation to "harden" it. A cross-check here would break every iOS
+    /// minor-6 attach, and — the reason this test has to exist rather than
+    /// relying on the others — it would break *nothing else in this suite*:
+    /// every other compact test leaves the preface's view id absent, which any
+    /// plausible comparison would wave through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_attach_takes_its_view_id_from_the_attach_not_the_preface() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect_prefacing(StreamKind::SessionControl, PROTOCOL_MINOR, Some("pane-1"))
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = peer.attach(&session_id, "r:pane-1", 1, None, true).await?;
+        assert!(
+            matches!(attached, SessionControlMessage::ViewAttached { .. }),
+            "an attach whose wire id differs from its preface was refused: {attached:?}"
+        );
+        // Accepted is not enough — the state feed has to follow, or the client
+        // is attached to something it will never hear from.
+        assert!(
+            matches!(
+                peer.next_state().await?,
+                StateMessage::ConfigurationChanged { .. }
+            ),
+            "the attach was accepted but its state channel stayed shut"
+        );
+        // And the authority holds the wire id, which is the one every later
+        // epoch check, takeover and detach will name.
+        assert!(
+            host.session().view_attachment_epoch("r:pane-1").is_some(),
+            "the host attached something other than the id the attach named"
+        );
+        assert!(
+            host.session().view_attachment_epoch("pane-1").is_none(),
+            "the host attached the preface's local id, which no later message will ever name"
+        );
+        drop(peer.io);
+        Ok(())
+    }
+
+    /// §4.2.1's stage-2 fence, on the transport whose accept path mints the
+    /// ids. An attach is stamped with the highest connection this client could
+    /// still be holding — **not** the one it arrived on — so a watermark set
+    /// from an older connection survives that connection's death for as long as
+    /// a newer one is open. Stamping the arriving connection's own id (or
+    /// nothing) collects the watermark early, and the delayed low-generation
+    /// attach it exists to refuse is accepted instead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_attach_is_fenced_at_the_clients_newest_connection() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        // Older connection, newer connection, attach on the older one.
+        let mut older = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let newer = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        assert!(newer.connection_id > older.connection_id);
+        let session_id = host.session_id.clone();
+        older
+            .attach(&session_id, "r:pane-1#g5", 5, None, true)
+            .await?;
+
+        // The connection that set the watermark is gone, and fully terminated —
+        // but the one that outranks it is not, so nothing may be collected yet.
+        let retired = older.connection_id;
+        drop(older);
+        while !host.connections.fully_terminated(retired) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut delayed = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let refused = delayed
+            .attach(&session_id, "r:pane-1#g5", 3, None, true)
+            .await?;
+        assert!(
+            matches!(
+                refused,
+                SessionControlMessage::AttachRejected {
+                    code: AttachRejectCode::StaleResume,
+                    ..
+                }
+            ),
+            "the watermark was collected while a connection that outranks its \
+             fence was still open, so a delayed attach was accepted: {refused:?}"
+        );
+        drop(newer);
+        Ok(())
+    }
+
+    /// §4.5 on compact. The channel is the stream here, so declining state
+    /// means the State channel never carries session state for this view — no
+    /// opening snapshot, no controller frame, no activity, no patches — while
+    /// the control channel keeps working. The positive half is asserted
+    /// alongside so the absence is evidence rather than a quiet timeout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_view_that_declines_state_gets_none() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut feed = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        feed.attach(&session_id, "r:pane-1", 1, None, true).await?;
+        assert!(
+            matches!(
+                feed.next_state().await?,
+                StateMessage::ConfigurationChanged { .. }
+            ),
+            "a view that wanted state did not get the opening burst"
+        );
+
+        let mut secondary = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let attached = secondary
+            .attach(&session_id, "r:pane-2", 1, None, false)
+            .await?;
+        assert!(
+            matches!(attached, SessionControlMessage::ViewAttached { .. }),
+            "the secondary was not attached: {attached:?}"
+        );
+        assert!(
+            secondary
+                .frame_within(Duration::from_millis(300))
+                .await?
+                .is_none(),
+            "a view that declined state was sent some anyway"
+        );
+
+        // The control channel is untouched by the decline: this is a view with
+        // no feed, not a view with no connection.
+        secondary
+            .write_control(&SessionControlMessage::Ping { nonce: 41 })
+            .await?;
+        assert!(
+            matches!(
+                secondary.next_control().await?,
+                SessionControlMessage::Pong { nonce: 41 }
+            ),
+            "a streamless compact view lost its control channel too"
+        );
+        drop(feed.io);
+        drop(secondary.io);
+        Ok(())
+    }
+
+    /// §5's compact framing: no heartbeat stream on this transport, so liveness
+    /// rides the control channel of the one view the connection carries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_ping_is_answered_on_the_control_channel() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host.attached("r:pane-1", 1).await?;
+        peer.write_control(&SessionControlMessage::Ping { nonce: 7 })
+            .await?;
+        assert!(
+            matches!(
+                peer.next_control_amid_state().await?,
+                SessionControlMessage::Pong { nonce: 7 }
+            ),
+            "the compact host did not answer the probe with its own nonce"
+        );
+
+        // Stateless, like the QUIC responder: a second probe is answered on its
+        // own terms, not on the first one's.
+        peer.write_control(&SessionControlMessage::Ping { nonce: 8 })
+            .await?;
+        assert!(matches!(
+            peer.next_control_amid_state().await?,
+            SessionControlMessage::Pong { nonce: 8 }
+        ));
+        drop(peer.io);
+        Ok(())
+    }
+
+    /// The same legacy path from the other direction: a minor-5 connection that
+    /// simply goes quiet. The host must neither speak first nor hang up.
+    ///
+    /// This is where a real client bug lived. A viewer that probes a legacy host
+    /// gets the connection closed (the test below), redials, and closes again —
+    /// a self-inflicted reconnect loop that reads as a flaky network. The host's
+    /// half of not having that happen is this: silence is a legacy viewer's
+    /// normal resting state, because it has no heartbeat to fill it with. A host
+    /// that sent something unsolicited would be sending a frame the viewer may
+    /// not be able to decode, and one that closed on idle would manufacture the
+    /// very disconnect the gate exists to prevent.
+    ///
+    /// "Quiet" is deliberately host→client only. The shipped client acks every
+    /// frame it applies, on every negotiated minor, so a resting legacy
+    /// connection still carries `StateAck` in the other direction — and the
+    /// silence asserted here has to hold *while* that traffic arrives, which is
+    /// why the window below is not an empty one.
+    ///
+    /// Both halves are falsifiable, which is why the assertions are split:
+    /// deleting the `RequestSnapshot` arm fails the liveness check at the end,
+    /// and emitting one unsolicited frame into the quiet window — a future
+    /// host-initiated keepalive, in miniature — fails the silence check before
+    /// it. The second is the one worth having: no code path can break it today,
+    /// so it exists to make sure none is added quietly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_quiet_legacy_compact_connection_is_left_alone() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect(
+                StreamKind::SessionControl,
+                REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            )
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+        let SessionControlMessage::ViewAttached {
+            session_epoch,
+            layout_epoch,
+            ..
+        } = attached
+        else {
+            bail!("the legacy attach was refused: {attached:?}");
+        };
+
+        // Drain the opening burst without asserting its shape — what this test
+        // is about starts once the host has said everything it volunteers.
+        while peer
+            .frame_within(Duration::from_millis(200))
+            .await?
+            .is_some()
+        {}
+
+        // What a real client does in this window rather than nothing at all:
+        // acknowledge what it applied. An ack must move the host to neither
+        // answer nor act — it is bookkeeping the host does not keep.
+        for terminal_revision in 1..=3 {
+            peer.write_control(&SessionControlMessage::StateAck {
+                session_epoch,
+                layout_epoch,
+                patch_sequence: 0,
+                terminal_revision,
+            })
+            .await?;
+        }
+
+        // Now the resting state a legacy viewer sits in indefinitely.
+        assert!(
+            peer.frame_within(Duration::from_millis(700))
+                .await?
+                .is_none(),
+            "the host spoke unprompted to a legacy view that cannot be expected \
+             to decode anything new, or hung up on it for being idle"
+        );
+
+        // Quiet is not the same as dead: the connection has to still be there.
+        peer.write_control(&SessionControlMessage::RequestSnapshot)
+            .await?;
+        assert!(
+            matches!(peer.next_state().await?, StateMessage::Snapshot(_)),
+            "a legacy connection stopped being served after going quiet"
+        );
+        assert!(
+            host.session().view_attachment_epoch("r:pane-1").is_some(),
+            "the view was detached while its connection sat idle"
+        );
+        drop(peer.io);
+        Ok(())
+    }
+
+    /// The gate, falsified: `Ping` is not part of the contract a minor-5 pair
+    /// negotiated, and a host that answered it there would be telling a viewer
+    /// its liveness story works when the rest of the contract behind it does
+    /// not. This is the claim the QUIC harness could not test — its "legacy"
+    /// peer was this same implementation negotiated down, and would never send
+    /// the frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_ping_below_the_reconnect_minor_is_not_a_message() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host
+            .connect(
+                StreamKind::SessionControl,
+                REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            )
+            .await?;
+        let session_id = host.session_id.clone();
+        peer.attach(&session_id, "r:pane-1", 0, None, true).await?;
+        peer.write_control(&SessionControlMessage::Ping { nonce: 7 })
+            .await?;
+
+        let frames = peer
+            .frames_until(|frame| matches!(frame, CompactFrame::Control(_)))
+            .await?;
+        assert!(
+            matches!(frames.last(), Some(CompactFrame::Closed)),
+            "a legacy compact pair got an answer to a frame it never agreed on: {frames:?}"
+        );
+        Ok(())
+    }
+
+    /// §6.3 on the state channel. Without this a viewer holds a healthy
+    /// connection to a session that no longer exists and stays Live — with the
+    /// heartbeat answering, nothing else would ever tell it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_session_that_ends_says_so_before_the_close() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host.attached("r:pane-1", 1).await?;
+
+        host.session()
+            .terminate(ghosttea::TerminationSource::User)?;
+
+        let frames = peer
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::SessionEnded { .. })
+                )
+            })
+            .await?;
+        assert!(
+            matches!(
+                frames.last(),
+                Some(CompactFrame::State(StateMessage::SessionEnded {
+                    reason: SessionEndReason::Exited { .. }
+                }))
+            ),
+            "the session ended without the host accounting for it: {frames:?}"
+        );
+        assert!(
+            matches!(peer.next_frame().await?, CompactFrame::Closed),
+            "the compact connection outlived the session it carried"
+        );
+        Ok(())
+    }
+
+    /// The same news for a view that arrives after the fact. The watch reports
+    /// only the transition, so a viewer attaching to an already-dead session
+    /// would otherwise wait for an account that never comes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_view_attaching_to_a_dead_session_is_told_at_once() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let session = host.session();
+        session.terminate(ghosttea::TerminationSource::User)?;
+        while !session.has_concluded() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut peer = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        peer.attach(&session_id, "r:pane-1", 1, None, true).await?;
+        assert!(
+            matches!(
+                peer.next_state().await?,
+                StateMessage::SessionEnded {
+                    reason: SessionEndReason::Exited { .. }
+                }
+            ),
+            "a view attached to a concluded session was handed the live opening burst"
+        );
+        Ok(())
+    }
+
+    /// §6.3's compact goodbye. The drain announces once and every attached
+    /// compact view has to hear it on the only channel it has.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_announced_shutdown_reaches_an_attached_compact_view() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host.attached("r:pane-1", 1).await?;
+
+        host.services.shutdown.announce();
+
+        let frames = peer
+            .frames_until(|frame| {
+                matches!(frame, CompactFrame::State(StateMessage::HostShutdown {}))
+            })
+            .await?;
+        assert!(
+            matches!(
+                frames.last(),
+                Some(CompactFrame::State(StateMessage::HostShutdown {}))
+            ),
+            "the host drained without telling its compact viewers: {frames:?}"
+        );
+        Ok(())
+    }
+
+    /// And an attachment that lands after the announcement has gone out must
+    /// not be told the host is healthy by omission.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_view_attaching_during_a_drain_is_told_at_once() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        host.services.shutdown.announce();
+
+        let mut peer = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        peer.attach(&session_id, "r:pane-1", 1, None, true).await?;
+        assert!(
+            matches!(peer.next_state().await?, StateMessage::HostShutdown {}),
+            "a view attaching into a drain was handed the live opening burst"
+        );
+        Ok(())
+    }
+
+    /// §4.2.3 on compact: the opening frame has to carry the shape the live
+    /// updates carry. At minor 6 that is `ControlState` with the real revision;
+    /// below it the revisionless `ControlChanged` is all the viewer can decode,
+    /// and a clear stays unrepresentable — which is the gate, falsified here by
+    /// a client that asks for less.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_state_channel_opens_with_the_revisioned_controller() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let session = host.session();
+        session.attach_view("r:owner", "truffle:peer:owner")?;
+        session.claim_control("r:owner", "truffle:peer:owner", 90, 30)?;
+        let revision = session.control_snapshot().control_revision;
+        assert!(revision > 0, "the fixture never established a controller");
+
+        let mut current = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = current
+            .attach(&session_id, "r:pane-1", 1, None, true)
+            .await?;
+        // §4.2.3's attach-time half: the response itself reports who holds
+        // control and at which revision, so a resuming view knows what to
+        // compare-and-swap against before any state frame arrives.
+        assert!(
+            matches!(
+                attached,
+                SessionControlMessage::ViewAttached {
+                    control_revision,
+                    controller: Some(ref controller),
+                    ..
+                } if control_revision == revision && controller.controller_view_id == "r:owner"
+            ),
+            "the attach response hid the controller behind the unknown sentinel: {attached:?}"
+        );
+        let frames = current
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::ControlState { .. })
+                        | CompactFrame::State(StateMessage::ControlChanged { .. })
+                )
+            })
+            .await?;
+        assert!(
+            matches!(
+                frames.last(),
+                Some(CompactFrame::State(StateMessage::ControlState {
+                    control_revision,
+                    controller: Some(_),
+                    ..
+                })) if *control_revision == revision
+            ),
+            "a minor-6 compact view did not open on the revisioned frame: {frames:?}"
+        );
+
+        let mut legacy = host
+            .connect(
+                StreamKind::SessionControl,
+                REMOTE_RECONNECT_PROTOCOL_MINOR - 1,
+            )
+            .await?;
+        legacy
+            .attach(&session_id, "r:pane-2", 0, None, true)
+            .await?;
+        let frames = legacy
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::ControlState { .. })
+                        | CompactFrame::State(StateMessage::ControlChanged { .. })
+                )
+            })
+            .await?;
+        assert!(
+            matches!(
+                frames.last(),
+                Some(CompactFrame::State(StateMessage::ControlChanged { .. }))
+            ),
+            "a legacy compact view was sent a frame it cannot decode: {frames:?}"
+        );
+        drop(current.io);
+        drop(legacy.io);
+        Ok(())
+    }
+
+    /// §4.2.3's compare-and-swap, now that a compact pair can negotiate the
+    /// minor that carries it. A claim against a revision that has moved must
+    /// lose, and the loser has to be *told* the revision it lost to — saying
+    /// nothing would leave it retrying against the same stale number forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_compact_claim_is_refused_and_answered_with_the_revision() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let session = host.session();
+        session.attach_view("r:owner", "truffle:peer:owner")?;
+        session.claim_control("r:owner", "truffle:peer:owner", 90, 30)?;
+        let current = session.control_snapshot().control_revision;
+
+        let mut peer = host.attached("r:pane-1", 1).await?;
+        // Drain the opening burst first. Its own `ControlState` says the same
+        // thing the answer will, so a scan that started here would match the
+        // greeting and never observe the claim at all.
+        let opening = peer
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::ControlState { .. })
+                )
+            })
+            .await?;
+        assert!(
+            matches!(
+                opening.last(),
+                Some(CompactFrame::State(StateMessage::ControlState {
+                    control_revision,
+                    ..
+                })) if *control_revision == current
+            ),
+            "the opening burst did not carry the live revision: {opening:?}"
+        );
+
+        peer.write_control(&SessionControlMessage::FocusAndResize {
+            view_id: "r:pane-1".into(),
+            attachment_epoch: session
+                .view_attachment_epoch("r:pane-1")
+                .context("the harness view is not attached")?,
+            cols: 100,
+            rows: 40,
+            client_sequence: 1,
+            // A revision this viewer could only be holding from before the
+            // claim above.
+            expected_control_revision: Some(current.saturating_sub(1)),
+        })
+        .await?;
+
+        // Anything from here is the answer to that claim. A host that granted
+        // it would name the claimant at a revision that had moved; one that
+        // stayed silent leaves this waiting, which is the failure.
+        let answer = peer
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::ControlState { .. })
+                )
+            })
+            .await?;
+        assert!(
+            matches!(
+                answer.last(),
+                Some(CompactFrame::State(StateMessage::ControlState {
+                    control_revision,
+                    controller: Some(controller),
+                    ..
+                })) if *control_revision == current
+                    && controller.controller_view_id == "r:owner"
+            ),
+            "the losing claim was answered with something other than the live \
+             controller and revision: {answer:?}"
+        );
+        assert_eq!(
+            session.control_snapshot().controller.map(|c| c.view_id),
+            Some("r:owner".to_owned()),
+            "a claim against a stale revision took control anyway"
+        );
+        drop(peer.io);
+        Ok(())
+    }
+
+    /// A takeover cancels the superseded attachment's state registration. On
+    /// QUIC that ends one stream; compact multiplexes both channels onto one
+    /// socket, so it ends the connection — which is all a superseded
+    /// attachment could still do anyway.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_superseded_compact_connection_is_retired_by_the_takeover() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut superseded = host.attached("r:pane-1#g1", 1).await?;
+        let mut successor = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        successor
+            .attach(&session_id, "r:pane-1#g1", 2, None, true)
+            .await?;
+
+        let frames = superseded
+            .frames_until(|frame| matches!(frame, CompactFrame::Closed))
+            .await?;
+        assert!(
+            matches!(frames.last(), Some(CompactFrame::Closed)),
+            "the superseded compact connection was left running: {frames:?}"
+        );
+        // The successor keeps its attachment: the loser's exit is
+        // epoch-conditional, so it cannot detach the view that replaced it.
+        assert!(
+            host.session()
+                .view_attachment_epoch("r:pane-1#g1")
+                .is_some(),
+            "the superseded handler took its successor's attachment with it"
+        );
+        drop(successor.io);
+        Ok(())
+    }
+
+    /// And a view that declined state has to be retired by the takeover too.
+    ///
+    /// This is where compact and QUIC genuinely differ rather than merely being
+    /// shaped differently. On QUIC a streamless secondary owns no state stream,
+    /// so there is nothing for a takeover to cancel — and nothing is lost,
+    /// because its session-control stream is one of many on a connection whose
+    /// heartbeat lives elsewhere. On compact the connection *is* the view: a
+    /// superseded handler nobody cancelled keeps answering heartbeats and
+    /// selection requests on an attachment the authority has already replaced,
+    /// so its client is told a dead view is alive by the very mechanism that
+    /// exists to detect the opposite.
+    ///
+    /// Registration therefore cannot be conditional on wanting state. What it
+    /// binds on this transport is the connection, not a feed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_superseded_streamless_compact_connection_is_retired_too() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut superseded = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        let session_id = host.session_id.clone();
+        let attached = superseded
+            .attach(&session_id, "r:pane-1#g1", 1, None, false)
+            .await?;
+        assert!(
+            matches!(attached, SessionControlMessage::ViewAttached { .. }),
+            "the streamless attach was refused: {attached:?}"
+        );
+        // It answers while it is current. The assertion below is that it stops,
+        // not that it never could — without this the test would pass against a
+        // host that had simply broken streamless attach outright.
+        superseded
+            .write_control(&SessionControlMessage::Ping { nonce: 1 })
+            .await?;
+        assert!(
+            matches!(
+                superseded.next_control().await?,
+                SessionControlMessage::Pong { nonce: 1 }
+            ),
+            "a streamless view could not answer a probe even while current"
+        );
+
+        let mut successor = host
+            .connect(StreamKind::SessionControl, PROTOCOL_MINOR)
+            .await?;
+        successor
+            .attach(&session_id, "r:pane-1#g1", 2, None, false)
+            .await?;
+
+        // Probe the loser. A Pong here is the bug in its most direct form: the
+        // superseded connection vouching for an attachment it no longer holds.
+        // The write may lose a race with the close, which is why its failure is
+        // tolerated and only the answer is asserted on.
+        let _ = superseded
+            .write_control(&SessionControlMessage::Ping { nonce: 2 })
+            .await;
+        let frames = superseded
+            .frames_until(|frame| matches!(frame, CompactFrame::Closed))
+            .await?;
+        assert!(
+            !frames.iter().any(|frame| matches!(
+                frame,
+                CompactFrame::Control(SessionControlMessage::Pong { .. })
+            )),
+            "a superseded streamless connection answered a heartbeat: {frames:?}"
+        );
+        assert!(
+            matches!(frames.last(), Some(CompactFrame::Closed)),
+            "the superseded streamless connection was left running: {frames:?}"
+        );
+        assert!(
+            host.session()
+                .view_attachment_epoch("r:pane-1#g1")
+                .is_some(),
+            "the superseded handler took its successor's attachment with it"
+        );
+        drop(successor.io);
+        Ok(())
+    }
+
+    /// §6.4's consult, on the transport that has no second stream to ask on.
+    /// Verified rather than built: the arm landed in the Phase 3 review.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compact_connection_answers_the_tombstone_consult() -> Result<()> {
+        let mut host = CompactHost::serving(serving_status(ghosttea::SessionStatus::Ended {
+            cause: ghosttea::SessionEndCause::Exited { code: Some(3) },
+        }))?;
+        let mut peer = host
+            .connect(StreamKind::ConnectionControl, PROTOCOL_MINOR)
+            .await?;
+        peer.write_raw(&ConnectionMessage::SessionStatus {
+            request_id: "status-1".into(),
+            session_id: "a-session-that-is-gone".into(),
+        })
+        .await?;
+        let answer = peer.read_raw::<ConnectionMessage>().await?;
+        assert!(
+            matches!(
+                answer,
+                ConnectionMessage::SessionStatusResult {
+                    ref request_id,
+                    status: SessionStatusKind::Ended {
+                        reason: SessionEndReason::Exited { code: Some(3) },
+                    },
+                } if request_id == "status-1"
+            ),
+            "the compact host could not account for a session it had buried: {answer:?}"
+        );
+        Ok(())
+    }
+
+    // ── Cross-language constants lockstep ────────────────────────────
+
+    /// The Swift half of the reconnect timings, read at compile time.
+    ///
+    /// Reading the real file rather than a copy is the point: a Swift edit that
+    /// drifts from Rust cannot be made without this crate rebuilding and the
+    /// test below failing.
+    const SWIFT_RECONNECT_CONSTANTS: &str = include_str!(
+        "../../../../../apple/GhostteaKit/Sources/GhostteaTruffle/GhostteaReconnectConstants.swift"
+    );
+
+    /// The `public static let <name>: UInt64 = <digits>` declarations inside
+    /// `GhostteaReconnectDefaults`, in file order.
+    ///
+    /// Scoped to that enum deliberately. The same file declares defaults
+    /// elsewhere — `bannerGraceMs` among them — and those are not pinned: it is
+    /// how long the UI waits before showing a banner, and the daemon renders
+    /// nothing, so there is no Rust counterpart for it to drift from.
+    fn swift_reconnect_defaults() -> Vec<(String, u64)> {
+        let body = SWIFT_RECONNECT_CONSTANTS
+            .split_once("public enum GhostteaReconnectDefaults {")
+            .expect("the Swift constants enum was renamed or removed")
+            .1
+            .split_once("\n}")
+            .expect("the Swift constants enum is unterminated")
+            .0;
+        body.lines()
+            .filter_map(|line| {
+                let (name, value) = line
+                    .trim()
+                    .strip_prefix("public static let ")?
+                    .split_once(": UInt64 = ")?;
+                Some((
+                    name.to_owned(),
+                    value
+                        .trim()
+                        .replace('_', "")
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| panic!("{name} is no longer a plain integer literal")),
+                ))
+            })
+            .collect()
+    }
+
+    /// Every reconnect timing the two languages share, pinned to one value.
+    ///
+    /// The clients enforce these locally — a viewer decides for itself when a
+    /// connection has gone quiet — so nothing on the wire forces agreement and
+    /// a drift would not fail an interop test. It would ship as one platform
+    /// giving up on a host seconds before the other, which reads as a flaky
+    /// network rather than as the edit that caused it.
+    #[test]
+    fn the_swift_reconnect_constants_match_their_rust_counterparts() {
+        let rust = MeshReconnectConfig::default();
+        let pinned: [(&str, u64); 9] = [
+            ("heartbeatIdleMs", rust.heartbeat_idle.as_millis() as u64),
+            ("heartbeatFailMs", rust.heartbeat_fail.as_millis() as u64),
+            ("backoffBaseMs", rust.backoff_base.as_millis() as u64),
+            ("backoffCapMs", rust.backoff_cap.as_millis() as u64),
+            ("backoffFloorMs", rust.backoff_floor.as_millis() as u64),
+            ("suspendAfterMs", rust.suspend_after.as_millis() as u64),
+            (
+                "synchronizeTimeoutMs",
+                rust.synchronize_timeout.as_millis() as u64,
+            ),
+            (
+                "remoteReconnectProtocolMinor",
+                u64::from(REMOTE_RECONNECT_PROTOCOL_MINOR),
+            ),
+            // The one row whose Rust side is a host constant rather than a
+            // viewer default, pinned because the Swift declaration says it
+            // mirrors this one. The binding is worth keeping even though the
+            // two are enforced in different processes: a client whose whole
+            // attempt budget is shorter than the host's handshake budget gives
+            // up while the host is still mid-handshake, so raising one without
+            // considering the other is the mistake this catches.
+            ("attemptTimeoutMs", HANDSHAKE_TIMEOUT.as_millis() as u64),
+        ];
+        let swift = swift_reconnect_defaults();
+
+        // Exhaustiveness before equality. A constant added on the Swift side
+        // with no row here would otherwise sail through — an unpinned constant
+        // is exactly the drift this test exists to catch, and it is invisible
+        // to a test that only checks the rows it already knows about.
+        let mut found: Vec<&str> = swift.iter().map(|(name, _)| name.as_str()).collect();
+        let mut expected: Vec<&str> = pinned.iter().map(|(name, _)| *name).collect();
+        found.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            found, expected,
+            "GhostteaReconnectDefaults and this test have drifted apart: every \
+             constant in that enum needs a Rust counterpart pinned here, and a \
+             name dropped on one side has to be dropped on both"
+        );
+
+        for (name, want) in pinned {
+            let (_, got) = swift
+                .iter()
+                .find(|(found, _)| found == name)
+                .expect("checked exhaustively above");
+            assert_eq!(
+                *got, want,
+                "GhostteaReconnectDefaults.{name} is {got} in Swift but {want} in Rust"
+            );
+        }
     }
 
     // ── Tailnet identity binding (§9.1) ──────────────────────────────

@@ -167,6 +167,19 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
   )
   case activityChanged(GhostteaSessionActivity)
   case configurationChanged(GhostteaTerminalPresentationConfig)
+  /// The revisioned replacement for ``controlChanged``, which structurally
+  /// cannot say "no controller" — its controller id is required. Hosts send
+  /// this at the reconnect minor and above, clears included; this client keeps
+  /// accepting ``controlChanged`` from legacy hosts.
+  case controlState(
+    controller: GhostteaControllerInfo?,
+    controlRevision: UInt64,
+    cols: UInt16,
+    rows: UInt16,
+    layoutEpoch: UInt64
+  )
+  case sessionEnded(GhostteaSessionEndReason)
+  case hostShutdown
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -174,6 +187,8 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
     case controlEpoch, cols, rows, layoutEpoch
     case activity
     case presentation
+    case controller, controlRevision
+    case reason
   }
 
   public init(from decoder: Decoder) throws {
@@ -196,6 +211,18 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
         GhostteaTerminalPresentationConfig.self, forKey: .presentation)
       guard presentation.isValid else { throw GhostteaTruffleError.malformedMessage }
       self = .configurationChanged(presentation)
+    case "control-state":
+      self = try .controlState(
+        controller: values.decodeIfPresent(GhostteaControllerInfo.self, forKey: .controller),
+        controlRevision: values.decode(UInt64.self, forKey: .controlRevision),
+        cols: values.decode(UInt16.self, forKey: .cols),
+        rows: values.decode(UInt16.self, forKey: .rows),
+        layoutEpoch: values.decode(UInt64.self, forKey: .layoutEpoch)
+      )
+    case "session-ended":
+      self = try .sessionEnded(values.decode(GhostteaSessionEndReason.self, forKey: .reason))
+    case "host-shutdown":
+      self = .hostShutdown
     default: throw GhostteaTruffleError.malformedMessage
     }
   }
@@ -226,6 +253,21 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
       var values = encoder.container(keyedBy: CodingKeys.self)
       try values.encode("configuration-changed", forKey: .type)
       try values.encode(presentation, forKey: .presentation)
+    case .controlState(let controller, let revision, let cols, let rows, let layout):
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("control-state", forKey: .type)
+      try values.encodeIfPresent(controller, forKey: .controller)
+      try values.encode(revision, forKey: .controlRevision)
+      try values.encode(cols, forKey: .cols)
+      try values.encode(rows, forKey: .rows)
+      try values.encode(layout, forKey: .layoutEpoch)
+    case .sessionEnded(let reason):
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("session-ended", forKey: .type)
+      try values.encode(reason, forKey: .reason)
+    case .hostShutdown:
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("host-shutdown", forKey: .type)
     }
   }
 }
@@ -354,15 +396,32 @@ public enum GhostteaTunnelInput: Codable, Equatable, Sendable {
 }
 
 public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
+  /// `attachGeneration` is monotonic per wire-view lineage across **every**
+  /// attempt, initial retries included — the ordering mechanism a reconnect
+  /// host fences takeover with. `0` declares a client that does not order its
+  /// attempts, which is what a rotating client must say.
   case attachView(
     requestID: String, sessionID: String, viewID: String, accessToken: String?, cols: UInt16,
-    rows: UInt16)
+    rows: UInt16, attachGeneration: UInt64, resume: GhostteaResumeHint?, wantsState: Bool)
   case viewAttached(
     requestID: String, sessionEpoch: UInt64, layoutEpoch: UInt64, attachmentEpoch: UInt64,
     cols: UInt16, rows: UInt16, readWrite: Bool,
-    presentation: GhostteaTerminalPresentationConfig?)
+    presentation: GhostteaTerminalPresentationConfig?, resumed: Bool,
+    controller: GhostteaControllerInfo?, controlRevision: UInt64)
+  /// A definitive attach failure. Hosts that predate this variant can only
+  /// close the stream, which reads as an ambiguous transport fault.
+  case attachRejected(requestID: String, code: GhostteaAttachRejectCode, retryable: Bool)
+  /// Compact-transport liveness: a compact connection carries exactly one view
+  /// on one control channel, so heartbeats ride it directly.
+  case ping(nonce: UInt64)
+  case pong(nonce: UInt64)
+  /// `expectedControlRevision` is the compare-and-swap: the host rejects the
+  /// claim if any claim *or clear* has intervened since that revision was
+  /// observed. `nil` is the legacy last-write-wins claim, which is all a host
+  /// below the reconnect minor understands.
   case focusAndResize(
-    viewID: String, attachmentEpoch: UInt64, cols: UInt16, rows: UInt16, clientSequence: UInt64)
+    viewID: String, attachmentEpoch: UInt64, cols: UInt16, rows: UInt16, clientSequence: UInt64,
+    expectedControlRevision: UInt64?)
   case resize(
     viewID: String, attachmentEpoch: UInt64, controlEpoch: UInt64, resizeSequence: UInt64,
     cols: UInt16, rows: UInt16)
@@ -386,6 +445,9 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       layoutEpoch, attachmentEpoch, readWrite, controlEpoch, clientSequence,
       resizeSequence, inputSequence, operation, patchSequence, terminalRevision,
       startColumn, startRow, endColumn, endRow, selectAll, text, presentation
+    case attachGeneration, resume, wantsState, expectedControlRevision
+    case resumed, controller, controlRevision
+    case code, retryable, nonce
   }
 
   public init(from decoder: Decoder) throws {
@@ -397,8 +459,14 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
         sessionID: v.decode(String.self, forKey: .sessionID),
         viewID: v.decode(String.self, forKey: .viewID),
         accessToken: v.decodeIfPresent(String.self, forKey: .accessToken),
-        cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows))
+        cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows),
+        attachGeneration: v.decodeIfPresent(UInt64.self, forKey: .attachGeneration) ?? 0,
+        resume: v.decodeIfPresent(GhostteaResumeHint.self, forKey: .resume),
+        wantsState: v.decodeIfPresent(Bool.self, forKey: .wantsState) ?? true)
     case "view-attached":
+      // Every reconnect field carries a default: a client at the reconnect
+      // minor must still decode a legacy host's `ViewAttached`, which omits
+      // all of them.
       self = try .viewAttached(
         requestID: v.decode(String.self, forKey: .requestID),
         sessionEpoch: v.decode(UInt64.self, forKey: .sessionEpoch),
@@ -407,13 +475,25 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
         cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows),
         readWrite: v.decode(Bool.self, forKey: .readWrite),
         presentation: v.decodeIfPresent(
-          GhostteaTerminalPresentationConfig.self, forKey: .presentation))
+          GhostteaTerminalPresentationConfig.self, forKey: .presentation),
+        resumed: v.decodeIfPresent(Bool.self, forKey: .resumed) ?? false,
+        controller: v.decodeIfPresent(GhostteaControllerInfo.self, forKey: .controller),
+        controlRevision: v.decodeIfPresent(UInt64.self, forKey: .controlRevision) ?? 0)
+    case "attach-rejected":
+      self = try .attachRejected(
+        requestID: v.decode(String.self, forKey: .requestID),
+        code: v.decode(GhostteaAttachRejectCode.self, forKey: .code),
+        retryable: v.decodeIfPresent(Bool.self, forKey: .retryable) ?? false)
+    case "ping": self = try .ping(nonce: v.decode(UInt64.self, forKey: .nonce))
+    case "pong": self = try .pong(nonce: v.decode(UInt64.self, forKey: .nonce))
     case "focus-and-resize":
       self = try .focusAndResize(
         viewID: v.decode(String.self, forKey: .viewID),
         attachmentEpoch: v.decode(UInt64.self, forKey: .attachmentEpoch),
         cols: v.decode(UInt16.self, forKey: .cols), rows: v.decode(UInt16.self, forKey: .rows),
-        clientSequence: v.decode(UInt64.self, forKey: .clientSequence))
+        clientSequence: v.decode(UInt64.self, forKey: .clientSequence),
+        expectedControlRevision: v.decodeIfPresent(
+          UInt64.self, forKey: .expectedControlRevision))
     case "resize":
       self = try .resize(
         viewID: v.decode(String.self, forKey: .viewID),
@@ -459,7 +539,9 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
   public func encode(to encoder: Encoder) throws {
     var v = encoder.container(keyedBy: CodingKeys.self)
     switch self {
-    case .attachView(let request, let session, let view, let token, let cols, let rows):
+    case .attachView(
+      let request, let session, let view, let token, let cols, let rows, let generation,
+      let resume, let wantsState):
       try v.encode("attach-view", forKey: .type)
       try v.encode(request, forKey: .requestID)
       try v.encode(session, forKey: .sessionID)
@@ -467,9 +549,12 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       try v.encodeIfPresent(token, forKey: .accessToken)
       try v.encode(cols, forKey: .cols)
       try v.encode(rows, forKey: .rows)
+      try v.encode(generation, forKey: .attachGeneration)
+      try v.encodeIfPresent(resume, forKey: .resume)
+      try v.encode(wantsState, forKey: .wantsState)
     case .viewAttached(
       let request, let session, let layout, let attachment, let cols, let rows, let write,
-      let presentation):
+      let presentation, let resumed, let controller, let controlRevision):
       try v.encode("view-attached", forKey: .type)
       try v.encode(request, forKey: .requestID)
       try v.encode(session, forKey: .sessionEpoch)
@@ -479,13 +564,29 @@ public enum GhostteaSessionControlMessage: Codable, Equatable, Sendable {
       try v.encode(rows, forKey: .rows)
       try v.encode(write, forKey: .readWrite)
       try v.encodeIfPresent(presentation, forKey: .presentation)
-    case .focusAndResize(let view, let attachment, let cols, let rows, let sequence):
+      try v.encode(resumed, forKey: .resumed)
+      try v.encodeIfPresent(controller, forKey: .controller)
+      try v.encode(controlRevision, forKey: .controlRevision)
+    case .attachRejected(let request, let code, let retryable):
+      try v.encode("attach-rejected", forKey: .type)
+      try v.encode(request, forKey: .requestID)
+      try v.encode(code.rawValue, forKey: .code)
+      try v.encode(retryable, forKey: .retryable)
+    case .ping(let nonce):
+      try v.encode("ping", forKey: .type)
+      try v.encode(nonce, forKey: .nonce)
+    case .pong(let nonce):
+      try v.encode("pong", forKey: .type)
+      try v.encode(nonce, forKey: .nonce)
+    case .focusAndResize(
+      let view, let attachment, let cols, let rows, let sequence, let expectedRevision):
       try v.encode("focus-and-resize", forKey: .type)
       try v.encode(view, forKey: .viewID)
       try v.encode(attachment, forKey: .attachmentEpoch)
       try v.encode(cols, forKey: .cols)
       try v.encode(rows, forKey: .rows)
       try v.encode(sequence, forKey: .clientSequence)
+      try v.encodeIfPresent(expectedRevision, forKey: .expectedControlRevision)
     case .resize(let view, let attachment, let control, let sequence, let cols, let rows):
       try v.encode("resize", forKey: .type)
       try v.encode(view, forKey: .viewID)
@@ -540,11 +641,29 @@ public struct GhostteaAttachmentInfo: Equatable, Sendable {
   public let rows: UInt16
   public let readWrite: Bool
   public let presentation: GhostteaTerminalPresentationConfig?
+  /// The minor this connection negotiated. Every reconnect behaviour reads its
+  /// gate from here rather than from what the host advertises: the
+  /// advertisement says what the host offers, only the handshake says what
+  /// this connection settled on.
+  public let negotiatedMinor: UInt16
+  /// Whether this attach replaced a live attachment of the same view.
+  public let resumed: Bool
+  public let controller: GhostteaControllerInfo?
+  /// `0` is unreachable for a revisioned host (they initialize at 1) and
+  /// therefore means "legacy host, controller state unknown" — never a
+  /// compare-and-swappable observation.
+  public let controlRevision: UInt64
+
+  public var supportsReconnect: Bool {
+    UInt64(negotiatedMinor) >= GhostteaReconnectDefaults.remoteReconnectProtocolMinor
+  }
 }
 
 public enum GhostteaAttachmentEvent: Equatable, Sendable {
   case state(GhostteaTerminalStateMessage)
   case selectionText(requestID: String, text: String)
+  case ping(nonce: UInt64)
+  case pong(nonce: UInt64)
 }
 
 /// One remote terminal view over a dedicated Truffle byte stream. Reads are
@@ -552,7 +671,13 @@ public enum GhostteaAttachmentEvent: Equatable, Sendable {
 /// hidden in an unbounded AsyncStream buffer.
 public actor GhostteaTruffleAttachment {
   public let sessionID: String
+  /// The identity this attachment carries on the wire. Against a legacy host
+  /// it is rotated per attempt, so it is not the local view id and must not be
+  /// used as one.
   public let viewID: String
+  /// The stable identity this client knows the pane by, whatever the wire is
+  /// currently calling it.
+  public let localViewID: String
   public let info: GhostteaAttachmentInfo
   public let stateCodec: GhostteaStateCodec
 
@@ -561,37 +686,56 @@ public actor GhostteaTruffleAttachment {
   private var detached = false
 
   private init(
-    connection: any MeshConnection, sessionID: String, viewID: String, info: GhostteaAttachmentInfo,
-    stateCodec: GhostteaStateCodec, buffer: Data
+    connection: any MeshConnection, sessionID: String, viewID: String, localViewID: String,
+    info: GhostteaAttachmentInfo, stateCodec: GhostteaStateCodec, buffer: Data
   ) {
     self.connection = connection
     self.sessionID = sessionID
     self.viewID = viewID
+    self.localViewID = localViewID
     self.info = info
     self.stateCodec = stateCodec
     self.buffer = buffer
   }
 
+  /// One attach attempt over a fresh compact connection.
+  ///
+  /// `plan` chooses the attach shape *after* the hello, because the fencing
+  /// shape depends on the negotiated minor and nothing before the hello knows
+  /// it: against a reconnect host the wire identity is stable and ordered by a
+  /// real `attachGeneration`, against a legacy host it is rotated per attempt
+  /// and the generation stays `0`. Without a plan this attaches the way it
+  /// always did — `viewID` verbatim, unordered.
+  ///
+  /// `offeredMinor` is the minor this attempt announces. It exists so a test
+  /// can stage a legacy pair against a current host — the host answers
+  /// `min(offered, its own)`, so nothing else can produce that pairing — and
+  /// defaults to the contract minor, which is what production always sends.
   public static func connect(
     over connection: any MeshConnection, localDeviceID: String, sessionID: String, viewID: String,
     cols: UInt16, rows: UInt16, accessToken: String? = nil, nonce: String = UUID().uuidString,
-    requestID: String = UUID().uuidString
+    requestID: String = UUID().uuidString, plan: GhostteaAttachPlanner? = nil,
+    offeredMinor: UInt16 = GhostteaTruffleContract.protocolMinor
   ) async throws -> GhostteaTruffleAttachment {
     let wire = GhostteaAttachmentHandshake(connection: connection)
     do {
-      let hello: (host: String, stateCodec: GhostteaStateCodec)
+      let hello: GhostteaCompactHello
       do {
         hello = try await wire.handshake(
-          localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce)
+          localDeviceID: localDeviceID, sessionID: sessionID, viewID: viewID, nonce: nonce,
+          offeredMinor: offeredMinor)
       } catch {
         throw GhostteaTruffleError.handshakeRejected(
           "session hello failed: \(String(describing: error))")
       }
+      let plan = plan?(hello) ?? GhostteaAttachPlan(wireViewID: viewID)
       try await wire.writeCompact(
         .control,
         GhostteaSessionControlMessage.attachView(
-          requestID: requestID, sessionID: sessionID, viewID: viewID, accessToken: accessToken,
-          cols: cols, rows: rows))
+          requestID: requestID, sessionID: sessionID, viewID: plan.wireViewID,
+          accessToken: accessToken, cols: cols, rows: rows,
+          attachGeneration: plan.attachGeneration, resume: plan.resume,
+          wantsState: plan.wantsState))
       let channel: GhostteaCompactChannel
       let payload: Data
       do {
@@ -602,22 +746,34 @@ public actor GhostteaTruffleAttachment {
       }
       guard channel == .control else { throw GhostteaTruffleError.mismatchedResponse }
       let response = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: payload)
+      // A definitive refusal, distinguished from a closed stream so the caller
+      // can act on the code instead of guessing at a transport fault.
+      if case .attachRejected(let responseID, let code, _) = response, responseID == requestID {
+        throw GhostteaTruffleError.attachRejected(code)
+      }
       guard
         case .viewAttached(
           let responseID, let sessionEpoch, let layoutEpoch, let attachmentEpoch, let actualCols,
-          let actualRows, let readWrite, let presentation) = response, responseID == requestID,
+          let actualRows, let readWrite, let presentation, let resumed, let controller,
+          let controlRevision) = response, responseID == requestID,
         presentation?.isValid != false
       else {
         throw GhostteaTruffleError.mismatchedResponse
       }
       let remainder = await wire.takeBuffer()
       return GhostteaTruffleAttachment(
-        connection: connection, sessionID: sessionID, viewID: viewID,
+        connection: connection, sessionID: sessionID, viewID: plan.wireViewID,
+        localViewID: viewID,
         info: GhostteaAttachmentInfo(
-          hostInstanceID: hello.host, sessionEpoch: sessionEpoch, layoutEpoch: layoutEpoch,
+          hostInstanceID: hello.hostInstanceID, sessionEpoch: sessionEpoch,
+          layoutEpoch: layoutEpoch,
           attachmentEpoch: attachmentEpoch, cols: actualCols, rows: actualRows,
           readWrite: readWrite,
-          presentation: presentation
+          presentation: presentation,
+          negotiatedMinor: hello.negotiatedMinor,
+          resumed: resumed,
+          controller: controller,
+          controlRevision: controlRevision
         ), stateCodec: hello.stateCodec, buffer: remainder)
     } catch {
       await connection.close()
@@ -639,18 +795,29 @@ public actor GhostteaTruffleAttachment {
       )
     case .control:
       let message = try JSONDecoder().decode(GhostteaSessionControlMessage.self, from: payload)
-      guard case .selectionTextResult(let requestID, let text) = message else {
-        throw GhostteaTruffleError.mismatchedResponse
+      switch message {
+      case .selectionTextResult(let requestID, let text):
+        return .selectionText(requestID: requestID, text: text)
+      case .ping(let nonce): return .ping(nonce: nonce)
+      case .pong(let nonce): return .pong(nonce: nonce)
+      default: throw GhostteaTruffleError.mismatchedResponse
       }
-      return .selectionText(requestID: requestID, text: text)
     }
   }
 
-  public func claimControl(cols: UInt16, rows: UInt16, sequence: UInt64) async throws {
+  /// Liveness probe on the compact control channel (§5). Answering a host's
+  /// own `Ping` costs nothing and keeps the channel symmetric.
+  public func ping(nonce: UInt64) async throws { try await write(.ping(nonce: nonce)) }
+
+  public func pong(nonce: UInt64) async throws { try await write(.pong(nonce: nonce)) }
+
+  public func claimControl(
+    cols: UInt16, rows: UInt16, sequence: UInt64, expectedControlRevision: UInt64? = nil
+  ) async throws {
     try await write(
       .focusAndResize(
         viewID: viewID, attachmentEpoch: info.attachmentEpoch, cols: cols, rows: rows,
-        clientSequence: sequence))
+        clientSequence: sequence, expectedControlRevision: expectedControlRevision))
   }
 
   public func resize(cols: UInt16, rows: UInt16, controlEpoch: UInt64, sequence: UInt64)
@@ -779,9 +946,9 @@ private actor GhostteaAttachmentHandshake {
   var buffer = Data()
   init(connection: any MeshConnection) { self.connection = connection }
 
-  func handshake(localDeviceID: String, sessionID: String, viewID: String, nonce: String)
-    async throws -> (host: String, stateCodec: GhostteaStateCodec)
-  {
+  func handshake(
+    localDeviceID: String, sessionID: String, viewID: String, nonce: String, offeredMinor: UInt16
+  ) async throws -> GhostteaCompactHello {
     try await connection.write(
       try GhostteaTerminalProtocolCodec.encodePreface(
         .init(streamKind: .sessionControl, sessionID: sessionID, viewID: viewID)))
@@ -789,7 +956,7 @@ private actor GhostteaAttachmentHandshake {
       try GhostteaTerminalProtocolCodec.encodeFrame(
         GhostteaConnectionMessage.clientHello(
           protocolMajor: GhostteaTruffleContract.protocolMajor,
-          protocolMinor: GhostteaTruffleContract.protocolMinor, hostInstanceID: "",
+          protocolMinor: offeredMinor, hostInstanceID: "",
           localDeviceID: localDeviceID, nonce: nonce,
           stateCodecs: [.compactJSONV1])))
     let response: GhostteaConnectionMessage = try await readFrame()
@@ -797,7 +964,8 @@ private actor GhostteaAttachmentHandshake {
       major == GhostteaTruffleContract.protocolMajor,
       minor > 0, echoed == nonce, !host.isEmpty
     else { throw GhostteaTruffleError.mismatchedResponse }
-    return (host, stateCodec ?? .json)
+    return GhostteaCompactHello(
+      hostInstanceID: host, negotiatedMinor: minor, stateCodec: stateCodec ?? .json)
   }
 
   func writeCompact<T: Encodable>(_ channel: GhostteaCompactChannel, _ value: T) async throws {
