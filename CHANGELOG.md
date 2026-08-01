@@ -3,6 +3,70 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.7.0 - 2026-08-01
+
+### Added
+
+- Remote sessions survive their host going away. A per-session lifecycle —
+  live, synchronizing, reconnecting, suspended, ended with a reason — replaces
+  the frozen replica and silently discarded keystrokes that an outage used to
+  leave behind. Reconnection is automatic with full-jitter backoff, resume is
+  same-tick when the host returns, and input outside live is rejected with
+  visible feedback rather than queued against a session that may have moved on.
+- Outage detection in seconds instead of half a minute. Reconnect-capable
+  peers run an idle-triggered heartbeat: a quiet connection is probed after
+  3 s of silence and declared dead at 6 s, scoped per connection incarnation
+  so a replayed or misdelivered pong can never vouch for a broken link.
+  Measured on a real tailnet, detection fell from 24.0 s to 3.5 s. Busy
+  connections never probe, and pre-0.7 peers keep the advertisement path.
+- Reconnection cannot resurrect the past. Every attach attempt carries an
+  ordered generation fenced by connection-id watermarks, the host enforces the
+  attachment epoch uniformly across input, resize, control, cleanup, and state
+  streams, and a superseded handler can neither publish stale state nor detach
+  its successor. Sessions that end while a viewer is away report why —
+  bounded tombstones distinguish a process that exited from a session that was
+  closed, hosts say goodbye on clean shutdown, and a restarted host reads as
+  host-restarted rather than a mystery outage.
+- Terminal control changes hands without fights. The controller carries an
+  always-present revision, clears are announced rather than silent, and
+  reclaiming control after a reconnect compares-and-swaps against the observed
+  revision — a pane that lost a race is told who won instead of stealing the
+  seat back. Deliberate user claims keep last-write-wins semantics.
+- iOS parity. The compact transport speaks the same reconnect protocol —
+  takeover, heartbeat, typed attach rejections, goodbyes — and GhostteaKit
+  gains a per-attachment lifecycle actor with the same fencing, orderly
+  background suspend on scene phase, reconnect banners with honest end
+  reasons, and copy that extracts from the retained frame while offline.
+- A cross-language interop suite. A real Rust compact host and the real Swift
+  client meet over loopback TCP in CI-runnable tests covering takeover
+  recovery from a frozen host, a legacy pairing left unprobed, fenced control
+  claims, selection round-trips, and the shutdown goodbye — each side proven
+  against the other rather than against its own expectations.
+
+### Changed
+
+- Tunnel protocol minor 6, negotiated per connection with the hello now
+  answering the computed minimum on both transports — the two ends of a
+  mixed-version connection previously disagreed about what they had agreed
+  on. Mixed pairings degrade to the pre-0.7 behavior by construction.
+- Local control protocol minor 13. Control claims can carry an expected
+  revision, and a fenced claim that loses receives the new control-rejected
+  answer naming the winner; a daemon below 13 never sees the field and keeps
+  unconditional claims.
+- Host QUIC identity is bound to the tailnet's own WhoIs answer instead of a
+  source-address registry lookup that rotted for relay-routed peers, closing
+  0.6's documented within-tailnet impersonation caveat.
+- Session listings report attachable from session state — it was hardcoded
+  true — and ghosttead drains on SIGTERM/SIGINT, announcing shutdown to
+  connected viewers before sessions end and reporting whether the goodbye
+  went out.
+- The GhostteaKit native artifact is republished as
+  `ghosttea-apple-native-6672c03dfd43` — the first published through the
+  CI-authoritative attested pipeline rather than a workstation. Four phases of
+  reconnect work compile into every slice, so the Apple plane needed rebuilt
+  bytes rather than only a version bump; the root `Package.swift` pins the new
+  content digest.
+
 ## 0.6.2 - 2026-07-30
 
 ### Fixed
