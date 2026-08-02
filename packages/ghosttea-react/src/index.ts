@@ -15,5 +15,13 @@ export {
   type SelectionScope,
   type TerminalMount,
 } from "./runtime.js";
-export { DEFAULT_THEME, type CellPoint, type CellSelection, type TerminalTheme } from "./renderers/types.js";
+export {
+  DEFAULT_EFFECTS,
+  DEFAULT_THEME,
+  type CellPoint,
+  type CellSelection,
+  type TerminalEffects,
+  type TerminalShaderEffect,
+  type TerminalTheme,
+} from "./renderers/types.js";
 export type { TerminalRenderMetrics, TerminalRenderPerformanceSnapshot } from "./performance.js";

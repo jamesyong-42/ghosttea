@@ -24,6 +24,7 @@
     "build:ssh:apple": "node scripts/build-ssh-candidate-apple.mjs",
     "build:ssh:fixture-probe": "node scripts/build-ssh-fixture-probe.mjs",
     "check:ghostty-vt:apple": "node scripts/validate-ghostty-vt-xcframework.mjs",
+    "check:webgpu-shaders": "electron scripts/validate-webgpu-shaders.mjs",
     "check:apple-native-artifact": "node scripts/check-apple-native-artifact.mjs",
     "check:apple-native-artifact:release": "node scripts/check-apple-native-artifact.mjs --release",
     "check:swiftpm:manifests": "node scripts/check-apple-native-artifact.mjs --manifests-only",

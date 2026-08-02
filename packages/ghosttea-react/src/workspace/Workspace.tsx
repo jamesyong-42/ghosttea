@@ -10,7 +10,9 @@ import {
 } from "react";
 import type { ConfigSnapshot, SessionSummary } from "@vibecook/ghosttea-protocol";
 import { TerminalSurface, type TerminalMenuAction } from "../TerminalSurface.js";
-import type { TerminalEffects, TerminalTheme } from "../renderers/types.js";
+import { DEFAULT_EFFECTS, type TerminalEffects, type TerminalTheme } from "../renderers/types.js";
+import { AppearanceSettings } from "../appearance/AppearanceSettings.js";
+import type { GhostteaAppearanceUpdate } from "../appearance/types.js";
 import { useGhostteaRuntime } from "../context.js";
 import { terminalEffectsFromConfig, terminalThemeFromConfig } from "../config.js";
 import { RemoteSessionPalette, type RemoteChoice } from "./RemoteSessionPalette.js";
@@ -76,6 +78,8 @@ export interface GhostteaWorkspacePlatform {
   openConfig?: () => void;
   /** Ghostty `reload_config` — re-read runtime configuration. */
   reloadConfig?: () => void;
+  /** Persist a profile-wide managed appearance block and reload it. */
+  saveAppearance?: (update: GhostteaAppearanceUpdate) => Promise<void>;
   newTab?: (cwd?: string) => void;
   selectTab?: (target: "previous" | "next" | "last" | number) => void;
   closeTab?: () => void;
@@ -482,6 +486,7 @@ export function GhostteaWorkspace({
   const [operationError, setOperationError] = useState<string>();
   const [focused, setFocused] = useState(document.hasFocus());
   const [remotePaletteOpen, setRemotePaletteOpen] = useState(false);
+  const [appearanceSettingsOpen, setAppearanceSettingsOpen] = useState(false);
   const [remotePaletteDeviceId, setRemotePaletteDeviceId] = useState<string>();
   const creatingSessionRef = useRef(false);
   const workspaceRef = useRef<HTMLElement>(null);
@@ -503,7 +508,7 @@ export function GhostteaWorkspace({
     [config, theme],
   );
   const effects = useMemo<TerminalEffects>(
-    () => (config ? terminalEffectsFromConfig(config) : { postProcess: "none" }),
+    () => (config ? terminalEffectsFromConfig(config) : DEFAULT_EFFECTS),
     [config],
   );
   const bindings = useMemo(
@@ -989,6 +994,17 @@ export function GhostteaWorkspace({
 
   return (
     <main ref={workspaceRef} className={`ghostty-window${active && focused ? " is-focused" : ""}`}>
+      {platform.saveAppearance ? (
+        <button
+          type="button"
+          className="ghosttea-settings-button"
+          aria-label="Open appearance settings"
+          title="Appearance settings"
+          onClick={() => setAppearanceSettingsOpen(true)}
+        >
+          ⚙
+        </button>
+      ) : null}
       {showTitlebar ? (
         <header className="ghostty-titlebar" aria-label={title}>
           <span className="ghostty-title">{title}</span>
@@ -1044,6 +1060,13 @@ export function GhostteaWorkspace({
           </aside>
         ) : null}
       </div>
+      {appearanceSettingsOpen && platform.saveAppearance ? (
+        <AppearanceSettings
+          config={config}
+          onClose={() => setAppearanceSettingsOpen(false)}
+          onSave={platform.saveAppearance}
+        />
+      ) : null}
     </main>
   );
 }

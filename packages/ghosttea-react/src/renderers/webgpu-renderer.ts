@@ -15,13 +15,22 @@ import {
   type RenderView,
   type Rgba,
   type TerminalRenderer,
+  type TerminalShaderEffect,
 } from "./types.js";
 import { graphemeCellWidth, splitGraphemes } from "../cell-width.js";
 import { rowsForDamage } from "./render-damage.js";
+import { SHADER_EFFECT_WGSL } from "./shader-effects.js";
 
 const ATLAS_SIZE = 2048;
 const GEOMETRY_CACHE_LIMIT = 8;
 const FONT_STACK = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+
+const EFFECT_MODES: Readonly<Record<TerminalShaderEffect, number>> = {
+  "ghosttea:better-crt": 1,
+  "ghosttea:crt": 2,
+  "ghosttea:vhs": 3,
+  "ghosttea:sparks-from-fire": 4,
+};
 
 const RECT_SHADER = /* wgsl */ `
 struct VertexOutput {
@@ -151,55 +160,14 @@ struct VertexOutput {
 }
 `;
 
-// WebGPU port of ~/.config/ghostty/shaders/bettercrt.glsl. Ghostty applies
-// custom shaders to the completed terminal image, so this must remain a
-// separate pass rather than being approximated per glyph.
-const BETTER_CRT_SHADER = /* wgsl */ `
-@group(0) @binding(0) var terminal_image: texture_2d<f32>;
-@group(0) @binding(1) var terminal_sampler: sampler;
-struct PostProcessConfig {
-  // A vec4 keeps the WGSL uniform layout equal to the host's 16-byte buffer.
-  enabled: vec4u,
-}
-@group(0) @binding(2) var<uniform> post_process: PostProcessConfig;
-
-@vertex fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f {
-  let positions = array<vec2f, 3>(
-    vec2f(-1.0, -1.0),
-    vec2f(3.0, -1.0),
-    vec2f(-1.0, 3.0),
-  );
-  return vec4f(positions[vertex_index], 0.0, 1.0);
-}
-
-@fragment fn fragment_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let dimensions = vec2f(textureDimensions(terminal_image));
-  var uv = position.xy / dimensions;
-  if (post_process.enabled.x == 0u) {
-    return textureSample(terminal_image, terminal_sampler, uv);
-  }
-  var dc = abs(vec2f(0.5) - uv);
-  dc *= dc;
-
-  // These constants are the active Ghostty shader's warp = 0.25 and
-  // scan = 0.50 values.
-  uv.x -= 0.5;
-  uv.x *= 1.0 + dc.y * 0.075;
-  uv.x += 0.5;
-  uv.y -= 0.5;
-  uv.y *= 1.0 + dc.x * 0.10;
-  uv.y += 0.5;
-
-  let scanline = abs(sin(position.y) * 0.125);
-  let color = textureSample(terminal_image, terminal_sampler, uv).rgb;
-  return vec4f(mix(color, vec3f(0.0), scanline), 1.0);
-}
-`;
-
 const premultipliedBlend: GPUBlendState = {
   color: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
   alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
 };
+
+function premultipliedClear(color: Rgba): GPUColorDict {
+  return { r: color[0] * color[3], g: color[1] * color[3], b: color[2] * color[3], a: color[3] };
+}
 
 class DynamicVertexBuffer {
   #buffer: GPUBuffer | undefined;
@@ -499,9 +467,11 @@ interface WebGpuSurface extends PixelSize {
   canvas: OffscreenCanvas;
   context: GPUCanvasContext;
   sceneTexture: GPUTexture;
-  postProcessConfigBuffer: GPUBuffer;
-  postProcessBindGroup: GPUBindGroup;
-  postProcessEnabled: boolean | undefined;
+  effectTextures: [GPUTexture, GPUTexture];
+  effectPasses: EffectPass[];
+  effectSignature: string;
+  effectFrame: number;
+  lastEffectTime: number;
   rectangleBuffer: DynamicVertexBuffer;
   glyphBuffer: DynamicVertexBuffer;
   colorGlyphBuffer: DynamicVertexBuffer;
@@ -512,7 +482,14 @@ interface WebGpuSurface extends PixelSize {
   sceneValid: boolean;
 }
 
+interface EffectPass {
+  mode: number;
+  configBuffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+}
+
 interface GeometryLayout {
+  rowResetInstanceCount: number;
   backgroundInstanceCount: number;
   selectionInstanceCount: number;
   decorationInstanceStart: number;
@@ -578,10 +555,14 @@ function geometryCacheKey(
     [
       ...view.theme.background,
       ...view.theme.foreground,
+      ...view.theme.cursor,
+      ...(view.theme.cursorText ?? view.theme.background),
       ...view.theme.selection,
       ...view.theme.selectionForeground,
     ].join(","),
+    view.theme.backgroundOpacityCells ? "opacity-cells" : "opaque-cells",
     selection,
+    effectiveCursorStyle(view) === CursorStyle.Block ? `${view.cursor.x},${view.cursor.y}` : "-",
     atlasGenerations.join(","),
   ].join("|");
 }
@@ -595,7 +576,7 @@ function pushCursorVertices(
   viewportHeight: number,
 ): void {
   const cursorStyle = effectiveCursorStyle(view);
-  if (cursorStyle === null || !renderRowSet.has(view.cursor.y)) return;
+  if (cursorStyle === null || cursorStyle === CursorStyle.Block || !renderRowSet.has(view.cursor.y)) return;
   const x = (ORIGIN_X + view.cursor.x * CELL_WIDTH) * scale;
   const y = (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * scale;
   const width = CELL_WIDTH * scale;
@@ -829,6 +810,36 @@ function selectionContains(selection: [CellPoint, CellPoint] | null, row: number
   return column >= first && column <= last;
 }
 
+function blockCursorContains(view: RenderView, row: number, column: number, span = 1): boolean {
+  return (
+    effectiveCursorStyle(view) === CursorStyle.Block &&
+    view.cursor.y === row &&
+    view.cursor.x >= column &&
+    view.cursor.x < column + Math.max(1, span)
+  );
+}
+
+function pushBlockCursorBackground(
+  vertices: number[],
+  view: RenderView,
+  renderRows: readonly number[],
+  scale: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): void {
+  if (effectiveCursorStyle(view) !== CursorStyle.Block || !renderRows.includes(view.cursor.y)) return;
+  pushRectangle(
+    vertices,
+    (ORIGIN_X + view.cursor.x * CELL_WIDTH) * scale,
+    (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * scale,
+    CELL_WIDTH * scale,
+    LINE_HEIGHT * scale,
+    view.theme.cursor,
+    viewportWidth,
+    viewportHeight,
+  );
+}
+
 interface ResolvedStyle {
   foreground: Rgba;
   background: Rgba | null;
@@ -844,6 +855,9 @@ function resolveStyle(style: StyleDefinition | undefined, theme: RenderView["the
     const originalForeground = foreground;
     foreground = background ?? theme.background;
     background = originalForeground;
+  }
+  if (background && theme.backgroundOpacityCells) {
+    background = [background[0], background[1], background[2], theme.background[3]];
   }
   if (style?.faint) foreground = [foreground[0], foreground[1], foreground[2], foreground[3] * 0.55];
   return {
@@ -1010,11 +1024,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   readonly kind = "webgpu" as const;
   readonly #surfaces = new Map<string, WebGpuSurface>();
   readonly #rectanglePipeline: GPURenderPipeline;
+  readonly #rectangleOverwritePipeline: GPURenderPipeline;
   readonly #glyphPipeline: GPURenderPipeline;
   readonly #fallbackGlyphPipeline: GPURenderPipeline;
   readonly #colorGlyphPipeline: GPURenderPipeline;
-  readonly #postProcessPipeline: GPURenderPipeline;
-  readonly #postProcessSampler: GPUSampler;
+  readonly #effectPipeline: GPURenderPipeline;
+  readonly #effectSampler: GPUSampler;
   readonly #monoAtlas: NativeGlyphAtlas;
   readonly #colorAtlas: NativeGlyphAtlas;
   readonly #fallbackAtlas: FallbackGlyphAtlas;
@@ -1034,7 +1049,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       label: "terminal color glyph shader",
       code: COLOR_GLYPH_SHADER,
     });
-    const postProcessModule = device.createShaderModule({ label: "Ghostty bettercrt shader", code: BETTER_CRT_SHADER });
+    const effectModule = device.createShaderModule({
+      label: "Ghosttea shader effect registry",
+      code: SHADER_EFFECT_WGSL,
+    });
     this.#rectanglePipeline = device.createRenderPipeline({
       label: "terminal rectangle pipeline",
       layout: "auto",
@@ -1059,6 +1077,28 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         entryPoint: "fragment_main",
         targets: [{ format, blend: premultipliedBlend }],
       },
+      primitive: { topology: "triangle-list" },
+    });
+    this.#rectangleOverwritePipeline = device.createRenderPipeline({
+      label: "terminal row-reset overwrite pipeline",
+      layout: "auto",
+      vertex: {
+        module: rectangleModule,
+        entryPoint: "vertex_main",
+        buffers: [
+          {
+            arrayStride: 40,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x2" },
+              { shaderLocation: 1, offset: 8, format: "float32x2" },
+              { shaderLocation: 2, offset: 16, format: "float32x2" },
+              { shaderLocation: 3, offset: 24, format: "float32x4" },
+            ],
+          },
+        ],
+      },
+      fragment: { module: rectangleModule, entryPoint: "fragment_main", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
     });
     this.#glyphPipeline = device.createRenderPipeline({
@@ -1132,15 +1172,15 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       },
       primitive: { topology: "triangle-list" },
     });
-    this.#postProcessPipeline = device.createRenderPipeline({
-      label: "Ghostty custom shader pipeline",
+    this.#effectPipeline = device.createRenderPipeline({
+      label: "Ghosttea ordered shader effect pipeline",
       layout: "auto",
-      vertex: { module: postProcessModule, entryPoint: "vertex_main" },
-      fragment: { module: postProcessModule, entryPoint: "fragment_main", targets: [{ format }] },
+      vertex: { module: effectModule, entryPoint: "vertex_main" },
+      fragment: { module: effectModule, entryPoint: "fragment_main", targets: [{ format }] },
       primitive: { topology: "triangle-list" },
     });
-    this.#postProcessSampler = device.createSampler({
-      label: "Ghostty custom shader sampler",
+    this.#effectSampler = device.createSampler({
+      label: "Ghosttea shader effect sampler",
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
       minFilter: "linear",
@@ -1183,18 +1223,18 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const context = canvas.getContext("webgpu") as GPUCanvasContext | null;
     if (!context) throw new Error("WebGPU canvas context unavailable");
     const sceneTexture = this.#createSceneTexture(canvas.width, canvas.height);
-    const postProcessConfigBuffer = this.device.createBuffer({
-      label: `Ghostty custom shader configuration ${id}`,
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
     const surface: WebGpuSurface = {
       canvas,
       context,
       sceneTexture,
-      postProcessConfigBuffer,
-      postProcessBindGroup: this.#createPostProcessBindGroup(sceneTexture, postProcessConfigBuffer),
-      postProcessEnabled: undefined,
+      effectTextures: [
+        this.#createEffectTexture(canvas.width, canvas.height, "A"),
+        this.#createEffectTexture(canvas.width, canvas.height, "B"),
+      ],
+      effectPasses: [],
+      effectSignature: "",
+      effectFrame: 0,
+      lastEffectTime: 0,
       width: 1,
       height: 1,
       dpr: 1,
@@ -1216,7 +1256,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (!surface) return;
     surface.context.unconfigure();
     surface.sceneTexture.destroy();
-    surface.postProcessConfigBuffer.destroy();
+    surface.effectTextures[0].destroy();
+    surface.effectTextures[1].destroy();
+    for (const pass of surface.effectPasses) pass.configBuffer.destroy();
     surface.rectangleBuffer.destroy();
     surface.glyphBuffer.destroy();
     surface.colorGlyphBuffer.destroy();
@@ -1240,11 +1282,16 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   #configure(surface: WebGpuSurface): void {
     surface.context.configure({ device: this.device, format: this.format, alphaMode: "premultiplied" });
     surface.sceneTexture.destroy();
+    surface.effectTextures[0].destroy();
+    surface.effectTextures[1].destroy();
+    for (const pass of surface.effectPasses) pass.configBuffer.destroy();
     surface.sceneTexture = this.#createSceneTexture(surface.canvas.width, surface.canvas.height);
-    surface.postProcessBindGroup = this.#createPostProcessBindGroup(
-      surface.sceneTexture,
-      surface.postProcessConfigBuffer,
-    );
+    surface.effectTextures = [
+      this.#createEffectTexture(surface.canvas.width, surface.canvas.height, "A"),
+      this.#createEffectTexture(surface.canvas.width, surface.canvas.height, "B"),
+    ];
+    surface.effectPasses = [];
+    surface.effectSignature = "";
     clearGeometryCache(surface);
     surface.sceneValid = false;
   }
@@ -1258,30 +1305,107 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     });
   }
 
-  #createPostProcessBindGroup(texture: GPUTexture, configBuffer: GPUBuffer): GPUBindGroup {
+  #createEffectTexture(width: number, height: number, suffix: string): GPUTexture {
+    return this.device.createTexture({
+      label: `terminal shader ping-pong ${suffix}`,
+      size: [Math.max(1, width), Math.max(1, height)],
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+  }
+
+  #createEffectBindGroup(texture: GPUTexture, configBuffer: GPUBuffer): GPUBindGroup {
     return this.device.createBindGroup({
-      label: "Ghostty custom shader bindings",
-      layout: this.#postProcessPipeline.getBindGroupLayout(0),
+      label: "Ghosttea shader effect bindings",
+      layout: this.#effectPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: texture.createView() },
-        { binding: 1, resource: this.#postProcessSampler },
+        { binding: 1, resource: this.#effectSampler },
         { binding: 2, resource: { buffer: configBuffer } },
       ],
     });
   }
 
+  #shaderStack(view: RenderView): TerminalShaderEffect[] {
+    const configured = view.effects?.shaderEffects?.filter((id) => EFFECT_MODES[id] !== undefined) ?? [];
+    if (configured.length > 0) return [...configured];
+    return view.effects?.postProcess === "better-crt" ? ["ghosttea:better-crt"] : [];
+  }
+
+  #ensureEffectPasses(surface: WebGpuSurface, stack: readonly TerminalShaderEffect[]): void {
+    const signature = stack.join("\0") || "ghosttea:blit";
+    if (surface.effectSignature === signature) return;
+    for (const pass of surface.effectPasses) pass.configBuffer.destroy();
+    const modes = stack.length > 0 ? stack.map((id) => EFFECT_MODES[id]) : [0];
+    surface.effectPasses = modes.map((mode, index) => {
+      const configBuffer = this.device.createBuffer({
+        label: `Ghosttea shader effect configuration ${index}`,
+        size: 48,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const inputTexture = index === 0 ? surface.sceneTexture : surface.effectTextures[(index - 1) % 2]!;
+      return {
+        mode,
+        configBuffer,
+        bindGroup: this.#createEffectBindGroup(inputTexture, configBuffer),
+      };
+    });
+    surface.effectSignature = signature;
+    surface.effectFrame = 0;
+    surface.lastEffectTime = 0;
+  }
+
+  #encodeEffectStack(surface: WebGpuSurface, view: RenderView, encoder: GPUCommandEncoder): number {
+    const stack = this.#shaderStack(view);
+    this.#ensureEffectPasses(surface, stack);
+    const now = view.effects?.animate ? performance.now() / 1_000 : 0;
+    const delta = surface.lastEffectTime > 0 ? Math.min(0.1, Math.max(0, now - surface.lastEffectTime)) : 0;
+    surface.lastEffectTime = now;
+    const passCount = surface.effectPasses.length;
+    for (let index = 0; index < passCount; index += 1) {
+      const effectPass = surface.effectPasses[index]!;
+      const storage = new ArrayBuffer(48);
+      const values = new DataView(storage);
+      values.setUint32(0, effectPass.mode, true);
+      values.setUint32(4, surface.effectFrame, true);
+      values.setUint32(8, index, true);
+      values.setUint32(12, passCount, true);
+      values.setFloat32(16, surface.canvas.width, true);
+      values.setFloat32(20, surface.canvas.height, true);
+      values.setFloat32(24, now, true);
+      values.setFloat32(28, delta, true);
+      values.setFloat32(32, (ORIGIN_X + view.cursor.x * CELL_WIDTH) * surface.dpr, true);
+      values.setFloat32(36, (ORIGIN_Y + view.cursor.y * LINE_HEIGHT) * surface.dpr, true);
+      values.setFloat32(40, view.cursor.visible ? 1 : 0, true);
+      values.setFloat32(44, view.cursor.style, true);
+      this.device.queue.writeBuffer(effectPass.configBuffer, 0, storage);
+      const last = index === passCount - 1;
+      const output = last
+        ? surface.context.getCurrentTexture().createView()
+        : surface.effectTextures[index % 2]!.createView();
+      const pass = encoder.beginRenderPass({
+        label: `Ghosttea shader effect pass ${index + 1}/${passCount}`,
+        colorAttachments: [
+          {
+            view: output,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      pass.setPipeline(this.#effectPipeline);
+      pass.setBindGroup(0, effectPass.bindGroup);
+      pass.draw(3);
+      pass.end();
+    }
+    surface.effectFrame += 1;
+    return passCount;
+  }
+
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    const postProcessEnabled = view.effects?.postProcess === "better-crt";
-    if (surface.postProcessEnabled !== postProcessEnabled) {
-      surface.postProcessEnabled = postProcessEnabled;
-      this.device.queue.writeBuffer(
-        surface.postProcessConfigBuffer,
-        0,
-        new Uint32Array([Number(postProcessEnabled), 0, 0, 0]),
-      );
-    }
     const encoder = this.device.createCommandEncoder({ label: `terminal frame ${id}` });
     const metrics =
       view.damage?.geometryChanged === false
@@ -1298,16 +1422,6 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     const encoder = this.device.createCommandEncoder({ label: `terminal frame batch (${active.length} panes)` });
     const byId = new Map<string, TerminalRenderMetrics | undefined>();
     for (const { id, view } of active) {
-      const surface = this.#surfaces.get(id)!;
-      const postProcessEnabled = view.effects?.postProcess === "better-crt";
-      if (surface.postProcessEnabled !== postProcessEnabled) {
-        surface.postProcessEnabled = postProcessEnabled;
-        this.device.queue.writeBuffer(
-          surface.postProcessConfigBuffer,
-          0,
-          new Uint32Array([Number(postProcessEnabled), 0, 0, 0]),
-        );
-      }
       byId.set(
         id,
         view.damage?.geometryChanged === false
@@ -1371,14 +1485,13 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           top,
           viewportWidth,
           Math.max(0, bottom - top),
-          // The rectangle pipeline blends. Force the row reset opaque so it
-          // replaces stale scene pixels even when a theme carries alpha.
-          [view.theme.background[0], view.theme.background[1], view.theme.background[2], 1],
+          view.theme.background,
           viewportWidth,
           viewportHeight,
         );
       }
     }
+    const rowResetInstanceCount = rectangleVertices.length / 10;
 
     for (const row of renderRows) {
       for (const run of view.nativeStyleRows[row] ?? []) {
@@ -1417,6 +1530,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
+    pushBlockCursorBackground(rectangleVertices, view, renderRows, scale, viewportWidth, viewportHeight);
     const selectionInstanceCount = rectangleVertices.length / 10 - backgroundInstanceCount;
 
     if (!hasNativeRows) {
@@ -1434,7 +1548,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           const style = styleFor(instance.styleId);
           if (style.invisible) continue;
           const isSelected = selectionContains(selection, row, instance.cellStart);
-          const foreground = isSelected ? view.theme.selectionForeground : style.foreground;
+          const foreground = blockCursorContains(view, row, instance.cellStart, instance.cellSpan)
+            ? (view.theme.cursorText ?? view.theme.background)
+            : isSelected
+              ? view.theme.selectionForeground
+              : style.foreground;
           const boxDrawing = boxCells.get(instance.cellStart);
           if (boxDrawing) {
             let backdrop = style.background ?? view.theme.background;
@@ -1493,9 +1611,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           const glyph = this.#fallbackAtlas.glyph(grapheme, scale);
           const cells = glyph?.cells ?? graphemeCellWidth(grapheme);
           if (glyph) {
-            const foreground = selectionContains(selection, row, column)
-              ? view.theme.selectionForeground
-              : view.theme.foreground;
+            const foreground = blockCursorContains(view, row, column, cells)
+              ? (view.theme.cursorText ?? view.theme.background)
+              : selectionContains(selection, row, column)
+                ? view.theme.selectionForeground
+                : view.theme.foreground;
             pushGlyph(
               fallbackGlyphVertices,
               (ORIGIN_X + column * CELL_WIDTH) * scale,
@@ -1554,6 +1674,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       glyphData: new Float32Array(glyphVertices),
       colorGlyphData: new Float32Array(colorGlyphVertices),
       fallbackGlyphData: new Float32Array(fallbackGlyphVertices),
+      rowResetInstanceCount,
       backgroundInstanceCount,
       selectionInstanceCount,
       decorationInstanceStart,
@@ -1617,14 +1738,13 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           top,
           viewportWidth,
           Math.max(0, bottom - top),
-          // The rectangle pipeline blends. Force the row reset opaque so it
-          // replaces stale scene pixels even when a theme carries alpha.
-          [view.theme.background[0], view.theme.background[1], view.theme.background[2], 1],
+          view.theme.background,
           viewportWidth,
           viewportHeight,
         );
       }
     }
+    const rowResetInstanceCount = rectangleVertices.length / 10;
 
     for (const row of renderRows) {
       for (const run of view.nativeStyleRows[row] ?? []) {
@@ -1663,6 +1783,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         );
       }
     }
+    pushBlockCursorBackground(rectangleVertices, view, renderRows, scale, viewportWidth, viewportHeight);
     const selectionInstanceCount = rectangleVertices.length / 10 - backgroundInstanceCount;
 
     const hasNativeRows = view.nativeRows.some((row) => row.length > 0);
@@ -1681,7 +1802,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           const style = styleFor(instance.styleId);
           if (style.invisible) continue;
           const isSelected = selectionContains(selection, row, instance.cellStart);
-          const foreground = isSelected ? view.theme.selectionForeground : style.foreground;
+          const foreground = blockCursorContains(view, row, instance.cellStart, instance.cellSpan)
+            ? (view.theme.cursorText ?? view.theme.background)
+            : isSelected
+              ? view.theme.selectionForeground
+              : style.foreground;
           const boxDrawing = boxCells.get(instance.cellStart);
           if (boxDrawing) {
             let backdrop = style.background ?? view.theme.background;
@@ -1743,9 +1868,11 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           const glyph = this.#fallbackAtlas.glyph(grapheme, scale);
           const cells = glyph?.cells ?? graphemeCellWidth(grapheme);
           if (glyph) {
-            const foreground = selectionContains(selection, row, column)
-              ? view.theme.selectionForeground
-              : view.theme.foreground;
+            const foreground = blockCursorContains(view, row, column, cells)
+              ? (view.theme.cursorText ?? view.theme.background)
+              : selectionContains(selection, row, column)
+                ? view.theme.selectionForeground
+                : view.theme.foreground;
             pushGlyph(
               fallbackGlyphVertices,
               (ORIGIN_X + column * CELL_WIDTH) * scale,
@@ -1866,7 +1993,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
           viewportWidth,
           viewportHeight,
         );
-      } else {
+      } else if (cursorStyle !== CursorStyle.Block) {
         pushRectangle(rectangleVertices, x, y, width, height, cursorColor, viewportWidth, viewportHeight);
       }
     }
@@ -1886,21 +2013,21 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       colorAttachments: [
         {
           view: surface.sceneTexture.createView(),
-          clearValue: {
-            r: view.theme.background[0],
-            g: view.theme.background[1],
-            b: view.theme.background[2],
-            a: view.theme.background[3],
-          },
+          clearValue: premultipliedClear(view.theme.background),
           loadOp: fullRedraw ? "clear" : "load",
           storeOp: "store",
         },
       ],
     });
-    if (rectangleBuffer && backgroundInstanceCount > 0) {
+    if (rectangleBuffer && rowResetInstanceCount > 0) {
+      pass.setPipeline(this.#rectangleOverwritePipeline);
+      pass.setVertexBuffer(0, rectangleBuffer);
+      pass.draw(6, rowResetInstanceCount);
+    }
+    if (rectangleBuffer && backgroundInstanceCount > rowResetInstanceCount) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, rectangleBuffer);
-      pass.draw(6, backgroundInstanceCount);
+      pass.draw(6, backgroundInstanceCount - rowResetInstanceCount, 0, rowResetInstanceCount);
     }
     if (rectangleBuffer && selectionInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
@@ -1937,26 +2064,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     pass.end();
 
-    const postProcessPass = encoder.beginRenderPass({
-      label: `Ghostty custom shader pass ${id}`,
-      colorAttachments: [
-        {
-          view: surface.context.getCurrentTexture().createView(),
-          clearValue: {
-            r: view.theme.background[0],
-            g: view.theme.background[1],
-            b: view.theme.background[2],
-            a: 1,
-          },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
-    postProcessPass.setPipeline(this.#postProcessPipeline);
-    postProcessPass.setBindGroup(0, surface.postProcessBindGroup);
-    postProcessPass.draw(3);
-    postProcessPass.end();
+    const effectPassCount = this.#encodeEffectStack(surface, view, encoder);
     surface.sceneValid = true;
     if (!this.#performanceMeasurementEnabled) return undefined;
     const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
@@ -1970,16 +2078,17 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       geometryCacheHits: 0,
       geometryCacheMisses: 0,
       canvasPixels: viewportWidth * viewportHeight,
-      renderPasses: 2,
+      renderPasses: 1 + effectPassCount,
       drawCalls:
-        Number(backgroundInstanceCount > 0) +
+        Number(rowResetInstanceCount > 0) +
+        Number(backgroundInstanceCount > rowResetInstanceCount) +
         Number(selectionInstanceCount > 0) +
         Number(glyphData.length > 0) +
         Number(colorGlyphData.length > 0) +
         Number(fallbackGlyphData.length > 0) +
         Number(decorationInstanceCount > 0) +
         Number(cursorInstanceCount > 0) +
-        1,
+        effectPassCount,
       rectangleVertices: (rectangleVertices.length / 10) * 6,
       monoGlyphVertices: (glyphVertices.length / 12) * 6,
       colorGlyphVertices: (colorGlyphVertices.length / 12) * 6,
@@ -2002,7 +2111,9 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   #encodeCachedRender(id: string, view: RenderView, encoder: GPUCommandEncoder): TerminalRenderMetrics | undefined {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
-    if (!surface.sceneValid || !view.damage || view.damage.full) return this.#encodeRender(id, view, encoder);
+    if (!surface.sceneValid || !view.damage || view.damage.full) {
+      return this.#encodeRender(id, view, encoder);
+    }
     const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
     const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
@@ -2055,6 +2166,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
         fallbackGlyphBuffer: promote
           ? createCachedVertexBuffer(this.device, `cached fallback glyphs ${id}`, cpu.fallbackGlyphData)
           : surface.fallbackGlyphBuffer.write(cpu.fallbackGlyphData),
+        rowResetInstanceCount: cpu.rowResetInstanceCount,
         backgroundInstanceCount: cpu.backgroundInstanceCount,
         selectionInstanceCount: cpu.selectionInstanceCount,
         decorationInstanceStart: cpu.decorationInstanceStart,
@@ -2101,21 +2213,26 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       colorAttachments: [
         {
           view: surface.sceneTexture.createView(),
-          clearValue: {
-            r: view.theme.background[0],
-            g: view.theme.background[1],
-            b: view.theme.background[2],
-            a: view.theme.background[3],
-          },
+          clearValue: premultipliedClear(view.theme.background),
           loadOp: "load",
           storeOp: "store",
         },
       ],
     });
-    if (geometry.rectangleBuffer && geometry.backgroundInstanceCount > 0) {
+    if (geometry.rectangleBuffer && geometry.rowResetInstanceCount > 0) {
+      pass.setPipeline(this.#rectangleOverwritePipeline);
+      pass.setVertexBuffer(0, geometry.rectangleBuffer);
+      pass.draw(6, geometry.rowResetInstanceCount);
+    }
+    if (geometry.rectangleBuffer && geometry.backgroundInstanceCount > geometry.rowResetInstanceCount) {
       pass.setPipeline(this.#rectanglePipeline);
       pass.setVertexBuffer(0, geometry.rectangleBuffer);
-      pass.draw(6, geometry.backgroundInstanceCount);
+      pass.draw(
+        6,
+        geometry.backgroundInstanceCount - geometry.rowResetInstanceCount,
+        0,
+        geometry.rowResetInstanceCount,
+      );
     }
     if (geometry.rectangleBuffer && geometry.selectionInstanceCount > 0) {
       pass.setPipeline(this.#rectanglePipeline);
@@ -2152,26 +2269,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     pass.end();
 
-    const postProcessPass = encoder.beginRenderPass({
-      label: `Ghostty custom shader pass ${id}`,
-      colorAttachments: [
-        {
-          view: surface.context.getCurrentTexture().createView(),
-          clearValue: {
-            r: view.theme.background[0],
-            g: view.theme.background[1],
-            b: view.theme.background[2],
-            a: 1,
-          },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
-    postProcessPass.setPipeline(this.#postProcessPipeline);
-    postProcessPass.setBindGroup(0, surface.postProcessBindGroup);
-    postProcessPass.draw(3);
-    postProcessPass.end();
+    const effectPassCount = this.#encodeEffectStack(surface, view, encoder);
     surface.sceneValid = true;
     if (!this.#performanceMeasurementEnabled) return undefined;
     const monoUploadsAfter = this.#monoAtlas.uploadMetrics();
@@ -2185,16 +2283,17 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       geometryCacheHits: Number(cacheHit),
       geometryCacheMisses: Number(!cacheHit),
       canvasPixels: viewportWidth * viewportHeight,
-      renderPasses: 2,
+      renderPasses: 1 + effectPassCount,
       drawCalls:
-        Number(geometry.backgroundInstanceCount > 0) +
+        Number(geometry.rowResetInstanceCount > 0) +
+        Number(geometry.backgroundInstanceCount > geometry.rowResetInstanceCount) +
         Number(geometry.selectionInstanceCount > 0) +
         Number(geometry.glyphInstanceCount > 0) +
         Number(geometry.colorGlyphInstanceCount > 0) +
         Number(geometry.fallbackGlyphInstanceCount > 0) +
         Number(geometry.decorationInstanceCount > 0) +
         Number(cursorInstanceCount > 0) +
-        1,
+        effectPassCount,
       rectangleVertices: (geometry.rectangleInstanceCount + cursorInstanceCount) * 6,
       monoGlyphVertices: geometry.glyphInstanceCount * 6,
       colorGlyphVertices: geometry.colorGlyphInstanceCount * 6,

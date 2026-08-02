@@ -70,6 +70,12 @@ unsafe extern "C" {
         cursor_g: u8,
         cursor_b: u8,
     ) -> i32;
+    fn eg_terminal_set_palette(
+        terminal: *mut RawTerminal,
+        indices: *const u8,
+        colors: *const u8,
+        len: usize,
+    ) -> i32;
     fn eg_terminal_scroll(terminal: *mut RawTerminal, rows: isize);
     fn eg_terminal_scroll_to(terminal: *mut RawTerminal, row: usize);
     fn eg_terminal_compress_scrollback_full(terminal: *mut RawTerminal) -> i32;
@@ -329,6 +335,22 @@ impl GhosttyTerminalCore {
                 cursor[0],
                 cursor[1],
                 cursor[2],
+            )
+        })
+    }
+
+    pub fn set_palette(&mut self, entries: &[(u8, [u8; 3])]) -> Result<(), GhosttyError> {
+        let indices = entries.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+        let colors = entries
+            .iter()
+            .flat_map(|(_, color)| color.iter().copied())
+            .collect::<Vec<_>>();
+        check(unsafe {
+            eg_terminal_set_palette(
+                self.raw.as_ptr(),
+                indices.as_ptr(),
+                colors.as_ptr(),
+                entries.len(),
             )
         })
     }
@@ -687,6 +709,24 @@ mod tests {
         assert!(snapshot.bell);
         assert!(snapshot.damage.full || !snapshot.damage.dirty_rows.is_empty());
         assert_eq!(snapshot.cells[0][6].style.foreground, Some([204, 102, 102]));
+    }
+
+    #[test]
+    fn applies_sparse_palette_overrides_to_ansi_cells() {
+        let mut terminal = GhosttyTerminalCore::new(20, 2, 100).unwrap();
+        terminal.feed(b"\x1b[31mred\x1b[34mblue");
+        terminal
+            .set_palette(&[(1, [0x12, 0x34, 0x56]), (4, [0xab, 0xcd, 0xef])])
+            .unwrap();
+        let snapshot = terminal.snapshot().unwrap();
+        assert_eq!(
+            snapshot.cells[0][0].style.foreground,
+            Some([0x12, 0x34, 0x56])
+        );
+        assert_eq!(
+            snapshot.cells[0][3].style.foreground,
+            Some([0xab, 0xcd, 0xef])
+        );
     }
 
     #[test]

@@ -23,13 +23,19 @@ describe("shared configuration presentation", () => {
       foreground: [1, 128 / 255, 0, 1],
       background: [16 / 255, 32 / 255, 64 / 255, 1],
       cursor: [1 / 255, 2 / 255, 3 / 255, 1],
+      cursorText: [16 / 255, 32 / 255, 64 / 255, 1],
       selection: [4 / 255, 5 / 255, 6 / 255, 1],
       selectionForeground: [7 / 255, 8 / 255, 9 / 255, 1],
+      backgroundOpacityCells: false,
     });
-    expect(terminalEffectsFromConfig({ renderer })).toEqual({ postProcess: "better-crt" });
+    expect(terminalEffectsFromConfig({ renderer })).toEqual({
+      postProcess: "better-crt",
+      shaderEffects: ["ghosttea:better-crt"],
+      animate: false,
+    });
   });
 
   it("keeps post-processing disabled without an imported opt-in", () => {
-    expect(DEFAULT_EFFECTS).toEqual({ postProcess: "none" });
+    expect(DEFAULT_EFFECTS).toEqual({ postProcess: "none", shaderEffects: [], animate: false });
   });
 });

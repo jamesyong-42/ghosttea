@@ -14,6 +14,12 @@ import {
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { orderNativeTabs } from "./native-tab-order";
 import { DesktopTabRegistry } from "./tab-registry";
+import {
+  appearanceBlock,
+  patchAppearanceBlock,
+  validateAppearanceUpdate,
+  type ManagedAppearanceUpdate,
+} from "./appearance-config";
 
 app.setName("Ghosttea");
 nativeTheme.themeSource = "dark";
@@ -34,8 +40,9 @@ const terminalConfigPath = join(app.getPath("userData"), "config.ghostty");
 const DEFAULT_TERMINAL_CONFIG = [
   "# Ghosttea application overrides (Ghostty-compatible syntax).",
   "# Your existing Ghostty config files are imported before this file.",
-  "# Enable Ghosttea's bundled CRT approximation with:",
-  "# custom-shader = ghosttea:better-crt",
+  "# Enable Ghosttea's public-domain CRT port with:",
+  "# custom-shader = ghosttea:crt",
+  "# Or use the in-app Appearance settings to choose a color theme and shader stack.",
   "",
 ].join("\n");
 
@@ -98,6 +105,14 @@ ipcMain.on("terminal-reload-config", (event) => {
   void ensureBackend()
     .then(() => backend!.automation.reloadConfig())
     .catch((error) => console.error("failed to reload terminal config", error));
+});
+
+ipcMain.handle("terminal-save-appearance", async (event, payload: unknown) => {
+  if (externalBackendConfigured()) {
+    await showExternalConfigOwnershipMessage(event.sender, "reload");
+    throw new Error("Appearance is managed by the external Ghosttea daemon");
+  }
+  await saveManagedAppearance(validateAppearanceUpdate(payload));
 });
 
 ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
@@ -200,6 +215,24 @@ async function openManagedTerminalConfig(): Promise<void> {
   }
   const message = await shell.openPath(document.path);
   if (message) throw new Error(message);
+}
+
+async function saveManagedAppearance(update: ManagedAppearanceUpdate): Promise<void> {
+  await ensureBackend();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const document = await backend!.automation.getConfigDocument();
+    const base = document.exists ? document.contents : DEFAULT_TERMINAL_CONFIG;
+    const candidate = patchAppearanceBlock(base, appearanceBlock(update));
+    const validation = await backend!.automation.validateConfigDocument(candidate);
+    const errors = validation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+    if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+    try {
+      await backend!.automation.replaceConfigDocument(document.revision, candidate);
+      return;
+    } catch (error) {
+      if (!(error instanceof GhostteaConfigDocumentConflictError) || attempt === 2) throw error;
+    }
+  }
 }
 
 function backendOptions(): GhostteaElectronBackendOptions {
@@ -363,7 +396,11 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     minHeight: 180,
     show: false,
     title: "Ghosttea",
-    backgroundColor: "#282c34",
+    // Transparent BrowserWindows are immutable after construction. Keep the
+    // macOS surface alpha-capable even when the active theme is opaque so a
+    // later config reload can lower background-opacity without recreating it.
+    backgroundColor: process.platform === "darwin" ? "#00000000" : "#282c34",
+    transparent: process.platform === "darwin",
     titleBarStyle: "default",
     ...(process.platform === "darwin" ? { tabbingIdentifier: groupId } : {}),
     acceptFirstMouse: true,

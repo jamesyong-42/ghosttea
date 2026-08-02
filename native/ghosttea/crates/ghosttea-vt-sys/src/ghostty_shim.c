@@ -44,6 +44,23 @@ int eg_terminal_set_colors(EgTerminal* state,
       state->terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor);
 }
 
+int eg_terminal_set_palette(EgTerminal* state,
+                            const uint8_t* indices,
+                            const uint8_t* colors,
+                            size_t len) {
+  if (state == NULL || (len != 0 && (indices == NULL || colors == NULL)))
+    return GHOSTTY_INVALID_VALUE;
+  GhosttyColorRgb palette[256];
+  ghostty_color_palette_default(palette);
+  for (size_t i = 0; i < len; i++) {
+    const size_t color_offset = i * 3;
+    palette[indices[i]] = (GhosttyColorRgb){
+        colors[color_offset], colors[color_offset + 1], colors[color_offset + 2]};
+  }
+  return ghostty_terminal_set(
+      state->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
+}
+
 enum { EG_MAX_CLIPBOARD_BYTES = 4 * 1024 * 1024 };
 
 static bool eg_buffer_reserve(EgBuffer* buffer, size_t required) {

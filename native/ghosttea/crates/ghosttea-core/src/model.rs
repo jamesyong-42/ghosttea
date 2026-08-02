@@ -214,6 +214,19 @@ impl TerminalModel {
         self.snapshot_update(render)
     }
 
+    pub fn set_appearance(
+        &mut self,
+        foreground: [u8; 3],
+        background: [u8; 3],
+        cursor: [u8; 3],
+        palette: &[(u8, [u8; 3])],
+        render: RenderRequest,
+    ) -> Result<TerminalUpdate> {
+        self.terminal.set_colors(foreground, background, cursor)?;
+        self.terminal.set_palette(palette)?;
+        self.snapshot_update(render)
+    }
+
     pub fn selection_text(
         &mut self,
         start: (u16, u32),

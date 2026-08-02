@@ -14,14 +14,21 @@ export interface TerminalTheme {
   background: Rgba;
   foreground: Rgba;
   cursor: Rgba;
+  cursorText?: Rgba;
   selection: Rgba;
   selectionForeground: Rgba;
+  /** Apply the window background alpha to explicit cell backgrounds too. */
+  backgroundOpacityCells?: boolean;
 }
 
 export type TerminalPostProcess = "none" | "better-crt";
+export type TerminalShaderEffect =
+  "ghosttea:better-crt" | "ghosttea:crt" | "ghosttea:vhs" | "ghosttea:sparks-from-fire";
 
 export interface TerminalEffects {
   postProcess: TerminalPostProcess;
+  shaderEffects?: readonly TerminalShaderEffect[];
+  animate?: boolean;
 }
 
 export interface CellPoint {
@@ -98,12 +105,16 @@ export const DEFAULT_THEME: TerminalTheme = {
   background: [40 / 255, 44 / 255, 52 / 255, 1],
   foreground: [1, 1, 1, 1],
   cursor: [1, 1, 1, 1],
+  cursorText: [40 / 255, 44 / 255, 52 / 255, 1],
   selection: [1, 1, 1, 1],
   selectionForeground: [40 / 255, 44 / 255, 52 / 255, 1],
+  backgroundOpacityCells: false,
 };
 
 export const DEFAULT_EFFECTS: TerminalEffects = {
   postProcess: "none",
+  shaderEffects: [],
+  animate: false,
 };
 
 export const CELL_WIDTH = 7.83;

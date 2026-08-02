@@ -2354,6 +2354,25 @@ impl Session {
         Ok(())
     }
 
+    pub fn set_appearance(
+        &self,
+        foreground: [u8; 3],
+        background: [u8; 3],
+        cursor: [u8; 3],
+        palette: &[(u8, [u8; 3])],
+    ) -> Result<()> {
+        let _operation = self.model_operation.lock().unwrap();
+        let update = self.model.lock().unwrap().set_appearance(
+            foreground,
+            background,
+            cursor,
+            palette,
+            RenderRequest::Full,
+        )?;
+        self.execute_update(update);
+        Ok(())
+    }
+
     /// Terminate, bounded by `deadline`.
     ///
     /// The deadline lands in the latch before the ladder is asked to start, so

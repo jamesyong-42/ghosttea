@@ -1,6 +1,6 @@
 :root {
   color: #fff;
-  background: #282c34;
+  background: transparent;
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   font-synthesis: none;
@@ -17,7 +17,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #282c34;
+  background: transparent;
 }
 
 body {
@@ -29,7 +29,7 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #282c34;
+  background: transparent;
 }
 
 .ghostty-titlebar {
@@ -89,7 +89,7 @@ body {
   position: relative;
   flex: 1 1 auto;
   overflow: hidden;
-  background: #282c34;
+  background: transparent;
 }
 
 .ghostty-split {
@@ -109,7 +109,392 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #282c34;
+  background: transparent;
+}
+
+.ghosttea-settings-button {
+  position: absolute;
+  z-index: 12;
+  top: 8px;
+  right: 9px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 8px;
+  color: rgb(255 255 255 / 68%);
+  background: rgb(20 22 28 / 68%);
+  box-shadow: 0 3px 16px rgb(0 0 0 / 18%);
+  font:
+    16px/28px system-ui,
+    sans-serif;
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 120ms ease-out,
+    background-color 120ms ease-out;
+  -webkit-app-region: no-drag;
+}
+
+.ghostty-window:hover .ghosttea-settings-button,
+.ghosttea-settings-button:focus-visible {
+  opacity: 1;
+}
+
+.ghosttea-settings-button:hover {
+  color: #fff;
+  background: rgb(34 37 46 / 92%);
+}
+
+.appearance-settings-backdrop {
+  position: absolute;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(5 7 12 / 64%);
+  backdrop-filter: blur(12px);
+  -webkit-app-region: no-drag;
+}
+
+.appearance-settings {
+  width: min(920px, 100%);
+  max-height: min(760px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 16px;
+  color: #eef1f7;
+  background: #1d2028;
+  box-shadow: 0 28px 90px rgb(0 0 0 / 58%);
+}
+
+.appearance-settings > header,
+.appearance-settings > footer {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 20px;
+}
+
+.appearance-settings > header {
+  justify-content: space-between;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
+}
+
+.appearance-settings h1,
+.appearance-settings h2,
+.appearance-settings p {
+  margin: 0;
+}
+
+.appearance-settings h1 {
+  font-size: 19px;
+}
+
+.appearance-settings header p,
+.appearance-help {
+  margin-top: 4px;
+  color: rgb(238 241 247 / 55%);
+  font-size: 12px;
+}
+
+.appearance-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: rgb(255 255 255 / 7%);
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.appearance-settings-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.78fr) minmax(340px, 1.22fr);
+  overflow: hidden;
+}
+
+.appearance-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  overflow: hidden;
+}
+
+.appearance-panel + .appearance-panel {
+  border-left: 1px solid rgb(255 255 255 / 9%);
+}
+
+.appearance-panel h2 {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.appearance-panel h2 span {
+  color: rgb(238 241 247 / 42%);
+  font-weight: 500;
+}
+
+.appearance-search {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid rgb(255 255 255 / 11%);
+  border-radius: 8px;
+  outline: 0;
+  color: inherit;
+  background: rgb(7 9 13 / 48%);
+}
+
+.appearance-search:focus {
+  border-color: #7698ff;
+}
+
+.appearance-theme-list,
+.appearance-details {
+  overflow: auto;
+}
+
+.appearance-theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.appearance-theme-list button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.appearance-theme-list button:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.appearance-theme-list button.is-selected {
+  border-color: rgb(118 152 255 / 55%);
+  background: rgb(118 152 255 / 13%);
+}
+
+.appearance-swatches {
+  width: 54px;
+  height: 24px;
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 5px;
+}
+
+.appearance-swatches i {
+  width: 9px;
+  height: 9px;
+}
+
+.appearance-preview {
+  position: relative;
+  min-height: 112px;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 11%);
+  border-radius: 10px;
+  box-shadow: inset 0 0 28px rgb(0 0 0 / 18%);
+}
+
+.appearance-preview code {
+  font:
+    12px/1.8 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.appearance-preview-dots {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.appearance-preview-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.appearance-preview-cursor {
+  display: inline-block;
+  min-width: 8px;
+  font:
+    12px/18px ui-monospace,
+    monospace;
+  text-align: center;
+}
+
+.appearance-range,
+.appearance-range > span {
+  display: flex;
+  gap: 10px;
+}
+
+.appearance-range {
+  flex-direction: column;
+  font-size: 12px;
+}
+
+.appearance-range > span {
+  justify-content: space-between;
+}
+
+.appearance-range output {
+  color: rgb(238 241 247 / 58%);
+}
+
+.appearance-range input {
+  width: 100%;
+}
+
+.appearance-check,
+.appearance-shader label {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.appearance-check input,
+.appearance-shader input {
+  margin-top: 2px;
+  accent-color: #7698ff;
+}
+
+.appearance-shader-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.appearance-shader {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 2%);
+}
+
+.appearance-shader label > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.appearance-shader small {
+  color: rgb(238 241 247 / 57%);
+  line-height: 1.35;
+}
+
+.appearance-shader em {
+  color: #91a9ef;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.appearance-shader-order {
+  display: flex;
+  gap: 3px;
+}
+
+.appearance-shader-order button {
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 5px;
+  color: inherit;
+  background: rgb(255 255 255 / 5%);
+  cursor: pointer;
+}
+
+.appearance-shader-order button:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.appearance-unavailable {
+  color: rgb(238 241 247 / 52%);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.appearance-unavailable summary {
+  cursor: pointer;
+}
+
+.appearance-unavailable p {
+  margin-top: 7px;
+}
+
+.appearance-error {
+  padding: 9px 20px;
+  color: #ffb4a9;
+  background: rgb(160 42 32 / 18%);
+  font-size: 12px;
+}
+
+.appearance-settings > footer {
+  justify-content: flex-end;
+  border-top: 1px solid rgb(255 255 255 / 9%);
+}
+
+.appearance-settings > footer button {
+  min-width: 84px;
+  padding: 8px 13px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 8px;
+  color: inherit;
+  background: rgb(255 255 255 / 6%);
+  cursor: pointer;
+}
+
+.appearance-settings > footer .appearance-save {
+  border-color: #7698ff;
+  background: #5878dc;
+}
+
+@media (max-width: 680px) {
+  .appearance-settings-grid {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .appearance-panel {
+    min-height: 360px;
+  }
+
+  .appearance-panel + .appearance-panel {
+    border-top: 1px solid rgb(255 255 255 / 9%);
+    border-left: 0;
+  }
 }
 
 .ghostty-pane[data-pane-accent]::before {

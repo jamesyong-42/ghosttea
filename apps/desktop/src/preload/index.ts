@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("desktop", {
   closeAllWindows: () => ipcRenderer.send("terminal-close-all-windows"),
   openConfig: () => ipcRenderer.send("terminal-open-config"),
   reloadConfig: () => ipcRenderer.send("terminal-reload-config"),
+  saveAppearance: (update: unknown) => ipcRenderer.invoke("terminal-save-appearance", update) as Promise<void>,
   newTab: (cwd?: string) => ipcRenderer.send("terminal-new-tab", cwd),
   selectTab: (target: "previous" | "next" | "last" | number) => ipcRenderer.send("terminal-select-tab", target),
   closeTab: () => ipcRenderer.send("terminal-close-tab"),

@@ -2000,10 +2000,16 @@ async fn handle_command(
                             scrollback_bytes,
                             on_exit,
                         )?;
-                        session.set_colors(
+                        let palette = terminal_config
+                            .palette
+                            .iter()
+                            .map(|entry| (entry.index, entry.color))
+                            .collect::<Vec<_>>();
+                        session.set_appearance(
                             terminal_config.foreground,
                             terminal_config.background,
                             terminal_config.cursor,
+                            &palette,
                         )?;
                         Ok::<_, anyhow::Error>(session)
                     })
@@ -2975,6 +2981,11 @@ fn publish_reloaded_config(
         context.host_config_tx.send_replace(Arc::new(presentation));
     }
     let colors = &config.terminal;
+    let palette = colors
+        .palette
+        .iter()
+        .map(|entry| (entry.index, entry.color))
+        .collect::<Vec<_>>();
     let sessions = context
         .registry
         .read()
@@ -2983,8 +2994,12 @@ fn publish_reloaded_config(
         .cloned()
         .collect::<Vec<_>>();
     for session in sessions {
-        if let Err(error) = session.set_colors(colors.foreground, colors.background, colors.cursor)
-        {
+        if let Err(error) = session.set_appearance(
+            colors.foreground,
+            colors.background,
+            colors.cursor,
+            &palette,
+        ) {
             eprintln!(
                 "[ghosttea] failed to refresh colors for session {} after configuration reload: {error:#}",
                 session.id()

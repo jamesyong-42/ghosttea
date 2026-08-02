@@ -39,19 +39,33 @@ export interface TerminalConfig {
   foreground: [number, number, number];
   background: [number, number, number];
   cursor: [number, number, number];
+  /** Sparse overrides layered over libghostty's default 256-color palette. */
+  palette?: PaletteConfigEntry[];
+}
+
+export interface PaletteConfigEntry {
+  index: number;
+  color: [number, number, number];
 }
 
 export interface RendererConfig {
   foreground: [number, number, number];
   background: [number, number, number];
   cursor: [number, number, number];
+  cursorText?: [number, number, number];
   selectionBackground: [number, number, number];
   selectionForeground: [number, number, number];
+  palette?: PaletteConfigEntry[];
+  backgroundOpacity?: number;
+  backgroundOpacityCells?: boolean;
   fontSize: number;
   fontFamilies: string[];
   paddingX: [number, number];
   paddingY: [number, number];
   postProcess: RendererPostProcess;
+  /** Ordered IDs resolved by Ghosttea's bundled WGSL shader registry. */
+  shaderEffects?: string[];
+  customShaderAnimation?: boolean;
   customShaderPaths: string[];
 }
 
@@ -761,6 +775,17 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     Array.isArray(color) &&
     color.length === 3 &&
     color.every((component) => Number.isSafeInteger(component) && component >= 0 && component <= 255);
+  const validPalette = (palette: unknown): boolean =>
+    Array.isArray(palette) &&
+    palette.every(
+      (entry) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        Number.isSafeInteger((entry as Record<string, unknown>).index) &&
+        Number((entry as Record<string, unknown>).index) >= 0 &&
+        Number((entry as Record<string, unknown>).index) <= 255 &&
+        validByteColor((entry as Record<string, unknown>).color),
+    );
   const validPair = (pair: unknown): boolean =>
     Array.isArray(pair) &&
     pair.length === 2 &&
@@ -823,11 +848,20 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       validByteColor(terminal.foreground) &&
       validByteColor(terminal.background) &&
       validByteColor(terminal.cursor) &&
+      (terminal.palette === undefined || validPalette(terminal.palette)) &&
       validByteColor(renderer.foreground) &&
       validByteColor(renderer.background) &&
       validByteColor(renderer.cursor) &&
+      (renderer.cursorText === undefined || validByteColor(renderer.cursorText)) &&
       validByteColor(renderer.selectionBackground) &&
       validByteColor(renderer.selectionForeground) &&
+      (renderer.palette === undefined || validPalette(renderer.palette)) &&
+      (renderer.backgroundOpacity === undefined ||
+        (typeof renderer.backgroundOpacity === "number" &&
+          Number.isFinite(renderer.backgroundOpacity) &&
+          renderer.backgroundOpacity >= 0 &&
+          renderer.backgroundOpacity <= 1)) &&
+      (renderer.backgroundOpacityCells === undefined || typeof renderer.backgroundOpacityCells === "boolean") &&
       typeof renderer.fontSize === "number" &&
       Number.isFinite(renderer.fontSize) &&
       renderer.fontSize > 0 &&
@@ -836,6 +870,9 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       validPair(renderer.paddingX) &&
       validPair(renderer.paddingY) &&
       (renderer.postProcess === "none" || renderer.postProcess === "better-crt") &&
+      (renderer.shaderEffects === undefined ||
+        (Array.isArray(renderer.shaderEffects) && renderer.shaderEffects.every((id) => typeof id === "string"))) &&
+      (renderer.customShaderAnimation === undefined || typeof renderer.customShaderAnimation === "boolean") &&
       Array.isArray(renderer.customShaderPaths) &&
       renderer.customShaderPaths.every((path) => typeof path === "string") &&
       Array.isArray(workspace.keybindings) &&

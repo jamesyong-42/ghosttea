@@ -18,6 +18,7 @@ export function App() {
       closeAllWindows: window.desktop.closeAllWindows,
       openConfig: window.desktop.openConfig,
       reloadConfig: window.desktop.reloadConfig,
+      saveAppearance: window.desktop.saveAppearance,
       newTab: window.desktop.newTab,
       selectTab: window.desktop.selectTab,
       closeTab: window.desktop.closeTab,

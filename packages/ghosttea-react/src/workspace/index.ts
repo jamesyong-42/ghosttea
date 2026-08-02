@@ -110,3 +110,17 @@ export {
   type RemoteBannerContent,
 } from "./remote-banner.js";
 export { TERMINAL_THEMES } from "./themes.js";
+export type { GhostteaAppearanceUpdate } from "../appearance/types.js";
+export {
+  GHOSTTY_COLOR_THEMES,
+  GHOSTTY_THEME_CATALOG_REVISION,
+  GHOSTTY_THEME_CATALOG_SOURCE,
+  findMatchingColorTheme,
+  type GhostteaColorTheme,
+} from "../appearance/catalog.js";
+export {
+  GHOSTTEA_SHADER_OPTIONS,
+  UNAVAILABLE_UPSTREAM_SHADERS,
+  isGhostteaShaderEffect,
+  type GhostteaShaderOption,
+} from "../appearance/shaders.js";

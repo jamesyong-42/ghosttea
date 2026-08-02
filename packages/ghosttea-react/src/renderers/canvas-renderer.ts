@@ -42,7 +42,7 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
   }
 
   mount(id: string, canvas: OffscreenCanvas): void {
-    const context = canvas.getContext("2d", { alpha: false });
+    const context = canvas.getContext("2d", { alpha: true });
     if (!context) throw new Error("Canvas2D worker backend unavailable");
     this.#surfaces.set(id, { canvas, context, width: 1, height: 1, dpr: 1 });
   }
@@ -65,6 +65,7 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
     const surface = this.#surfaces.get(id);
     if (!surface) return;
     const { context, width, height, dpr } = surface;
+    context.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
     context.save();
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.fillStyle = css(view.theme.background);
@@ -128,6 +129,13 @@ export class CanvasTerminalRenderer implements TerminalRenderer {
         context.strokeRect(x + 0.5, y + 0.5, CELL_WIDTH - 1, LINE_HEIGHT - 1);
       } else {
         context.fillRect(x, y, CELL_WIDTH, LINE_HEIGHT);
+        context.save();
+        context.beginPath();
+        context.rect(x, y, CELL_WIDTH, LINE_HEIGHT);
+        context.clip();
+        context.fillStyle = css(view.theme.cursorText ?? view.theme.background);
+        context.fillText(view.rows[view.cursor.y] ?? "", ORIGIN_X, ORIGIN_Y + view.cursor.y * LINE_HEIGHT);
+        context.restore();
       }
     }
     context.restore();

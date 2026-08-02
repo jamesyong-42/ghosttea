@@ -124,6 +124,7 @@ let forceCanvasFallback = false;
 let partialRenderingEnabled = true;
 let pendingFrameCreditBytes = 0;
 let frameCreditTimer: ReturnType<typeof setTimeout> | undefined;
+let shaderAnimationScheduled = false;
 
 interface ActivePerformanceMeasurement {
   startedAt: number;
@@ -522,6 +523,34 @@ function scheduleFlush(): void {
   else setTimeout(run, 8);
 }
 
+function shaderAnimationActive(surfaceId: string, presentation: SurfaceSnapshot): boolean {
+  return (
+    mounts.has(surfaceId) &&
+    !occluded.has(surfaceId) &&
+    presentation.focused &&
+    presentation.effects.animate === true &&
+    (presentation.effects.shaderEffects?.length ?? 0) > 0
+  );
+}
+
+function scheduleShaderAnimation(): void {
+  if (
+    shaderAnimationScheduled ||
+    ![...surfaces].some(([surfaceId, presentation]) => shaderAnimationActive(surfaceId, presentation))
+  )
+    return;
+  shaderAnimationScheduled = true;
+  const run = (): void => {
+    shaderAnimationScheduled = false;
+    for (const [surfaceId, presentation] of surfaces) {
+      if (shaderAnimationActive(surfaceId, presentation)) markDirty(surfaceId);
+    }
+    scheduleShaderAnimation();
+  };
+  if (typeof self.requestAnimationFrame === "function") self.requestAnimationFrame(run);
+  else setTimeout(run, 16);
+}
+
 async function flush(): Promise<void> {
   const backend = await ensureRenderer();
   const ids = [...dirty].filter((id) => !occluded.has(id));
@@ -633,6 +662,7 @@ async function mount(surfaceId: string, sessionHandle: string, canvas: Offscreen
   backend.mount(surfaceId, canvas);
   backend.resize(surfaceId, entry.size);
   invalidateFull(surfaceId);
+  scheduleShaderAnimation();
 }
 
 function applyFrame(packet: ArrayBuffer): void {
@@ -949,6 +979,7 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
           invalidateFull(surfaceId);
         }
       }
+      scheduleShaderAnimation();
     } else if (message.type === "selection") {
       if (message.surfaceId) {
         surface(message.surfaceId, message.sessionHandle).selection = message.selection;
@@ -976,11 +1007,13 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
           cursorBlinkTimers.delete(surfaceId);
         }
       }
+      scheduleShaderAnimation();
     } else if (message.type === "focus") {
       const value = surface(message.surfaceId, message.sessionHandle);
       value.focused = Boolean(message.focused);
       scheduleCursorBlink(message.surfaceId, value.focused);
       invalidateRows(message.surfaceId, [snapshot(message.sessionHandle).cursor.y]);
+      scheduleShaderAnimation();
     } else if (message.type === "cursor-frozen") {
       const value = surfaces.get(message.surfaceId);
       if (!value) return;

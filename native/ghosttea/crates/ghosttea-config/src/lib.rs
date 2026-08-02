@@ -28,6 +28,9 @@ pub const GHOSTTY_COMPAT_VERSION: &str = GHOSTTY_CONFIG_COMPAT_VERSION;
 pub const GHOSTTY_COMPAT_COMMIT: &str = GHOSTTY_CONFIG_COMPAT_COMMIT;
 pub const DEFAULT_SCROLLBACK_BYTES: u64 = 10_000_000;
 pub const GHOSTTEA_BETTER_CRT_SHADER: &str = "ghosttea:better-crt";
+pub const GHOSTTEA_CRT_SHADER: &str = "ghosttea:crt";
+pub const GHOSTTEA_VHS_SHADER: &str = "ghosttea:vhs";
+pub const GHOSTTEA_SPARKS_SHADER: &str = "ghosttea:sparks-from-fire";
 pub const CONFIG_DOCUMENT_SCHEMA_VERSION: u32 = 1;
 /// Keeps a raw document plus worst-case JSON escaping below the 1 MiB control
 /// packet quota. Ghostty configuration should reference large assets by path.
@@ -200,6 +203,16 @@ pub struct TerminalConfig {
     pub foreground: [u8; 3],
     pub background: [u8; 3],
     pub cursor: [u8; 3],
+    /// Sparse overrides for Ghostty's default 256-color palette.
+    #[serde(default)]
+    pub palette: Vec<PaletteConfigEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaletteConfigEntry {
+    pub index: u8,
+    pub color: [u8; 3],
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -208,13 +221,26 @@ pub struct RendererConfig {
     pub foreground: [u8; 3],
     pub background: [u8; 3],
     pub cursor: [u8; 3],
+    #[serde(default = "default_cursor_text")]
+    pub cursor_text: [u8; 3],
     pub selection_background: [u8; 3],
     pub selection_foreground: [u8; 3],
+    #[serde(default)]
+    pub palette: Vec<PaletteConfigEntry>,
+    #[serde(default = "default_background_opacity")]
+    pub background_opacity: f32,
+    #[serde(default)]
+    pub background_opacity_cells: bool,
     pub font_size: f32,
     pub font_families: Vec<String>,
     pub padding_x: [f32; 2],
     pub padding_y: [f32; 2],
     pub post_process: RendererPostProcess,
+    /// Ordered, distributable WGSL effects selected from Ghosttea's registry.
+    #[serde(default)]
+    pub shader_effects: Vec<String>,
+    #[serde(default)]
+    pub custom_shader_animation: bool,
     pub custom_shader_paths: Vec<String>,
 }
 
@@ -247,6 +273,14 @@ pub enum RendererPostProcess {
     #[default]
     None,
     BetterCrt,
+}
+
+const fn default_cursor_text() -> [u8; 3] {
+    DEFAULT_BACKGROUND
+}
+
+const fn default_background_opacity() -> f32 {
+    1.0
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -386,13 +420,19 @@ impl Default for ConfigSnapshot {
             foreground: DEFAULT_FOREGROUND,
             background: DEFAULT_BACKGROUND,
             cursor: DEFAULT_FOREGROUND,
+            cursor_text: DEFAULT_BACKGROUND,
             selection_background: DEFAULT_FOREGROUND,
             selection_foreground: DEFAULT_BACKGROUND,
+            palette: Vec::new(),
+            background_opacity: 1.0,
+            background_opacity_cells: false,
             font_size: platform_default_font_size(),
             font_families: Vec::new(),
             padding_x: [2.0, 2.0],
             padding_y: [2.0, 2.0],
             post_process: RendererPostProcess::None,
+            shader_effects: Vec::new(),
+            custom_shader_animation: false,
             custom_shader_paths: Vec::new(),
         };
         Self {
@@ -411,6 +451,7 @@ impl Default for ConfigSnapshot {
                 foreground: renderer.foreground,
                 background: renderer.background,
                 cursor: renderer.cursor,
+                palette: renderer.palette.clone(),
             },
             renderer,
             workspace: WorkspaceConfig::default(),
@@ -1140,6 +1181,16 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
     ) {
         parsed_only_keys.insert("cursor-color");
     }
+    snapshot.renderer.cursor_text = snapshot.renderer.background;
+    if apply_terminal_color(
+        &scalars,
+        "cursor-text",
+        &mut snapshot.renderer.cursor_text,
+        snapshot.renderer.background,
+        &mut state.diagnostics,
+    ) {
+        parsed_only_keys.insert("cursor-text");
+    }
     snapshot.renderer.selection_background = snapshot.renderer.foreground;
     snapshot.renderer.selection_foreground = snapshot.renderer.background;
     if apply_terminal_color(
@@ -1159,6 +1210,49 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         &mut state.diagnostics,
     ) {
         parsed_only_keys.insert("selection-foreground");
+    }
+    apply_palette(
+        &scalars,
+        &mut snapshot.renderer.palette,
+        &mut state.diagnostics,
+    );
+    for setting in scalars
+        .iter()
+        .filter(|setting| setting.key == "background-opacity")
+    {
+        if setting.value.is_empty() {
+            snapshot.renderer.background_opacity = 1.0;
+            continue;
+        }
+        match setting.value.parse::<f32>() {
+            Ok(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
+                snapshot.renderer.background_opacity = value;
+            }
+            _ => state.diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-value",
+                "`background-opacity` must be a number from 0 through 1".to_owned(),
+                setting,
+            )),
+        }
+    }
+    for setting in scalars
+        .iter()
+        .filter(|setting| setting.key == "background-opacity-cells")
+    {
+        if setting.value.is_empty() {
+            snapshot.renderer.background_opacity_cells = false;
+            continue;
+        }
+        match parse_bool(&setting.value) {
+            Some(value) => snapshot.renderer.background_opacity_cells = value,
+            None => state.diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-value",
+                "`background-opacity-cells` must be `true` or `false`".to_owned(),
+                setting,
+            )),
+        }
     }
     for setting in scalars
         .iter()
@@ -1219,8 +1313,11 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
         .collect();
 
     for setting in custom_shaders {
-        if setting.value == GHOSTTEA_BETTER_CRT_SHADER {
-            snapshot.renderer.post_process = RendererPostProcess::BetterCrt;
+        if let Some(shader_id) = builtin_shader_id(&setting.value) {
+            if shader_id == GHOSTTEA_BETTER_CRT_SHADER {
+                snapshot.renderer.post_process = RendererPostProcess::BetterCrt;
+            }
+            snapshot.renderer.shader_effects.push(shader_id.to_owned());
         } else {
             snapshot
                 .renderer
@@ -1235,6 +1332,24 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
                 ),
                 &setting,
             ));
+        }
+    }
+    for setting in scalars
+        .iter()
+        .filter(|setting| setting.key == "custom-shader-animation")
+    {
+        if setting.value.is_empty() {
+            snapshot.renderer.custom_shader_animation = false;
+            continue;
+        }
+        match parse_bool(&setting.value) {
+            Some(value) => snapshot.renderer.custom_shader_animation = value,
+            None => state.diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-value",
+                "`custom-shader-animation` must be `true` or `false`".to_owned(),
+                setting,
+            )),
         }
     }
 
@@ -1276,6 +1391,7 @@ fn project(mut state: LoadState) -> ConfigSnapshot {
     snapshot.terminal.foreground = snapshot.renderer.foreground;
     snapshot.terminal.background = snapshot.renderer.background;
     snapshot.terminal.cursor = snapshot.renderer.cursor;
+    snapshot.terminal.palette = snapshot.renderer.palette.clone();
 
     let mut unsupported_reported = BTreeSet::new();
     snapshot.configured_keys = state
@@ -1369,6 +1485,56 @@ fn apply_color(
                 setting,
             )),
         }
+    }
+}
+
+fn apply_palette(
+    scalars: &[Setting],
+    output: &mut Vec<PaletteConfigEntry>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let mut palette = BTreeMap::<u8, [u8; 3]>::new();
+    for setting in scalars.iter().filter(|setting| setting.key == "palette") {
+        if setting.value.is_empty() {
+            palette.clear();
+            continue;
+        }
+        let parsed = setting.value.split_once('=').and_then(|(index, color)| {
+            Some((index.trim().parse::<u8>().ok()?, parse_color(color.trim())?))
+        });
+        match parsed {
+            Some((index, color)) => {
+                palette.insert(index, color);
+            }
+            None => diagnostics.push(diagnostic_at(
+                DiagnosticSeverity::Error,
+                "invalid-palette",
+                "`palette` must use `index=color` with an index from 0 through 255".to_owned(),
+                setting,
+            )),
+        }
+    }
+    *output = palette
+        .into_iter()
+        .map(|(index, color)| PaletteConfigEntry { index, color })
+        .collect();
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn builtin_shader_id(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        GHOSTTEA_BETTER_CRT_SHADER => Some(GHOSTTEA_BETTER_CRT_SHADER),
+        GHOSTTEA_CRT_SHADER => Some(GHOSTTEA_CRT_SHADER),
+        GHOSTTEA_VHS_SHADER => Some(GHOSTTEA_VHS_SHADER),
+        GHOSTTEA_SPARKS_SHADER => Some(GHOSTTEA_SPARKS_SHADER),
+        _ => None,
     }
 }
 
@@ -1564,11 +1730,16 @@ fn known_keys() -> BTreeSet<&'static str> {
 fn support_for_key(key: &str) -> ConfigSupport {
     match key {
         "background"
+        | "background-opacity"
+        | "background-opacity-cells"
         | "foreground"
         | "cursor-color"
+        | "cursor-text"
+        | "palette"
         | "selection-background"
         | "selection-foreground"
-        | "scrollback-limit" => ConfigSupport::Applied,
+        | "scrollback-limit"
+        | "custom-shader-animation" => ConfigSupport::Applied,
         "config-file" | "custom-shader" | "font-family" | "font-size" | "window-padding-x"
         | "window-padding-y" | "keybind" => ConfigSupport::Parsed,
         _ => ConfigSupport::Unsupported,
@@ -2286,10 +2457,7 @@ mod tests {
                 .diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.code == "recognized-not-applied")
-                .all(|diagnostic| matches!(
-                    diagnostic.key.as_deref(),
-                    Some("custom-shader-animation" | "theme")
-                ))
+                .all(|diagnostic| matches!(diagnostic.key.as_deref(), Some("theme")))
         );
         assert_eq!(
             snapshot
@@ -2297,7 +2465,7 @@ mod tests {
                 .iter()
                 .find(|configured| configured.key == "custom-shader-animation")
                 .map(|configured| configured.support),
-            Some(ConfigSupport::Unsupported)
+            Some(ConfigSupport::Applied)
         );
     }
 
@@ -2384,6 +2552,45 @@ mod tests {
                 Some(ConfigSupport::Parsed)
             );
         }
+        assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics);
+    }
+
+    #[test]
+    fn applies_palette_opacity_cursor_text_and_ordered_builtin_shaders() {
+        let temporary = TempDir::new().unwrap();
+        let config = temporary.path().join("config");
+        write(
+            &config,
+            "background = 101820\ncursor-text = f0e0d0\npalette = 0=010203\npalette = 15=#fdfcfb\nbackground-opacity = 0.72\nbackground-opacity-cells = true\ncustom-shader = ghosttea:crt\ncustom-shader = ghosttea:vhs\ncustom-shader = ghosttea:sparks-from-fire\ncustom-shader-animation = true\n",
+        );
+
+        let snapshot = load_config(&ConfigLoadOptions::explicit(&config));
+        assert_eq!(snapshot.renderer.cursor_text, [0xf0, 0xe0, 0xd0]);
+        assert_eq!(snapshot.renderer.background_opacity, 0.72);
+        assert!(snapshot.renderer.background_opacity_cells);
+        assert_eq!(
+            snapshot.renderer.palette,
+            vec![
+                PaletteConfigEntry {
+                    index: 0,
+                    color: [1, 2, 3],
+                },
+                PaletteConfigEntry {
+                    index: 15,
+                    color: [0xfd, 0xfc, 0xfb],
+                },
+            ]
+        );
+        assert_eq!(snapshot.terminal.palette, snapshot.renderer.palette);
+        assert_eq!(
+            snapshot.renderer.shader_effects,
+            vec![
+                GHOSTTEA_CRT_SHADER,
+                GHOSTTEA_VHS_SHADER,
+                GHOSTTEA_SPARKS_SHADER
+            ]
+        );
+        assert!(snapshot.renderer.custom_shader_animation);
         assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics);
     }
 

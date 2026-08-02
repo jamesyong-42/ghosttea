@@ -43,17 +43,19 @@ to try Ghosttea.
 
 ## Current behavior
 
-| Area                                             | Daemon / Electron                                                                                                                                     | Swift / Metal                                                                                                                                                        |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Device config applies to local SSH; shared desktop sessions use the host's presentation projection and update live over Truffle                                                 |
-| `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                        | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget |
-| `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied  | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                      |
-| `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                               | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                        |
-| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                                | `font-size` scales runtime shaping and grid metrics at app startup; arbitrary `font-family` values remain diagnosed because Apple currently uses the bundled font set         |
-| `custom-shader`                                  | `ghosttea:better-crt` is applied by WebGPU; Canvas fallback and arbitrary Ghostty GLSL are unsupported                                                | Diagnosed/preserved; Metal post-processing is not implemented                                                                                                        |
+| Area                                             | Daemon / Electron                                                                                                                                     | Swift / Metal                                                                                                                                                         |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foreground, background, cursor, selection colors | Fixed colors are applied live; dynamic `cell-foreground`/`cell-background` references are diagnosed as parsed until per-cell rendering is implemented | Device config applies to local SSH; shared desktop sessions use the host's presentation projection and update live over Truffle                                       |
+| `cursor-text`, `palette`                         | Applied live. Sparse palette entries override libghostty's default 256-color table; the Settings catalog writes entries 0–15                          | Additional snapshot fields are ignored by the current Metal renderer                                                                                                  |
+| `background-opacity`, `background-opacity-cells` | WebGPU and Canvas2D preserve premultiplied alpha; macOS Electron windows expose it to the desktop. Explicit cell backgrounds follow the cells toggle  | Parsed from the shared snapshot; native window translucency is not implemented                                                                                        |
+| `scrollback-limit`                               | Applied to new sessions; default is Ghostty's 10,000,000 bytes                                                                                        | Available through `GhostteaTerminalConfiguration(config:)`; the core default is 10,000,000 bytes, while the iOS app may deliberately impose its device memory budget  |
+| `keybind`                                        | Mutations overlay the pinned 93-entry platform table; `clear`, blank reset, `unbind`, supported single-stroke actions, and `unconsumed:` are applied  | Preserved in the shared API; the Swift workspace still has a smaller hand-written action router                                                                       |
+| `window-padding-x/y`                             | Parsed, not yet used by the fixed desktop cell geometry                                                                                               | Applied by `GhostteaTerminalMetalView.applyConfiguration(_:)`                                                                                                         |
+| `font-family`, `font-size`                       | Parsed, but runtime font metrics are still selected at process startup                                                                                | `font-size` scales runtime shaping and grid metrics at app startup; arbitrary `font-family` values remain diagnosed because Apple currently uses the bundled font set |
+| `custom-shader`, `custom-shader-animation`       | Namespaced built-ins compose in declaration order through ping-pong WebGPU passes. Canvas fallback and arbitrary Ghostty GLSL are unsupported         | Diagnosed/preserved; Metal post-processing is not implemented                                                                                                         |
 
-Other recognized keys—including `theme`, `palette`, background opacity,
-shell integration, and most window/application behavior—are currently reported
+Other recognized keys—including `theme`, shell integration, and most
+window/application behavior—are currently reported
 as `unsupported`; importing them never creates a false success signal.
 
 Color parsing uses Ghostty's full X11 catalog. It also accepts Ghostty's newer
@@ -61,16 +63,28 @@ Color parsing uses Ghostty's full X11 catalog. It also accepts Ghostty's newer
 syntax extension to the 1.3.1 config release. `transparent` is not a Ghostty
 color and is rejected instead of being silently converted to black.
 
-The CRT effect is off by default. Ghosttea's bundled approximation is opt-in
-with the Ghostty key and a namespaced value:
+Shader effects are off by default. Namespaced built-ins may be stacked:
 
 ```text
-custom-shader = ghosttea:better-crt
+custom-shader = ghosttea:crt
+custom-shader = ghosttea:vhs
+custom-shader-animation = true
 ```
 
-This value is a Ghosttea extension. Normal Ghostty shader paths are preserved
-in the snapshot but are not executed: silently treating arbitrary GLSL as the
-bundled CRT effect would be incorrect.
+The current registry also contains `ghosttea:sparks-from-fire` and the legacy
+`ghosttea:better-crt` compatibility effect. These values are Ghosttea
+extensions. Normal Ghostty GLSL paths are preserved in the snapshot but are
+not executed: silently treating arbitrary GLSL as a bundled WGSL effect would
+be incorrect. The settings dialog shows upstream shader names whose licensing
+has not been cleared, but does not bundle or enable them.
+
+The linked `ghostty.style` project seeds its built-in gallery from
+`mbadolato/iTerm2-Color-Schemes`. The desktop Appearance dialog packages a
+pinned 602-theme snapshot of that source for deterministic offline use,
+expands the selected theme into Ghostty color and palette keys, and updates a
+marked managed block through the configuration document compare-and-swap API.
+It never rewrites the rest of the user's file or executes community-provided
+configuration text.
 
 Desktop key sequences, key tables, chained actions, and the full
 `all:`/`global:`/`performable:` semantics are preserved in the snapshot but are
