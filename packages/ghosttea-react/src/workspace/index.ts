@@ -110,7 +110,14 @@ export {
   type RemoteBannerContent,
 } from "./remote-banner.js";
 export { TERMINAL_THEMES } from "./themes.js";
-export type { GhostteaAppearanceUpdate } from "../appearance/types.js";
+export type {
+  GhostteaAppearanceUpdate,
+  GhostteaConfigEditorBridge,
+  GhostteaConfigEditorExportResult,
+  GhostteaConfigEditorImportResult,
+  GhostteaConfigEditorSaveResult,
+  GhostteaConfigEditorState,
+} from "../appearance/types.js";
 export {
   GHOSTTY_COLOR_THEMES,
   GHOSTTY_THEME_CATALOG_REVISION,

@@ -19,6 +19,7 @@ export function App() {
       openConfig: window.desktop.openConfig,
       reloadConfig: window.desktop.reloadConfig,
       saveAppearance: window.desktop.saveAppearance,
+      configEditor: window.desktop.configEditor,
       newTab: window.desktop.newTab,
       selectTab: window.desktop.selectTab,
       closeTab: window.desktop.closeTab,

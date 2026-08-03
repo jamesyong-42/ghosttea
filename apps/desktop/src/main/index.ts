@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
+import { open as openFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, shell } from "electron";
 import {
   allSettledWithin,
@@ -21,6 +22,13 @@ import {
   validateAppearanceUpdate,
   type ManagedAppearanceUpdate,
 } from "./appearance-config";
+import {
+  MAX_CONFIG_EDITOR_BYTES,
+  serializeSupportedGhosttyConfig,
+  trustedConfigEditorRendererUrl,
+  validateConfigContents,
+  validateConfigSaveRequest,
+} from "./config-editor";
 
 app.setName("Ghosttea");
 nativeTheme.themeSource = "dark";
@@ -43,7 +51,7 @@ const DEFAULT_TERMINAL_CONFIG = [
   "# Your existing Ghostty config files are imported before this file.",
   "# Enable Ghosttea's public-domain CRT port with:",
   "# custom-shader = ghosttea:crt",
-  "# Or use the in-app Appearance settings to choose a color theme and shader stack.",
+  "# Or use the in-app Settings to choose a color theme, shader stack, or advanced override.",
   "",
 ].join("\n");
 
@@ -114,6 +122,105 @@ ipcMain.handle("terminal-save-appearance", async (event, payload: unknown) => {
     throw new Error("Appearance is managed by the external Ghosttea daemon");
   }
   await saveManagedAppearance(validateAppearanceUpdate(payload));
+});
+
+ipcMain.handle("terminal-config-editor-load", async (event) => {
+  await requireManagedConfigEditor(event);
+  const [document, config] = await Promise.all([
+    backend!.automation.getConfigDocument(),
+    backend!.automation.getConfig(),
+  ]);
+  assertProfileConfigDocument(document.path);
+  return { document, config };
+});
+
+ipcMain.handle("terminal-config-editor-validate", async (event, payload: unknown) => {
+  await requireManagedConfigEditor(event);
+  return backend!.automation.validateConfigDocument(validateConfigContents(payload));
+});
+
+ipcMain.handle("terminal-config-editor-save", async (event, payload: unknown) => {
+  await requireManagedConfigEditor(event);
+  const request = validateConfigSaveRequest(payload);
+  const current = await backend!.automation.getConfigDocument();
+  assertProfileConfigDocument(current.path);
+  const validation = await backend!.automation.validateConfigDocument(request.contents);
+  const errors = validation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+  if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+  try {
+    const update = await backend!.automation.replaceConfigDocument(request.expectedRevision, request.contents);
+    assertProfileConfigDocument(update.document.path);
+    return { status: "saved", document: update.document, config: update.config } as const;
+  } catch (error) {
+    if (!(error instanceof GhostteaConfigDocumentConflictError)) throw error;
+    assertProfileConfigDocument(error.document.path);
+    return { status: "conflict", document: error.document } as const;
+  }
+});
+
+ipcMain.handle("terminal-config-editor-import-ghostty", async (event) => {
+  await requireManagedConfigEditor(event);
+  // An empty candidate removes only the Ghosttea overlay while retaining the
+  // detected Ghostty roots and their includes in the validation projection.
+  const inherited = await backend!.automation.validateConfigDocument("");
+  const sources = inherited.config.sources.filter((source) => source.kind !== "ghosttea-overlay");
+  if (sources.length === 0) {
+    return { status: "unavailable", message: "No Ghostty configuration files were detected." } as const;
+  }
+  const contents = serializeSupportedGhosttyConfig(inherited.config);
+  try {
+    validateConfigContents(contents);
+  } catch {
+    return {
+      status: "unavailable",
+      message: "The supported Ghostty settings exceed Ghosttea's 64 KiB profile-overlay limit.",
+    } as const;
+  }
+  return {
+    status: "selected",
+    name: sources.length === 1 ? basename(sources[0]!.path) : `${sources.length} detected Ghostty sources`,
+    contents,
+    notice:
+      "Generated supported overrides from the effective Ghostty settings. Source files, private paths, unsupported keys, and relative includes were not copied.",
+  } as const;
+});
+
+ipcMain.handle("terminal-config-editor-import-file", async (event) => {
+  await requireManagedConfigEditor(event);
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const options: Electron.OpenDialogOptions = {
+    title: "Import Ghostty configuration",
+    properties: ["openFile"],
+    filters: [
+      { name: "Ghostty configuration", extensions: ["ghostty", "conf", "config"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  };
+  const selection = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+  const path = selection.filePaths[0];
+  if (selection.canceled || !path) return { status: "cancelled" } as const;
+  return {
+    status: "selected",
+    name: basename(path),
+    contents: await readConfigImport(path),
+    notice:
+      "Imported text is staged as a draft. Relative config-file paths will resolve from the Ghosttea profile overlay, not the imported file's folder.",
+  } as const;
+});
+
+ipcMain.handle("terminal-config-editor-export-file", async (event, payload: unknown) => {
+  await requireManagedConfigEditor(event);
+  const contents = validateConfigContents(payload);
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const options = {
+    title: "Export Ghostty configuration",
+    defaultPath: join(app.getPath("documents"), "ghosttea-config.ghostty"),
+    filters: [{ name: "Ghostty configuration", extensions: ["ghostty"] }],
+  };
+  const selection = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+  if (selection.canceled || !selection.filePath) return { status: "cancelled" } as const;
+  await writeFile(selection.filePath, contents, { encoding: "utf8", mode: 0o600 });
+  return { status: "saved", path: selection.filePath } as const;
 });
 
 ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
@@ -198,6 +305,57 @@ async function showExternalConfigOwnershipMessage(
   };
   if (owner) await dialog.showMessageBox(owner, options);
   else await dialog.showMessageBox(options);
+}
+
+async function requireManagedConfigEditor(event: Electron.IpcMainInvokeEvent): Promise<void> {
+  const { sender, senderFrame } = event;
+  if (
+    !senderFrame ||
+    senderFrame !== sender.mainFrame ||
+    !trustedConfigEditorRendererUrl(
+      senderFrame.url,
+      process.env.ELECTRON_RENDERER_URL,
+      resolve(__dirname, "../renderer/index.html"),
+    )
+  ) {
+    throw new Error("Configuration editor is unavailable for this sender");
+  }
+  if (externalBackendConfigured()) {
+    await showExternalConfigOwnershipMessage(sender, "reload");
+    throw new Error("Configuration is managed by the external Ghosttea daemon");
+  }
+  if (!BrowserWindow.fromWebContents(sender)) throw new Error("Configuration editor is unavailable for this sender");
+  await ensureBackend();
+}
+
+function assertProfileConfigDocument(path: string): void {
+  if (resolve(path) !== resolve(terminalConfigPath)) {
+    throw new Error("ghosttead returned a configuration path outside this Electron profile");
+  }
+}
+
+async function readConfigImport(path: string): Promise<string> {
+  const file = await openFile(path, "r");
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile()) throw new Error("Imported configuration must be a regular file");
+    if (metadata.size > MAX_CONFIG_EDITOR_BYTES) {
+      throw new Error(`Imported configuration is ${metadata.size} bytes; maximum is ${MAX_CONFIG_EDITOR_BYTES} bytes`);
+    }
+    const bytes = await file.readFile();
+    if (bytes.byteLength > MAX_CONFIG_EDITOR_BYTES) {
+      throw new Error(
+        `Imported configuration is ${bytes.byteLength} bytes; maximum is ${MAX_CONFIG_EDITOR_BYTES} bytes`,
+      );
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new Error("Imported configuration is not valid UTF-8 text");
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function openManagedTerminalConfig(): Promise<void> {

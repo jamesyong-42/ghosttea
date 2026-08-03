@@ -86,6 +86,27 @@ marked managed block through the configuration document compare-and-swap API.
 It never rewrites the rest of the user's file or executes community-provided
 configuration text.
 
+The desktop Settings dialog also has an Advanced editor for the exact
+profile-owned overlay. Its Raw config tab validates a draft after a short
+debounce, reports diagnostics and loaded source layers, and previews the last
+valid view-owned color/effect projection without writing on each keystroke.
+Save & load is an explicit compare-and-swap operation, so an edit made by
+another process opens a conflict view instead of being overwritten. Import
+from Ghostty generates a portable snapshot of settings in Ghosttea's supported
+projection; it does not copy private source paths, relative includes, or
+unsupported source text. File imports are bounded UTF-8 drafts with explicit
+Replace or Append choices, and exports use the host's native save dialog.
+
+The Friendly editor changes that same raw draft through a visible managed
+block, emitting only the setting groups the user actually changes. It supplies
+color pickers plus opacity, typography, padding, scrollback, and keybinding
+controls. Reset removes only that block. Colors, opacity, and
+WebGPU effects preview live; scrollback applies to new sessions, while desktop
+font changes remain startup-only and padding remains parsed-only. If an
+included layer shadows a friendly override, the UI identifies the mismatched
+fields and directs the user to the raw/source view instead of claiming the
+change worked.
+
 Desktop key sequences, key tables, chained actions, and the full
 `all:`/`global:`/`performable:` semantics are preserved in the snapshot but are
 not applied yet. An unsupported action never replaces a working default
@@ -129,11 +150,17 @@ all writers to use the API, because unrelated editors do not honor its lock.
 
 This is deliberately a privileged local API. It can address only the daemon's
 explicit final overlay, never imported Ghostty roots or included files, and it
-is not exposed over Truffle. The Electron utility bridge uses an explicit
-command allowlist that rejects these operations from renderers. Electron also
-refuses open/reload actions when attached to an externally managed daemon.
+is not exposed over Truffle. The generic Electron renderer-to-daemon bridge
+uses an explicit command allowlist that rejects these operations. The desktop
+app exposes a separate, purpose-built Settings IPC facade: main owns the fixed
+profile path, validates the 64 KiB text/revision payloads, performs validation
+before writes, accepts only the trusted top-level application frame, returns
+conflicts as data, and owns native import/export file dialogs. The renderer
+never supplies a destination path or an arbitrary daemon command. Electron
+also refuses these operations when attached to an externally managed daemon.
 Node hosts use `GhostteaAutomationClient`; Swift embedders continue to load a
-user-selected overlay URL through `GhostteaConfiguration.load`.
+user-selected overlay URL through
+`GhostteaConfiguration.load`.
 
 Truffle terminal protocol 1.5 adds a host-authoritative
 `TerminalPresentationConfig` at view attachment and a

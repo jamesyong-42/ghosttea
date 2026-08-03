@@ -39,6 +39,13 @@ post-process effect automatically. Lower-level hosts can use
 [`Ghostty configuration compatibility`](../../docs/ghostty-config-compatibility.md)
 matrix for deliberate gaps.
 
+Desktop hosts may provide the exported `GhostteaConfigEditorBridge` through
+`GhostteaWorkspacePlatform.configEditor`. The workspace then adds an Advanced
+Settings section with a lossless raw overlay editor and a friendly managed
+form. The bridge is intentionally capability-shaped: the host owns document
+scope, validation, compare-and-swap persistence, and native import/export
+dialogs; the React package owns only draft state and presentation.
+
 Architecture:
 
 1. **Match** — `matchGhostteaBinding` (Ghostty defaults + extensions)

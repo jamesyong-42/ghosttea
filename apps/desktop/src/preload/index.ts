@@ -45,6 +45,16 @@ contextBridge.exposeInMainWorld("desktop", {
   openConfig: () => ipcRenderer.send("terminal-open-config"),
   reloadConfig: () => ipcRenderer.send("terminal-reload-config"),
   saveAppearance: (update: unknown) => ipcRenderer.invoke("terminal-save-appearance", update) as Promise<void>,
+  configEditor: {
+    load: () => ipcRenderer.invoke("terminal-config-editor-load") as Promise<unknown>,
+    validate: (contents: string) => ipcRenderer.invoke("terminal-config-editor-validate", contents) as Promise<unknown>,
+    save: (expectedRevision: string, contents: string) =>
+      ipcRenderer.invoke("terminal-config-editor-save", { expectedRevision, contents }) as Promise<unknown>,
+    importGhostty: () => ipcRenderer.invoke("terminal-config-editor-import-ghostty") as Promise<unknown>,
+    importFile: () => ipcRenderer.invoke("terminal-config-editor-import-file") as Promise<unknown>,
+    exportFile: (contents: string) =>
+      ipcRenderer.invoke("terminal-config-editor-export-file", contents) as Promise<unknown>,
+  },
   newTab: (cwd?: string) => ipcRenderer.send("terminal-new-tab", cwd),
   selectTab: (target: "previous" | "next" | "last" | number) => ipcRenderer.send("terminal-select-tab", target),
   closeTab: () => ipcRenderer.send("terminal-close-tab"),

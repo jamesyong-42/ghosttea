@@ -164,8 +164,10 @@ body {
 }
 
 .appearance-settings {
-  width: min(920px, 100%);
-  max-height: min(760px, 100%);
+  position: relative;
+  width: min(1160px, 100%);
+  height: min(820px, 100%);
+  max-height: min(820px, 100%);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -177,7 +179,8 @@ body {
 }
 
 .appearance-settings > header,
-.appearance-settings > footer {
+.settings-page > footer,
+.advanced-config > footer {
   display: flex;
   gap: 16px;
   align-items: center;
@@ -217,7 +220,78 @@ body {
   cursor: pointer;
 }
 
+.settings-layout {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 158px minmax(0, 1fr);
+}
+
+.settings-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 10px;
+  border-right: 1px solid rgb(255 255 255 / 9%);
+  background: rgb(7 9 13 / 18%);
+}
+
+.settings-sidebar button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-sidebar button:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.settings-sidebar button.is-selected {
+  border-color: rgb(118 152 255 / 40%);
+  background: rgb(118 152 255 / 13%);
+}
+
+.settings-sidebar button span {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-sidebar button small {
+  color: rgb(238 241 247 / 48%);
+  font-size: 10px;
+}
+
+.settings-content,
+.settings-page {
+  min-width: 0;
+  min-height: 0;
+}
+
+.settings-content {
+  position: relative;
+  overflow: hidden;
+}
+
+.settings-page {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+}
+
+.settings-page.is-active {
+  display: flex;
+}
+
 .appearance-settings-grid {
+  flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(240px, 0.78fr) minmax(340px, 1.22fr);
@@ -466,12 +540,16 @@ body {
   font-size: 12px;
 }
 
-.appearance-settings > footer {
+.settings-page > footer,
+.advanced-config > footer {
   justify-content: flex-end;
   border-top: 1px solid rgb(255 255 255 / 9%);
 }
 
-.appearance-settings > footer button {
+.settings-page > footer button,
+.advanced-config > footer button,
+.advanced-config button,
+.friendly-config-editor button {
   min-width: 84px;
   padding: 8px 13px;
   border: 1px solid rgb(255 255 255 / 12%);
@@ -481,12 +559,606 @@ body {
   cursor: pointer;
 }
 
-.appearance-settings > footer .appearance-save {
+.settings-page > footer .appearance-save,
+.advanced-config > footer .appearance-save {
   border-color: #7698ff;
   background: #5878dc;
 }
 
-@media (max-width: 680px) {
+.advanced-config {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.advanced-config-toolbar {
+  min-height: 52px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
+}
+
+.settings-segmented {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 22%);
+}
+
+.settings-segmented button {
+  min-width: 100px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+}
+
+.settings-segmented button[aria-selected="true"] {
+  background: rgb(255 255 255 / 10%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
+}
+
+.config-validation-status {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: rgb(238 241 247 / 58%);
+  font-size: 11px;
+}
+
+.config-validation-status::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #768093;
+  content: "";
+}
+
+.config-validation-status.is-valid::before {
+  background: #5ed19a;
+  box-shadow: 0 0 8px rgb(94 209 154 / 45%);
+}
+
+.config-validation-status.is-invalid::before {
+  background: #ff8173;
+}
+
+.config-validation-status.is-validating::before {
+  background: #f2c66d;
+}
+
+.config-import-stage,
+.config-conflict {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
+  background: rgb(80 108 190 / 17%);
+  font-size: 11px;
+}
+
+.config-conflict {
+  align-items: flex-start;
+  background: rgb(172 104 43 / 18%);
+}
+
+.config-import-stage p,
+.config-conflict p {
+  margin-top: 3px;
+  color: rgb(238 241 247 / 60%);
+}
+
+.config-import-stage > span,
+.config-conflict > span,
+.config-editor-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.config-import-stage button,
+.config-conflict button,
+.config-editor-actions button,
+.friendly-heading button {
+  min-width: auto;
+  padding: 6px 9px;
+}
+
+.config-conflict details {
+  margin-top: 6px;
+}
+
+.config-conflict summary {
+  cursor: pointer;
+}
+
+.config-conflict pre {
+  max-width: 560px;
+  max-height: 130px;
+  margin: 7px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 24%);
+  font:
+    10px/1.45 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  white-space: pre-wrap;
+}
+
+.advanced-config-body {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  overflow: hidden;
+}
+
+.raw-config-editor,
+.friendly-config-editor {
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px;
+  overflow: auto;
+}
+
+.raw-config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.config-document-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.config-document-meta code {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(238 241 247 / 56%);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-document-meta > span {
+  margin-left: auto;
+  color: rgb(238 241 247 / 43%);
+}
+
+.config-code-editor {
+  min-height: 260px;
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 11%);
+  border-radius: 9px;
+  background: #11131a;
+}
+
+.config-code-editor pre,
+.config-code-editor textarea {
+  min-height: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  outline: 0;
+  font:
+    11px/1.62 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  tab-size: 2;
+}
+
+.config-code-editor pre {
+  width: 48px;
+  overflow: hidden;
+  border-right: 1px solid rgb(255 255 255 / 7%);
+  color: rgb(238 241 247 / 25%);
+  background: rgb(255 255 255 / 2%);
+  text-align: right;
+  user-select: none;
+}
+
+.config-code-editor textarea {
+  width: 100%;
+  resize: none;
+  color: #dce4f5;
+  background: transparent;
+  white-space: pre;
+}
+
+.config-code-editor:focus-within {
+  border-color: #7698ff;
+  box-shadow: 0 0 0 1px rgb(118 152 255 / 20%);
+}
+
+.config-editor-help {
+  margin-top: 0;
+}
+
+.config-inspector {
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+  border-left: 1px solid rgb(255 255 255 / 9%);
+  background: rgb(7 9 13 / 17%);
+}
+
+.config-inspector section + section {
+  margin-top: 18px;
+}
+
+.config-inspector h2 {
+  font-size: 12px;
+}
+
+.config-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.config-diagnostics button {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 7px;
+  padding: 7px;
+  border-color: rgb(255 255 255 / 7%);
+  background: rgb(255 255 255 / 2%);
+  text-align: left;
+}
+
+.config-diagnostics button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.config-diagnostics strong {
+  color: #9db3f7;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.config-diagnostics .is-error strong {
+  color: #ff958a;
+}
+
+.config-diagnostics .is-warning strong {
+  color: #f0c875;
+}
+
+.config-diagnostics span {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.config-diagnostics small {
+  grid-column: 2;
+  overflow: hidden;
+  color: rgb(238 241 247 / 38%);
+  font-size: 9px;
+  text-overflow: ellipsis;
+}
+
+.config-empty-state {
+  color: rgb(238 241 247 / 40%);
+  font-size: 10px;
+}
+
+.config-effective {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 9px 0 0;
+}
+
+.config-effective div {
+  padding: 7px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.config-effective dt {
+  color: rgb(238 241 247 / 43%);
+  font-size: 9px;
+}
+
+.config-effective dd {
+  margin: 2px 0 0;
+  font-size: 11px;
+}
+
+.config-sources {
+  margin-top: 10px;
+  color: rgb(238 241 247 / 55%);
+  font-size: 10px;
+}
+
+.config-sources summary {
+  cursor: pointer;
+}
+
+.config-sources ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.config-sources li {
+  display: flex;
+  flex-direction: column;
+}
+
+.config-sources li span {
+  color: rgb(118 152 255 / 78%);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.config-sources code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friendly-config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.friendly-heading {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.friendly-heading h2 {
+  font-size: 14px;
+}
+
+.friendly-shadow-warning {
+  padding: 9px 11px;
+  border: 1px solid rgb(240 200 117 / 28%);
+  border-radius: 8px;
+  color: #f0d18f;
+  background: rgb(172 104 43 / 14%);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.friendly-config-editor fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 2%);
+}
+
+.friendly-config-editor legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.friendly-config-editor legend span {
+  margin-left: 5px;
+  color: #91a9ef;
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.friendly-color-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.friendly-color {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px;
+  border-radius: 7px;
+  background: rgb(0 0 0 / 16%);
+}
+
+.friendly-color input {
+  width: 34px;
+  height: 30px;
+  padding: 1px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.friendly-color span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.friendly-color strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friendly-color code {
+  color: rgb(238 241 247 / 45%);
+  font-size: 9px;
+}
+
+.friendly-field-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.friendly-field-grid label,
+.friendly-number-wide,
+.friendly-textarea-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10px;
+}
+
+.friendly-field-grid input,
+.friendly-number-wide input,
+.friendly-textarea-field textarea {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 6px;
+  outline: 0;
+  color: inherit;
+  background: rgb(0 0 0 / 18%);
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.friendly-field-grid input:focus,
+.friendly-number-wide input:focus,
+.friendly-textarea-field textarea:focus {
+  border-color: #7698ff;
+}
+
+.friendly-textarea-field small,
+.friendly-number-wide small {
+  color: rgb(238 241 247 / 42%);
+  font-size: 9px;
+}
+
+.config-message {
+  padding: 8px 18px;
+  color: #a9eacb;
+  background: rgb(43 137 94 / 16%);
+  font-size: 11px;
+}
+
+.advanced-config > footer {
+  min-height: 62px;
+}
+
+.advanced-config > footer button:disabled,
+.settings-page > footer button:disabled,
+.advanced-config button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.config-footer-status {
+  margin-right: auto;
+  color: rgb(238 241 247 / 48%);
+  font-size: 10px;
+}
+
+.config-discard-backdrop {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(5 7 12 / 72%);
+  backdrop-filter: blur(7px);
+}
+
+.config-discard-backdrop > section {
+  width: min(390px, 100%);
+  padding: 18px;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 12px;
+  background: #242832;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 50%);
+}
+
+.config-discard-backdrop h2 {
+  font-size: 15px;
+}
+
+.config-discard-backdrop p {
+  margin-top: 7px;
+  color: rgb(238 241 247 / 58%);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.config-discard-backdrop footer {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.config-discard-backdrop button {
+  padding: 7px 10px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 7px;
+  color: inherit;
+  background: rgb(255 255 255 / 6%);
+  cursor: pointer;
+}
+
+.config-discard-backdrop .config-discard-action {
+  border-color: rgb(255 129 115 / 52%);
+  background: rgb(160 42 32 / 34%);
+}
+
+@media (max-width: 800px) {
+  .appearance-settings {
+    height: 100%;
+    border-radius: 10px;
+  }
+
+  .settings-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-sidebar {
+    flex-direction: row;
+    padding: 7px 10px;
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 9%);
+  }
+
+  .settings-sidebar button {
+    min-width: 130px;
+  }
+
   .appearance-settings-grid {
     grid-template-columns: 1fr;
     overflow: auto;
@@ -499,6 +1171,30 @@ body {
   .appearance-panel + .appearance-panel {
     border-top: 1px solid rgb(255 255 255 / 9%);
     border-left: 0;
+  }
+
+  .advanced-config-body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .raw-config-editor,
+  .friendly-config-editor {
+    min-height: 520px;
+  }
+
+  .config-inspector {
+    min-height: 260px;
+    border-top: 1px solid rgb(255 255 255 / 9%);
+    border-left: 0;
+  }
+
+  .friendly-color-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .friendly-field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
