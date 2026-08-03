@@ -641,8 +641,11 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     // later config reload can lower background-opacity without recreating it.
     backgroundColor: process.platform === "darwin" ? "#00000000" : "#282c34",
     transparent: process.platform === "darwin",
-    titleBarStyle: "default",
-    ...(process.platform === "darwin" ? { tabbingIdentifier: groupId } : {}),
+    // A transparent macOS window leaves the default titlebar surface visually
+    // empty. Extend content into it so the renderer can paint a visible bar,
+    // while hiddenInset keeps the native traffic-light controls available.
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    ...(process.platform === "darwin" ? { tabbingIdentifier: groupId, trafficLightPosition: { x: 12, y: 8 } } : {}),
     acceptFirstMouse: true,
     fullscreenable: true,
     autoHideMenuBar: process.platform !== "darwin",

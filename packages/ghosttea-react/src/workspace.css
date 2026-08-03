@@ -136,6 +136,21 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.ghostty-titlebar .ghosttea-settings-button {
+  top: 0;
+  right: 3px;
+  width: 34px;
+  height: 29px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 14px;
+  line-height: 27px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
 .ghostty-window:hover .ghosttea-settings-button,
 .ghosttea-settings-button:focus-visible {
   opacity: 1;

@@ -1002,25 +1002,33 @@ export function GhostteaWorkspace({
     ],
   );
 
+  const settingsButton =
+    platform.saveAppearance || platform.configEditor ? (
+      <button
+        type="button"
+        className="ghosttea-settings-button"
+        aria-label="Open settings"
+        title="Settings"
+        disabled={!config}
+        onClick={() => setAppearanceSettingsOpen(true)}
+      >
+        ⚙
+      </button>
+    ) : null;
+
   return (
-    <main ref={workspaceRef} className={`ghostty-window${active && focused ? " is-focused" : ""}`}>
-      {platform.saveAppearance || platform.configEditor ? (
-        <button
-          type="button"
-          className="ghosttea-settings-button"
-          aria-label="Open settings"
-          title="Settings"
-          disabled={!config}
-          onClick={() => setAppearanceSettingsOpen(true)}
-        >
-          ⚙
-        </button>
-      ) : null}
+    <main
+      ref={workspaceRef}
+      className={`ghostty-window${active && focused ? " is-focused" : ""}${showTitlebar ? " has-titlebar" : ""}`}
+    >
       {showTitlebar ? (
         <header className="ghostty-titlebar" aria-label={title}>
           <span className="ghostty-title">{title}</span>
+          {settingsButton}
         </header>
-      ) : null}
+      ) : (
+        settingsButton
+      )}
       <div className="ghosttea-workspace-body">
         <section className="terminal-host">
           {error ? (

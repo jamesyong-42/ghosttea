@@ -52,7 +52,7 @@ export function App() {
       storageKey={`ghosttea:workspace:v2:${window.desktop.tabId}`}
       claimExistingSessions={window.desktop.claimExistingSessions}
       active={active}
-      showTitlebar={false}
+      showTitlebar={window.desktop.platform === "darwin"}
       onSessionsChange={window.desktop.updateTabSessions}
       onActiveSessionChange={(session) => window.desktop.updateActiveCwd(session?.cwd ?? undefined)}
       {...(window.desktop.initialCwd ? { initialCwd: window.desktop.initialCwd } : {})}
