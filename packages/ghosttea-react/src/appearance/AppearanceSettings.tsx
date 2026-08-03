@@ -6,6 +6,37 @@ import { AdvancedConfigSettings } from "./AdvancedConfigSettings.js";
 import type { GhostteaAppearanceUpdate, GhostteaConfigEditorBridge } from "./types.js";
 import type { TerminalShaderEffect } from "../renderers/types.js";
 
+export interface AppearanceDraftState {
+  themeName: string | null;
+  opacity: number;
+  opacityCells: boolean;
+  effects: TerminalShaderEffect[];
+  animation: boolean;
+}
+
+export function appearanceDraftFromConfig(config: ConfigSnapshot): AppearanceDraftState {
+  return {
+    themeName: findMatchingColorTheme(config.renderer)?.name ?? null,
+    opacity: config.renderer.backgroundOpacity ?? 1,
+    opacityCells: config.renderer.backgroundOpacityCells ?? false,
+    effects:
+      config.renderer.shaderEffects?.filter(isGhostteaShaderEffect) ??
+      (config.renderer.postProcess === "better-crt" ? ["ghosttea:better-crt"] : []),
+    animation: config.renderer.customShaderAnimation ?? false,
+  };
+}
+
+export function sameAppearanceDraft(left: AppearanceDraftState, right: AppearanceDraftState): boolean {
+  return (
+    left.themeName === right.themeName &&
+    left.opacity === right.opacity &&
+    left.opacityCells === right.opacityCells &&
+    left.animation === right.animation &&
+    left.effects.length === right.effects.length &&
+    left.effects.every((effect, index) => effect === right.effects[index])
+  );
+}
+
 export interface AppearanceSettingsProps {
   config: ConfigSnapshot;
   onClose: () => void;
@@ -16,21 +47,30 @@ export interface AppearanceSettingsProps {
 
 export function AppearanceSettings({ config, onClose, onSave, configEditor, onPreview }: AppearanceSettingsProps) {
   const [section, setSection] = useState<"appearance" | "advanced">(onSave ? "appearance" : "advanced");
+  const [advancedOpened, setAdvancedOpened] = useState(!onSave);
   const [advancedDirty, setAdvancedDirty] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const matchedTheme = findMatchingColorTheme(config.renderer);
-  const currentTheme = colorThemeFromRenderer(config.renderer);
-  const [themeName, setThemeName] = useState<string | null>(matchedTheme?.name ?? null);
+  const [observedConfig, setObservedConfig] = useState(config);
+  const [observedPropRevision, setObservedPropRevision] = useState(config.revision);
+  const initialAppearance = appearanceDraftFromConfig(config);
+  const [appearanceBaseline, setAppearanceBaseline] = useState(initialAppearance);
+  const [appearanceBaselineRevision, setAppearanceBaselineRevision] = useState(config.revision);
+  const matchedTheme = findMatchingColorTheme(observedConfig.renderer);
+  const currentTheme = colorThemeFromRenderer(observedConfig.renderer);
+  const [themeName, setThemeName] = useState<string | null>(initialAppearance.themeName);
   const [query, setQuery] = useState("");
-  const [opacity, setOpacity] = useState(config.renderer.backgroundOpacity ?? 1);
-  const [opacityCells, setOpacityCells] = useState(config.renderer.backgroundOpacityCells ?? false);
-  const [effects, setEffects] = useState<TerminalShaderEffect[]>(
-    config.renderer.shaderEffects?.filter(isGhostteaShaderEffect) ??
-      (config.renderer.postProcess === "better-crt" ? ["ghosttea:better-crt"] : []),
-  );
-  const [animation, setAnimation] = useState(config.renderer.customShaderAnimation ?? false);
+  const [opacity, setOpacity] = useState(initialAppearance.opacity);
+  const [opacityCells, setOpacityCells] = useState(initialAppearance.opacityCells);
+  const [effects, setEffects] = useState<TerminalShaderEffect[]>(initialAppearance.effects);
+  const [animation, setAnimation] = useState(initialAppearance.animation);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const appearanceDraft = useMemo<AppearanceDraftState>(
+    () => ({ themeName, opacity, opacityCells, effects, animation }),
+    [animation, effects, opacity, opacityCells, themeName],
+  );
+  const appearanceDirty = !sameAppearanceDraft(appearanceDraft, appearanceBaseline);
+  const appearanceStale = appearanceDirty && observedConfig.revision !== appearanceBaselineRevision;
   const selectedTheme = themeName ? GHOSTTY_COLOR_THEMES.find((theme) => theme.name === themeName) : undefined;
   const previewTheme = selectedTheme ?? currentTheme;
   const filteredThemes = useMemo(() => {
@@ -38,6 +78,25 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
     if (!normalized) return GHOSTTY_COLOR_THEMES.slice(0, 80);
     return GHOSTTY_COLOR_THEMES.filter((theme) => theme.name.toLocaleLowerCase().includes(normalized)).slice(0, 120);
   }, [query]);
+  const resetAppearanceToConfig = useCallback((nextConfig: ConfigSnapshot): void => {
+    const next = appearanceDraftFromConfig(nextConfig);
+    setThemeName(next.themeName);
+    setOpacity(next.opacity);
+    setOpacityCells(next.opacityCells);
+    setEffects(next.effects);
+    setAnimation(next.animation);
+    setAppearanceBaseline(next);
+    setAppearanceBaselineRevision(nextConfig.revision);
+  }, []);
+  const acknowledgeLatestAppearanceBase = (): void => {
+    setAppearanceBaseline(appearanceDraftFromConfig(observedConfig));
+    setAppearanceBaselineRevision(observedConfig.revision);
+  };
+  const selectSection = (next: "appearance" | "advanced"): void => {
+    if ((next === "advanced" && appearanceDirty) || (next === "appearance" && advancedDirty)) return;
+    if (next === "advanced") setAdvancedOpened(true);
+    setSection(next);
+  };
   const requestClose = useCallback((): void => {
     if (advancedDirty) {
       setConfirmDiscard(true);
@@ -45,6 +104,28 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
     }
     onClose();
   }, [advancedDirty, onClose]);
+
+  // React preserves this dialog across daemon config notifications. Reconcile
+  // a clean appearance draft during render (the guarded previous-prop pattern)
+  // so a newer snapshot cannot be overwritten by stale form state. A dirty
+  // draft keeps its old baseline and therefore becomes an explicit conflict.
+  if (config.revision !== observedPropRevision) {
+    setObservedPropRevision(config.revision);
+    setObservedConfig(config);
+  } else if (observedConfig.revision !== appearanceBaselineRevision && !appearanceDirty) {
+    resetAppearanceToConfig(observedConfig);
+  }
+
+  useEffect(() => {
+    configEditor?.setDirty?.(advancedDirty);
+  }, [advancedDirty, configEditor]);
+
+  useEffect(
+    () => () => {
+      configEditor?.setDirty?.(false);
+    },
+    [configEditor],
+  );
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
@@ -75,7 +156,7 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
     });
   };
   const save = async (): Promise<void> => {
-    if (!onSave) return;
+    if (!onSave || appearanceStale) return;
     setSaving(true);
     setError(undefined);
     try {
@@ -118,7 +199,9 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
                 type="button"
                 className={section === "appearance" ? "is-selected" : ""}
                 aria-current={section === "appearance" ? "page" : undefined}
-                onClick={() => setSection("appearance")}
+                disabled={advancedDirty}
+                title={advancedDirty ? "Save or revert the Advanced draft before switching sections" : undefined}
+                onClick={() => selectSection("appearance")}
               >
                 <span>Appearance</span>
                 <small>Themes &amp; shaders</small>
@@ -129,16 +212,40 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
                 type="button"
                 className={section === "advanced" ? "is-selected" : ""}
                 aria-current={section === "advanced" ? "page" : undefined}
-                onClick={() => setSection("advanced")}
+                disabled={appearanceDirty}
+                title={appearanceDirty ? "Apply or cancel Appearance changes before switching sections" : undefined}
+                onClick={() => selectSection("advanced")}
               >
                 <span>Advanced</span>
                 <small>Ghostty config</small>
               </button>
             ) : null}
+            {appearanceDirty ? (
+              <p className="settings-sidebar-note">Apply or cancel Appearance edits to switch.</p>
+            ) : null}
+            {advancedDirty ? (
+              <p className="settings-sidebar-note">Save or revert the Advanced draft to switch.</p>
+            ) : null}
           </nav>
 
           <div className="settings-content">
             <div className={`settings-page appearance-settings-page${section === "appearance" ? " is-active" : ""}`}>
+              {appearanceStale ? (
+                <div className="config-conflict appearance-config-stale" role="alert">
+                  <div>
+                    <strong>The configuration changed while Appearance had pending edits.</strong>
+                    <p>Choose whether to reload the current values or explicitly rebase your pending appearance.</p>
+                  </div>
+                  <span>
+                    <button type="button" onClick={() => resetAppearanceToConfig(observedConfig)}>
+                      Reload current values
+                    </button>
+                    <button type="button" onClick={acknowledgeLatestAppearanceBase}>
+                      Keep my pending edits
+                    </button>
+                  </span>
+                </div>
+              ) : null}
               <div className="appearance-settings-grid">
                 <section className="appearance-panel">
                   <h2>
@@ -150,7 +257,7 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
                     onChange={(event) => setQuery(event.currentTarget.value)}
                     placeholder="Search Ghostty themes"
                     aria-label="Search Ghostty themes"
-                    autoFocus
+                    autoFocus={section === "appearance"}
                   />
                   <div className="appearance-theme-list" role="listbox" aria-label="Color themes">
                     {!matchedTheme ? (
@@ -307,20 +414,26 @@ export function AppearanceSettings({ config, onClose, onSave, configEditor, onPr
                 <button type="button" onClick={requestClose}>
                   Cancel
                 </button>
-                <button type="button" className="appearance-save" disabled={saving} onClick={() => void save()}>
+                <button
+                  type="button"
+                  className="appearance-save"
+                  disabled={saving || appearanceStale}
+                  onClick={() => void save()}
+                >
                   {saving ? "Applying…" : "Apply"}
                 </button>
               </footer>
             </div>
 
-            {configEditor ? (
+            {configEditor && advancedOpened ? (
               <div className={`settings-page advanced-settings-page${section === "advanced" ? " is-active" : ""}`}>
                 <AdvancedConfigSettings
-                  config={config}
+                  config={observedConfig}
                   editor={configEditor}
                   onClose={requestClose}
                   onDirtyChange={setAdvancedDirty}
                   onPreview={onPreview}
+                  onSaved={setObservedConfig}
                 />
               </div>
             ) : null}

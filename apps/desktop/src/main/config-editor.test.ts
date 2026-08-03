@@ -3,6 +3,9 @@ import { pathToFileURL } from "node:url";
 import type { ConfigSnapshot } from "@vibecook/ghosttea-protocol";
 import {
   MAX_CONFIG_EDITOR_BYTES,
+  assertConfigDocumentIncludesAuthorized,
+  blockingConfigDiagnostics,
+  configDocumentIncludes,
   serializeSupportedGhosttyConfig,
   trustedConfigEditorRendererUrl,
   validateConfigContents,
@@ -72,5 +75,67 @@ describe("desktop config editor boundary", () => {
     );
     expect(trustedConfigEditorRendererUrl("https://example.com/", "http://localhost:5173/", packaged)).toBe(false);
     expect(trustedConfigEditorRendererUrl("not a url", undefined, packaged)).toBe(false);
+  });
+
+  it("allows existing include paths but refuses renderer-introduced file reads", () => {
+    const current = [
+      "config-file = /Users/private/dormant",
+      "config-file =",
+      'config-file = "themes/current"',
+      "config-file = ?~/optional",
+      "",
+    ].join("\n");
+    expect(configDocumentIncludes(current)).toEqual(new Set(["themes/current", "~/optional"]));
+    expect(() =>
+      assertConfigDocumentIncludesAuthorized(
+        current,
+        [
+          "config-file = /Users/private/dormant",
+          "config-file =",
+          "config-file = themes/current",
+          'config-file = ?"~/optional"',
+          "",
+        ].join("\n"),
+      ),
+    ).not.toThrow();
+    expect(() => assertConfigDocumentIncludesAuthorized(current, "")).not.toThrow();
+    expect(() => assertConfigDocumentIncludesAuthorized(current, "config-file = /Users/private/secrets\n")).toThrow(
+      "cannot change active config-file directives",
+    );
+    expect(() => assertConfigDocumentIncludesAuthorized(current, "config-file = /Users/private/dormant\n")).toThrow(
+      "cannot change active config-file directives",
+    );
+    expect(() =>
+      assertConfigDocumentIncludesAuthorized(current, 'config-file = ?"~/optional"\nconfig-file = themes/current\n'),
+    ).toThrow("cannot change active config-file directives");
+  });
+
+  it("blocks local and newly introduced errors but tolerates unchanged inherited errors", () => {
+    const inherited = {
+      severity: "error",
+      code: "invalid-value",
+      message: "inherited failure",
+      source: "/Users/example/.config/ghostty/config",
+      line: 4,
+      key: "font-size",
+    } as const;
+    const local = { ...inherited, message: "local failure", source: "/profile/config.ghostty", line: 2 } as const;
+    const introduced = { ...inherited, message: "new inherited failure", line: 7 } as const;
+    const unattributed = {
+      severity: "error",
+      code: "invalid-value",
+      message: "global failure",
+      line: 4,
+      key: "font-size",
+    } as const;
+
+    expect(blockingConfigDiagnostics([inherited], [inherited], "/profile/config.ghostty")).toEqual([]);
+    expect(
+      blockingConfigDiagnostics(
+        [inherited, unattributed],
+        [inherited, local, introduced, unattributed],
+        "/profile/config.ghostty",
+      ),
+    ).toEqual([local, introduced, unattributed]);
   });
 });

@@ -1,4 +1,9 @@
-import type { ConfigDocument, ConfigDocumentValidation, ConfigSnapshot } from "@vibecook/ghosttea-protocol";
+import type {
+  ConfigDiagnostic,
+  ConfigDocument,
+  ConfigDocumentValidation,
+  ConfigSnapshot,
+} from "@vibecook/ghosttea-protocol";
 import type { GhostteaColorTheme } from "./catalog.js";
 import type { TerminalShaderEffect } from "../renderers/types.js";
 
@@ -14,6 +19,14 @@ export interface GhostteaAppearanceUpdate {
 export interface GhostteaConfigEditorState {
   document: ConfigDocument;
   config: ConfigSnapshot;
+}
+
+export interface GhostteaConfigEditorValidation extends ConfigDocumentValidation {
+  /**
+   * Errors caused by the candidate overlay. Hosts may omit this for backwards
+   * compatibility, in which case every error remains blocking.
+   */
+  blockingErrors?: ConfigDiagnostic[];
 }
 
 export type GhostteaConfigEditorSaveResult =
@@ -42,9 +55,13 @@ export type GhostteaConfigEditorExportResult = { status: "saved"; path: string }
 /** Narrow host capability for editing only Ghosttea's profile-owned overlay. */
 export interface GhostteaConfigEditorBridge {
   load: () => Promise<GhostteaConfigEditorState>;
-  validate: (contents: string) => Promise<ConfigDocumentValidation>;
+  validate: (contents: string) => Promise<GhostteaConfigEditorValidation>;
   save: (expectedRevision: string, contents: string) => Promise<GhostteaConfigEditorSaveResult>;
   importGhostty: () => Promise<GhostteaConfigEditorImportResult>;
   importFile: () => Promise<GhostteaConfigEditorImportResult>;
   exportFile: (contents: string) => Promise<GhostteaConfigEditorExportResult>;
+  /** Open the owned overlay in a trusted external text editor. */
+  openExternal?: () => void;
+  /** Inform a native host that closing this renderer requires confirmation. */
+  setDirty?: (dirty: boolean) => void;
 }

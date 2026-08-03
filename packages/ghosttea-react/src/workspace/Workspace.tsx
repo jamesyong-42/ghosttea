@@ -52,8 +52,9 @@ export function workspaceOwnsHotkey(
   root: Pick<HTMLElement, "contains"> | null,
   target: EventTarget | null,
   activeElement: Element | null,
+  blocked = false,
 ): boolean {
-  if (!active || !root) return false;
+  if (!active || blocked || !root) return false;
   return (
     (target instanceof Node && root.contains(target)) || (activeElement instanceof Node && root.contains(activeElement))
   );
@@ -895,7 +896,11 @@ export function GhostteaWorkspace({
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (!workspaceOwnsHotkey(active, workspaceRef.current, event.target, document.activeElement)) return;
+      if (
+        !workspaceOwnsHotkey(active, workspaceRef.current, event.target, document.activeElement, appearanceSettingsOpen)
+      ) {
+        return;
+      }
 
       // Workspace owns chrome/platform/unhandled only; terminal effects stay on TerminalSurface.
       const routed = resolveKeyEvent(event, {
@@ -961,6 +966,7 @@ export function GhostteaWorkspace({
   }, [
     active,
     activePane?.session.cwd,
+    appearanceSettingsOpen,
     bindings,
     enableRemoteSessions,
     executeWorkspaceCommand,

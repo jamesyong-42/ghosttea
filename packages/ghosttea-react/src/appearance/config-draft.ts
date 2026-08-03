@@ -22,6 +22,7 @@ export interface FriendlyConfigValues {
 }
 
 export type FriendlyConfigSection = "colors" | "opacity" | "scrollback" | "typography" | "padding" | "keybindings";
+export type ConfigNewline = "\n" | "\r\n";
 
 const ALL_FRIENDLY_CONFIG_SECTIONS: ReadonlySet<FriendlyConfigSection> = new Set([
   "colors",
@@ -31,6 +32,67 @@ const ALL_FRIENDLY_CONFIG_SECTIONS: ReadonlySet<FriendlyConfigSection> = new Set
   "padding",
   "keybindings",
 ]);
+
+export function preferredConfigNewline(contents: string, fallback: ConfigNewline = "\n"): ConfigNewline {
+  const first = contents.match(/\r\n|\n/u)?.[0];
+  return first === "\r\n" ? "\r\n" : first === "\n" ? "\n" : fallback;
+}
+
+function normalizedTextareaContents(contents: string): string {
+  return contents.replaceAll(/\r\n|\r|\n/gu, "\n");
+}
+
+function originalOffset(contents: string, normalizedOffset: number): number {
+  let normalized = 0;
+  let original = 0;
+  while (original < contents.length && normalized < normalizedOffset) {
+    if (contents[original] === "\r" && contents[original + 1] === "\n") original += 2;
+    else original += 1;
+    normalized += 1;
+  }
+  return original;
+}
+
+/** Preserve every untouched newline token while applying one textarea edit. */
+export function applyConfigTextareaEdit(
+  previous: string,
+  textareaValue: string,
+  insertedNewline: ConfigNewline = preferredConfigNewline(previous),
+): string {
+  const before = normalizedTextareaContents(previous);
+  const after = normalizedTextareaContents(textareaValue);
+  if (before === after) return previous;
+
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - suffix - 1] === after[after.length - suffix - 1]
+  ) {
+    suffix += 1;
+  }
+
+  const originalStart = originalOffset(previous, prefix);
+  const originalEnd = originalOffset(previous, before.length - suffix);
+  const replacement = after.slice(prefix, after.length - suffix).replaceAll("\n", insertedNewline);
+  return `${previous.slice(0, originalStart)}${replacement}${previous.slice(originalEnd)}`;
+}
+
+export function appendConfigDocument(left: string, right: string, newline = preferredConfigNewline(left)): string {
+  if (!left) return right;
+  if (!right) return left;
+  let cursor = left.length;
+  let trailingNewlines = 0;
+  while (cursor > 0) {
+    if (cursor >= 2 && left.slice(cursor - 2, cursor) === "\r\n") cursor -= 2;
+    else if (left[cursor - 1] === "\n" || left[cursor - 1] === "\r") cursor -= 1;
+    else break;
+    trailingNewlines += 1;
+  }
+  return `${left}${newline.repeat(Math.max(0, 2 - trailingNewlines))}${right}`;
+}
 
 function colorHex(color: readonly [number, number, number]): string {
   return `#${color.map((component) => component.toString(16).padStart(2, "0")).join("")}`;
@@ -256,21 +318,17 @@ export function patchFriendlyConfigBlock(
   sections: ReadonlySet<FriendlyConfigSection> = ALL_FRIENDLY_CONFIG_SECTIONS,
 ): string {
   if (sections.size === 0) return removeFriendlyConfigBlock(contents);
-  const newline = contents.includes("\r\n") ? "\r\n" : "\n";
+  const newline = preferredConfigNewline(contents);
   const range = managedBlockRange(contents);
-  const withoutBlock = range ? `${contents.slice(0, range.start)}${contents.slice(range.end)}` : contents;
-  const prefix = withoutBlock.trimEnd();
   const block = friendlyConfigBlock(values, sections).replaceAll("\n", newline);
-  return `${prefix}${prefix ? newline.repeat(2) : ""}${block}${newline}`;
+  if (range) return `${contents.slice(0, range.start)}${block}${contents.slice(range.end)}`;
+  return `${appendConfigDocument(contents, block, newline)}${newline}`;
 }
 
 export function removeFriendlyConfigBlock(contents: string): string {
   const range = managedBlockRange(contents);
   if (!range) return contents;
-  const before = contents.slice(0, range.start).trimEnd();
-  const after = contents.slice(range.end).trimStart();
-  const newline = contents.includes("\r\n") ? "\r\n" : "\n";
-  return `${before}${before && after ? newline.repeat(2) : ""}${after}`;
+  return `${contents.slice(0, range.start)}${contents.slice(range.end)}`;
 }
 
 export function hasFriendlyConfigBlock(contents: string): boolean {

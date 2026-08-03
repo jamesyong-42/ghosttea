@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  ConfigDiagnostic,
-  ConfigDocument,
-  ConfigDocumentValidation,
-  ConfigSnapshot,
-} from "@vibecook/ghosttea-protocol";
+import type { ConfigDiagnostic, ConfigDocument, ConfigSnapshot } from "@vibecook/ghosttea-protocol";
 import {
+  appendConfigDocument,
+  applyConfigTextareaEdit,
   friendlyConfigMismatches,
   friendlyConfigSections,
   friendlyValuesFromConfig,
   patchFriendlyConfigBlock,
+  preferredConfigNewline,
   removeFriendlyConfigBlock,
   type FriendlyConfigSection,
   type FriendlyConfigValues,
 } from "./config-draft.js";
-import type { GhostteaConfigEditorBridge, GhostteaConfigEditorImportResult } from "./types.js";
+import type {
+  GhostteaConfigEditorBridge,
+  GhostteaConfigEditorImportResult,
+  GhostteaConfigEditorValidation,
+} from "./types.js";
 
 const VALIDATION_DEBOUNCE_MS = 320;
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -29,6 +31,7 @@ export interface AdvancedConfigSettingsProps {
   onClose: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onPreview: (config: ConfigSnapshot | undefined) => void;
+  onSaved?: (config: ConfigSnapshot) => void;
 }
 
 export function AdvancedConfigSettings({
@@ -37,13 +40,14 @@ export function AdvancedConfigSettings({
   onClose,
   onDirtyChange,
   onPreview,
+  onSaved,
 }: AdvancedConfigSettingsProps) {
   const [mode, setMode] = useState<EditorMode>("raw");
   const [document, setDocument] = useState<ConfigDocument>();
   const [baseContents, setBaseContents] = useState("");
   const [baseConfig, setBaseConfig] = useState(config);
   const [draft, setDraft] = useState("");
-  const [validation, setValidation] = useState<ConfigDocumentValidation>();
+  const [validation, setValidation] = useState<GhostteaConfigEditorValidation>();
   const [validatedDraft, setValidatedDraft] = useState<string>();
   const [validationState, setValidationState] = useState<ValidationState>("idle");
   const [friendly, setFriendly] = useState(() => friendlyValuesFromConfig(config));
@@ -62,16 +66,20 @@ export function AdvancedConfigSettings({
   const gutterRef = useRef<HTMLPreElement>(null);
 
   const diagnostics = validation?.config.diagnostics ?? [];
-  const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+  const blockingErrors = validation?.blockingErrors ?? errors;
+  const errorCount = errors.length;
+  const blockingErrorCount = blockingErrors.length;
+  const inheritedErrorCount = Math.max(0, errorCount - blockingErrorCount);
   const warningCount = diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length;
   const dirty = document !== undefined && draft !== baseContents;
   const byteCount = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft]);
   const lineNumbers = useMemo(
-    () => Array.from({ length: Math.max(1, draft.split(/\r?\n/u).length) }, (_, index) => index + 1).join("\n"),
+    () => Array.from({ length: Math.max(1, draft.split(/\r\n|\r|\n/u).length) }, (_, index) => index + 1).join("\n"),
     [draft],
   );
   const previewConfig = validation?.config ?? baseConfig;
-  const editorDisabled = loading || saving;
+  const editorDisabled = loading || saving || !document;
   const friendlyMismatches = useMemo(
     () =>
       friendlyDraftContents === draft && validationState === "valid"
@@ -136,7 +144,8 @@ export function AdvancedConfigSettings({
         .validate(draft)
         .then((result) => {
           if (cancelled || sequence !== validationSequence.current) return;
-          const nextErrors = result.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+          const nextErrors =
+            result.blockingErrors ?? result.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
           setValidation(result);
           setValidatedDraft(draft);
           if (draft === baseContents) setBaseConfig(result.config);
@@ -217,10 +226,8 @@ export function AdvancedConfigSettings({
   const applyImport = (strategy: "replace" | "append"): void => {
     if (!pendingImport) return;
     let contents = pendingImport.contents;
-    if (strategy === "append" && draft.trim()) {
-      const newline = draft.includes("\r\n") ? "\r\n" : "\n";
-      const imported = pendingImport.contents.replaceAll(/\r?\n/gu, newline);
-      contents = `${draft.trimEnd()}${newline.repeat(2)}${imported}`;
+    if (strategy === "append" && draft) {
+      contents = appendConfigDocument(draft, pendingImport.contents, preferredConfigNewline(draft));
     }
     if (new TextEncoder().encode(contents).byteLength > MAX_CONFIG_BYTES) {
       setError(`The resulting draft exceeds the ${MAX_CONFIG_BYTES}-byte configuration limit.`);
@@ -246,8 +253,8 @@ export function AdvancedConfigSettings({
       setError("Wait for the current draft to finish validating before saving.");
       return;
     }
-    if (validationState !== "valid" || errorCount > 0) {
-      setError("Fix configuration errors before saving.");
+    if (validationState !== "valid" || blockingErrorCount > 0) {
+      setError("Fix errors introduced by this profile draft before saving.");
       return;
     }
     if (mode === "friendly" && friendlyMismatches.length > 0) {
@@ -260,12 +267,14 @@ export function AdvancedConfigSettings({
     try {
       const latestValidation = await editor.validate(draft);
       if (!mounted.current) return;
-      const latestErrors = latestValidation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+      const latestErrors =
+        latestValidation.blockingErrors ??
+        latestValidation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
       setValidation(latestValidation);
       setValidatedDraft(draft);
       setValidationState(latestErrors.length > 0 ? "invalid" : "valid");
       if (latestErrors.length > 0) {
-        setError("The effective configuration changed and now contains errors. Review validation before saving.");
+        setError("The profile draft now introduces configuration errors. Review validation before saving.");
         return;
       }
       const latestMismatches =
@@ -287,7 +296,7 @@ export function AdvancedConfigSettings({
       setBaseContents(result.document.contents);
       setBaseConfig(result.config);
       setDraft(result.document.contents);
-      setValidation({ documentRevision: result.document.revision, config: result.config });
+      setValidation({ documentRevision: result.document.revision, config: result.config, blockingErrors: [] });
       setValidatedDraft(result.document.contents);
       setValidationState("valid");
       setFriendly(friendlyValuesFromConfig(result.config));
@@ -297,6 +306,7 @@ export function AdvancedConfigSettings({
         "Saved and loaded. Existing sessions received live settings; startup-only and parsed-only settings remain deferred as indicated.",
       );
       onPreview(result.config);
+      onSaved?.(result.config);
     } catch (cause) {
       if (mounted.current) setError(errorMessage(cause));
     } finally {
@@ -308,12 +318,12 @@ export function AdvancedConfigSettings({
     if (!conflict) return;
     setDocument(conflict);
     setBaseContents(conflict.contents);
+    setValidatedDraft(undefined);
+    setValidationState("validating");
     if (!keepDraft) {
       setFriendlyDraftContents(undefined);
       setFriendlySections(friendlyConfigSections(conflict.contents));
       setDraft(conflict.contents);
-      setValidatedDraft(undefined);
-      setValidationState("validating");
     }
     setConflict(undefined);
     setMessage(
@@ -354,7 +364,9 @@ export function AdvancedConfigSettings({
             : validationState === "validating"
               ? "Validating…"
               : validationState === "valid"
-                ? "Valid · visual preview"
+                ? inheritedErrorCount > 0
+                  ? `Valid · ${inheritedErrorCount} inherited errors`
+                  : "Valid · visual preview"
                 : validationState === "invalid"
                   ? "Needs attention"
                   : "Not validated"}
@@ -407,6 +419,7 @@ export function AdvancedConfigSettings({
           <RawEditor
             draft={draft}
             document={document}
+            documentStatus={loading ? "Loading…" : "Unavailable"}
             lineNumbers={lineNumbers}
             textAreaRef={textAreaRef}
             gutterRef={gutterRef}
@@ -414,12 +427,11 @@ export function AdvancedConfigSettings({
             onImportGhostty={() => void stageImport(editor.importGhostty)}
             onImportFile={() => void stageImport(editor.importFile)}
             onExport={() => void exportDraft()}
+            onOpenExternal={editor.openExternal}
             byteCount={byteCount}
             dirty={dirty}
             disabled={editorDisabled}
-            lineEnding={
-              draft.includes("\r\n") || (!draft.includes("\n") && baseContents.includes("\r\n")) ? "\r\n" : "\n"
-            }
+            lineEnding={preferredConfigNewline(draft, preferredConfigNewline(baseContents))}
           />
         ) : (
           <FriendlyEditor
@@ -437,7 +449,8 @@ export function AdvancedConfigSettings({
           <section>
             <h2>Validation</h2>
             <p className="appearance-help">
-              {errorCount} errors · {warningCount} warnings · {diagnostics.length} diagnostics
+              {errorCount} errors ({blockingErrorCount} in this draft) · {warningCount} warnings · {diagnostics.length}{" "}
+              diagnostics
             </p>
             <div className="config-diagnostics">
               {diagnostics.length === 0 ? (
@@ -529,7 +542,7 @@ export function AdvancedConfigSettings({
             loading ||
             validationState !== "valid" ||
             validatedDraft !== draft ||
-            errorCount > 0 ||
+            blockingErrorCount > 0 ||
             Boolean(conflict) ||
             Boolean(pendingImport) ||
             (mode === "friendly" && friendlyMismatches.length > 0)
@@ -546,6 +559,7 @@ export function AdvancedConfigSettings({
 interface RawEditorProps {
   draft: string;
   document: ConfigDocument | undefined;
+  documentStatus: string;
   lineNumbers: string;
   textAreaRef: React.RefObject<HTMLTextAreaElement | null>;
   gutterRef: React.RefObject<HTMLPreElement | null>;
@@ -553,6 +567,7 @@ interface RawEditorProps {
   onImportGhostty: () => void;
   onImportFile: () => void;
   onExport: () => void;
+  onOpenExternal: (() => void) | undefined;
   byteCount: number;
   dirty: boolean;
   disabled: boolean;
@@ -562,6 +577,7 @@ interface RawEditorProps {
 function RawEditor({
   draft,
   document,
+  documentStatus,
   lineNumbers,
   textAreaRef,
   gutterRef,
@@ -569,6 +585,7 @@ function RawEditor({
   onImportGhostty,
   onImportFile,
   onExport,
+  onOpenExternal,
   byteCount,
   dirty,
   disabled,
@@ -586,10 +603,15 @@ function RawEditor({
         <button type="button" disabled={disabled} onClick={onExport}>
           Export…
         </button>
+        {onOpenExternal ? (
+          <button type="button" onClick={onOpenExternal}>
+            Open externally…
+          </button>
+        ) : null}
       </div>
       <div className="config-document-meta">
         <strong>Profile override</strong>
-        <code title={document?.path}>{document?.path ? sourceName(document.path) : "Loading…"}</code>
+        <code title={document?.path}>{document?.path ? sourceName(document.path) : documentStatus}</code>
         <span>{document?.exists ? "On disk" : "New file"}</span>
       </div>
       <div className="config-code-editor">
@@ -599,7 +621,7 @@ function RawEditor({
         <textarea
           ref={textAreaRef}
           value={draft}
-          onChange={(event) => onChange(event.currentTarget.value.replaceAll(/\r?\n/gu, lineEnding))}
+          onChange={(event) => onChange(applyConfigTextareaEdit(draft, event.currentTarget.value, lineEnding))}
           onScroll={(event) => {
             if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop;
           }}

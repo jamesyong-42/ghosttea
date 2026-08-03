@@ -24,6 +24,8 @@ import {
 } from "./appearance-config";
 import {
   MAX_CONFIG_EDITOR_BYTES,
+  assertConfigDocumentIncludesAuthorized,
+  blockingConfigDiagnostics,
   serializeSupportedGhosttyConfig,
   trustedConfigEditorRendererUrl,
   validateConfigContents,
@@ -117,10 +119,7 @@ ipcMain.on("terminal-reload-config", (event) => {
 });
 
 ipcMain.handle("terminal-save-appearance", async (event, payload: unknown) => {
-  if (externalBackendConfigured()) {
-    await showExternalConfigOwnershipMessage(event.sender, "reload");
-    throw new Error("Appearance is managed by the external Ghosttea daemon");
-  }
+  await requireManagedConfigEditor(event);
   await saveManagedAppearance(validateAppearanceUpdate(payload));
 });
 
@@ -136,7 +135,10 @@ ipcMain.handle("terminal-config-editor-load", async (event) => {
 
 ipcMain.handle("terminal-config-editor-validate", async (event, payload: unknown) => {
   await requireManagedConfigEditor(event);
-  return backend!.automation.validateConfigDocument(validateConfigContents(payload));
+  const contents = validateConfigContents(payload);
+  const current = await backend!.automation.getConfigDocument();
+  assertProfileConfigDocument(current.path);
+  return validateManagedConfigCandidate(current, contents);
 });
 
 ipcMain.handle("terminal-config-editor-save", async (event, payload: unknown) => {
@@ -144,9 +146,10 @@ ipcMain.handle("terminal-config-editor-save", async (event, payload: unknown) =>
   const request = validateConfigSaveRequest(payload);
   const current = await backend!.automation.getConfigDocument();
   assertProfileConfigDocument(current.path);
-  const validation = await backend!.automation.validateConfigDocument(request.contents);
-  const errors = validation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
-  if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+  const validation = await validateManagedConfigCandidate(current, request.contents);
+  if (validation.blockingErrors.length > 0) {
+    throw new Error(validation.blockingErrors.map((diagnostic) => diagnostic.message).join("\n"));
+  }
   try {
     const update = await backend!.automation.replaceConfigDocument(request.expectedRevision, request.contents);
     assertProfileConfigDocument(update.document.path);
@@ -204,7 +207,7 @@ ipcMain.handle("terminal-config-editor-import-file", async (event) => {
     name: basename(path),
     contents: await readConfigImport(path),
     notice:
-      "Imported text is staged as a draft. Relative config-file paths will resolve from the Ghosttea profile overlay, not the imported file's folder.",
+      "Imported text is staged as a draft. Active config-file directives must stay in their current order or be cleared; edit include structure through the externally opened profile config.",
   } as const;
 });
 
@@ -221,6 +224,18 @@ ipcMain.handle("terminal-config-editor-export-file", async (event, payload: unkn
   if (selection.canceled || !selection.filePath) return { status: "cancelled" } as const;
   await writeFile(selection.filePath, contents, { encoding: "utf8", mode: 0o600 });
   return { status: "saved", path: selection.filePath } as const;
+});
+
+ipcMain.on("terminal-config-editor-dirty", (event, payload: unknown) => {
+  if (
+    typeof payload !== "boolean" ||
+    externalBackendConfigured() ||
+    !trustedManagedConfigEditorSender(event.sender, event.senderFrame)
+  ) {
+    return;
+  }
+  if (payload) dirtyConfigEditorSenders.add(event.sender);
+  else dirtyConfigEditorSenders.delete(event.sender);
 });
 
 ipcMain.on("terminal-new-tab", (event, cwd: unknown) => {
@@ -274,6 +289,10 @@ ipcMain.on("terminal-tab-active-cwd", (event, cwd: unknown) => {
 
 const tabs = new DesktopTabRegistry<BrowserWindow>();
 let backend: GhostteaElectronBackend | undefined;
+const dirtyConfigEditorSenders = new Set<Electron.WebContents>();
+const pendingDraftCloseConfirmations = new WeakMap<BrowserWindow, Promise<void>>();
+let quitDraftConfirmation: Promise<void> | undefined;
+let discardDraftsApprovedForQuit = false;
 let quitting = false;
 let quitCleanupComplete = false;
 let quitCleanup: Promise<void> | undefined;
@@ -309,15 +328,7 @@ async function showExternalConfigOwnershipMessage(
 
 async function requireManagedConfigEditor(event: Electron.IpcMainInvokeEvent): Promise<void> {
   const { sender, senderFrame } = event;
-  if (
-    !senderFrame ||
-    senderFrame !== sender.mainFrame ||
-    !trustedConfigEditorRendererUrl(
-      senderFrame.url,
-      process.env.ELECTRON_RENDERER_URL,
-      resolve(__dirname, "../renderer/index.html"),
-    )
-  ) {
+  if (!trustedManagedConfigEditorSender(sender, senderFrame)) {
     throw new Error("Configuration editor is unavailable for this sender");
   }
   if (externalBackendConfigured()) {
@@ -328,10 +339,71 @@ async function requireManagedConfigEditor(event: Electron.IpcMainInvokeEvent): P
   await ensureBackend();
 }
 
+function trustedManagedConfigEditorSender(
+  sender: Electron.WebContents,
+  senderFrame: Electron.WebFrameMain | null,
+): boolean {
+  return Boolean(
+    senderFrame &&
+    senderFrame === sender.mainFrame &&
+    BrowserWindow.fromWebContents(sender) &&
+    trustedConfigEditorRendererUrl(
+      senderFrame.url,
+      process.env.ELECTRON_RENDERER_URL,
+      resolve(__dirname, "../renderer/index.html"),
+    ),
+  );
+}
+
+async function confirmDiscardConfigDraft(owner: BrowserWindow, quittingApp = false): Promise<boolean> {
+  const count = [...dirtyConfigEditorSenders].filter((sender) => !sender.isDestroyed()).length;
+  const result = await dialog.showMessageBox(owner, {
+    type: "warning",
+    title: "Unsaved Ghostty configuration",
+    message: quittingApp
+      ? `Discard ${count === 1 ? "the unsaved configuration draft" : `${count} unsaved configuration drafts`} and quit?`
+      : "Discard the unsaved configuration draft and close this window?",
+    detail: "The draft has not been written to disk. This action cannot be undone.",
+    buttons: ["Keep Editing", quittingApp ? "Discard and Quit" : "Discard and Close"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  return result.response === 1;
+}
+
+function guardDirtyConfigEditorClose(window: BrowserWindow, event: Electron.Event): void {
+  if (!dirtyConfigEditorSenders.has(window.webContents)) return;
+  event.preventDefault();
+  if (pendingDraftCloseConfirmations.has(window)) return;
+  const confirmation = confirmDiscardConfigDraft(window)
+    .then((discard) => {
+      if (!discard || window.isDestroyed()) return;
+      dirtyConfigEditorSenders.delete(window.webContents);
+      window.close();
+    })
+    .finally(() => pendingDraftCloseConfirmations.delete(window));
+  pendingDraftCloseConfirmations.set(window, confirmation);
+}
+
 function assertProfileConfigDocument(path: string): void {
   if (resolve(path) !== resolve(terminalConfigPath)) {
     throw new Error("ghosttead returned a configuration path outside this Electron profile");
   }
+}
+
+async function validateManagedConfigCandidate(
+  current: Awaited<ReturnType<GhostteaElectronBackend["automation"]["getConfigDocument"]>>,
+  contents: string,
+) {
+  assertConfigDocumentIncludesAuthorized(current.contents, contents);
+  const [baseline, validation] = await Promise.all([
+    backend!.automation.validateConfigDocument(current.contents),
+    backend!.automation.validateConfigDocument(contents),
+  ]);
+  return {
+    ...validation,
+    blockingErrors: blockingConfigDiagnostics(baseline.config.diagnostics, validation.config.diagnostics, current.path),
+  };
 }
 
 async function readConfigImport(path: string): Promise<string> {
@@ -380,11 +452,13 @@ async function saveManagedAppearance(update: ManagedAppearanceUpdate): Promise<v
   await ensureBackend();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const document = await backend!.automation.getConfigDocument();
+    assertProfileConfigDocument(document.path);
     const base = document.exists ? document.contents : DEFAULT_TERMINAL_CONFIG;
     const candidate = patchAppearanceBlock(base, appearanceBlock(update));
-    const validation = await backend!.automation.validateConfigDocument(candidate);
-    const errors = validation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
-    if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+    const validation = await validateManagedConfigCandidate(document, candidate);
+    if (validation.blockingErrors.length > 0) {
+      throw new Error(validation.blockingErrors.map((diagnostic) => diagnostic.message).join("\n"));
+    }
     const mismatches = appearanceUpdateMismatches(validation.config.renderer, update);
     if (mismatches.length > 0) {
       throw new Error(
@@ -551,6 +625,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
   const additionalArguments = [
     `--ghosttea-tab-id=${tabId}`,
     `--ghosttea-tab-claim-existing=${claimExistingSessions ? "1" : "0"}`,
+    `--ghosttea-managed-config-editor=${externalBackendConfigured() ? "0" : "1"}`,
     ...(options.initialCwd ? [`--ghosttea-tab-cwd=${encodeURIComponent(options.initialCwd)}`] : []),
   ];
 
@@ -581,6 +656,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
       additionalArguments,
     },
   });
+  const windowWebContents = window.webContents;
   const record = tabs.add(window, tabId, groupId);
   if (options.tabOf && process.platform === "darwin" && !options.tabOf.isDestroyed()) {
     options.tabOf.addTabbedWindow(window);
@@ -608,13 +684,18 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     );
   });
   window.once("closed", () => {
+    dirtyConfigEditorSenders.delete(windowWebContents);
     const closed = tabs.delete(window);
     if (lastFocusedWindow === window) lastFocusedWindow = undefined;
     if (!closed) return;
     terminateClosedTabSessions(closed.id, closed.sessionIds);
   });
+  window.on("close", (event) => guardDirtyConfigEditorClose(window, event));
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[terminal-runtime] preload failed at ${preloadPath}: ${error.stack ?? error.message}`);
+  });
+  window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) dirtyConfigEditorSenders.delete(windowWebContents);
   });
   // Terminal selections live in the render worker rather than the DOM, so
   // Electron's native edit role cannot copy them. Route the shortcut through
@@ -683,6 +764,30 @@ app.on("second-instance", (_event, _argv, _workingDirectory, additionalData) => 
 });
 
 app.on("before-quit", (event) => {
+  if (!discardDraftsApprovedForQuit) {
+    const dirtyWindows = BrowserWindow.getAllWindows().filter((window) =>
+      dirtyConfigEditorSenders.has(window.webContents),
+    );
+    if (dirtyWindows.length > 0) {
+      event.preventDefault();
+      if (!quitDraftConfirmation) {
+        const owner = (
+          lastFocusedWindow && dirtyWindows.includes(lastFocusedWindow) ? lastFocusedWindow : dirtyWindows[0]
+        )!;
+        quitDraftConfirmation = confirmDiscardConfigDraft(owner, true)
+          .then((discard) => {
+            if (!discard) return;
+            dirtyConfigEditorSenders.clear();
+            discardDraftsApprovedForQuit = true;
+            app.quit();
+          })
+          .finally(() => {
+            quitDraftConfirmation = undefined;
+          });
+      }
+      return;
+    }
+  }
   if (quitCleanupComplete) {
     quitting = true;
     backend?.stop();

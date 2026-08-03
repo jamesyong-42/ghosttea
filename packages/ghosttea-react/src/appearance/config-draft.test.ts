@@ -3,6 +3,8 @@ import type { ConfigSnapshot } from "@vibecook/ghosttea-protocol";
 import {
   FRIENDLY_BLOCK_END,
   FRIENDLY_BLOCK_START,
+  appendConfigDocument,
+  applyConfigTextareaEdit,
   friendlyConfigMismatches,
   friendlyConfigSections,
   friendlyValuesFromConfig,
@@ -55,7 +57,7 @@ describe("friendly config draft", () => {
     expect(second.match(new RegExp(FRIENDLY_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(
       1,
     );
-    expect(second).toContain("# tail\n\n# >>>");
+    expect(second).toContain(`${FRIENDLY_BLOCK_END}\n# tail\n`);
     expect(second).toContain("font-size = 17\n");
     expect(removeFriendlyConfigBlock(second)).toContain("# tail");
     expect(hasFriendlyConfigBlock(removeFriendlyConfigBlock(second))).toBe(false);
@@ -106,5 +108,23 @@ describe("friendly config draft", () => {
   it("does not throw while a raw editor is typing an incomplete marker", () => {
     expect(hasFriendlyConfigBlock(`${FRIENDLY_BLOCK_START}\n`)).toBe(true);
     expect(friendlyConfigSections(`${FRIENDLY_BLOCK_START}\n`)).toEqual(new Set());
+  });
+
+  it("preserves bytes outside the managed block", () => {
+    const values = friendlyValuesFromConfig(config);
+    const before = "# before with spaces   \r\n\r\n";
+    const after = "\r\n  # after stays indented\r\n\r\n";
+    const original = `${before}${FRIENDLY_BLOCK_START}\r\nfont-size = 9\r\n${FRIENDLY_BLOCK_END}${after}`;
+    const patched = patchFriendlyConfigBlock(original, values, new Set(["typography"]));
+
+    expect(patched.startsWith(before)).toBe(true);
+    expect(patched.endsWith(after)).toBe(true);
+    expect(removeFriendlyConfigBlock(patched)).toBe(`${before}${after}`);
+  });
+
+  it("preserves mixed line endings across textarea edits and exact appends", () => {
+    expect(applyConfigTextareaEdit("one\r\ntwo\nthree\r\n", "one\nTWO\nthree\n")).toBe("one\r\nTWO\nthree\r\n");
+    expect(applyConfigTextareaEdit("one\r\ntwo\n", "one\nnew\ntwo\n")).toBe("one\r\nnew\r\ntwo\n");
+    expect(appendConfigDocument("left  \r\n", "right\n", "\r\n")).toBe("left  \r\n\r\nright\n");
   });
 });

@@ -82,6 +82,14 @@ describe("managed appearance config", () => {
     expect(second.trimEnd().endsWith(APPEARANCE_BLOCK_END)).toBe(true);
   });
 
+  it("preserves trailing spaces and indentation outside the managed block", () => {
+    const original = `# before   \n\n${APPEARANCE_BLOCK_START}\nold = value\n${APPEARANCE_BLOCK_END}\n  # tail   \n`;
+    const result = patchAppearanceBlock(original, appearanceBlock(update));
+
+    expect(result).toContain("# before   \n\n  # tail   \n");
+    expect(result).toContain("  # tail   \n\n# >>> Ghosttea appearance");
+  });
+
   it("detects requested values shadowed by a later included layer", () => {
     const renderer: RendererConfig = {
       foreground: [0xf0, 0xf1, 0xf2],

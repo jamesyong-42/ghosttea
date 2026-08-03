@@ -11,7 +11,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
 };
@@ -35,6 +35,12 @@ pub const CONFIG_DOCUMENT_SCHEMA_VERSION: u32 = 1;
 /// Keeps a raw document plus worst-case JSON escaping below the 1 MiB control
 /// packet quota. Ghostty configuration should reference large assets by path.
 pub const MAX_CONFIG_DOCUMENT_BYTES: usize = 64 * 1024;
+/// Bound every inherited/include source independently. This also rejects
+/// devices and pipes before reading so configuration validation cannot become
+/// an unbounded filesystem read.
+const MAX_CONFIG_SOURCE_BYTES: usize = 64 * 1024;
+const MAX_CONFIG_TOTAL_SOURCE_BYTES: usize = 512 * 1024;
+const MAX_CONFIG_INCLUDE_FILES: usize = 128;
 
 const DEFAULT_BACKGROUND: [u8; 3] = [0x28, 0x2c, 0x34];
 const DEFAULT_FOREGROUND: [u8; 3] = [0xff, 0xff, 0xff];
@@ -632,6 +638,7 @@ struct LoadState {
     diagnostics: Vec<ConfigDiagnostic>,
     configured: BTreeMap<String, usize>,
     loaded_includes: HashSet<PathBuf>,
+    loaded_source_bytes: usize,
     home_dir: Option<PathBuf>,
     default_font_size: f32,
 }
@@ -805,7 +812,7 @@ fn load_file(
         // Ghostty de-duplicates entries in its recursive include queue. Root
         // files are not pre-seeded, so a root referenced by config-file is
         // loaded once more before a subsequent reference is diagnosed.
-        if !state.loaded_includes.insert(identity.clone()) {
+        if state.loaded_includes.contains(&identity) {
             state.diagnostics.push(diagnostic(
                 DiagnosticSeverity::Warning,
                 "include-cycle",
@@ -816,14 +823,50 @@ fn load_file(
             ));
             return;
         }
+        if state.loaded_includes.len() >= MAX_CONFIG_INCLUDE_FILES {
+            state.diagnostics.push(diagnostic(
+                DiagnosticSeverity::Error,
+                "source-limit-exceeded",
+                format!("configuration includes are limited to {MAX_CONFIG_INCLUDE_FILES} files"),
+                Some(path),
+                None,
+                Some("config-file"),
+            ));
+            includes.clear();
+            return;
+        }
+        state.loaded_includes.insert(identity.clone());
     }
     let text = match document_override
         .filter(|document| document.identity == identity)
         .map(|document| Cow::Borrowed(document.contents))
     {
-        Some(text) => text,
-        None => match fs::read_to_string(path) {
-            Ok(text) => Cow::Owned(text),
+        Some(text) => {
+            if state.loaded_source_bytes.saturating_add(text.len()) > MAX_CONFIG_TOTAL_SOURCE_BYTES
+            {
+                state.diagnostics.push(diagnostic(
+                    DiagnosticSeverity::Error,
+                    "source-limit-exceeded",
+                    format!(
+                        "configuration sources exceed the {MAX_CONFIG_TOTAL_SOURCE_BYTES}-byte total limit"
+                    ),
+                    Some(path),
+                    None,
+                    None,
+                ));
+                return;
+            }
+            state.loaded_source_bytes += text.len();
+            text
+        }
+        None => match read_config_source(
+            path,
+            MAX_CONFIG_TOTAL_SOURCE_BYTES.saturating_sub(state.loaded_source_bytes),
+        ) {
+            Ok((text, bytes)) => {
+                state.loaded_source_bytes += bytes;
+                Cow::Owned(text)
+            }
             Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => {
                 state.diagnostics.push(diagnostic(
@@ -911,6 +954,68 @@ fn load_file(
             line,
             bare,
         });
+    }
+}
+
+fn read_config_source(path: &Path, remaining_total_bytes: usize) -> io::Result<(String, usize)> {
+    let mut file = open_config_source(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "configuration source must be a regular file",
+        ));
+    }
+
+    let limit = MAX_CONFIG_SOURCE_BYTES.min(remaining_total_bytes);
+    if metadata.len() > limit as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "configuration source is {} bytes; maximum remaining is {limit} bytes",
+                metadata.len()
+            ),
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    Read::by_ref(&mut file)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("configuration source exceeded the {limit}-byte limit while it was being read"),
+        ));
+    }
+    let length = bytes.len();
+    String::from_utf8(bytes)
+        .map(|contents| (contents, length))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "configuration source is not valid UTF-8",
+            )
+        })
+}
+
+fn open_config_source(path: &Path) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Opening a FIFO read-only can block before its descriptor can be
+        // inspected. O_NONBLOCK is harmless for regular files and lets the
+        // descriptor metadata check below reject special files safely.
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::File::open(path)
     }
 }
 
@@ -2275,6 +2380,79 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "include-cycle")
         );
+    }
+
+    #[test]
+    fn included_sources_are_regular_and_bounded() {
+        let temporary = TempDir::new().unwrap();
+        let root = temporary.path().join("config.ghostty");
+        let directory = temporary.path().join("not-a-file");
+        fs::create_dir_all(&directory).unwrap();
+        write(&root, "config-file = not-a-file\n");
+
+        let directory_result = load_config(&ConfigLoadOptions::explicit(&root));
+        assert!(directory_result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source-read-failed"
+                && diagnostic.message.contains("must be a regular file")
+        }));
+
+        #[cfg(unix)]
+        {
+            use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+            let fifo = temporary.path().join("named-pipe");
+            let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+            write(&root, "config-file = named-pipe\n");
+
+            // This completes without a writer because sources are opened
+            // non-blocking before the descriptor type is checked.
+            let fifo_result = load_config(&ConfigLoadOptions::explicit(&root));
+            assert!(fifo_result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "source-read-failed"
+                    && diagnostic.message.contains("must be a regular file")
+            }));
+        }
+
+        let oversized = temporary.path().join("oversized.ghostty");
+        fs::write(&oversized, vec![b'x'; MAX_CONFIG_SOURCE_BYTES + 1]).unwrap();
+        write(&root, "config-file = oversized.ghostty\n");
+
+        let oversized_result = load_config(&ConfigLoadOptions::explicit(&root));
+        assert!(oversized_result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source-read-failed"
+                && diagnostic.message.contains("maximum remaining")
+        }));
+
+        let many_includes = (0..=MAX_CONFIG_INCLUDE_FILES)
+            .map(|index| {
+                let name = format!("include-{index}");
+                write(&temporary.path().join(&name), "");
+                format!("config-file = {name}\n")
+            })
+            .collect::<String>();
+        write(&root, &many_includes);
+        let include_count_result = load_config(&ConfigLoadOptions::explicit(&root));
+        assert!(include_count_result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source-limit-exceeded"
+                && diagnostic.message.contains("limited to 128 files")
+        }));
+
+        let aggregate_includes = (0..8)
+            .map(|index| {
+                let name = format!("aggregate-{index}");
+                let mut contents = vec![b'x'; MAX_CONFIG_SOURCE_BYTES];
+                contents[0] = b'#';
+                fs::write(temporary.path().join(&name), contents).unwrap();
+                format!("config-file = {name}\n")
+            })
+            .collect::<String>();
+        write(&root, &aggregate_includes);
+        let aggregate_result = load_config(&ConfigLoadOptions::explicit(&root));
+        assert!(aggregate_result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "source-read-failed"
+                && diagnostic.message.contains("maximum remaining")
+        }));
     }
 
     #[test]

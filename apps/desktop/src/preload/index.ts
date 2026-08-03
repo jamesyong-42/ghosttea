@@ -11,6 +11,7 @@ function argument(name: string): string | undefined {
 
 const tabId = argument("ghosttea-tab-id") ?? "default";
 const claimExistingSessions = argument("ghosttea-tab-claim-existing") !== "0";
+const managedConfigEditor = argument("ghosttea-managed-config-editor") === "1";
 const encodedInitialCwd = argument("ghosttea-tab-cwd");
 let initialCwd: string | undefined;
 try {
@@ -44,17 +45,24 @@ contextBridge.exposeInMainWorld("desktop", {
   closeAllWindows: () => ipcRenderer.send("terminal-close-all-windows"),
   openConfig: () => ipcRenderer.send("terminal-open-config"),
   reloadConfig: () => ipcRenderer.send("terminal-reload-config"),
-  saveAppearance: (update: unknown) => ipcRenderer.invoke("terminal-save-appearance", update) as Promise<void>,
-  configEditor: {
-    load: () => ipcRenderer.invoke("terminal-config-editor-load") as Promise<unknown>,
-    validate: (contents: string) => ipcRenderer.invoke("terminal-config-editor-validate", contents) as Promise<unknown>,
-    save: (expectedRevision: string, contents: string) =>
-      ipcRenderer.invoke("terminal-config-editor-save", { expectedRevision, contents }) as Promise<unknown>,
-    importGhostty: () => ipcRenderer.invoke("terminal-config-editor-import-ghostty") as Promise<unknown>,
-    importFile: () => ipcRenderer.invoke("terminal-config-editor-import-file") as Promise<unknown>,
-    exportFile: (contents: string) =>
-      ipcRenderer.invoke("terminal-config-editor-export-file", contents) as Promise<unknown>,
-  },
+  ...(managedConfigEditor
+    ? {
+        saveAppearance: (update: unknown) => ipcRenderer.invoke("terminal-save-appearance", update) as Promise<void>,
+        configEditor: {
+          load: () => ipcRenderer.invoke("terminal-config-editor-load") as Promise<unknown>,
+          validate: (contents: string) =>
+            ipcRenderer.invoke("terminal-config-editor-validate", contents) as Promise<unknown>,
+          save: (expectedRevision: string, contents: string) =>
+            ipcRenderer.invoke("terminal-config-editor-save", { expectedRevision, contents }) as Promise<unknown>,
+          importGhostty: () => ipcRenderer.invoke("terminal-config-editor-import-ghostty") as Promise<unknown>,
+          importFile: () => ipcRenderer.invoke("terminal-config-editor-import-file") as Promise<unknown>,
+          exportFile: (contents: string) =>
+            ipcRenderer.invoke("terminal-config-editor-export-file", contents) as Promise<unknown>,
+          openExternal: () => ipcRenderer.send("terminal-open-config"),
+          setDirty: (dirty: boolean) => ipcRenderer.send("terminal-config-editor-dirty", dirty),
+        },
+      }
+    : {}),
   newTab: (cwd?: string) => ipcRenderer.send("terminal-new-tab", cwd),
   selectTab: (target: "previous" | "next" | "last" | number) => ipcRenderer.send("terminal-select-tab", target),
   closeTab: () => ipcRenderer.send("terminal-close-tab"),

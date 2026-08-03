@@ -44,7 +44,10 @@ Desktop hosts may provide the exported `GhostteaConfigEditorBridge` through
 Settings section with a lossless raw overlay editor and a friendly managed
 form. The bridge is intentionally capability-shaped: the host owns document
 scope, validation, compare-and-swap persistence, and native import/export
-dialogs; the React package owns only draft state and presentation.
+dialogs; the React package owns only draft state and presentation. The raw
+editor preserves untouched mixed line endings and source bytes, reports
+inherited versus draft-blocking diagnostics separately, and can notify native
+hosts while an unsaved draft needs close/quit protection.
 
 Architecture:
 

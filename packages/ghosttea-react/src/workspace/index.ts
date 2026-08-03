@@ -117,6 +117,7 @@ export type {
   GhostteaConfigEditorImportResult,
   GhostteaConfigEditorSaveResult,
   GhostteaConfigEditorState,
+  GhostteaConfigEditorValidation,
 } from "../appearance/types.js";
 export {
   GHOSTTY_COLOR_THEMES,

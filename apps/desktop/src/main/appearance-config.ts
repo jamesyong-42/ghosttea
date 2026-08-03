@@ -132,12 +132,26 @@ export function patchAppearanceBlock(contents: string, block: string): string {
   if (start < 0 !== end < 0 || (start >= 0 && end < start) || duplicateStart || duplicateEnd) {
     throw new Error("The managed appearance block in config.ghostty is malformed");
   }
-  const withoutExistingBlock =
-    start >= 0 ? `${contents.slice(0, start)}${contents.slice(end + APPEARANCE_BLOCK_END.length)}` : contents;
+  let blockEnd = end + APPEARANCE_BLOCK_END.length;
+  if (start >= 0 && contents.slice(blockEnd, blockEnd + 2) === "\r\n") blockEnd += 2;
+  else if (start >= 0 && (contents[blockEnd] === "\n" || contents[blockEnd] === "\r")) blockEnd += 1;
+  const withoutExistingBlock = start >= 0 ? `${contents.slice(0, start)}${contents.slice(blockEnd)}` : contents;
   // Keep the managed layer last so ordinary settings later in the overlay do
   // not silently shadow a successful Settings save.
-  const prefix = withoutExistingBlock.trimEnd();
-  return `${prefix}${prefix ? newline.repeat(2) : ""}${normalizedBlock}${newline}`;
+  return `${appendWithBlankLine(withoutExistingBlock, newline)}${normalizedBlock}${newline}`;
+}
+
+function appendWithBlankLine(contents: string, newline: "\n" | "\r\n"): string {
+  if (!contents) return "";
+  let cursor = contents.length;
+  let trailingNewlines = 0;
+  while (cursor > 0) {
+    if (cursor >= 2 && contents.slice(cursor - 2, cursor) === "\r\n") cursor -= 2;
+    else if (contents[cursor - 1] === "\n" || contents[cursor - 1] === "\r") cursor -= 1;
+    else break;
+    trailingNewlines += 1;
+  }
+  return `${contents}${newline.repeat(Math.max(0, 2 - trailingNewlines))}`;
 }
 
 function colorBytes(color: string): [number, number, number] {

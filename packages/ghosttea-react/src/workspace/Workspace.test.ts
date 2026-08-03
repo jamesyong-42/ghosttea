@@ -13,6 +13,7 @@ describe("workspaceOwnsHotkey", () => {
     expect(workspaceOwnsHotkey(true, root as never, eventTarget, focused as never)).toBe(true);
     expect(workspaceOwnsHotkey(false, root as never, eventTarget, focused as never)).toBe(false);
     expect(workspaceOwnsHotkey(true, { contains: () => false } as never, eventTarget, focused as never)).toBe(false);
+    expect(workspaceOwnsHotkey(true, root as never, eventTarget, focused as never, true)).toBe(false);
     vi.unstubAllGlobals();
   });
 });

@@ -21,8 +21,8 @@ declare global {
       closeAllWindows: () => void;
       openConfig: () => void;
       reloadConfig: () => void;
-      saveAppearance: (update: GhostteaAppearanceUpdate) => Promise<void>;
-      configEditor: GhostteaConfigEditorBridge;
+      saveAppearance?: (update: GhostteaAppearanceUpdate) => Promise<void>;
+      configEditor?: GhostteaConfigEditorBridge;
       newTab: (cwd?: string) => void;
       selectTab: (target: "previous" | "next" | "last" | number) => void;
       closeTab: () => void;

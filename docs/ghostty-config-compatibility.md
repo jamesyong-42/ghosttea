@@ -96,6 +96,15 @@ from Ghostty generates a portable snapshot of settings in Ghosttea's supported
 projection; it does not copy private source paths, relative includes, or
 unsupported source text. File imports are bounded UTF-8 drafts with explicit
 Replace or Append choices, and exports use the host's native save dialog.
+Active `config-file` directives in the owned overlay can be preserved exactly
+or cleared in-app. Reordering, partially removing, or adding include operations
+requires opening the profile config in an external editor; this keeps
+real-time renderer validation from activating a filesystem read through direct
+paths or include-queue resets. Every loaded source must be a bounded regular
+UTF-8 file, with aggregate include limits as defense in depth. Errors
+introduced by the draft block Save & load, while unchanged errors in inherited
+Ghostty roots remain visible without making the owned overlay permanently
+read-only.
 
 The Friendly editor changes that same raw draft through a visible managed
 block, emitting only the setting groups the user actually changes. It supplies
@@ -106,6 +115,13 @@ font changes remain startup-only and padding remains parsed-only. If an
 included layer shadows a friendly override, the UI identifies the mismatched
 fields and directs the user to the raw/source view instead of claiming the
 change worked.
+
+Appearance and Advanced drafts are mutually exclusive within one Settings
+session. An Advanced save refreshes Appearance before that page can apply, and
+an external configuration change requires an explicit reload-or-rebase choice
+when Appearance has pending edits. Workspace shortcuts pause while Settings is
+open. Electron also mirrors Advanced dirty state in main, so pane/window close
+and application quit cannot bypass the discard confirmation.
 
 Desktop key sequences, key tables, chained actions, and the full
 `all:`/`global:`/`performable:` semantics are preserved in the snapshot but are
@@ -156,8 +172,9 @@ app exposes a separate, purpose-built Settings IPC facade: main owns the fixed
 profile path, validates the 64 KiB text/revision payloads, performs validation
 before writes, accepts only the trusted top-level application frame, returns
 conflicts as data, and owns native import/export file dialogs. The renderer
-never supplies a destination path or an arbitrary daemon command. Electron
-also refuses these operations when attached to an externally managed daemon.
+never supplies a destination path or an arbitrary daemon command, and may not
+introduce an unapproved include target. Electron omits the editing capability
+entirely when attached to an externally managed daemon.
 Node hosts use `GhostteaAutomationClient`; Swift embedders continue to load a
 user-selected overlay URL through
 `GhostteaConfiguration.load`.
