@@ -1,31 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ConfigSnapshot } from "@vibecook/ghosttea-protocol";
-import { GHOSTTY_COLOR_THEMES, findMatchingColorTheme } from "./catalog.js";
+import { GHOSTTY_COLOR_THEMES, colorThemeFromRenderer, findMatchingColorTheme } from "./catalog.js";
 import { GHOSTTEA_SHADER_OPTIONS, UNAVAILABLE_UPSTREAM_SHADERS, isGhostteaShaderEffect } from "./shaders.js";
 import type { GhostteaAppearanceUpdate } from "./types.js";
 import type { TerminalShaderEffect } from "../renderers/types.js";
 
 export interface AppearanceSettingsProps {
-  config: ConfigSnapshot | undefined;
+  config: ConfigSnapshot;
   onClose: () => void;
   onSave: (update: GhostteaAppearanceUpdate) => Promise<void>;
 }
 
 export function AppearanceSettings({ config, onClose, onSave }: AppearanceSettingsProps) {
-  const matchedTheme = config ? findMatchingColorTheme(config.renderer) : undefined;
-  const initialTheme = matchedTheme ?? GHOSTTY_COLOR_THEMES.find((theme) => theme.name === "3024 Night")!;
-  const [themeName, setThemeName] = useState(initialTheme.name);
+  const matchedTheme = findMatchingColorTheme(config.renderer);
+  const currentTheme = colorThemeFromRenderer(config.renderer);
+  const [themeName, setThemeName] = useState<string | null>(matchedTheme?.name ?? null);
   const [query, setQuery] = useState("");
-  const [opacity, setOpacity] = useState(config?.renderer.backgroundOpacity ?? 1);
-  const [opacityCells, setOpacityCells] = useState(config?.renderer.backgroundOpacityCells ?? false);
+  const [opacity, setOpacity] = useState(config.renderer.backgroundOpacity ?? 1);
+  const [opacityCells, setOpacityCells] = useState(config.renderer.backgroundOpacityCells ?? false);
   const [effects, setEffects] = useState<TerminalShaderEffect[]>(
-    config?.renderer.shaderEffects?.filter(isGhostteaShaderEffect) ??
-      (config?.renderer.postProcess === "better-crt" ? ["ghosttea:better-crt"] : []),
+    config.renderer.shaderEffects?.filter(isGhostteaShaderEffect) ??
+      (config.renderer.postProcess === "better-crt" ? ["ghosttea:better-crt"] : []),
   );
-  const [animation, setAnimation] = useState(config?.renderer.customShaderAnimation ?? false);
+  const [animation, setAnimation] = useState(config.renderer.customShaderAnimation ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const selectedTheme = GHOSTTY_COLOR_THEMES.find((theme) => theme.name === themeName) ?? initialTheme;
+  const selectedTheme = themeName ? GHOSTTY_COLOR_THEMES.find((theme) => theme.name === themeName) : undefined;
+  const previewTheme = selectedTheme ?? currentTheme;
   const filteredThemes = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return GHOSTTY_COLOR_THEMES.slice(0, 80);
@@ -61,7 +62,7 @@ export function AppearanceSettings({ config, onClose, onSave }: AppearanceSettin
     setError(undefined);
     try {
       await onSave({
-        theme: selectedTheme,
+        ...(selectedTheme ? { theme: selectedTheme } : {}),
         backgroundOpacity: opacity,
         backgroundOpacityCells: opacityCells,
         shaderEffects: effects,
@@ -111,15 +112,18 @@ export function AppearanceSettings({ config, onClose, onSave }: AppearanceSettin
               autoFocus
             />
             <div className="appearance-theme-list" role="listbox" aria-label="Color themes">
-              {!filteredThemes.some((theme) => theme.name === selectedTheme.name) ? (
-                <ThemeChoice theme={selectedTheme} selected onSelect={setThemeName} />
+              {!matchedTheme ? (
+                <ThemeChoice theme={currentTheme} selected={themeName === null} onSelect={() => setThemeName(null)} />
+              ) : null}
+              {selectedTheme && !filteredThemes.some((theme) => theme.name === selectedTheme.name) ? (
+                <ThemeChoice theme={selectedTheme} selected onSelect={() => setThemeName(selectedTheme.name)} />
               ) : null}
               {filteredThemes.map((theme) => (
                 <ThemeChoice
                   key={theme.name}
                   theme={theme}
-                  selected={theme.name === selectedTheme.name}
-                  onSelect={setThemeName}
+                  selected={theme.name === selectedTheme?.name}
+                  onSelect={() => setThemeName(theme.name)}
                 />
               ))}
             </div>
@@ -129,22 +133,22 @@ export function AppearanceSettings({ config, onClose, onSave }: AppearanceSettin
             <h2>Preview</h2>
             <div
               className="appearance-preview"
-              style={{ color: selectedTheme.foreground, background: selectedTheme.background }}
+              style={{ color: previewTheme.foreground, background: previewTheme.background }}
             >
               <div className="appearance-preview-dots">
-                {selectedTheme.palette.slice(1, 7).map((color, index) => (
+                {previewTheme.palette.slice(1, 7).map((color, index) => (
                   <i key={`${color}-${index}`} style={{ background: color }} />
                 ))}
               </div>
               <code>
-                <span style={{ color: selectedTheme.palette[2] }}>ghosttea</span>{" "}
-                <span style={{ color: selectedTheme.palette[4] }}>~/projects</span> $ cargo test
+                <span style={{ color: previewTheme.palette[2] }}>ghosttea</span>{" "}
+                <span style={{ color: previewTheme.palette[4] }}>~/projects</span> $ cargo test
                 <br />
                 All systems steeping.
               </code>
               <i
                 className="appearance-preview-cursor"
-                style={{ color: selectedTheme.cursorText, background: selectedTheme.cursor }}
+                style={{ color: previewTheme.cursorText, background: previewTheme.cursor }}
               >
                 _
               </i>
@@ -270,7 +274,7 @@ function ThemeChoice({
 }: {
   theme: (typeof GHOSTTY_COLOR_THEMES)[number];
   selected: boolean;
-  onSelect: (name: string) => void;
+  onSelect: () => void;
 }) {
   return (
     <button
@@ -278,7 +282,7 @@ function ThemeChoice({
       role="option"
       aria-selected={selected}
       className={selected ? "is-selected" : ""}
-      onClick={() => onSelect(theme.name)}
+      onClick={onSelect}
     >
       <span className="appearance-swatches" style={{ background: theme.background }}>
         {theme.palette.slice(1, 5).map((color, index) => (

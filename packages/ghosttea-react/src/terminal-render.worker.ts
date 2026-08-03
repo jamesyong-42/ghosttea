@@ -29,6 +29,7 @@ import {
   type TerminalEffects,
   type TerminalTheme,
   renderedSizeChanged,
+  terminalEffectsNeedAnimation,
 } from "./renderers/types.js";
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
@@ -498,6 +499,7 @@ async function recoverDevice(info: GPUDeviceLostInfo): Promise<void> {
       next.resize(id, mount.size);
       invalidateFull(id);
     }
+    scheduleShaderAnimation();
     postToRenderer({ type: "renderer-status", backend: next.kind, recovered: true });
   } catch (error) {
     console.error("[terminal-renderer] WebGPU recovery failed", error);
@@ -525,11 +527,11 @@ function scheduleFlush(): void {
 
 function shaderAnimationActive(surfaceId: string, presentation: SurfaceSnapshot): boolean {
   return (
+    renderer?.kind === "webgpu" &&
     mounts.has(surfaceId) &&
     !occluded.has(surfaceId) &&
     presentation.focused &&
-    presentation.effects.animate === true &&
-    (presentation.effects.shaderEffects?.length ?? 0) > 0
+    terminalEffectsNeedAnimation(presentation.effects)
   );
 }
 

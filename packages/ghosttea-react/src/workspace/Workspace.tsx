@@ -1000,6 +1000,7 @@ export function GhostteaWorkspace({
           className="ghosttea-settings-button"
           aria-label="Open appearance settings"
           title="Appearance settings"
+          disabled={!config}
           onClick={() => setAppearanceSettingsOpen(true)}
         >
           ⚙
@@ -1060,7 +1061,7 @@ export function GhostteaWorkspace({
           </aside>
         ) : null}
       </div>
-      {appearanceSettingsOpen && platform.saveAppearance ? (
+      {appearanceSettingsOpen && platform.saveAppearance && config ? (
         <AppearanceSettings
           config={config}
           onClose={() => setAppearanceSettingsOpen(false)}

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { RendererConfig } from "@vibecook/ghosttea-protocol";
 import {
   APPEARANCE_BLOCK_END,
   APPEARANCE_BLOCK_START,
   appearanceBlock,
+  appearanceUpdateMismatches,
   patchAppearanceBlock,
   validateAppearanceUpdate,
   type ManagedAppearanceUpdate,
@@ -29,17 +31,29 @@ describe("managed appearance config", () => {
   it("validates colors and keeps a unique ordered shader stack", () => {
     const validated = validateAppearanceUpdate({
       ...update,
-      theme: { ...update.theme, background: "#AABBCC" },
+      theme: { ...update.theme!, background: "#AABBCC" },
       shaderEffects: ["ghosttea:vhs", "ghosttea:crt", "ghosttea:vhs"],
     });
-    expect(validated.theme.background).toBe("#aabbcc");
+    expect(validated.theme!.background).toBe("#aabbcc");
     expect(validated.shaderEffects).toEqual(["ghosttea:vhs", "ghosttea:crt"]);
     expect(() => validateAppearanceUpdate({ ...update, shaderEffects: ["/tmp/untrusted.glsl"] })).toThrow(
       "unknown effect",
     );
     expect(() =>
-      validateAppearanceUpdate({ ...update, theme: { ...update.theme, name: "bad\nforeground = red" } }),
+      validateAppearanceUpdate({ ...update, theme: { ...update.theme!, name: "bad\nforeground = red" } }),
     ).toThrow("Theme name is invalid");
+  });
+
+  it("preserves custom colors when no catalog theme was selected", () => {
+    const { theme, ...customColorUpdate } = update;
+    const validated = validateAppearanceUpdate(customColorUpdate);
+    const block = appearanceBlock(validated);
+
+    expect(theme).toBeDefined();
+    expect(validated.theme).toBeUndefined();
+    expect(block).toContain("# Theme: current custom colors preserved");
+    expect(block).not.toContain("background =");
+    expect(block).not.toContain("palette =");
   });
 
   it("appends a complete CRLF block without rewriting user settings", () => {
@@ -63,7 +77,43 @@ describe("managed appearance config", () => {
     );
     expect(second).toContain("font-size = 14\n");
     expect(second).toContain("background-opacity = 0.50\n");
-    expect(second).toContain(`${APPEARANCE_BLOCK_END}\n# untouched tail\n`);
+    expect(second).toContain("# untouched tail\n");
+    expect(second.indexOf("# untouched tail")).toBeLessThan(second.indexOf(APPEARANCE_BLOCK_START));
+    expect(second.trimEnd().endsWith(APPEARANCE_BLOCK_END)).toBe(true);
+  });
+
+  it("detects requested values shadowed by a later included layer", () => {
+    const renderer: RendererConfig = {
+      foreground: [0xf0, 0xf1, 0xf2],
+      background: [0x10, 0x11, 0x12],
+      cursor: [0xab, 0xcd, 0xef],
+      cursorText: [1, 2, 3],
+      selectionBackground: [0x20, 0x21, 0x22],
+      selectionForeground: [0xe0, 0xe1, 0xe2],
+      palette: update.theme!.palette.map((color, index) => ({
+        index,
+        color: [1, 3, 5].map((offset) => Number.parseInt(color.slice(offset, offset + 2), 16)) as [
+          number,
+          number,
+          number,
+        ],
+      })),
+      backgroundOpacity: 0.73,
+      backgroundOpacityCells: true,
+      fontSize: 13,
+      fontFamilies: [],
+      paddingX: [2, 2],
+      paddingY: [2, 2],
+      postProcess: "none",
+      shaderEffects: ["ghosttea:crt", "ghosttea:vhs"],
+      customShaderAnimation: true,
+      customShaderPaths: [],
+    };
+
+    expect(appearanceUpdateMismatches(renderer, update)).toEqual([]);
+    expect(
+      appearanceUpdateMismatches({ ...renderer, background: [9, 9, 9], shaderEffects: ["ghosttea:vhs"] }, update),
+    ).toEqual(["background", "custom-shader"]);
   });
 
   it("refuses ambiguous or incomplete managed markers", () => {

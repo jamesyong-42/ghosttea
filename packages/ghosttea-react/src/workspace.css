@@ -146,6 +146,11 @@ body {
   background: rgb(34 37 46 / 92%);
 }
 
+.ghosttea-settings-button:disabled {
+  opacity: 0;
+  cursor: default;
+}
+
 .appearance-settings-backdrop {
   position: absolute;
   z-index: 50;

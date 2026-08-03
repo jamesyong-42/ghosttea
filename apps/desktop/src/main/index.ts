@@ -15,6 +15,7 @@ import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { orderNativeTabs } from "./native-tab-order";
 import { DesktopTabRegistry } from "./tab-registry";
 import {
+  appearanceUpdateMismatches,
   appearanceBlock,
   patchAppearanceBlock,
   validateAppearanceUpdate,
@@ -226,6 +227,12 @@ async function saveManagedAppearance(update: ManagedAppearanceUpdate): Promise<v
     const validation = await backend!.automation.validateConfigDocument(candidate);
     const errors = validation.config.diagnostics.filter((diagnostic) => diagnostic.severity === "error");
     if (errors.length > 0) throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+    const mismatches = appearanceUpdateMismatches(validation.config.renderer, update);
+    if (mismatches.length > 0) {
+      throw new Error(
+        `Appearance settings are overridden by an included configuration layer: ${mismatches.join(", ")}`,
+      );
+    }
     try {
       await backend!.automation.replaceConfigDocument(document.revision, candidate);
       return;

@@ -1,8 +1,9 @@
 # WebGPU appearance pipeline
 
-Each terminal pane owns three persistent render textures: one terminal scene
-and two shader ping-pong targets. All panes share a WebGPU device, pipelines,
-and glyph atlases through the render worker.
+Each terminal pane owns one persistent terminal-scene texture and lazily owns
+up to two shader ping-pong targets. All panes share a WebGPU device, pipelines,
+and glyph atlases through the render worker. Empty and single-effect stacks
+need no intermediate target; two effects need one; longer stacks need both.
 
 ## Pass composition
 
@@ -21,9 +22,11 @@ cursor state. Separate uniform buffers are required because multiple writes to
 one buffer before a queue submission would otherwise make every encoded pass
 observe the final effect's values.
 
-Animation marks only focused, visible surfaces dirty. With no terminal damage,
-the scene pass loads its persistent texture and the renderer reruns only the
-full-screen effects. Hidden tabs and unfocused panes stop requesting frames.
+Animation marks only focused, visible WebGPU surfaces with at least one
+animated effect dirty. With no terminal damage, the renderer bypasses terminal
+geometry and the scene pass and reruns only the full-screen effects. Static
+CRT-only stacks, Canvas fallback, hidden tabs, and unfocused panes stop
+requesting frames.
 
 ## Alpha semantics
 
@@ -57,7 +60,12 @@ overrides on top of libghostty's default 256-color palette.
 The desktop bridge validates settings, generates a marked Ghostty-syntax
 appearance block, validates the full layered candidate through the daemon, and
 replaces the profile overlay with compare-and-swap. Text outside the managed
-block is preserved.
+block is preserved. A configuration is identified as a catalog theme only when
+all fixed colors and ANSI entries 0–15 match; otherwise the picker keeps a
+"Current custom colors" choice and omits color mutations. The managed block is
+kept last, and the daemon's effective projection must match every requested
+value before the save may succeed, so later includes cannot silently shadow an
+Apply operation.
 
 The shader picker accounts for all 36 files at reviewed
 `0xhckr/ghostty-shaders` revision

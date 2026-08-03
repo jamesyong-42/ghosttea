@@ -31,6 +31,17 @@ export interface TerminalEffects {
   animate?: boolean;
 }
 
+const ANIMATED_SHADER_EFFECTS: ReadonlySet<TerminalShaderEffect> = new Set([
+  "ghosttea:vhs",
+  "ghosttea:sparks-from-fire",
+]);
+
+export function terminalEffectsNeedAnimation(effects: TerminalEffects): boolean {
+  return (
+    effects.animate === true && (effects.shaderEffects?.some((effect) => ANIMATED_SHADER_EFFECTS.has(effect)) ?? false)
+  );
+}
+
 export interface CellPoint {
   column: number;
   row: number;

@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { CursorStyle, GlyphFormat, type GlyphDefinition, type StyleDefinition } from "@vibecook/ghosttea-frame";
-import type { TerminalRenderMetrics } from "../performance.js";
+import { emptyRenderMetrics, type TerminalRenderMetrics } from "../performance.js";
 
 import {
   CELL_WIDTH,
@@ -31,6 +31,10 @@ const EFFECT_MODES: Readonly<Record<TerminalShaderEffect, number>> = {
   "ghosttea:vhs": 3,
   "ghosttea:sparks-from-fire": 4,
 };
+
+export function effectIntermediateTextureCount(effectPassCount: number): number {
+  return Math.min(2, Math.max(0, Math.trunc(effectPassCount) - 1));
+}
 
 const RECT_SHADER = /* wgsl */ `
 struct VertexOutput {
@@ -467,7 +471,7 @@ interface WebGpuSurface extends PixelSize {
   canvas: OffscreenCanvas;
   context: GPUCanvasContext;
   sceneTexture: GPUTexture;
-  effectTextures: [GPUTexture, GPUTexture];
+  effectTextures: GPUTexture[];
   effectPasses: EffectPass[];
   effectSignature: string;
   effectFrame: number;
@@ -1227,10 +1231,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
       canvas,
       context,
       sceneTexture,
-      effectTextures: [
-        this.#createEffectTexture(canvas.width, canvas.height, "A"),
-        this.#createEffectTexture(canvas.width, canvas.height, "B"),
-      ],
+      effectTextures: [],
       effectPasses: [],
       effectSignature: "",
       effectFrame: 0,
@@ -1256,8 +1257,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (!surface) return;
     surface.context.unconfigure();
     surface.sceneTexture.destroy();
-    surface.effectTextures[0].destroy();
-    surface.effectTextures[1].destroy();
+    for (const texture of surface.effectTextures) texture.destroy();
     for (const pass of surface.effectPasses) pass.configBuffer.destroy();
     surface.rectangleBuffer.destroy();
     surface.glyphBuffer.destroy();
@@ -1282,14 +1282,10 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
   #configure(surface: WebGpuSurface): void {
     surface.context.configure({ device: this.device, format: this.format, alphaMode: "premultiplied" });
     surface.sceneTexture.destroy();
-    surface.effectTextures[0].destroy();
-    surface.effectTextures[1].destroy();
+    for (const texture of surface.effectTextures) texture.destroy();
     for (const pass of surface.effectPasses) pass.configBuffer.destroy();
     surface.sceneTexture = this.#createSceneTexture(surface.canvas.width, surface.canvas.height);
-    surface.effectTextures = [
-      this.#createEffectTexture(surface.canvas.width, surface.canvas.height, "A"),
-      this.#createEffectTexture(surface.canvas.width, surface.canvas.height, "B"),
-    ];
+    surface.effectTextures = [];
     surface.effectPasses = [];
     surface.effectSignature = "";
     clearGeometryCache(surface);
@@ -1337,6 +1333,12 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     if (surface.effectSignature === signature) return;
     for (const pass of surface.effectPasses) pass.configBuffer.destroy();
     const modes = stack.length > 0 ? stack.map((id) => EFFECT_MODES[id]) : [0];
+    const intermediateCount = effectIntermediateTextureCount(modes.length);
+    while (surface.effectTextures.length > intermediateCount) surface.effectTextures.pop()!.destroy();
+    while (surface.effectTextures.length < intermediateCount) {
+      const suffix = surface.effectTextures.length === 0 ? "A" : "B";
+      surface.effectTextures.push(this.#createEffectTexture(surface.canvas.width, surface.canvas.height, suffix));
+    }
     surface.effectPasses = modes.map((mode, index) => {
       const configBuffer = this.device.createBuffer({
         label: `Ghosttea shader effect configuration ${index}`,
@@ -1401,6 +1403,21 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     surface.effectFrame += 1;
     return passCount;
+  }
+
+  #encodeEffectsOnly(
+    surface: WebGpuSurface,
+    view: RenderView,
+    encoder: GPUCommandEncoder,
+  ): TerminalRenderMetrics | undefined {
+    const effectPassCount = this.#encodeEffectStack(surface, view, encoder);
+    if (!this.#performanceMeasurementEnabled) return undefined;
+    return {
+      ...emptyRenderMetrics(),
+      canvasPixels: surface.canvas.width * surface.canvas.height,
+      renderPasses: effectPassCount,
+      drawCalls: effectPassCount,
+    };
   }
 
   render(id: string, view: RenderView): TerminalRenderMetrics | undefined {
@@ -2116,6 +2133,7 @@ export class WebGpuTerminalRenderer implements TerminalRenderer {
     }
     const rowCount = Math.max(view.rows.length, view.nativeRows.length, view.nativeStyleRows.length);
     const damage = rowsForDamage(rowCount, view.damage, surface.sceneValid);
+    if (damage.rows.length === 0) return this.#encodeEffectsOnly(surface, view, encoder);
     const monoUploadsBefore = this.#performanceMeasurementEnabled ? this.#monoAtlas.uploadMetrics() : undefined;
     const colorUploadsBefore = this.#performanceMeasurementEnabled ? this.#colorAtlas.uploadMetrics() : undefined;
     const fallbackUploadsBefore = this.#performanceMeasurementEnabled ? this.#fallbackAtlas.uploadMetrics() : undefined;

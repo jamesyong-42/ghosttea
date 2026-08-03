@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RendererConfig } from "@vibecook/ghosttea-protocol";
 import { terminalEffectsFromConfig, terminalThemeFromConfig } from "./config";
-import { DEFAULT_EFFECTS } from "./renderers/types";
+import { DEFAULT_EFFECTS, terminalEffectsNeedAnimation } from "./renderers/types";
 
 const renderer: RendererConfig = {
   foreground: [255, 128, 0],
@@ -37,5 +37,29 @@ describe("shared configuration presentation", () => {
 
   it("keeps post-processing disabled without an imported opt-in", () => {
     expect(DEFAULT_EFFECTS).toEqual({ postProcess: "none", shaderEffects: [], animate: false });
+  });
+
+  it("requests animation frames only when an animated effect is selected", () => {
+    expect(
+      terminalEffectsNeedAnimation({
+        postProcess: "none",
+        shaderEffects: ["ghosttea:crt", "ghosttea:better-crt"],
+        animate: true,
+      }),
+    ).toBe(false);
+    expect(
+      terminalEffectsNeedAnimation({
+        postProcess: "none",
+        shaderEffects: ["ghosttea:crt", "ghosttea:vhs"],
+        animate: true,
+      }),
+    ).toBe(true);
+    expect(
+      terminalEffectsNeedAnimation({
+        postProcess: "none",
+        shaderEffects: ["ghosttea:sparks-from-fire"],
+        animate: false,
+      }),
+    ).toBe(false);
   });
 });
