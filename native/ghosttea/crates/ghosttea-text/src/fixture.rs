@@ -116,6 +116,18 @@ pub fn phase2_fixture_cases() -> Vec<ShapingFixtureCase> {
             bold: false,
             italic: false,
         },
+        ShapingFixtureCase {
+            name: "emoji-presentation".into(),
+            text: "⏸ ⏸\u{fe0e} ⏸\u{fe0f} 😀".into(),
+            bold: false,
+            italic: false,
+        },
+        ShapingFixtureCase {
+            name: "symbol-fallback".into(),
+            text: "⏸ ✻ ⚠ ← ·".into(),
+            bold: false,
+            italic: false,
+        },
     ]
 }
 
@@ -194,7 +206,7 @@ impl TextEngine {
                 fallbacks
                     .iter()
                     .enumerate()
-                    .map(|(index, id)| (format!("fallback-{index}"), *id)),
+                    .map(|(index, face)| (format!("fallback-{index}"), face.id)),
             );
         }
 

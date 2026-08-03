@@ -35,7 +35,7 @@ if (!existsSync(fontsDirectory)) {
   // An unlocked font in this directory would ship in the package resource
   // bundle without appearing in the release BOM, so treat it as drift too.
   for (const filename of readdirSync(fontsDirectory)) {
-    if (filename.endsWith(".ttf") && !expected.has(filename)) {
+    if (/\.(?:otf|ttf)$/i.test(filename) && !expected.has(filename)) {
       problems.push(`Unlocked font ${filename} is present; remove it or add it to native/fonts.lock.json.`);
     }
   }

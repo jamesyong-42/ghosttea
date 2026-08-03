@@ -1,12 +1,12 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan, TextEngine};
-use ghosttea_vt::{GhosttyTerminalCore, TerminalSnapshot};
+use ghosttea_vt::{GhosttyTerminalCore, TerminalSnapshot, TrackedTerminalSelection};
 
 use crate::{
     AccessibilityRow, ClipboardRequest, FrameCursor, LogicalCell, LogicalCellStyle, LogicalCursor,
@@ -119,6 +119,7 @@ impl RenderCache {
 pub struct TerminalModel {
     runtime: Arc<TerminalRuntime>,
     terminal: GhosttyTerminalCore,
+    view_selections: HashMap<String, TrackedTerminalSelection>,
     render_cache: RenderCache,
     metadata: TerminalMetadata,
     session_handle: u64,
@@ -139,6 +140,7 @@ impl TerminalModel {
                 options.rows,
                 options.scrollback_bytes,
             )?,
+            view_selections: HashMap::new(),
             render_cache: RenderCache::new(),
             metadata: TerminalMetadata {
                 cols: options.cols,
@@ -162,6 +164,10 @@ impl TerminalModel {
 
     pub fn latest_logical(&self) -> Option<LogicalTerminalSnapshot> {
         self.latest_logical.clone()
+    }
+
+    pub fn selection(&self) -> Option<ghosttea_vt::TerminalSelection> {
+        self.terminal.selection()
     }
 
     pub fn text_engine_performance(&self) -> TextEnginePerformanceSnapshot {
@@ -233,6 +239,55 @@ impl TerminalModel {
         end: (u16, u32),
         select_all: bool,
     ) -> Result<String> {
+        self.validate_selection_rows(start, end, select_all)?;
+        Ok(self.terminal.selection_text(start, end, select_all)?)
+    }
+
+    /// Create a selection owned by one attached view. Unlike
+    /// [`TerminalModel::selection_text`], this does not install a terminal-wide
+    /// default selection, so another viewer cannot inherit its highlight.
+    pub fn selection_text_for(
+        &mut self,
+        view_id: &str,
+        start: (u16, u32),
+        end: (u16, u32),
+        select_all: bool,
+    ) -> Result<String> {
+        self.validate_selection_rows(start, end, select_all)?;
+        let selection = self.terminal.track_selection(start, end, select_all)?;
+        let text = self.terminal.format_tracked_selection(&selection)?;
+        self.view_selections.insert(view_id.to_owned(), selection);
+        Ok(text)
+    }
+
+    pub fn selection_for(&self, view_id: &str) -> Option<ghosttea_vt::TerminalSelection> {
+        self.view_selections
+            .get(view_id)
+            .and_then(|selection| self.terminal.tracked_selection_points(selection))
+    }
+
+    pub fn view_selections(&self) -> Vec<(String, Option<ghosttea_vt::TerminalSelection>)> {
+        self.view_selections
+            .iter()
+            .map(|(view_id, selection)| {
+                (
+                    view_id.clone(),
+                    self.terminal.tracked_selection_points(selection),
+                )
+            })
+            .collect()
+    }
+
+    pub fn remove_view_selection(&mut self, view_id: &str) {
+        self.view_selections.remove(view_id);
+    }
+
+    fn validate_selection_rows(
+        &self,
+        start: (u16, u32),
+        end: (u16, u32),
+        select_all: bool,
+    ) -> Result<()> {
         if !select_all {
             let row_count = self.terminal.selection_row_count()?;
             anyhow::ensure!(
@@ -240,7 +295,7 @@ impl TerminalModel {
                 "selection row is outside the retained terminal grid"
             );
         }
-        Ok(self.terminal.selection_text(start, end, select_all)?)
+        Ok(())
     }
 
     pub fn accessibility_rows(
@@ -543,6 +598,7 @@ impl TerminalModel {
             catalog_reset,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &snapshot.scrollbar,
+            selection: snapshot.selection.as_ref(),
             new_glyph_definitions: &new_definitions,
             clipboard: snapshot.clipboard.as_deref(),
             cursor: &cursor,
@@ -718,5 +774,47 @@ mod tests {
                 .contains("outside the retained terminal grid")
         );
         assert!(model.selection_text((0, 0), (0, 0), true).is_ok());
+    }
+
+    #[test]
+    fn keeps_tracked_selection_state_owned_by_each_view() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut model = TerminalModel::new(
+            runtime,
+            TerminalModelOptions {
+                session_handle: 5,
+                session_epoch: 1,
+                layout_epoch: 1,
+                cols: 12,
+                rows: 3,
+                scrollback_bytes: 4096,
+            },
+        )
+        .unwrap();
+        model
+            .feed(b"\x1b[?1049hfirst\r\nsecond\r\nthird", RenderRequest::None)
+            .unwrap();
+
+        assert_eq!(
+            model
+                .selection_text_for("view-a", (0, 1), (5, 1), false)
+                .unwrap(),
+            "second"
+        );
+        assert_eq!(
+            model
+                .selection_text_for("view-b", (0, 2), (4, 2), false)
+                .unwrap(),
+            "third"
+        );
+        assert_eq!(model.selection(), None);
+
+        model.feed(b"\x1b[1S", RenderRequest::None).unwrap();
+        assert_eq!(model.selection_for("view-a").unwrap().anchor.row, 0);
+        assert_eq!(model.selection_for("view-b").unwrap().anchor.row, 1);
+
+        model.remove_view_selection("view-a");
+        assert_eq!(model.selection_for("view-a"), None);
+        assert_eq!(model.selection_for("view-b").unwrap().anchor.row, 1);
     }
 }

@@ -39,6 +39,24 @@
       "family": "Noto Color Emoji",
       "faceIndex": 0,
       "sha256": "bf2a8506b80614ba190a34c7b037af1269a7d614fe9f3b613cc15cdeec6f814b"
+    },
+    {
+      "role": "fallback-1",
+      "family": "STIX Two Math",
+      "faceIndex": 0,
+      "sha256": "3a5f3f26f40d5698b3c62dd085d48d6663696a3f80825aab8b553d5097518e8c"
+    },
+    {
+      "role": "fallback-2",
+      "family": "Noto Sans Symbols 2",
+      "faceIndex": 0,
+      "sha256": "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21"
+    },
+    {
+      "role": "fallback-3",
+      "family": "Noto Emoji",
+      "faceIndex": 0,
+      "sha256": "84a38f2f02374efb72cac2b7eb5589102e06fffc33f7b531ed708f4a08236c91"
     }
   ],
   "cases": {
@@ -67,10 +85,20 @@
       "definitionCount": 9,
       "sha256": "501c1446f75b67451bb428e62739e724590b086629ea8bc767c8f47f991f66da"
     },
+    "emoji-presentation": {
+      "glyphCount": 4,
+      "definitionCount": 3,
+      "sha256": "f787d22e961d70fd32e1551763a645f12d3791d0cdb702093951a2d89f9bf2c3"
+    },
     "italic": {
       "glyphCount": 14,
       "definitionCount": 9,
       "sha256": "99863813f334d93f19f402a3589d27989325994d5b2dfda38d77f756fdff6f6c"
+    },
+    "symbol-fallback": {
+      "glyphCount": 5,
+      "definitionCount": 5,
+      "sha256": "0053ea40fdf54920180a067ffea2328a615d7c757406fc1e3e0533b87792e0c5"
     }
   }
 }

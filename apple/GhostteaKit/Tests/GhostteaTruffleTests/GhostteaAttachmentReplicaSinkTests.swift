@@ -9,7 +9,7 @@ import Testing
 /// exist to prove the shared core behaves identically when nobody is acking —
 /// which is the whole reason the two halves were deduped rather than left as
 /// two copies drifting apart.
-private func snapshotJSON(terminalRevision: UInt64) -> String {
+private func snapshotJSON(terminalRevision: UInt64, viewportOffset: UInt64 = 0) -> String {
   """
   {
     "type": "snapshot",
@@ -30,7 +30,7 @@ private func snapshotJSON(terminalRevision: UInt64) -> String {
     }],
     "cursor": {"x": 6, "y": 0, "visible": true, "style": 0, "blinking": true},
     "mouseTracking": false,
-    "scrollbar": {"total": 1, "offset": 0, "len": 1},
+    "scrollbar": {"total": \(viewportOffset + 1), "offset": \(viewportOffset), "len": 1},
     "title": "desktop",
     "cwd": "/shared"
   }
@@ -110,6 +110,35 @@ private func makeSink(
   #expect(rendered.payload.starts(with: Data("TRF1".utf8)))
 }
 
+@Test func theSinkRendersTrackedSelectionAsASelectionOnlyFrame() async throws {
+  let output = SinkOutput()
+  let sink = try makeSink(output: output)
+  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
+  try await sink.apply(
+    .selectionChanged(
+      GhostteaTrackedSelection(
+        anchor: GhostteaTrackedSelectionPoint(column: 1, row: 40),
+        focus: GhostteaTrackedSelectionPoint(column: 6, row: 41)
+      )
+    ),
+    from: token
+  )
+
+  let frames = await output.frames
+  #expect(frames.count == 2)
+  #expect(frames.last?.1 == false)
+  let payload = try #require(frames.last?.0.effects.first { $0.kind == .frameReady }?.payload)
+  let littleUInt32: (Int) -> UInt32 = { offset in
+    UInt32(payload[offset])
+      | UInt32(payload[offset + 1]) << 8
+      | UInt32(payload[offset + 2]) << 16
+      | UInt32(payload[offset + 3]) << 24
+  }
+  #expect(littleUInt32(108) == 0)  // no row replacements
+  #expect(littleUInt32(168) == 12)  // tracked endpoint payload
+  #expect(littleUInt32(172) == 1)
+}
+
 @Test func aDiscontinuousPatchRefusesTheFrameRatherThanRenderingIt() async throws {
   let output = SinkOutput()
   let sink = try makeSink(output: output)
@@ -179,7 +208,10 @@ private func makeSink(
   }
   #expect(controllers.count == 2)
   #expect(controllers.first == .some(nil))
-  #expect(controllers.last == .some(GhostteaControllerInfo(controllerViewID: "r:pane-1", controlEpoch: 9)))
+  #expect(
+    controllers.last
+      == .some(GhostteaControllerInfo(controllerViewID: "r:pane-1", controlEpoch: 9))
+  )
 }
 
 // MARK: - P2-6: offline copy from the retained frame (§4.4)
@@ -198,18 +230,28 @@ private func row(_ text: String) -> GhostteaLogicalRow {
   // A single row clips at both ends.
   #expect(
     GhostteaViewportSelection.extract(
-      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 14, endRow: 0),
+      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 13, endRow: 0),
       from: rows) == "line-1")
 
   // A span keeps its middle rows whole and clips only the ends — how a
   // terminal selection reads.
   #expect(
     GhostteaViewportSelection.extract(
-      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 7, endRow: 2),
+      GhostteaSelectionRequest(startColumn: 8, startRow: 0, endColumn: 6, endRow: 2),
       from: rows) == "line-1\nmiddle row here\ninterop")
 
+  // Backward drags and absolute scrollback coordinates match the host RPC.
+  #expect(
+    GhostteaViewportSelection.extract(
+      GhostteaSelectionRequest(startColumn: 13, startRow: 40, endColumn: 8, endRow: 40),
+      from: rows,
+      viewportOffset: 40) == "line-1")
+
   // Nothing retained is not an empty selection: there is no screen to select.
-  #expect(GhostteaViewportSelection.extract(GhostteaSelectionRequest(selectAll: true), from: []) == nil)
+  #expect(
+    GhostteaViewportSelection.extract(GhostteaSelectionRequest(selectAll: true), from: [])
+      == nil
+  )
 
   // A column past the row's width clips rather than failing — the selection
   // describes a screen that is simply shorter there.
@@ -217,6 +259,37 @@ private func row(_ text: String) -> GhostteaLogicalRow {
     GhostteaViewportSelection.extract(
       GhostteaSelectionRequest(startColumn: 0, startRow: 0, endColumn: 900, endRow: 0),
       from: rows) == "interop-line-1")
+}
+
+@Test func viewportSelectionUsesCellSpansForWideGraphemes() {
+  let style = GhostteaLogicalCellStyle(
+    bold: false,
+    italic: false,
+    faint: false,
+    inverse: false,
+    invisible: false,
+    strikethrough: false,
+    underline: false,
+    foreground: nil,
+    background: nil
+  )
+  let rows = [
+    GhostteaLogicalRow(
+      text: "a界b",
+      cells: [
+        GhostteaLogicalCell(column: 0, span: 1, text: "a", style: style),
+        GhostteaLogicalCell(column: 1, span: 2, text: "界", style: style),
+        GhostteaLogicalCell(column: 3, span: 1, text: "b", style: style),
+      ]
+    )
+  ]
+  #expect(
+    GhostteaViewportSelection.extract(
+      GhostteaSelectionRequest(startColumn: 2, startRow: 7, endColumn: 3, endRow: 7),
+      from: rows,
+      viewportOffset: 7
+    ) == "界b"
+  )
 }
 
 @Test func theSinkRetainsRowsThroughSnapshotsAndPatchesForOfflineCopy() async throws {
@@ -244,4 +317,15 @@ private func row(_ text: String) -> GhostteaLogicalRow {
   try await sink.apply(decoded(patched), from: token)
   #expect(
     await sink.retainedSelection(GhostteaSelectionRequest(selectAll: true)) == "after the patch")
+
+  let offsetSink = try makeSink(output: SinkOutput())
+  try await offsetSink.apply(
+    decoded(snapshotJSON(terminalRevision: 20, viewportOffset: 40)),
+    from: token
+  )
+  #expect(
+    await offsetSink.retainedSelection(
+      GhostteaSelectionRequest(startColumn: 0, startRow: 40, endColumn: 5, endRow: 40)
+    ) == "shared"
+  )
 }

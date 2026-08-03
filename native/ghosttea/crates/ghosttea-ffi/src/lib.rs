@@ -18,9 +18,9 @@ use ghosttea_config::{ConfigDocumentError, ConfigLoadOptions, ConfigManager, loa
 use ghosttea_core::{
     ClipboardRequest, LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
-    TerminalUpdate, TextEnginePerformanceSnapshot,
+    TerminalSelection, TerminalSelectionPoint, TerminalUpdate, TextEnginePerformanceSnapshot,
 };
-use ghosttea_text::{FontResource, FontResources, TextEngine, TextMetrics};
+use ghosttea_text::{FontPresentation, FontResource, FontResources, TextEngine, TextMetrics};
 use serde_json::json;
 
 pub const GHOSTTEA_ABI_VERSION: u32 = 1;
@@ -306,7 +306,15 @@ fn create_runtime(config: &GhostteaRuntimeConfig) -> Result<GhostteaRuntimeHandl
             2 => &mut italic,
             3 => &mut bold_italic,
             4 => {
-                fallbacks.push(resource);
+                fallbacks.push(resource.with_presentation(FontPresentation::Any));
+                continue;
+            }
+            5 => {
+                fallbacks.push(resource.with_presentation(FontPresentation::Text));
+                continue;
+            }
+            6 => {
+                fallbacks.push(resource.with_presentation(FontPresentation::Emoji));
                 continue;
             }
             _ => return Err(invalid("font has an unknown role")),
@@ -1084,6 +1092,33 @@ pub extern "C" fn ghosttea_replica_publish_patch_json(
     replica_update_operation(replica, out, |model| {
         model
             .publish_patch(patch)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_publish_selection(
+    replica: *mut GhostteaReplicaHandle,
+    has_selection: bool,
+    anchor_column: u16,
+    anchor_row: u32,
+    focus_column: u16,
+    focus_row: u32,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    let selection = has_selection.then_some(TerminalSelection {
+        anchor: TerminalSelectionPoint {
+            column: anchor_column,
+            row: anchor_row,
+        },
+        focus: TerminalSelectionPoint {
+            column: focus_column,
+            row: focus_row,
+        },
+    });
+    replica_update_operation(replica, out, |model| {
+        model
+            .publish_selection(selection)
             .map_err(|error| error.to_string())
     })
 }

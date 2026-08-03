@@ -15,6 +15,7 @@ pub use authority::{
 };
 pub use effects::{ClipboardRequest, TerminalEffect, TerminalMetadata, TerminalUpdate};
 pub use frame::{FrameCursor, TextSnapshot, encode_text_snapshot};
+pub use ghosttea_vt::{TerminalSelection, TerminalSelectionPoint};
 pub use input_order::InputOrderState;
 pub use logical::{
     AccessibilityRow, LogicalCell, LogicalCellStyle, LogicalCursor, LogicalRow, LogicalScrollbar,

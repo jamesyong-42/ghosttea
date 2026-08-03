@@ -13,7 +13,7 @@ use serde::{
 use crate::session::{KeyInput, MouseInput, SessionActivity};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 6;
+pub const PROTOCOL_MINOR: u16 = 7;
 pub const SESSION_ACTIVITY_PROTOCOL_MINOR: u16 = 4;
 pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
 /// Gates every remote-reconnect behaviour: resume takeover, heartbeats,
@@ -22,6 +22,7 @@ pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
 /// The design doc calls this family "1.5"; minor 5 was spent by terminal
 /// presentation sync before this work landed, so it ships as minor 6.
 pub const REMOTE_RECONNECT_PROTOCOL_MINOR: u16 = 6;
+pub const TRACKED_SELECTION_PROTOCOL_MINOR: u16 = 7;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -619,6 +620,9 @@ pub enum StateMessage {
     ConfigurationChanged {
         presentation: TerminalPresentationConfig,
     },
+    SelectionChanged {
+        selection: Option<TrackedSelection>,
+    },
     /// The revisioned replacement for `ControlChanged`, which structurally
     /// cannot say "no controller" — its `controller_view_id` is required.
     /// Hosts send this to viewers at [`REMOTE_RECONNECT_PROTOCOL_MINOR`] or
@@ -635,6 +639,35 @@ pub enum StateMessage {
         reason: SessionEndReason,
     },
     HostShutdown {},
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedSelectionPoint {
+    pub column: u16,
+    pub row: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedSelection {
+    pub anchor: TrackedSelectionPoint,
+    pub focus: TrackedSelectionPoint,
+}
+
+impl From<ghosttea_core::TerminalSelection> for TrackedSelection {
+    fn from(selection: ghosttea_core::TerminalSelection) -> Self {
+        Self {
+            anchor: TrackedSelectionPoint {
+                column: selection.anchor.column,
+                row: selection.anchor.row,
+            },
+            focus: TrackedSelectionPoint {
+                column: selection.focus.column,
+                row: selection.focus.row,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -689,6 +722,12 @@ impl Serialize for CompactStateMessageRef<'_> {
             StateMessage::ConfigurationChanged { presentation } => {
                 serializer.serialize_newtype_variant("CompactStateMessage", 4, "g", presentation)
             }
+            StateMessage::SelectionChanged { selection } => serializer.serialize_newtype_variant(
+                "CompactStateMessage",
+                8,
+                "l",
+                &CompactTrackedSelectionRef(selection.as_ref()),
+            ),
             StateMessage::ControlState {
                 controller,
                 control_revision,
@@ -721,6 +760,25 @@ impl Serialize for CompactStateMessageRef<'_> {
 }
 
 struct CompactSnapshotRef<'a>(&'a LogicalTerminalSnapshot);
+
+struct CompactTrackedSelectionRef<'a>(Option<&'a TrackedSelection>);
+
+impl Serialize for CompactTrackedSelectionRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Some(selection) = self.0 else {
+            return serializer.serialize_none();
+        };
+        let mut tuple = serializer.serialize_tuple(4)?;
+        tuple.serialize_element(&selection.anchor.column)?;
+        tuple.serialize_element(&selection.anchor.row)?;
+        tuple.serialize_element(&selection.focus.column)?;
+        tuple.serialize_element(&selection.focus.row)?;
+        tuple.end()
+    }
+}
 
 impl Serialize for CompactSnapshotRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -956,6 +1014,8 @@ enum CompactStateMessage {
     SessionEnded(CompactSessionEnded),
     #[serde(rename = "hs")]
     HostShutdown(),
+    #[serde(rename = "l")]
+    SelectionChanged(Option<CompactTrackedSelection>),
 }
 
 #[derive(Deserialize)]
@@ -1089,6 +1149,9 @@ struct CompactController(String, u64);
 #[derive(Deserialize)]
 struct CompactSessionEnded(String, Option<i32>);
 
+#[derive(Deserialize)]
+struct CompactTrackedSelection(u16, u32, u16, u32);
+
 impl TryFrom<CompactSessionEnded> for SessionEndReason {
     type Error = anyhow::Error;
 
@@ -1134,6 +1197,18 @@ impl TryFrom<CompactStateMessage> for StateMessage {
                 reason: ended.try_into()?,
             },
             CompactStateMessage::HostShutdown() => Self::HostShutdown {},
+            CompactStateMessage::SelectionChanged(selection) => Self::SelectionChanged {
+                selection: selection.map(|selection| TrackedSelection {
+                    anchor: TrackedSelectionPoint {
+                        column: selection.0,
+                        row: selection.1,
+                    },
+                    focus: TrackedSelectionPoint {
+                        column: selection.2,
+                        row: selection.3,
+                    },
+                }),
+            },
         })
     }
 }
@@ -1928,6 +2003,26 @@ mod tests {
             rows: 40,
             layout_epoch: 5,
         });
+    }
+
+    #[test]
+    fn tracked_selection_round_trips_and_uses_a_new_compact_tag() {
+        let selected = StateMessage::SelectionChanged {
+            selection: Some(TrackedSelection {
+                anchor: TrackedSelectionPoint { column: 2, row: 41 },
+                focus: TrackedSelectionPoint { column: 8, row: 43 },
+            }),
+        };
+        round_trips_in_both_state_codecs(&selected);
+        round_trips_in_both_state_codecs(&StateMessage::SelectionChanged { selection: None });
+        assert_eq!(
+            compact_state_json(&selected),
+            serde_json::json!({"l": [2, 41, 8, 43]})
+        );
+        assert_eq!(
+            compact_state_json(&StateMessage::SelectionChanged { selection: None }),
+            serde_json::json!({"l": null})
+        );
     }
 
     #[test]

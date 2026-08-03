@@ -2,6 +2,13 @@ import Foundation
 import GhostteaCore
 import GhostteaPerformance
 
+struct GhostteaRetainedViewport: Equatable, Sendable {
+  var rows: [GhostteaLogicalRow]
+  var offset: UInt64
+
+  static let empty = Self(rows: [], offset: 0)
+}
+
 /// The replica half that both attachment readers share.
 ///
 /// ``GhostteaTruffleReplicaPump`` pulls frames and ``GhostteaAttachmentReplicaSink``
@@ -19,7 +26,7 @@ actor GhostteaReplicaPublisher {
   /// The rows the replica is currently showing, kept alongside it so a frozen
   /// frame can still be copied from (§4.4). Retained *after* a successful
   /// publish, never before: rows the replica rejected were never on screen.
-  private(set) var retainedRows: [GhostteaLogicalRow] = []
+  private(set) var retainedViewport = GhostteaRetainedViewport.empty
 
   private let encoder = JSONEncoder()
   private let sessionHandle: UInt64
@@ -40,7 +47,10 @@ actor GhostteaReplicaPublisher {
     ) {
       try await replica.publishSnapshotJSON(encoder.encode(snapshot))
     }
-    retainedRows = snapshot.rows
+    retainedViewport = GhostteaRetainedViewport(
+      rows: snapshot.rows,
+      offset: snapshot.scrollbar.offset
+    )
     return update
   }
 
@@ -59,13 +69,30 @@ actor GhostteaReplicaPublisher {
       // retained width is ignored rather than grown into: the rows are a
       // mirror of what was published, not a buffer of their own.
       for replacement in patch.rowReplacements
-      where Int(replacement.rowIndex) < retainedRows.count {
-        retainedRows[Int(replacement.rowIndex)] = replacement.row
+      where Int(replacement.rowIndex) < retainedViewport.rows.count {
+        retainedViewport.rows[Int(replacement.rowIndex)] = replacement.row
+      }
+      if let scrollbar = patch.scrollbar {
+        retainedViewport.offset = scrollbar.offset
       }
       return update
     } catch {
       if await replica.isPoisoned { throw error }
       throw GhostteaAttachmentApplyFailure.needsSnapshot
+    }
+  }
+
+  func publish(_ selection: GhostteaTrackedSelection?) async throws -> GhostteaUpdate {
+    try await GhostteaPerformanceRecorder.shared.measure(.truffleReplicaPublication) {
+      if let selection {
+        return try await replica.publishSelection(
+          anchorColumn: selection.anchor.column,
+          anchorRow: selection.anchor.row,
+          focusColumn: selection.focus.column,
+          focusRow: selection.focus.row
+        )
+      }
+      return try await replica.clearSelection()
     }
   }
 
@@ -80,7 +107,7 @@ actor GhostteaReplicaPublisher {
     presentation = next
     // The new replica has painted nothing yet, so nothing is on screen to
     // copy until the host's next frame arrives.
-    retainedRows = []
+    retainedViewport = .empty
     return true
   }
 }

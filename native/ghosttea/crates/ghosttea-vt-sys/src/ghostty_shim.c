@@ -26,6 +26,13 @@ struct EgTerminal {
   uint32_t effects;
 };
 
+struct EgTrackedSelection {
+  GhosttyTrackedGridRef start;
+  GhosttyTrackedGridRef end;
+  GhosttyTerminalScreen screen;
+  bool rectangle;
+};
+
 int eg_terminal_set_colors(EgTerminal* state,
                            uint8_t fg_r, uint8_t fg_g, uint8_t fg_b,
                            uint8_t bg_r, uint8_t bg_g, uint8_t bg_b,
@@ -296,15 +303,17 @@ bool eg_terminal_alternate_scroll(EgTerminal* state) {
   return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && alternate_scroll;
 }
 
-size_t eg_terminal_selection_text(EgTerminal* state,
-                                  uint16_t start_column,
-                                  uint32_t start_row,
-                                  uint16_t end_column,
-                                  uint32_t end_row,
-                                  bool select_all,
-                                  uint8_t* out,
-                                  size_t cap) {
-  if (state == NULL) return SIZE_MAX;
+EgTrackedSelection* eg_terminal_track_selection(EgTerminal* state,
+                                                uint16_t start_column,
+                                                uint32_t start_row,
+                                                uint16_t end_column,
+                                                uint32_t end_row,
+                                                bool select_all) {
+  if (state == NULL) return NULL;
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (ghostty_terminal_get(
+          state->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) != GHOSTTY_SUCCESS)
+    return NULL;
   GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
   GhosttyResult result;
   if (select_all) {
@@ -322,8 +331,100 @@ size_t eg_terminal_selection_text(EgTerminal* state,
     if (result == GHOSTTY_SUCCESS)
       result = ghostty_terminal_grid_ref(state->terminal, end, &selection.end);
   }
+  if (result != GHOSTTY_SUCCESS) return NULL;
+
+  // Convert both untracked snapshot refs before creating either tracked ref.
+  // Snapshot refs are short-lived, while the coordinates remain valid for the
+  // remainder of this serialized terminal operation.
+  GhosttyPointCoordinate start_coordinate = {0};
+  GhosttyPointCoordinate end_coordinate = {0};
+  result = ghostty_terminal_point_from_grid_ref(
+      state->terminal, &selection.start, GHOSTTY_POINT_TAG_SCREEN,
+      &start_coordinate);
+  if (result != GHOSTTY_SUCCESS) return NULL;
+  result = ghostty_terminal_point_from_grid_ref(
+      state->terminal, &selection.end, GHOSTTY_POINT_TAG_SCREEN,
+      &end_coordinate);
+  if (result != GHOSTTY_SUCCESS) return NULL;
+
+  EgTrackedSelection* tracked = calloc(1, sizeof(*tracked));
+  if (tracked == NULL) return NULL;
+  GhosttyPoint start = {
+      .tag = GHOSTTY_POINT_TAG_SCREEN,
+      .value.coordinate = start_coordinate,
+  };
+  GhosttyPoint end = {
+      .tag = GHOSTTY_POINT_TAG_SCREEN,
+      .value.coordinate = end_coordinate,
+  };
+  result = ghostty_terminal_grid_ref_track(
+      state->terminal, start, &tracked->start);
+  if (result == GHOSTTY_SUCCESS)
+    result = ghostty_terminal_grid_ref_track(
+        state->terminal, end, &tracked->end);
+  if (result != GHOSTTY_SUCCESS) {
+    ghostty_tracked_grid_ref_free(tracked->start);
+    ghostty_tracked_grid_ref_free(tracked->end);
+    free(tracked);
+    return NULL;
+  }
+  tracked->screen = screen;
+  tracked->rectangle = selection.rectangle;
+  return tracked;
+}
+
+void eg_tracked_selection_free(EgTrackedSelection* selection) {
+  if (selection == NULL) return;
+  ghostty_tracked_grid_ref_free(selection->start);
+  ghostty_tracked_grid_ref_free(selection->end);
+  free(selection);
+}
+
+bool eg_terminal_tracked_selection_points(
+    EgTerminal* state,
+    const EgTrackedSelection* selection,
+    EgSelection* out) {
+  if (state == NULL || selection == NULL || out == NULL) return false;
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (ghostty_terminal_get(
+          state->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) != GHOSTTY_SUCCESS ||
+      screen != selection->screen)
+    return false;
+  GhosttyPointCoordinate start = {0};
+  GhosttyPointCoordinate end = {0};
+  if (ghostty_tracked_grid_ref_point(
+          selection->start, GHOSTTY_POINT_TAG_SCREEN, &start) != GHOSTTY_SUCCESS)
+    return false;
+  if (ghostty_tracked_grid_ref_point(
+          selection->end, GHOSTTY_POINT_TAG_SCREEN, &end) != GHOSTTY_SUCCESS)
+    return false;
+  out->start_column = start.x;
+  out->start_row = start.y;
+  out->end_column = end.x;
+  out->end_row = end.y;
+  return true;
+}
+
+size_t eg_terminal_tracked_selection_text(
+    EgTerminal* state,
+    const EgTrackedSelection* tracked,
+    uint8_t* out,
+    size_t cap) {
+  if (state == NULL || tracked == NULL) return SIZE_MAX;
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (ghostty_terminal_get(
+          state->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) != GHOSTTY_SUCCESS)
+    return SIZE_MAX;
+  if (screen != tracked->screen) return 0;
+  GhosttySelection selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+  GhosttyResult result = ghostty_tracked_grid_ref_snapshot(
+      tracked->start, &selection.start);
   if (result == GHOSTTY_NO_VALUE) return 0;
   if (result != GHOSTTY_SUCCESS) return SIZE_MAX;
+  result = ghostty_tracked_grid_ref_snapshot(tracked->end, &selection.end);
+  if (result == GHOSTTY_NO_VALUE) return 0;
+  if (result != GHOSTTY_SUCCESS) return SIZE_MAX;
+  selection.rectangle = tracked->rectangle;
 
   GhosttyTerminalSelectionFormatOptions options =
       GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
@@ -335,7 +436,25 @@ size_t eg_terminal_selection_text(EgTerminal* state,
   result = ghostty_terminal_selection_format_buf(
       state->terminal, options, out, cap, &written);
   if (result == GHOSTTY_SUCCESS || result == GHOSTTY_OUT_OF_SPACE) return written;
+  if (result == GHOSTTY_NO_VALUE) return 0;
   return SIZE_MAX;
+}
+
+size_t eg_terminal_selection_text(EgTerminal* state,
+                                  uint16_t start_column,
+                                  uint32_t start_row,
+                                  uint16_t end_column,
+                                  uint32_t end_row,
+                                  bool select_all,
+                                  uint8_t* out,
+                                  size_t cap) {
+  EgTrackedSelection* selection = eg_terminal_track_selection(
+      state, start_column, start_row, end_column, end_row, select_all);
+  if (selection == NULL) return SIZE_MAX;
+  size_t written = eg_terminal_tracked_selection_text(
+      state, selection, out, cap);
+  eg_tracked_selection_free(selection);
+  return written;
 }
 
 static void eg_cell_style(GhosttyRenderStateRowCells cells, EgCellStyle* compact) {

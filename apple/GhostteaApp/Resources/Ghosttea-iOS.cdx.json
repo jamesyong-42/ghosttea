@@ -145,7 +145,7 @@
       },
       {
         "name": "ghosttea:font-notices:sha256",
-        "value": "b3177ac25cc57c976ae9e2a458a23cf840b7d4c919e4f87fdc8cab7875c3ea17"
+        "value": "74a171c239592ee050b78f675550e837814715caee6c4133f2b072c57b6579e6"
       },
       {
         "name": "ghosttea:ssh-production-approved",
@@ -3212,6 +3212,111 @@
           "value": "src/font/res/NotoColorEmoji.ttf"
         }
       ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/fallback-symbols-math@v2.13b171",
+      "name": "STIXTwoMath-Regular.otf",
+      "version": "v2.13b171",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3a5f3f26f40d5698b3c62dd085d48d6663696a3f80825aab8b553d5097518e8c"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/stipub/stixfonts.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "fallback-symbols-math"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "fonts/static_otf/STIXTwoMath-Regular.otf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/fallback-symbols@NotoSansSymbols2-v2.008",
+      "name": "NotoSansSymbols2-Regular.ttf",
+      "version": "NotoSansSymbols2-v2.008",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/notofonts/symbols.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "fallback-symbols"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "NotoSansSymbols2/googlefonts/ttf/NotoSansSymbols2-Regular.ttf"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "bom-ref": "ghosttea:font/fallback-emoji-text@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "name": "NotoEmoji-Regular.ttf",
+      "version": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "licenses": [
+        {
+          "license": {
+            "id": "OFL-1.1"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "84a38f2f02374efb72cac2b7eb5589102e06fffc33f7b531ed708f4a08236c91"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ghostty-org/ghostty.git"
+        }
+      ],
+      "properties": [
+        {
+          "name": "ghosttea:font-role",
+          "value": "fallback-emoji-text"
+        },
+        {
+          "name": "ghosttea:source-path",
+          "value": "src/font/res/NotoEmoji-Regular.ttf"
+        }
+      ]
     }
   ],
   "dependencies": [
@@ -3228,7 +3333,10 @@
         "ghosttea:font/bold@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
         "ghosttea:font/bold-italic@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
-        "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+        "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+        "ghosttea:font/fallback-symbols-math@v2.13b171",
+        "ghosttea:font/fallback-symbols@NotoSansSymbols2-v2.008",
+        "ghosttea:font/fallback-emoji-text@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
       ]
     },
     {
@@ -3870,6 +3978,18 @@
     },
     {
       "ref": "ghosttea:font/fallback-emoji@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/fallback-symbols-math@v2.13b171",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/fallback-symbols@NotoSansSymbols2-v2.008",
+      "dependsOn": []
+    },
+    {
+      "ref": "ghosttea:font/fallback-emoji-text@f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
       "dependsOn": []
     }
   ]

@@ -13,6 +13,11 @@ struct RawTerminal {
 }
 
 #[repr(C)]
+struct RawTrackedSelection {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 #[derive(Default)]
 struct RawSnapshotMeta {
     cols: u16,
@@ -50,6 +55,15 @@ struct RawScrollbar {
     len: u64,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct RawSelection {
+    start_column: u16,
+    start_row: u32,
+    end_column: u16,
+    end_row: u32,
+}
+
 type CellCallback =
     unsafe extern "C" fn(*mut c_void, u16, u16, u16, *const u8, usize, *const RawCellStyle);
 
@@ -82,13 +96,23 @@ unsafe extern "C" {
     fn eg_terminal_scrollbar(terminal: *mut RawTerminal, scrollbar: *mut RawScrollbar) -> bool;
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_alternate_scroll(terminal: *mut RawTerminal) -> bool;
-    fn eg_terminal_selection_text(
+    fn eg_terminal_track_selection(
         terminal: *mut RawTerminal,
         start_column: u16,
         start_row: u32,
         end_column: u16,
         end_row: u32,
         select_all: bool,
+    ) -> *mut RawTrackedSelection;
+    fn eg_tracked_selection_free(selection: *mut RawTrackedSelection);
+    fn eg_terminal_tracked_selection_points(
+        terminal: *mut RawTerminal,
+        selection: *const RawTrackedSelection,
+        points: *mut RawSelection,
+    ) -> bool;
+    fn eg_terminal_tracked_selection_text(
+        terminal: *mut RawTerminal,
+        selection: *const RawTrackedSelection,
         out: *mut u8,
         cap: usize,
     ) -> usize;
@@ -216,12 +240,51 @@ pub struct TerminalSnapshot {
     pub bell: bool,
     pub mouse_tracking: bool,
     pub scrollbar: TerminalScrollbar,
+    pub selection: Option<TerminalSelection>,
     pub clipboard: Option<Vec<u8>>,
     pub pty_response: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSelectionPoint {
+    pub column: u16,
+    pub row: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSelection {
+    pub anchor: TerminalSelectionPoint,
+    pub focus: TerminalSelectionPoint,
+}
+
+/// A pair of Ghostty-owned grid pins that follows the selected cells as the
+/// terminal scrolls, reflows, or redraws an alternate screen.
+pub struct TrackedTerminalSelection {
+    raw: NonNull<RawTrackedSelection>,
+    owner: NonNull<RawTerminal>,
+}
+
+// Selection pins are only accessed while their owning terminal actor is
+// serialized. The opaque handles never receive concurrent calls.
+unsafe impl Send for TrackedTerminalSelection {}
+
+impl fmt::Debug for TrackedTerminalSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrackedTerminalSelection")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for TrackedTerminalSelection {
+    fn drop(&mut self) {
+        unsafe { eg_tracked_selection_free(self.raw.as_ptr()) };
+    }
+}
+
 pub struct GhosttyTerminalCore {
     raw: NonNull<RawTerminal>,
+    default_selection: Option<TrackedTerminalSelection>,
     cached_rows: Vec<String>,
     cached_cells: Vec<Vec<TerminalCell>>,
 }
@@ -236,6 +299,7 @@ impl GhosttyTerminalCore {
             .ok_or(GhosttyError(-1))?;
         Ok(Self {
             raw,
+            default_selection: None,
             cached_rows: Vec::new(),
             cached_cells: Vec::new(),
         })
@@ -251,14 +315,73 @@ impl GhosttyTerminalCore {
         end: (u16, u32),
         select_all: bool,
     ) -> Result<String, GhosttyError> {
-        let required = unsafe {
-            eg_terminal_selection_text(
+        let selection = self.track_selection(start, end, select_all)?;
+        let text = self.format_tracked_selection(&selection)?;
+        self.default_selection = Some(selection);
+        Ok(text)
+    }
+
+    pub fn track_selection(
+        &mut self,
+        start: (u16, u32),
+        end: (u16, u32),
+        select_all: bool,
+    ) -> Result<TrackedTerminalSelection, GhosttyError> {
+        let raw = NonNull::new(unsafe {
+            eg_terminal_track_selection(
                 self.raw.as_ptr(),
                 start.0,
                 start.1,
                 end.0,
                 end.1,
                 select_all,
+            )
+        })
+        .ok_or(GhosttyError(-1))?;
+        Ok(TrackedTerminalSelection {
+            raw,
+            owner: self.raw,
+        })
+    }
+
+    pub fn tracked_selection_points(
+        &self,
+        selection: &TrackedTerminalSelection,
+    ) -> Option<TerminalSelection> {
+        if selection.owner != self.raw {
+            return None;
+        }
+        let mut points = RawSelection::default();
+        unsafe {
+            eg_terminal_tracked_selection_points(
+                self.raw.as_ptr(),
+                selection.raw.as_ptr(),
+                &mut points,
+            )
+        }
+        .then_some(TerminalSelection {
+            anchor: TerminalSelectionPoint {
+                column: points.start_column,
+                row: points.start_row,
+            },
+            focus: TerminalSelectionPoint {
+                column: points.end_column,
+                row: points.end_row,
+            },
+        })
+    }
+
+    pub fn format_tracked_selection(
+        &self,
+        selection: &TrackedTerminalSelection,
+    ) -> Result<String, GhosttyError> {
+        if selection.owner != self.raw {
+            return Err(GhosttyError(-1));
+        }
+        let required = unsafe {
+            eg_terminal_tracked_selection_text(
+                self.raw.as_ptr(),
+                selection.raw.as_ptr(),
                 std::ptr::null_mut(),
                 0,
             )
@@ -268,13 +391,9 @@ impl GhosttyTerminalCore {
         }
         let mut output = vec![0_u8; required];
         let written = unsafe {
-            eg_terminal_selection_text(
+            eg_terminal_tracked_selection_text(
                 self.raw.as_ptr(),
-                start.0,
-                start.1,
-                end.0,
-                end.1,
-                select_all,
+                selection.raw.as_ptr(),
                 output.as_mut_ptr(),
                 output.len(),
             )
@@ -373,6 +492,12 @@ impl GhosttyTerminalCore {
 
     pub fn alternate_scroll(&self) -> bool {
         unsafe { eg_terminal_alternate_scroll(self.raw.as_ptr()) }
+    }
+
+    pub fn selection(&self) -> Option<TerminalSelection> {
+        self.default_selection
+            .as_ref()
+            .and_then(|selection| self.tracked_selection_points(selection))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -638,6 +763,7 @@ impl GhosttyTerminalCore {
                     len: meta.rows.into(),
                 }
             },
+            selection: self.selection(),
             clipboard: (meta.effects & EFFECT_CLIPBOARD != 0).then(|| self.take_clipboard()),
             pty_response: self.take_pty_response(),
         })
@@ -1102,6 +1228,73 @@ mod tests {
         assert!(all.contains("first"));
         assert!(all.contains("third"));
         assert!(scrollbar.total >= 3);
+    }
+
+    #[test]
+    fn selection_points_follow_cells_scrolled_inside_alternate_screen() {
+        let mut terminal = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        terminal.feed(b"\x1b[?1049hfirst\r\nsecond\r\nthird");
+        assert_eq!(
+            terminal.selection_text((0, 1), (5, 1), false).unwrap(),
+            "second"
+        );
+        assert_eq!(terminal.selection().unwrap().anchor.row, 1);
+
+        // Claude Code and other TUIs scroll their alternate-screen grid. A
+        // numeric row would remain 1 and silently begin selecting "third";
+        // Ghostty's tracked grid pin follows "second" to row 0 instead.
+        terminal.feed(b"\x1b[1S");
+        let selection = terminal.selection().unwrap();
+        assert_eq!(selection.anchor.row, 0);
+        assert_eq!(selection.focus.row, 0);
+
+        // A pin still belongs to the alternate screen after the TUI exits;
+        // it must not highlight the same numeric row on the primary screen.
+        terminal.feed(b"\x1b[?1049l");
+        assert_eq!(terminal.selection(), None);
+    }
+
+    #[test]
+    fn independently_tracked_selections_follow_their_own_cells() {
+        let mut terminal = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        terminal.feed(b"\x1b[?1049hfirst\r\nsecond\r\nthird");
+        let second = terminal.track_selection((0, 1), (5, 1), false).unwrap();
+        let third = terminal.track_selection((0, 2), (4, 2), false).unwrap();
+        assert_eq!(
+            terminal.format_tracked_selection(&second).unwrap(),
+            "second"
+        );
+        assert_eq!(terminal.format_tracked_selection(&third).unwrap(), "third");
+
+        // Installing a separate default selection must not replace either
+        // caller-owned pair of pins.
+        assert_eq!(
+            terminal.selection_text((0, 0), (4, 0), false).unwrap(),
+            "first"
+        );
+        terminal.feed(b"\x1b[1S");
+
+        assert_eq!(
+            terminal
+                .tracked_selection_points(&second)
+                .unwrap()
+                .anchor
+                .row,
+            0
+        );
+        assert_eq!(
+            terminal
+                .tracked_selection_points(&third)
+                .unwrap()
+                .anchor
+                .row,
+            1
+        );
+        assert_eq!(
+            terminal.format_tracked_selection(&second).unwrap(),
+            "second"
+        );
+        assert_eq!(terminal.format_tracked_selection(&third).unwrap(), "third");
     }
 
     #[test]

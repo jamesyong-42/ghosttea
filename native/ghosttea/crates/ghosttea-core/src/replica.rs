@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan};
-use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
+use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar, TerminalSelection};
 
 use crate::{
     FrameCursor, LogicalCellStyle, LogicalRow, LogicalTerminalPatch, LogicalTerminalSnapshot,
@@ -37,6 +37,7 @@ pub struct LogicalReplicaModel {
     frame_sequence: u64,
     latest: Option<LogicalTerminalSnapshot>,
     patch_sequence: u64,
+    selection: Option<TerminalSelection>,
     render_cache: ReplicaRenderCache,
     text_engine_performance: TextEnginePerformanceSnapshot,
     render_performance: ReplicaRenderPerformanceSnapshot,
@@ -50,6 +51,7 @@ impl LogicalReplicaModel {
             frame_sequence: 0,
             latest: None,
             patch_sequence: 0,
+            selection: None,
             render_cache: ReplicaRenderCache::default(),
             text_engine_performance: TextEnginePerformanceSnapshot::default(),
             render_performance: ReplicaRenderPerformanceSnapshot::default(),
@@ -159,6 +161,27 @@ impl LogicalReplicaModel {
                 snapshot.mouse_tracking = previous_mouse_tracking;
                 snapshot.scrollbar = previous_scrollbar;
                 self.latest = Some(snapshot);
+                Err(error)
+            }
+        }
+    }
+
+    /// Publishes the authoritative host selection without pretending terminal
+    /// rows changed. The frame sequence still advances so retained renderers
+    /// can atomically replace (or clear) their tracked endpoints.
+    pub fn publish_selection(
+        &mut self,
+        selection: Option<TerminalSelection>,
+    ) -> Result<TerminalUpdate> {
+        let snapshot = self
+            .latest
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("remote selection arrived before a snapshot"))?;
+        let previous = std::mem::replace(&mut self.selection, selection);
+        match self.render(&snapshot, &[], false) {
+            Ok(frame) => Ok([TerminalEffect::FrameReady(frame)].into_iter().collect()),
+            Err(error) => {
+                self.selection = previous;
                 Err(error)
             }
         }
@@ -287,6 +310,7 @@ impl LogicalReplicaModel {
             catalog_reset: full_snapshot,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &scrollbar,
+            selection: self.selection.as_ref(),
             new_glyph_definitions: &definitions,
             clipboard: None,
             cursor: &cursor,
@@ -479,6 +503,36 @@ mod tests {
         assert_eq!(u16::from_le_bytes(frame[6..8].try_into().unwrap()) & 1, 0);
         assert_eq!(u64::from_le_bytes(frame[48..56].try_into().unwrap()), 12);
         assert_eq!(u32::from_le_bytes(frame[108..112].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn tracked_selection_publishes_a_selection_only_frame_and_can_clear() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut replica = LogicalReplicaModel::new(runtime, 42);
+        replica.publish(snapshot("hello")).unwrap();
+        let selection = TerminalSelection {
+            anchor: ghosttea_vt::TerminalSelectionPoint { column: 1, row: 4 },
+            focus: ghosttea_vt::TerminalSelectionPoint { column: 3, row: 5 },
+        };
+
+        let selected = frame(replica.publish_selection(Some(selection)).unwrap());
+        assert_eq!(
+            u32::from_le_bytes(selected[108..112].try_into().unwrap()),
+            0
+        );
+        assert_eq!(
+            u32::from_le_bytes(selected[168..172].try_into().unwrap()),
+            12
+        );
+        assert_eq!(
+            u32::from_le_bytes(selected[172..176].try_into().unwrap()),
+            1
+        );
+
+        let cleared = frame(replica.publish_selection(None).unwrap());
+        assert_eq!(u32::from_le_bytes(cleared[108..112].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(cleared[168..172].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(cleared[172..176].try_into().unwrap()), 0);
     }
 
     #[test]

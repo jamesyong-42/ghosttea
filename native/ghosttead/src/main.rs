@@ -2,8 +2,8 @@ use std::{env, fs, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use ghosttea::{
-    FontResource, FontResources, RASTER_SCALE, TerminalService, TerminalServiceConfig, TextEngine,
-    TextMetrics,
+    FontPresentation, FontResource, FontResources, RASTER_SCALE, TerminalService,
+    TerminalServiceConfig, TextEngine, TextMetrics,
 };
 use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};
 use truffle_core::{Node, network::tailscale::TailscaleProvider};
@@ -182,7 +182,12 @@ fn configured_text_engine() -> Result<Option<TextEngine>> {
     fonts.bold = Some(resource("JetBrainsMonoNerdFont-Bold.ttf")?);
     fonts.italic = Some(resource("JetBrainsMonoNerdFont-Italic.ttf")?);
     fonts.bold_italic = Some(resource("JetBrainsMonoNerdFont-BoldItalic.ttf")?);
-    fonts.fallbacks = vec![resource("NotoColorEmoji.ttf")?];
+    fonts.fallbacks = vec![
+        resource("NotoColorEmoji.ttf")?.with_presentation(FontPresentation::Emoji),
+        resource("STIXTwoMath-Regular.otf")?.with_presentation(FontPresentation::Text),
+        resource("NotoSansSymbols2-Regular.ttf")?.with_presentation(FontPresentation::Text),
+        resource("NotoEmoji-Regular.ttf")?.with_presentation(FontPresentation::Text),
+    ];
     Ok(Some(TextEngine::from_fonts(
         fonts,
         TextMetrics::default(),

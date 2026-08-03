@@ -145,6 +145,29 @@ public struct TRF1ScrollbarState: Equatable, Sendable {
   public let length: UInt64
 }
 
+public struct TRF1SelectionPoint: Equatable, Sendable {
+  public let column: UInt16
+  public let row: UInt32
+
+  public init(column: UInt16, row: UInt32) {
+    self.column = column
+    self.row = row
+  }
+}
+
+/// Ghostty-owned selection endpoints in absolute retained-grid coordinates.
+/// Unlike viewport highlights, these points are tracked through scroll and
+/// reflow by Ghostty's grid pins.
+public struct TRF1SelectionState: Equatable, Sendable {
+  public let anchor: TRF1SelectionPoint
+  public let focus: TRF1SelectionPoint
+
+  public init(anchor: TRF1SelectionPoint, focus: TRF1SelectionPoint) {
+    self.anchor = anchor
+    self.focus = focus
+  }
+}
+
 public struct TRF1DecodingError: Error, Equatable, CustomStringConvertible, Sendable {
   public let reason: String
 
@@ -484,6 +507,27 @@ public func decodeTRF1ScrollbarState(_ section: TRF1Section) throws -> TRF1Scrol
   try require(length <= total, "scrollbar viewport exceeds total rows")
   try require(offset <= total - length, "scrollbar offset exceeds scrollable range")
   return TRF1ScrollbarState(total: total, offset: offset, length: length)
+}
+
+public func decodeTRF1SelectionState(_ section: TRF1Section) throws -> TRF1SelectionState? {
+  try requireKind(section, .selectionSpans, "wrong selection section kind")
+  if section.itemCount == 0 {
+    try require(section.bytes.isEmpty, "empty selection carries payload bytes")
+    return nil
+  }
+  try require(section.itemCount == 1, "selection item count mismatch")
+  try require(section.bytes.count == 12, "invalid selection payload size")
+  let reader = TRF1Reader(data: section.bytes)
+  return TRF1SelectionState(
+    anchor: TRF1SelectionPoint(
+      column: try reader.uint16(0, "truncated selection state"),
+      row: try reader.uint32(2, "truncated selection state")
+    ),
+    focus: TRF1SelectionPoint(
+      column: try reader.uint16(6, "truncated selection state"),
+      row: try reader.uint32(8, "truncated selection state")
+    )
+  )
 }
 
 public func decodeTRF1ClipboardWrite(_ section: TRF1Section) throws -> String {

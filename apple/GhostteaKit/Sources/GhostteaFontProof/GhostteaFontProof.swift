@@ -41,23 +41,30 @@ public enum GhostteaFontProof {
   }
 
   private static func generate(_ fonts: [Data]) throws -> Data {
-    precondition(fonts.count == 5)
+    precondition(fonts.count == 8)
     return try withFontBytes(fonts[0]) { regular in
       try withFontBytes(fonts[1]) { bold in
         try withFontBytes(fonts[2]) { italic in
           try withFontBytes(fonts[3]) { boldItalic in
             try withFontBytes(fonts[4]) { emoji in
-              var output = ghosttea_owned_bytes_t(data: nil, len: 0, capacity: 0)
-              let status = ghosttea_font_fixture_generate(
-                regular, bold, italic, boldItalic, emoji, &output)
-              guard status == GHOSTTEA_FONT_FIXTURE_OK else {
-                throw GhostteaFontProofError.nativeFailure(status)
+              try withFontBytes(fonts[5]) { symbolsMath in
+                try withFontBytes(fonts[6]) { symbols in
+                  try withFontBytes(fonts[7]) { emojiText in
+                    var output = ghosttea_owned_bytes_t(data: nil, len: 0, capacity: 0)
+                    let status = ghosttea_font_fixture_generate(
+                      regular, bold, italic, boldItalic, emoji, symbolsMath, symbols, emojiText,
+                      &output)
+                    guard status == GHOSTTEA_FONT_FIXTURE_OK else {
+                      throw GhostteaFontProofError.nativeFailure(status)
+                    }
+                    defer { ghosttea_font_fixture_free(output) }
+                    guard let pointer = output.data, output.len > 0 else {
+                      throw GhostteaFontProofError.emptyNativeOutput
+                    }
+                    return Data(bytes: pointer, count: output.len)
+                  }
+                }
               }
-              defer { ghosttea_font_fixture_free(output) }
-              guard let pointer = output.data, output.len > 0 else {
-                throw GhostteaFontProofError.emptyNativeOutput
-              }
-              return Data(bytes: pointer, count: output.len)
             }
           }
         }

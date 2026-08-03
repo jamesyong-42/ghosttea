@@ -140,6 +140,24 @@ private struct CompactStateMessage: Decodable {
         GhostteaTerminalPresentationConfig.self, forKey: key)
       guard presentation.isValid else { throw GhostteaTruffleError.malformedMessage }
       message = .configurationChanged(presentation)
+    case "l":
+      guard !(try values.decodeNil(forKey: key)) else {
+        message = .selectionChanged(nil)
+        return
+      }
+      var tuple = try values.nestedUnkeyedContainer(forKey: key)
+      let selection = try GhostteaTrackedSelection(
+        anchor: GhostteaTrackedSelectionPoint(
+          column: tuple.decode(UInt16.self),
+          row: tuple.decode(UInt32.self)
+        ),
+        focus: GhostteaTrackedSelectionPoint(
+          column: tuple.decode(UInt16.self),
+          row: tuple.decode(UInt32.self)
+        )
+      )
+      try requireEnd(tuple)
+      message = .selectionChanged(selection)
     default:
       throw GhostteaTruffleError.malformedMessage
     }

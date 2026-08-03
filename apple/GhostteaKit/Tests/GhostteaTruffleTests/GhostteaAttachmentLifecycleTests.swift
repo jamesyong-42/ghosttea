@@ -27,6 +27,30 @@ import Truffle
   #expect(cleared == .controlState(controller: nil, controlRevision: 18, cols: 100, rows: 30, layoutEpoch: 2))
 }
 
+@Test func compactTrackedSelectionMatchesTheRustTupleAndCanClear() throws {
+  let selected = try GhostteaTerminalStateCodec.decode(
+    Data(#"{"l":[2,41,8,43]}"#.utf8), codec: .compactJSONV1)
+  #expect(
+    selected
+      == .selectionChanged(
+        GhostteaTrackedSelection(
+          anchor: GhostteaTrackedSelectionPoint(column: 2, row: 41),
+          focus: GhostteaTrackedSelectionPoint(column: 8, row: 43)
+        )
+      )
+  )
+  #expect(
+    try GhostteaTerminalStateCodec.decode(
+      Data(#"{"l":null}"#.utf8), codec: .compactJSONV1)
+      == .selectionChanged(nil)
+  )
+  for malformed in [#"{"l":[2,41,8]}"#, #"{"l":[2,41,8,43,9]}"#] {
+    #expect(throws: (any Error).self) {
+      try GhostteaTerminalStateCodec.decode(Data(malformed.utf8), codec: .compactJSONV1)
+    }
+  }
+}
+
 @Test func compactSessionEndAndHostShutdownMatchTheRustTuples() throws {
   #expect(
     try GhostteaTerminalStateCodec.decode(
@@ -178,7 +202,7 @@ import Truffle
   #expect(GhostteaReconnectDefaults.suspendAfterMs == 600_000)
   #expect(GhostteaReconnectDefaults.synchronizeTimeoutMs == 10_000)
   #expect(GhostteaReconnectDefaults.remoteReconnectProtocolMinor == 6)
-  #expect(UInt64(GhostteaTruffleContract.protocolMinor) == 6)
+  #expect(UInt64(GhostteaTruffleContract.protocolMinor) == 7)
 }
 
 // MARK: - Controller revision rule (§4.2.3)
@@ -235,6 +259,37 @@ import Truffle
   let live = await recorder.wait { $0.phase == .live }
   #expect(live != nil)
   #expect(await sink.applied.count == 1)
+  await lifecycle.close()
+}
+
+@Test func trackedSelectionCrossesTheLiveLifecycleAndCanClear() async {
+  let dialer = ScriptedDialer()
+  let sink = RecordingSink()
+  let lifecycle = makeLifecycle(dialer: dialer, sink: sink)
+  let recorder = await PhaseRecorder.watching(lifecycle)
+  await lifecycle.start()
+
+  let peer = await dialer.nextPeer()
+  try? await peer.goLive(snapshot: snapshotJSON(terminalRevision: 42), minor: 7)
+  _ = await recorder.wait { $0.phase == .live }
+  _ = await nextAcknowledgement(peer)
+
+  try? await peer.writeState(#"{"l":[2,41,8,43]}"#)
+  #expect(
+    await poll {
+      await sink.applied.last
+        == .selectionChanged(
+          GhostteaTrackedSelection(
+            anchor: GhostteaTrackedSelectionPoint(column: 2, row: 41),
+            focus: GhostteaTrackedSelectionPoint(column: 8, row: 43)
+          )) ? true : nil
+    } == true
+  )
+
+  try? await peer.writeState(#"{"l":null}"#)
+  #expect(
+    await poll { await sink.applied.last == .selectionChanged(nil) ? true : nil } == true
+  )
   await lifecycle.close()
 }
 

@@ -13,8 +13,11 @@ system fonts and must be treated as `FontMode::System`, which is intentionally
 non-parity because installed fonts and fallback choices differ between devices.
 
 The Phase 2 parity bundle is locked in `native/fonts.lock.json`: JetBrains Mono
-Nerd Font regular/bold/italic/bold-italic plus Noto Color Emoji, all under
-OFL-1.1 notices inherited from the pinned Ghostty source. Run:
+Nerd Font regular/bold/italic/bold-italic, Noto Color Emoji, STIX Two Math,
+Noto Sans Symbols 2, and Noto Emoji. Missing text glyphs resolve by ordered
+font coverage through the symbol faces before the monochrome emoji face; Unicode
+presentation rules select the colored emoji face. All fonts ship under OFL-1.1
+with pinned source and notice metadata. Run:
 
 ```sh
 npm run sync:fonts

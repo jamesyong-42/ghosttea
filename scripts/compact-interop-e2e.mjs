@@ -36,7 +36,7 @@ let shutdownRowRan = false;
 
 const MAGIC = Buffer.from("TSP1");
 const PROTOCOL_MAJOR = 1;
-const PROTOCOL_MINOR = 6;
+const PROTOCOL_MINOR = 7;
 const STREAM_KIND_SESSION_CONTROL = 2;
 const CHANNEL_CONTROL = 1;
 const CHANNEL_STATE = 2;

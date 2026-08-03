@@ -653,6 +653,24 @@ public actor GhostteaLogicalReplica {
     try publish(patch, using: ghosttea_replica_publish_patch_json)
   }
 
+  public func publishSelection(
+    anchorColumn: UInt16,
+    anchorRow: UInt32,
+    focusColumn: UInt16,
+    focusRow: UInt32
+  ) throws -> GhostteaUpdate {
+    try performUpdate { output in
+      ghosttea_replica_publish_selection(
+        handle, true, anchorColumn, anchorRow, focusColumn, focusRow, &output)
+    }
+  }
+
+  public func clearSelection() throws -> GhostteaUpdate {
+    try performUpdate { output in
+      ghosttea_replica_publish_selection(handle, false, 0, 0, 0, 0, &output)
+    }
+  }
+
   public func refresh() throws -> GhostteaUpdate {
     try performUpdate { output in ghosttea_replica_refresh(handle, &output) }
   }

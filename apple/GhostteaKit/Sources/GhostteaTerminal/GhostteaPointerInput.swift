@@ -159,6 +159,41 @@ enum GhostteaSelectionAutoScroll {
   }
 }
 
+enum GhostteaSelectionCompletion {
+  static func resolve(
+    anchor: GhostteaTerminalCellPoint,
+    focus: GhostteaTerminalCellPoint
+  ) -> GhostteaTerminalSelection? {
+    guard anchor != focus else { return nil }
+    return GhostteaTerminalSelection(anchor: anchor, focus: focus)
+  }
+}
+
+enum GhostteaScrollGesture {
+  static func deltaPoints(translationDelta: Double, directTouch: Bool) -> Double {
+    directTouch ? -translationDelta : translationDelta
+  }
+}
+
+enum GhostteaScrollMomentum {
+  /// Matches `UIScrollView.DecelerationRate.normal`: 0.998 retained per millisecond.
+  static let decelerationRatePerMillisecond = 0.998
+  static let minimumVelocityPointsPerSecond = 12.0
+  static let launchVelocityPointsPerSecond = 60.0
+
+  static func deceleratedVelocity(
+    _ velocity: Double,
+    elapsedSeconds: Double
+  ) -> Double {
+    guard velocity.isFinite, elapsedSeconds.isFinite, elapsedSeconds > 0 else { return 0 }
+    return velocity * pow(decelerationRatePerMillisecond, elapsedSeconds * 1_000)
+  }
+
+  static func shouldContinue(velocity: Double) -> Bool {
+    velocity.isFinite && abs(velocity) >= minimumVelocityPointsPerSecond
+  }
+}
+
 struct GhostteaWheelAccumulator: Equatable, Sendable {
   private(set) var remainder: Double = 0
 

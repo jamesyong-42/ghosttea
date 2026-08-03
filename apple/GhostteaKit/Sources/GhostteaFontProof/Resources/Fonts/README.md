@@ -1,6 +1,6 @@
 # Bundled parity fonts
 
-The five fonts pinned by `native/fonts.lock.json` are committed here rather than generated.
+The eight fonts pinned by `native/fonts.lock.json` are committed here rather than generated.
 
 `GhostteaFonts` declares this directory as a `.process("Fonts")` resource, and `GhostteaCore`
 depends on it — so an empty directory fails SwiftPM at package-graph load, taking down every

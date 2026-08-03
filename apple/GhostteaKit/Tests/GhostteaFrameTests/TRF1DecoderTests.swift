@@ -108,6 +108,8 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
       _ = try? decodeTRF1CursorState(section)
     case .scrollbarState:
       _ = try? decodeTRF1ScrollbarState(section)
+    case .selectionSpans:
+      _ = try? decodeTRF1SelectionState(section)
     case .accessibilityText:
       _ = try? decodeTRF1AccessibilityRows(section)
     case .clipboardWrite:
@@ -150,6 +152,7 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   let cursorSection = try #require(frame.sections.first { $0.kind == .cursorState })
   let accessibilitySection = try #require(frame.sections.first { $0.kind == .accessibilityText })
   let scrollbarSection = try #require(frame.sections.first { $0.kind == .scrollbarState })
+  let selectionSection = try #require(frame.sections.first { $0.kind == .selectionSpans })
 
   #expect(try !decodeTRF1GlyphDefinitions(glyphSection).isEmpty)
   #expect(try !decodeTRF1StyleDefinitions(styleSection).isEmpty)
@@ -162,6 +165,57 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
   let scrollbar = try decodeTRF1ScrollbarState(scrollbarSection)
   #expect(scrollbar.length == 30)
   #expect(scrollbar.length <= scrollbar.total)
+  #expect(try decodeTRF1SelectionState(selectionSection) == nil)
+}
+
+@Test func decodesTrackedSelectionEndpointsAndExplicitClear() throws {
+  var bytes = Data(repeating: 0, count: 12)
+  writeUInt16(2, to: &bytes, at: 0)
+  writeUInt32(41, to: &bytes, at: 2)
+  writeUInt16(8, to: &bytes, at: 6)
+  writeUInt32(43, to: &bytes, at: 8)
+  let selected = try decodeTRF1SelectionState(
+    TRF1Section(kind: .selectionSpans, flags: 0, itemCount: 1, bytes: bytes)
+  )
+  #expect(
+    selected
+      == TRF1SelectionState(
+        anchor: TRF1SelectionPoint(column: 2, row: 41),
+        focus: TRF1SelectionPoint(column: 8, row: 43)
+      )
+  )
+  #expect(
+    try decodeTRF1SelectionState(
+      TRF1Section(kind: .selectionSpans, flags: 0, itemCount: 0, bytes: Data())
+    ) == nil
+  )
+  #expect(throws: TRF1DecodingError.self) {
+    try decodeTRF1SelectionState(
+      TRF1Section(kind: .selectionSpans, flags: 0, itemCount: 1, bytes: Data())
+    )
+  }
+}
+
+@Test func retainedSelectionFollowsAlternateScreenGridScroll() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 812, sessionEpoch: 1, columns: 12, rows: 3)
+  )
+  let full = try framePayload(
+    await terminal.feed(Data("\u{1b}[?1049hfirst\r\nsecond\r\nthird".utf8), render: .full)
+  )
+  _ = try await terminal.selectionText(
+    startColumn: 0, startRow: 1, endColumn: 5, endRow: 1)
+  let scrolled = try framePayload(
+    await terminal.feed(Data("\u{1b}[1S".utf8), render: .damage)
+  )
+
+  var state = RetainedTRF1State()
+  _ = try state.apply(full)
+  _ = try state.apply(scrolled)
+  #expect(state.selection?.anchor.row == 0)
+  #expect(state.selection?.focus.row == 0)
 }
 
 @Test func rejectsMalformedFrameEnvelopeBeforeSectionAllocation() {
@@ -218,6 +272,7 @@ private func exerciseEveryTRF1Decoder(_ data: Data) {
     _ = try? decodeTRF1RowReplacements(section)
     _ = try? decodeTRF1CursorState(section)
     _ = try? decodeTRF1ScrollbarState(section)
+    _ = try? decodeTRF1SelectionState(section)
     _ = try? decodeTRF1AccessibilityRows(section)
     _ = try? decodeTRF1ClipboardWrite(section)
   }

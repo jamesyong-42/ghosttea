@@ -132,15 +132,15 @@ struct GhostteaSSHView: View {
       onAction: model.apply,
       onNewTab: { model.createTab() },
       onSplit: model.split,
-      onCommandPalette: { model.presentsCommandPalette = true }
-    ) { _, pane, _ in
-      GhostteaSSHWorkspacePane(
-        sessionID: pane.sessionID,
-        frame: model.frame(for: pane.sessionID),
-        status: model.sessionStatus(for: pane.sessionID),
-        controlsGridSize: gridControllerPaneIDs.contains(pane.id),
-        visible: scenePhase == .active)
-    }
+      onCommandPalette: { model.presentsCommandPalette = true },
+      paneContent: { _, pane, _ in
+        GhostteaSSHWorkspacePane(
+          sessionID: pane.sessionID,
+          frame: model.frame(for: pane.sessionID),
+          status: model.sessionStatus(for: pane.sessionID),
+          controlsGridSize: gridControllerPaneIDs.contains(pane.id),
+          visible: scenePhase == .active)
+      })
   }
 
   private var hostKeyPresented: Binding<Bool> {
@@ -178,6 +178,7 @@ private struct GhostteaSSHWorkspacePane: View {
           onSoftwareInput: { model.handleSoftwareInput($0, sessionID: sessionID) },
           onMouseInput: { model.handleMouse($0, sessionID: sessionID) },
           onScrollRows: { model.handleScroll($0, sessionID: sessionID) },
+          onClipboardWrite: { _ in },
           onSelectionCommit: { model.copySelection($0, sessionID: sessionID) },
           onSelectAll: { model.copyAll(sessionID: sessionID) })
       } else {

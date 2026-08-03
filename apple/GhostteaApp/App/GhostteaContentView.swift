@@ -177,6 +177,7 @@ struct GhostteaContentView: View {
           onSoftwareInput: model.handleSoftwareInput,
           onMouseInput: model.handleMouse,
           onScrollRows: model.handleScroll,
+          onClipboardWrite: model.handleClipboardWrite,
           onSelectionCommit: model.copySelection,
           onSelectAll: model.copyAll
         )

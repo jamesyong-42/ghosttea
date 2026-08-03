@@ -32,6 +32,9 @@ int32_t ghosttea_font_fixture_generate(
     ghosttea_font_bytes_t italic,
     ghosttea_font_bytes_t bold_italic,
     ghosttea_font_bytes_t emoji,
+    ghosttea_font_bytes_t symbols_math,
+    ghosttea_font_bytes_t symbols,
+    ghosttea_font_bytes_t emoji_text,
     ghosttea_owned_bytes_t *out);
 
 void ghosttea_font_fixture_free(ghosttea_owned_bytes_t bytes);

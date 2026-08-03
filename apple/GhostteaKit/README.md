@@ -469,20 +469,23 @@ Gesture recognizers, wheel accumulation, and selection extraction build on this
 boundary in the next slice.
 
 The interaction slice installs indirect-pointer pan and hover recognizers plus
-a direct-touch long-press selection recognizer. Active mouse-tracking sessions
-receive normalized left press/motion/release and hover events; Shift or
-`forceLocalSelection` keeps the same drag view-local. Wheel input uses desktop's
-2× precise-device multiplier, retains sub-row remainder across events, and caps
-remote wheel packets at 12 per update. Non-tracking wheel rows are returned to
-the host for native terminal scrolling.
+direct-touch pan and long-press selection recognizers. Active mouse-tracking
+sessions receive normalized left press/motion/release and hover events; Shift
+or `forceLocalSelection` keeps the same pointer drag view-local. Trackpad and
+one-finger scrolling use desktop's 2× precise-device multiplier, retain sub-row
+remainder for the gesture, and cap remote wheel packets at 12 per update.
+Non-tracking rows return to the host, where regular screens move scrollback and
+alternate-screen applications receive their configured scroll-key input.
 
 Local selections are stored in absolute scrollback coordinates, clipped back
 to the current viewport for Metal rendering, and retained across scroll frames.
 The host receives change and commit callbacks; committed extraction goes to
 `GhostteaTerminal.selectionText` so wrapped rows, wide cells, and graphemes stay
-native-model decisions. Zero-length clicks clear selection. Word/line expansion,
-which is absent from the desktop demo, is not added as an iOS-only behavior.
-Physical pointer and touch ergonomics remain release evidence.
+native-model decisions. Zero-length pointer clicks clear selection; a touch
+long-press is itself an explicit selection gesture, so it retains and copies
+its cell even without a drag. Word/line expansion, which is absent from the
+desktop demo, is not added as an iOS-only behavior. Physical pointer and touch
+ergonomics remain release evidence.
 
 Selection now also matches the desktop demo at viewport edges and in its edit
 menu. While a local drag remains above or below the surface, a cancellable

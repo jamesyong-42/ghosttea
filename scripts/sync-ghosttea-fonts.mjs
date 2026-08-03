@@ -31,7 +31,7 @@ mkdirSync(appleFonts, { recursive: true });
 
 const manifestFonts = [];
 for (const font of lock.fonts) {
-  const source = join(vendor, font.path);
+  const source = font.bundledPath ? join(root, font.bundledPath) : join(vendor, font.path);
   if (!existsSync(source)) throw new Error(`Missing locked font ${font.path}.`);
   const digest = sha256(source);
   if (digest !== font.sha256) throw new Error(`Digest mismatch for locked font ${font.path}.`);
@@ -41,15 +41,28 @@ for (const font of lock.fonts) {
   manifestFonts.push({ role: font.role, filename, sha256: digest });
 }
 
-for (const [name, relativePath] of Object.entries({
-  "OFL-1.1.txt": lock.license.text,
-  "FONT-NOTICES.md": lock.license.notices,
-})) {
-  const source = join(vendor, relativePath);
-  if (!existsSync(source)) throw new Error(`Missing font license material ${relativePath}.`);
-  cpSync(source, join(output, name));
-  cpSync(source, join(appleResources, name));
+const licenseSource = join(vendor, lock.license.text);
+if (!existsSync(licenseSource)) {
+  throw new Error(`Missing font license material ${lock.license.text}.`);
 }
+cpSync(licenseSource, join(output, "OFL-1.1.txt"));
+cpSync(licenseSource, join(appleResources, "OFL-1.1.txt"));
+
+const noticesSource = join(vendor, lock.license.notices);
+if (!existsSync(noticesSource)) {
+  throw new Error(`Missing font license material ${lock.license.notices}.`);
+}
+const additions = (lock.additionalNotices ?? [])
+  .map(
+    (notice) =>
+      `- ${notice.name} (${notice.license})\n  - ${notice.copyright}\n  - ${notice.repository}`,
+  )
+  .join("\n");
+const notices = `${readFileSync(noticesSource, "utf8").trimEnd()}\n${
+  additions ? `\n## Ghosttea fallback additions\n\n${additions}\n` : ""
+}`;
+writeFileSync(join(output, "FONT-NOTICES.md"), notices);
+writeFileSync(join(appleResources, "FONT-NOTICES.md"), notices);
 
 cpSync(join(root, "native/ghosttea/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
 

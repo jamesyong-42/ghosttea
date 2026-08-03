@@ -15,6 +15,10 @@ use swash::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+mod emoji_presentation;
+
+use emoji_presentation::has_default_emoji_presentation;
+
 #[cfg(feature = "fixture")]
 mod fixture;
 
@@ -60,11 +64,26 @@ pub enum FontMode {
     System,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum FontPresentation {
+    #[default]
+    Text,
+    Emoji,
+    Any,
+}
+
+impl FontPresentation {
+    fn accepts(self, requested: Self) -> bool {
+        self == Self::Any || requested == Self::Any || self == requested
+    }
+}
+
 #[derive(Clone)]
 pub struct FontResource {
     name: String,
     bytes: Arc<Vec<u8>>,
     face_index: usize,
+    presentation: FontPresentation,
 }
 
 impl FontResource {
@@ -73,11 +92,17 @@ impl FontResource {
             name: name.into(),
             bytes: Arc::new(bytes),
             face_index: 0,
+            presentation: FontPresentation::Text,
         }
     }
 
     pub fn with_face_index(mut self, face_index: usize) -> Self {
         self.face_index = face_index;
+        self
+    }
+
+    pub fn with_presentation(mut self, presentation: FontPresentation) -> Self {
+        self.presentation = presentation;
         self
     }
 
@@ -87,6 +112,10 @@ impl FontResource {
 
     pub fn bytes(&self) -> &[u8] {
         self.bytes.as_slice()
+    }
+
+    pub fn presentation(&self) -> FontPresentation {
+        self.presentation
     }
 }
 
@@ -174,6 +203,12 @@ struct LoadedFace {
     data: Arc<dyn AsRef<[u8]> + Send + Sync>,
 }
 
+#[derive(Clone, Copy)]
+struct FallbackFace {
+    id: ID,
+    presentation: FontPresentation,
+}
+
 #[derive(Clone)]
 struct Grapheme<'a> {
     text: &'a str,
@@ -194,8 +229,9 @@ pub struct TextEngine {
     database: Database,
     primary_family: String,
     styled_faces: HashMap<FontStyle, ID>,
-    fallback_order: Option<Vec<ID>>,
-    fallback_faces: HashMap<char, ID>,
+    face_presentations: HashMap<ID, FontPresentation>,
+    fallback_order: Option<Vec<FallbackFace>>,
+    fallback_faces: HashMap<(char, FontPresentation), ID>,
     loaded_faces: HashMap<ID, LoadedFace>,
     next_face_id: u32,
     glyph_ids: HashMap<GlyphKey, u32>,
@@ -293,11 +329,17 @@ impl TextEngine {
                 .unwrap_or(primary);
             styled_faces.insert(style, face);
         }
+        let face_presentations = styled_faces
+            .values()
+            .copied()
+            .map(|face| (face, FontPresentation::Text))
+            .collect();
 
         Ok(Self {
             database,
             primary_family,
             styled_faces,
+            face_presentations,
             fallback_order: None,
             fallback_faces: HashMap::new(),
             loaded_faces: HashMap::new(),
@@ -323,6 +365,7 @@ impl TextEngine {
         validate_configuration(metrics, raster_scale)?;
         let mut database = Database::new();
         let regular = load_font_resource(&mut database, &fonts.regular)?;
+        let mut face_presentations = HashMap::from([(regular, fonts.regular.presentation())]);
         let bold = fonts
             .bold
             .as_ref()
@@ -341,10 +384,26 @@ impl TextEngine {
             .map(|font| load_font_resource(&mut database, font))
             .transpose()?
             .unwrap_or_else(|| if bold != regular { bold } else { italic });
+        if let Some(font) = &fonts.bold {
+            face_presentations.insert(bold, font.presentation());
+        }
+        if let Some(font) = &fonts.italic {
+            face_presentations.insert(italic, font.presentation());
+        }
+        if let Some(font) = &fonts.bold_italic {
+            face_presentations.insert(bold_italic, font.presentation());
+        }
         let fallback_order = fonts
             .fallbacks
             .iter()
-            .map(|font| load_font_resource(&mut database, font))
+            .map(|font| {
+                let id = load_font_resource(&mut database, font)?;
+                face_presentations.insert(id, font.presentation());
+                Ok(FallbackFace {
+                    id,
+                    presentation: font.presentation(),
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         let primary_family = database
             .face(regular)
@@ -385,6 +444,7 @@ impl TextEngine {
             database,
             primary_family,
             styled_faces,
+            face_presentations,
             fallback_order: Some(fallback_order),
             fallback_faces: HashMap::new(),
             loaded_faces: HashMap::new(),
@@ -513,10 +573,13 @@ impl TextEngine {
                 .get(&style)
                 .context("missing styled primary face")?;
             let span = UnicodeWidthStr::width(cluster).clamp(1, 2) as u16;
-            let face = if self.face_supports(primary, cluster)? {
+            let presentation = cluster_presentation(cluster);
+            let face = if self.face_supports(primary, cluster)?
+                && self.face_matches(primary, presentation)
+            {
                 primary
             } else {
-                self.fallback_for(cluster).unwrap_or(primary)
+                self.fallback_for(cluster, presentation).unwrap_or(primary)
             };
             output.push(Grapheme {
                 text: cluster,
@@ -531,38 +594,68 @@ impl TextEngine {
         Ok(output)
     }
 
-    fn fallback_for(&mut self, cluster: &str) -> Option<ID> {
-        let representative = cluster.chars().find(|character| !character.is_control())?;
-        if let Some(face) = self.fallback_faces.get(&representative)
+    fn fallback_for(&mut self, cluster: &str, presentation: FontPresentation) -> Option<ID> {
+        let representative = cluster
+            .chars()
+            .find(|character| !is_ignorable(*character))?;
+        let cache_key = (representative, presentation);
+        if let Some(face) = self.fallback_faces.get(&cache_key)
             && self.face_supports(*face, cluster).unwrap_or(false)
         {
             return Some(*face);
         }
-        let prefer_emoji = cluster.chars().any(is_emoji);
-        let mut ids = self
-            .fallback_order
-            .clone()
-            .unwrap_or_else(|| self.database.faces().map(|face| face.id).collect());
-        if self.fallback_order.is_none() && prefer_emoji {
-            ids.sort_by_key(|id| {
-                let face = self.database.face(*id);
-                let emoji_named = face.is_some_and(|face| {
-                    face.post_script_name.contains("Emoji")
+        let faces = self.fallback_order.clone().unwrap_or_else(|| {
+            self.database
+                .faces()
+                .map(|face| FallbackFace {
+                    id: face.id,
+                    presentation: self.inferred_presentation(face.id),
+                })
+                .collect()
+        });
+        let found = faces
+            .iter()
+            .copied()
+            .find(|face| {
+                face.presentation.accepts(presentation)
+                    && self.face_supports(face.id, cluster).unwrap_or(false)
+            })
+            .or_else(|| {
+                faces
+                    .iter()
+                    .copied()
+                    .find(|face| self.face_supports(face.id, cluster).unwrap_or(false))
+            })
+            .map(|face| face.id);
+        if let Some(face) = found {
+            self.fallback_faces.insert(cache_key, face);
+        }
+        found
+    }
+
+    fn face_matches(&self, face: ID, presentation: FontPresentation) -> bool {
+        self.inferred_presentation(face).accepts(presentation)
+    }
+
+    fn inferred_presentation(&self, face: ID) -> FontPresentation {
+        self.face_presentations
+            .get(&face)
+            .copied()
+            .unwrap_or_else(|| {
+                let color_emoji = self.database.face(face).is_some_and(|face| {
+                    face.post_script_name.contains("ColorEmoji")
+                        || face.post_script_name.contains("Color Emoji")
                         || face
                             .families
                             .iter()
-                            .any(|family| family.0.contains("Emoji"))
+                            .any(|family| family.0.contains("Color Emoji"))
                 });
-                !emoji_named
-            });
-        }
-        let found = ids
-            .into_iter()
-            .find(|id| self.face_supports(*id, cluster).unwrap_or(false));
-        if let Some(face) = found {
-            self.fallback_faces.insert(representative, face);
-        }
-        found
+                if color_emoji {
+                    FontPresentation::Emoji
+                } else {
+                    FontPresentation::Text
+                }
+            })
     }
 
     fn face_supports(&self, face: ID, cluster: &str) -> Result<bool> {
@@ -826,11 +919,25 @@ fn load_font_resource(database: &mut Database, resource: &FontResource) -> Resul
 }
 
 fn is_ignorable(character: char) -> bool {
-    character == '\u{200d}' || character == '\u{fe0f}' || character.is_control()
+    character == '\u{200d}'
+        || character == '\u{fe0e}'
+        || character == '\u{fe0f}'
+        || character.is_control()
 }
 
-fn is_emoji(character: char) -> bool {
-    matches!(character as u32, 0x1f000..=0x1faff | 0x2600..=0x27bf)
+fn cluster_presentation(cluster: &str) -> FontPresentation {
+    for character in cluster.chars() {
+        match character {
+            '\u{fe0e}' => return FontPresentation::Text,
+            '\u{fe0f}' => return FontPresentation::Emoji,
+            _ => {}
+        }
+    }
+    cluster
+        .chars()
+        .find(|character| !is_ignorable(*character))
+        .filter(|character| has_default_emoji_presentation(*character))
+        .map_or(FontPresentation::Text, |_| FontPresentation::Emoji)
 }
 
 fn style_id(style: FontStyle) -> u32 {
@@ -867,6 +974,124 @@ mod tests {
             .with_face_data(face, |bytes, index| (bytes.to_vec(), index))
             .expect("test system font must be readable");
         FontResource::new("test-monospace", bytes).with_face_index(index as usize)
+    }
+
+    fn presentation_test_engine() -> TextEngine {
+        let mut fonts = FontResources::new(FontResource::new(
+            "JetBrainsMonoNerdFont-Regular.ttf",
+            include_bytes!(
+                "../../../../vendor/ghostty/src/font/res/JetBrainsMonoNerdFont-Regular.ttf"
+            )
+            .to_vec(),
+        ));
+        fonts.fallbacks = vec![
+            FontResource::new(
+                "NotoColorEmoji.ttf",
+                include_bytes!("../../../../vendor/ghostty/src/font/res/NotoColorEmoji.ttf")
+                    .to_vec(),
+            )
+            .with_presentation(FontPresentation::Emoji),
+            FontResource::new(
+                "STIXTwoMath-Regular.otf",
+                include_bytes!("../../../../font-resources/STIXTwoMath-Regular.otf").to_vec(),
+            )
+            .with_presentation(FontPresentation::Text),
+            FontResource::new(
+                "NotoSansSymbols2-Regular.ttf",
+                include_bytes!("../../../../font-resources/NotoSansSymbols2-Regular.ttf").to_vec(),
+            )
+            .with_presentation(FontPresentation::Text),
+            FontResource::new(
+                "NotoEmoji-Regular.ttf",
+                include_bytes!("../../../../vendor/ghostty/src/font/res/NotoEmoji-Regular.ttf")
+                    .to_vec(),
+            )
+            .with_presentation(FontPresentation::Text),
+        ];
+        TextEngine::from_fonts(fonts, TextMetrics::default(), RASTER_SCALE).unwrap()
+    }
+
+    #[test]
+    fn resolves_unicode_and_explicit_presentation_selectors() {
+        assert_eq!(cluster_presentation("\u{23f8}"), FontPresentation::Text);
+        assert_eq!(
+            cluster_presentation("\u{23f8}\u{fe0e}"),
+            FontPresentation::Text
+        );
+        assert_eq!(
+            cluster_presentation("\u{23f8}\u{fe0f}"),
+            FontPresentation::Emoji
+        );
+        assert_eq!(cluster_presentation("\u{1f600}"), FontPresentation::Emoji);
+        assert_eq!(cluster_presentation("\u{26a0}"), FontPresentation::Text);
+    }
+
+    #[test]
+    fn renders_text_default_symbols_as_alpha_and_real_emoji_as_color() {
+        let mut engine = presentation_test_engine();
+        let pause = engine.shape_row("\u{23f8}", FontStyle::default()).unwrap();
+        assert!(!pause.definitions.is_empty());
+        assert!(
+            pause
+                .definitions
+                .iter()
+                .all(|definition| definition.format == GlyphFormat::Alpha8)
+        );
+
+        let emoji_pause = engine
+            .shape_row("\u{23f8}\u{fe0f}", FontStyle::default())
+            .unwrap();
+        assert!(
+            emoji_pause
+                .definitions
+                .iter()
+                .any(|definition| definition.format == GlyphFormat::Rgba8Premultiplied)
+        );
+
+        let grin = engine.shape_row("\u{1f600}", FontStyle::default()).unwrap();
+        assert!(
+            grin.definitions
+                .iter()
+                .any(|definition| definition.format == GlyphFormat::Rgba8Premultiplied)
+        );
+
+        for symbol in ["✻", "⚠"] {
+            let row = engine.shape_row(symbol, FontStyle::default()).unwrap();
+            assert!(
+                !row.definitions.is_empty(),
+                "{symbol} must resolve through text fallback"
+            );
+            assert!(
+                row.definitions
+                    .iter()
+                    .all(|definition| definition.format == GlyphFormat::Alpha8),
+                "{symbol} must not silently become an emoji"
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_missing_symbols_by_ordered_font_coverage() {
+        let mut engine = presentation_test_engine();
+        let graphemes = engine
+            .resolve_graphemes("⏸✻⚠←·", &[])
+            .expect("symbol cascade must resolve");
+        let postscript_names = graphemes
+            .iter()
+            .map(|grapheme| {
+                engine
+                    .database
+                    .face(grapheme.face)
+                    .expect("resolved face metadata")
+                    .post_script_name
+                    .as_str()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(postscript_names[0], "STIXTwoMath-Regular");
+        assert_eq!(postscript_names[1], "NotoSansSymbols2-Regular");
+        assert_eq!(postscript_names[3], "JetBrainsMonoNF-Regular");
+        assert_eq!(postscript_names[4], "JetBrainsMonoNF-Regular");
     }
 
     #[test]

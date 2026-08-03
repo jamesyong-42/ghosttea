@@ -92,6 +92,8 @@ public actor GhostteaTruffleReplicaPump {
     case .state(.configurationChanged(let presentation)):
       try await publisher.adopt(presentation)
       return .configurationChanged(presentation)
+    case .state(.selectionChanged(let selection)):
+      return .frame(try await publisher.publish(selection), fullSnapshot: false)
     case .state(.snapshot(let snapshot)):
       let update = try await publisher.publish(snapshot)
       try await attachment.acknowledge(

@@ -155,6 +155,26 @@ public struct GhostteaLogicalCursor: Codable, Equatable, Sendable {
   }
 }
 
+public struct GhostteaTrackedSelectionPoint: Codable, Equatable, Sendable {
+  public let column: UInt16
+  public let row: UInt32
+
+  public init(column: UInt16, row: UInt32) {
+    self.column = column
+    self.row = row
+  }
+}
+
+public struct GhostteaTrackedSelection: Codable, Equatable, Sendable {
+  public let anchor: GhostteaTrackedSelectionPoint
+  public let focus: GhostteaTrackedSelectionPoint
+
+  public init(anchor: GhostteaTrackedSelectionPoint, focus: GhostteaTrackedSelectionPoint) {
+    self.anchor = anchor
+    self.focus = focus
+  }
+}
+
 public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
   case snapshot(GhostteaLogicalSnapshot)
   case patch(GhostteaLogicalPatch)
@@ -167,6 +187,7 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
   )
   case activityChanged(GhostteaSessionActivity)
   case configurationChanged(GhostteaTerminalPresentationConfig)
+  case selectionChanged(GhostteaTrackedSelection?)
   /// The revisioned replacement for ``controlChanged``, which structurally
   /// cannot say "no controller" — its controller id is required. Hosts send
   /// this at the reconnect minor and above, clears included; this client keeps
@@ -187,6 +208,7 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
     case controlEpoch, cols, rows, layoutEpoch
     case activity
     case presentation
+    case selection
     case controller, controlRevision
     case reason
   }
@@ -211,6 +233,10 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
         GhostteaTerminalPresentationConfig.self, forKey: .presentation)
       guard presentation.isValid else { throw GhostteaTruffleError.malformedMessage }
       self = .configurationChanged(presentation)
+    case "selection-changed":
+      self = try .selectionChanged(
+        values.decodeIfPresent(GhostteaTrackedSelection.self, forKey: .selection)
+      )
     case "control-state":
       self = try .controlState(
         controller: values.decodeIfPresent(GhostteaControllerInfo.self, forKey: .controller),
@@ -253,6 +279,10 @@ public enum GhostteaTerminalStateMessage: Codable, Equatable, Sendable {
       var values = encoder.container(keyedBy: CodingKeys.self)
       try values.encode("configuration-changed", forKey: .type)
       try values.encode(presentation, forKey: .presentation)
+    case .selectionChanged(let selection):
+      var values = encoder.container(keyedBy: CodingKeys.self)
+      try values.encode("selection-changed", forKey: .type)
+      try values.encodeIfPresent(selection, forKey: .selection)
     case .controlState(let controller, let revision, let cols, let rows, let layout):
       var values = encoder.container(keyedBy: CodingKeys.self)
       try values.encode("control-state", forKey: .type)

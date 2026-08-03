@@ -4,7 +4,9 @@ use ghosttea_core::{
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
 };
 use ghosttea_ffi::*;
-use ghosttea_text::{FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics};
+use ghosttea_text::{
+    FontPresentation, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
+};
 use serde_json::Value;
 
 fn bytes(path: &Path, name: &str) -> Vec<u8> {
@@ -28,10 +30,16 @@ fn resources(path: &Path) -> FontResources {
         "bold-italic",
         bytes(path, "JetBrainsMonoNerdFont-BoldItalic.ttf"),
     ));
-    fonts.fallbacks = vec![FontResource::new(
-        "emoji",
-        bytes(path, "NotoColorEmoji.ttf"),
-    )];
+    fonts.fallbacks = vec![
+        FontResource::new("emoji", bytes(path, "NotoColorEmoji.ttf"))
+            .with_presentation(FontPresentation::Emoji),
+        FontResource::new("symbols-math", bytes(path, "STIXTwoMath-Regular.otf"))
+            .with_presentation(FontPresentation::Text),
+        FontResource::new("symbols", bytes(path, "NotoSansSymbols2-Regular.ttf"))
+            .with_presentation(FontPresentation::Text),
+        FontResource::new("emoji-text", bytes(path, "NotoEmoji-Regular.ttf"))
+            .with_presentation(FontPresentation::Text),
+    ];
     fonts
 }
 
@@ -99,7 +107,8 @@ fn assert_payloads_equal(direct: &[(u32, Vec<u8>)], ffi: &[(u32, Vec<u8>)]) {
 fn ffi_matches_direct_model_and_survives_repeated_lifecycles() {
     let directory = env::var("GHOSTTEA_FONT_DIR").expect("GHOSTTEA_FONT_DIR is required");
     let directory = Path::new(&directory);
-    let input = b"phase3\r\n\x1b]0;ffi-title\x07\x1b[6nemoji: \xF0\x9F\x98\x80";
+    let input =
+        b"phase3\r\n\x1b]0;ffi-title\x07\x1b[6nemoji: \xF0\x9F\x98\x80 symbol: \xE2\x8F\xB8";
 
     let direct_runtime = std::sync::Arc::new(TerminalRuntime::new(
         TextEngine::from_fonts(resources(directory), TextMetrics::default(), RASTER_SCALE).unwrap(),
@@ -119,22 +128,24 @@ fn ffi_matches_direct_model_and_survives_repeated_lifecycles() {
     let expected = direct_payloads(direct.feed(input, RenderRequest::Full).unwrap());
 
     let font_bytes = [
-        bytes(directory, "JetBrainsMonoNerdFont-Regular.ttf"),
-        bytes(directory, "JetBrainsMonoNerdFont-Bold.ttf"),
-        bytes(directory, "JetBrainsMonoNerdFont-Italic.ttf"),
-        bytes(directory, "JetBrainsMonoNerdFont-BoldItalic.ttf"),
-        bytes(directory, "NotoColorEmoji.ttf"),
+        (bytes(directory, "JetBrainsMonoNerdFont-Regular.ttf"), 0),
+        (bytes(directory, "JetBrainsMonoNerdFont-Bold.ttf"), 1),
+        (bytes(directory, "JetBrainsMonoNerdFont-Italic.ttf"), 2),
+        (bytes(directory, "JetBrainsMonoNerdFont-BoldItalic.ttf"), 3),
+        (bytes(directory, "NotoColorEmoji.ttf"), 6),
+        (bytes(directory, "STIXTwoMath-Regular.otf"), 5),
+        (bytes(directory, "NotoSansSymbols2-Regular.ttf"), 5),
+        (bytes(directory, "NotoEmoji-Regular.ttf"), 5),
     ];
     let fonts = font_bytes
         .iter()
-        .enumerate()
-        .map(|(role, data)| GhostteaFont {
+        .map(|(data, role)| GhostteaFont {
             data: GhostteaBytesView {
                 data: data.as_ptr(),
                 len: data.len(),
             },
             face_index: 0,
-            role: role as u32,
+            role: *role,
         })
         .collect::<Vec<_>>();
     let runtime_config = GhostteaRuntimeConfig {

@@ -16,7 +16,7 @@ public enum GhostteaTruffleContract {
   /// settled on, which is what every reconnect behaviour is gated by — never
   /// this number. Counterpart: `PROTOCOL_MINOR` in
   /// `native/ghosttea/src/tunnel_protocol.rs`.
-  public static let protocolMinor: UInt16 = 6
+  public static let protocolMinor: UInt16 = 7
   public static let maximumControlMessageBytes = 1 * 1024 * 1024
   public static let maximumStateMessageBytes = 16 * 1024 * 1024
   public static let maximumPrefaceMetadataBytes = 4 * 1024

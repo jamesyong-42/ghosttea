@@ -37,3 +37,12 @@ An accompanying FAQ is also available at <https://openfontlicense.org/>.
 A full copy of the MIT license can be found at [MIT.txt](./MIT.txt).
 
 A full copy of the BSD 2-Clause license can be found at [BSD-2-Clause.txt](./BSD-2-Clause.txt).
+
+## Ghosttea fallback additions
+
+- STIX Two Math (OFL-1.1)
+  - Copyright 2001-2021 The STI Pub Companies, consisting of the American Chemical Society, the American Institute of Physics, the American Mathematical Society, the American Physical Society, Elsevier, Inc., and The Institute of Electrical and Electronic Engineers, Inc.
+  - https://github.com/stipub/stixfonts
+- Noto Sans Symbols 2 (OFL-1.1)
+  - Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
+  - https://github.com/notofonts/symbols

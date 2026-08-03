@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use ghosttea_text::{GlyphDefinition, GlyphFormat, GlyphInstance, ShapedRow};
-use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar};
+use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar, TerminalSelection};
 use std::collections::{BTreeMap, HashMap};
 
 pub const FRAME_MAGIC: u32 = 0x3146_5254;
@@ -13,6 +13,7 @@ pub const ROW_REPLACEMENTS: u16 = 3;
 pub const STYLE_DEFINITIONS: u16 = 2;
 pub const GLYPH_DEFINITIONS: u16 = 1;
 pub const CLIPBOARD_WRITE: u16 = 11;
+pub const SELECTION_SPANS: u16 = 5;
 pub const FULL_SNAPSHOT: u16 = 1;
 pub const MOUSE_TRACKING: u16 = 1 << 1;
 pub const CATALOG_RESET: u16 = 1 << 2;
@@ -224,6 +225,7 @@ pub struct TextSnapshot<'a> {
     pub catalog_reset: bool,
     pub mouse_tracking: bool,
     pub scrollbar: &'a TerminalScrollbar,
+    pub selection: Option<&'a TerminalSelection>,
     pub new_glyph_definitions: &'a [GlyphDefinition],
     pub clipboard: Option<&'a [u8]>,
     pub cursor: &'a FrameCursor,
@@ -245,6 +247,7 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         catalog_reset,
         mouse_tracking,
         scrollbar,
+        selection,
         new_glyph_definitions,
         clipboard,
         cursor,
@@ -356,7 +359,17 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         bytes.extend_from_slice(text);
         bytes
     });
-    let section_count = 6 + usize::from(clipboard_payload.is_some());
+    let selection_payload = selection.map(|selection| {
+        let mut bytes = Vec::with_capacity(12);
+        bytes.extend_from_slice(&selection.anchor.column.to_le_bytes());
+        bytes.extend_from_slice(&selection.anchor.row.to_le_bytes());
+        bytes.extend_from_slice(&selection.focus.column.to_le_bytes());
+        bytes.extend_from_slice(&selection.focus.row.to_le_bytes());
+        bytes
+    });
+    // Selection is present even when empty so an incremental frame can clear a
+    // previously retained selection without widening another section.
+    let section_count = 7 + usize::from(clipboard_payload.is_some());
     let glyph_offset = FRAME_HEADER_BYTES + SECTION_HEADER_BYTES * section_count;
     let style_offset = glyph_offset + glyph_definitions.len();
     let replacement_offset = style_offset + style_definitions.len();
@@ -377,6 +390,10 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     packet.extend_from_slice(&scrollbar.total.to_le_bytes());
     packet.extend_from_slice(&scrollbar.offset.to_le_bytes());
     packet.extend_from_slice(&scrollbar.len.to_le_bytes());
+    let selection_offset = packet.len();
+    if let Some(bytes) = &selection_payload {
+        packet.extend_from_slice(bytes);
+    }
     let clipboard_offset = packet.len();
     if let Some(bytes) = &clipboard_payload {
         packet.extend_from_slice(bytes);
@@ -430,11 +447,19 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
     put_u32(&mut packet, 148, scrollbar_offset as u32);
     put_u32(&mut packet, 152, 24);
     put_u32(&mut packet, 156, 1);
+    put_u16(&mut packet, 160, SELECTION_SPANS);
+    put_u32(&mut packet, 164, selection_offset as u32);
+    put_u32(
+        &mut packet,
+        168,
+        selection_payload.as_ref().map_or(0, |bytes| bytes.len()) as u32,
+    );
+    put_u32(&mut packet, 172, u32::from(selection_payload.is_some()));
     if let Some(bytes) = &clipboard_payload {
-        put_u16(&mut packet, 160, CLIPBOARD_WRITE);
-        put_u32(&mut packet, 164, clipboard_offset as u32);
-        put_u32(&mut packet, 168, bytes.len() as u32);
-        put_u32(&mut packet, 172, 1);
+        put_u16(&mut packet, 176, CLIPBOARD_WRITE);
+        put_u32(&mut packet, 180, clipboard_offset as u32);
+        put_u32(&mut packet, 184, bytes.len() as u32);
+        put_u32(&mut packet, 188, 1);
     }
     Ok(packet)
 }
@@ -559,6 +584,10 @@ mod tests {
             style: 1,
             blinking: true,
         };
+        let selection = TerminalSelection {
+            anchor: ghosttea_vt::TerminalSelectionPoint { column: 2, row: 7 },
+            focus: ghosttea_vt::TerminalSelectionPoint { column: 9, row: 8 },
+        };
         let frame = encode_text_snapshot(TextSnapshot {
             session_handle: 4,
             session_epoch: 1,
@@ -578,6 +607,7 @@ mod tests {
                 offset: 6,
                 len: 24,
             },
+            selection: Some(&selection),
             new_glyph_definitions: &shaped[0].definitions,
             clipboard: None,
             cursor: &cursor,
@@ -589,7 +619,7 @@ mod tests {
             CATALOG_RESET
         );
         assert_eq!(u64::from_le_bytes(frame[40..48].try_into().unwrap()), 3);
-        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 6);
+        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 7);
         assert_eq!(
             u16::from_le_bytes(frame[64..66].try_into().unwrap()),
             GLYPH_DEFINITIONS
@@ -604,6 +634,17 @@ mod tests {
         assert_eq!(
             u16::from_le_bytes(frame[144..146].try_into().unwrap()),
             SCROLLBAR_STATE
+        );
+        assert_eq!(
+            u16::from_le_bytes(frame[160..162].try_into().unwrap()),
+            SELECTION_SPANS
+        );
+        assert_eq!(u32::from_le_bytes(frame[168..172].try_into().unwrap()), 12);
+        assert_eq!(u32::from_le_bytes(frame[172..176].try_into().unwrap()), 1);
+        let selection_offset = u32::from_le_bytes(frame[164..168].try_into().unwrap()) as usize;
+        assert_eq!(
+            &frame[selection_offset..selection_offset + 12],
+            &[2, 0, 7, 0, 0, 0, 9, 0, 8, 0, 0, 0]
         );
         let scrollbar_offset = u32::from_le_bytes(frame[148..152].try_into().unwrap()) as usize;
         assert_eq!(
@@ -670,6 +711,7 @@ mod tests {
                 offset: 0,
                 len: 24,
             },
+            selection: None,
             new_glyph_definitions: &[],
             clipboard: None,
             cursor: &cursor,
@@ -679,6 +721,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(frame[76..80].try_into().unwrap()), 0);
         assert_eq!(u16::from_le_bytes(frame[98..100].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(frame[108..112].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(frame[168..172].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(frame[172..176].try_into().unwrap()), 0);
     }
 
     #[test]
@@ -710,6 +754,7 @@ mod tests {
                 offset: 24,
                 len: 24,
             },
+            selection: None,
             new_glyph_definitions: &[],
             clipboard: Some(b"copied"),
             cursor: &cursor,
@@ -719,12 +764,12 @@ mod tests {
             u16::from_le_bytes(frame[6..8].try_into().unwrap()) & MOUSE_TRACKING,
             MOUSE_TRACKING
         );
-        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 7);
+        assert_eq!(u16::from_le_bytes(frame[60..62].try_into().unwrap()), 8);
         assert_eq!(
-            u16::from_le_bytes(frame[160..162].try_into().unwrap()),
+            u16::from_le_bytes(frame[176..178].try_into().unwrap()),
             CLIPBOARD_WRITE
         );
-        let offset = u32::from_le_bytes(frame[164..168].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(frame[180..184].try_into().unwrap()) as usize;
         assert_eq!(&frame[offset + 4..], b"copied");
     }
 
@@ -770,6 +815,7 @@ mod tests {
             catalog_reset: true,
             mouse_tracking: snapshot.mouse_tracking,
             scrollbar: &snapshot.scrollbar,
+            selection: snapshot.selection.as_ref(),
             new_glyph_definitions: &[],
             clipboard: snapshot.clipboard.as_deref(),
             cursor: &cursor,

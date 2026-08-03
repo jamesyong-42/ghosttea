@@ -2784,6 +2784,7 @@ async fn handle_command(
                     registry.read().unwrap().get(&session_id).cloned()
                 {
                     let text = session.selection_text(
+                        &view_id,
                         start_column,
                         start_row,
                         end_column,

@@ -2,8 +2,8 @@ GHOSTTEA iOS THIRD-PARTY NOTICES
 ================================
 
 This file is generated from the reviewed iOS release dependency graph.
-CycloneDX SHA-256: 3fc59a71e52157039d4b3c736e8b6c276d9eda4235b3e8ecd9105ceda3d8cd37
-Components: 106
+CycloneDX SHA-256: f9ad0142bd89f93be9a0eebadb6d2d1906e6727a5aa0627c862cf15d2f110ee6
+Components: 109
 Unique license documents: 99
 
 COMPONENT INDEX
@@ -19,7 +19,7 @@ Ghostty VT f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
 
 OpenSSL openssl-3.5.7
   License: Apache-2.0
-  Documents: LICENSE-047
+  Documents: LICENSE-048
 
 libssh2 libssh2-1.11.1
   License: BSD-3-Clause and bundled notices
@@ -47,27 +47,27 @@ anyhow 1.0.103
 
 base64 0.22.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-008, LICENSE-063
+  Documents: LICENSE-008, LICENSE-064
 
 bitflags 1.3.2
   License: MIT/Apache-2.0
-  Documents: LICENSE-037, LICENSE-063
+  Documents: LICENSE-037, LICENSE-064
 
 bitflags 2.13.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-037, LICENSE-063
+  Documents: LICENSE-037, LICENSE-064
 
 block-buffer 0.10.4
   License: MIT OR Apache-2.0
-  Documents: LICENSE-066, LICENSE-084
+  Documents: LICENSE-067, LICENSE-084
 
 bytemuck_derive 1.11.0
   License: Zlib OR Apache-2.0 OR MIT
-  Documents: LICENSE-049, LICENSE-060, LICENSE-089
+  Documents: LICENSE-050, LICENSE-061, LICENSE-089
 
 bytemuck 1.25.1
   License: Zlib OR Apache-2.0 OR MIT
-  Documents: LICENSE-049, LICENSE-060, LICENSE-089
+  Documents: LICENSE-050, LICENSE-061, LICENSE-089
 
 bytes 1.12.1
   License: MIT
@@ -75,11 +75,11 @@ bytes 1.12.1
 
 cc 1.2.67
   License: MIT OR Apache-2.0
-  Documents: LICENSE-018, LICENSE-063
+  Documents: LICENSE-018, LICENSE-064
 
 cfg-if 1.0.4
   License: MIT OR Apache-2.0
-  Documents: LICENSE-018, LICENSE-063
+  Documents: LICENSE-018, LICENSE-064
 
 core_maths 0.1.1
   License: MIT
@@ -87,55 +87,55 @@ core_maths 0.1.1
 
 core-foundation-sys 0.8.7
   License: MIT OR Apache-2.0
-  Documents: LICENSE-035, LICENSE-063
+  Documents: LICENSE-035, LICENSE-064
 
 core-foundation 0.9.4
   License: MIT OR Apache-2.0
-  Documents: LICENSE-035, LICENSE-063
+  Documents: LICENSE-035, LICENSE-064
 
 core-graphics-types 0.1.3
   License: MIT OR Apache-2.0
-  Documents: LICENSE-035, LICENSE-063
+  Documents: LICENSE-035, LICENSE-064
 
 core-graphics 0.22.3
   License: MIT / Apache-2.0
-  Documents: LICENSE-035, LICENSE-063
+  Documents: LICENSE-035, LICENSE-064
 
 core-text 19.2.0
   License: MIT/Apache-2.0
-  Documents: LICENSE-035, LICENSE-063
+  Documents: LICENSE-035, LICENSE-064
 
 cpufeatures 0.2.17
   License: MIT OR Apache-2.0
-  Documents: LICENSE-066, LICENSE-068
+  Documents: LICENSE-067, LICENSE-069
 
 crypto-common 0.1.7
   License: MIT OR Apache-2.0
-  Documents: LICENSE-016, LICENSE-066
+  Documents: LICENSE-016, LICENSE-067
 
 digest 0.10.7
   License: MIT OR Apache-2.0
-  Documents: LICENSE-061, LICENSE-066
+  Documents: LICENSE-062, LICENSE-067
 
 errno 0.3.14
   License: MIT OR Apache-2.0
-  Documents: LICENSE-050, LICENSE-063
+  Documents: LICENSE-051, LICENSE-064
 
 fastrand 2.4.1
   License: Apache-2.0 OR MIT
-  Documents: LICENSE-014, LICENSE-063
+  Documents: LICENSE-014, LICENSE-064
 
 filetime 0.2.27
   License: MIT/Apache-2.0
-  Documents: LICENSE-018, LICENSE-063
+  Documents: LICENSE-018, LICENSE-064
 
 find-msvc-tools 0.1.9
   License: MIT OR Apache-2.0
-  Documents: LICENSE-018, LICENSE-063
+  Documents: LICENSE-018, LICENSE-064
 
 font-types 0.11.3
   License: MIT OR Apache-2.0
-  Documents: LICENSE-004, LICENSE-052
+  Documents: LICENSE-004, LICENSE-053
 
 fontconfig-parser 0.5.8
   License: MIT
@@ -159,11 +159,11 @@ generic-array 0.14.7
 
 getrandom 0.2.17
   License: MIT OR Apache-2.0
-  Documents: LICENSE-024, LICENSE-067
+  Documents: LICENSE-024, LICENSE-068
 
 getrandom 0.4.3
   License: MIT OR Apache-2.0
-  Documents: LICENSE-030, LICENSE-067
+  Documents: LICENSE-030, LICENSE-068
 
 ghosttea-config 0.8.0
   License: MIT
@@ -199,15 +199,15 @@ harfbuzz_rs 2.0.1
 
 harfbuzz-sys 0.5.0
   License: MIT
-  Documents: LICENSE-059, LICENSE-081, LICENSE-087, LICENSE-093
+  Documents: LICENSE-060, LICENSE-081, LICENSE-087, LICENSE-093
 
 http 1.4.2
   License: MIT OR Apache-2.0
-  Documents: LICENSE-055, LICENSE-086
+  Documents: LICENSE-056, LICENSE-086
 
 httparse 1.10.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-011, LICENSE-063
+  Documents: LICENSE-011, LICENSE-064
 
 itoa 1.0.18
   License: MIT OR Apache-2.0
@@ -223,7 +223,7 @@ libm 0.2.16
 
 log 0.4.33
   License: MIT OR Apache-2.0
-  Documents: LICENSE-037, LICENSE-063
+  Documents: LICENSE-037, LICENSE-064
 
 memchr 2.8.3
   License: Unlicense OR MIT
@@ -235,15 +235,15 @@ memmap2 0.9.11
 
 once_cell 1.21.4
   License: MIT OR Apache-2.0
-  Documents: LICENSE-014, LICENSE-063
+  Documents: LICENSE-014, LICENSE-064
 
 percent-encoding 2.3.2
   License: MIT OR Apache-2.0
-  Documents: LICENSE-063, LICENSE-070
+  Documents: LICENSE-064, LICENSE-070
 
 pkg-config 0.3.33
   License: MIT OR Apache-2.0
-  Documents: LICENSE-018, LICENSE-063
+  Documents: LICENSE-018, LICENSE-064
 
 proc-macro2 1.0.106
   License: MIT OR Apache-2.0
@@ -255,27 +255,27 @@ quote 1.0.46
 
 rand_core 0.10.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-040, LICENSE-054
+  Documents: LICENSE-040, LICENSE-055
 
 read-fonts 0.39.2
   License: MIT OR Apache-2.0
-  Documents: LICENSE-004, LICENSE-052
+  Documents: LICENSE-004, LICENSE-053
 
 ring 0.17.14
   License: Apache-2.0 AND ISC
-  Documents: LICENSE-002, LICENSE-041, LICENSE-062, LICENSE-063, LICENSE-071, LICENSE-091
+  Documents: LICENSE-002, LICENSE-041, LICENSE-063, LICENSE-064, LICENSE-071, LICENSE-091
 
 roxmltree 0.20.0
   License: MIT OR Apache-2.0
-  Documents: LICENSE-063, LICENSE-098
+  Documents: LICENSE-064, LICENSE-098
 
 rustix 1.1.4
   License: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-  Documents: LICENSE-014, LICENSE-063, LICENSE-064
+  Documents: LICENSE-014, LICENSE-064, LICENSE-065
 
 rustls-pki-types 1.15.0
   License: MIT OR Apache-2.0
-  Documents: LICENSE-027, LICENSE-058
+  Documents: LICENSE-027, LICENSE-059
 
 rustls-webpki 0.103.13
   License: ISC
@@ -283,7 +283,7 @@ rustls-webpki 0.103.13
 
 rustls 0.23.42
   License: Apache-2.0 OR ISC OR MIT
-  Documents: LICENSE-042, LICENSE-046, LICENSE-063
+  Documents: LICENSE-042, LICENSE-047, LICENSE-064
 
 serde_core 1.0.228
   License: MIT OR Apache-2.0
@@ -303,7 +303,7 @@ serde 1.0.228
 
 sha2 0.10.9
   License: MIT OR Apache-2.0
-  Documents: LICENSE-066, LICENSE-073
+  Documents: LICENSE-067, LICENSE-073
 
 shlex 2.0.1
   License: MIT OR Apache-2.0
@@ -311,7 +311,7 @@ shlex 2.0.1
 
 skrifa 0.42.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-004, LICENSE-052
+  Documents: LICENSE-004, LICENSE-053
 
 slotmap 1.1.1
   License: Zlib
@@ -319,7 +319,7 @@ slotmap 1.1.1
 
 smallvec 1.15.2
   License: MIT OR Apache-2.0
-  Documents: LICENSE-006, LICENSE-063
+  Documents: LICENSE-006, LICENSE-064
 
 subtle 2.6.1
   License: BSD-3-Clause
@@ -327,7 +327,7 @@ subtle 2.6.1
 
 swash 0.2.9
   License: Apache-2.0 OR MIT
-  Documents: LICENSE-043, LICENSE-063
+  Documents: LICENSE-044, LICENSE-064
 
 syn 2.0.119
   License: MIT OR Apache-2.0
@@ -335,11 +335,11 @@ syn 2.0.119
 
 tar 0.4.45
   License: MIT OR Apache-2.0
-  Documents: LICENSE-057, LICENSE-063
+  Documents: LICENSE-058, LICENSE-064
 
 tempfile 3.27.0
   License: MIT OR Apache-2.0
-  Documents: LICENSE-053, LICENSE-063
+  Documents: LICENSE-054, LICENSE-064
 
 tinyvec_macros 0.1.1
   License: MIT OR Apache-2.0 OR Zlib
@@ -347,15 +347,15 @@ tinyvec_macros 0.1.1
 
 tinyvec 1.12.0
   License: Zlib OR Apache-2.0 OR MIT
-  Documents: LICENSE-049, LICENSE-080, LICENSE-097
+  Documents: LICENSE-050, LICENSE-080, LICENSE-097
 
 ttf-parser 0.25.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-063, LICENSE-076
+  Documents: LICENSE-064, LICENSE-076
 
 typenum 1.20.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-017, LICENSE-022, LICENSE-065
+  Documents: LICENSE-017, LICENSE-022, LICENSE-066
 
 unicode-ident 1.0.24
   License: (MIT OR Apache-2.0) AND Unicode-3.0
@@ -363,15 +363,15 @@ unicode-ident 1.0.24
 
 unicode-segmentation 1.13.3
   License: MIT OR Apache-2.0
-  Documents: LICENSE-045, LICENSE-063
+  Documents: LICENSE-046, LICENSE-064
 
 unicode-width 0.2.2
   License: MIT OR Apache-2.0
-  Documents: LICENSE-045, LICENSE-063
+  Documents: LICENSE-046, LICENSE-064
 
 untrusted 0.9.0
   License: ISC
-  Documents: LICENSE-044
+  Documents: LICENSE-045
 
 ureq-proto 0.6.0
   License: MIT OR Apache-2.0
@@ -379,7 +379,7 @@ ureq-proto 0.6.0
 
 ureq 3.3.0
   License: MIT OR Apache-2.0
-  Documents: LICENSE-048, LICENSE-077
+  Documents: LICENSE-049, LICENSE-077
 
 utf8-zero 0.8.1
   License: MIT OR Apache-2.0
@@ -387,7 +387,7 @@ utf8-zero 0.8.1
 
 version_check 0.9.5
   License: MIT/Apache-2.0
-  Documents: LICENSE-063, LICENSE-074
+  Documents: LICENSE-064, LICENSE-074
 
 webpki-roots 1.0.8
   License: CDLA-Permissive-2.0
@@ -395,19 +395,19 @@ webpki-roots 1.0.8
 
 xattr 1.6.1
   License: MIT OR Apache-2.0
-  Documents: LICENSE-053, LICENSE-063
+  Documents: LICENSE-054, LICENSE-064
 
 yazi 0.2.1
   License: Apache-2.0 OR MIT
-  Documents: LICENSE-051, LICENSE-063
+  Documents: LICENSE-052, LICENSE-064
 
 zeno 0.3.3
   License: Apache-2.0 OR MIT
-  Documents: LICENSE-043, LICENSE-063
+  Documents: LICENSE-044, LICENSE-064
 
 zeroize 1.9.0
   License: Apache-2.0 OR MIT
-  Documents: LICENSE-056, LICENSE-080
+  Documents: LICENSE-057, LICENSE-080
 
 zmij 1.0.23
   License: MIT
@@ -415,23 +415,35 @@ zmij 1.0.23
 
 JetBrainsMonoNerdFont-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
   License: OFL-1.1
-  Documents: LICENSE-069, LICENSE-096
+  Documents: LICENSE-043, LICENSE-096
 
 JetBrainsMonoNerdFont-Bold.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
   License: OFL-1.1
-  Documents: LICENSE-069, LICENSE-096
+  Documents: LICENSE-043, LICENSE-096
 
 JetBrainsMonoNerdFont-Italic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
   License: OFL-1.1
-  Documents: LICENSE-069, LICENSE-096
+  Documents: LICENSE-043, LICENSE-096
 
 JetBrainsMonoNerdFont-BoldItalic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
   License: OFL-1.1
-  Documents: LICENSE-069, LICENSE-096
+  Documents: LICENSE-043, LICENSE-096
 
 NotoColorEmoji.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
   License: OFL-1.1
-  Documents: LICENSE-069, LICENSE-096
+  Documents: LICENSE-043, LICENSE-096
+
+STIXTwoMath-Regular.otf v2.13b171
+  License: OFL-1.1
+  Documents: LICENSE-043, LICENSE-096
+
+NotoSansSymbols2-Regular.ttf NotoSansSymbols2-v2.008
+  License: OFL-1.1
+  Documents: LICENSE-043, LICENSE-096
+
+NotoEmoji-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
+  License: OFL-1.1
+  Documents: LICENSE-043, LICENSE-096
 
 LICENSE DOCUMENTS
 =================
@@ -3091,7 +3103,61 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-043 · LICENSE-MIT
+LICENSE-043 · FONT-NOTICES.md
+SHA-256: 74a171c239592ee050b78f675550e837814715caee6c4133f2b072c57b6579e6
+Used by: JetBrainsMonoNerdFont-Bold.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-BoldItalic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Italic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoColorEmoji.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoEmoji-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoSansSymbols2-Regular.ttf NotoSansSymbols2-v2.008, STIXTwoMath-Regular.otf v2.13b171
+--------------------------------------------------------------------------------
+# Fonts and Licenses
+
+This project uses several fonts which fall under the SIL Open Font License (OFL-1.1), MIT License, and BSD 2-Clause License:
+
+- Code New Roman (OFL-1.1)
+  - [© 2014 Sam Radian. All Rights Reserved.](https://github.com/chrissimpkins/codeface/blob/master/fonts/code-new-roman/license.txt)
+- Geist Mono (OFL-1.1)
+  - [Copyright (c) 2023 Vercel, in collaboration with basement.studio](https://github.com/vercel/geist-font/blob/main/LICENSE.txt)
+- Inconsolata (OFL-1.1)
+  - [Copyright 2006 The Inconsolata Project Authors](https://github.com/google/fonts/blob/main/ofl/inconsolata/OFL.txt)
+- JetBrains Mono (OFL-1.1)
+  - [Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)](https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt)
+- JuliaMono (OFL-1.1)
+  - [Copyright (c) 2020 - 2023, cormullion
+    with Reserved Font Name JuliaMono.](https://github.com/cormullion/juliamono/blob/master/LICENSE)
+- Kawkab Mono (OFL-1.1)
+  - [Copyright (c) 2015, Abdullah Arif (abdullah.a@gmail.com). Copyright 2010, 2012, 2014 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe Systems Incorporated in the United States and/or other countries.
+    ](https://github.com/aiaf/kawkab-mono/blob/master/OFL.txt)
+- Lilex (OFL-1.1)
+  - [Copyright 2019 The Lilex Project Authors (https://github.com/mishamyrt/Lilex)](https://github.com/mishamyrt/Lilex/blob/master/OFL.txt)
+- Monaspace Neon (OFL-1.1)
+  - [Copyright (c) 2023, GitHub https://github.com/githubnext/monaspace
+    with Reserved Font Name "Monaspace", including subfamilies: "Argon", "Neon", "Xenon", "Radon", and "Krypton"](https://github.com/githubnext/monaspace/blob/main/LICENSE)
+- Noto Emoji (OFL-1.1)
+  - [Copyright 2013 Google LLC](https://github.com/googlefonts/noto-emoji/blob/main/LICENSE)
+- Cozette (MIT)
+  - [Copyright (c) 2020, Slavfox](https://github.com/slavfox/Cozette/blob/main/LICENSE)
+- Terminus TTF (OFL-1.1)
+  - [Copyright (c) 2010-2020 Dimitar Toshkov Zhekov with Reserved Font Name "Terminus Font"](https://sourceforge.net/projects/terminus-font/)
+  - [Copyright (c) 2011-2023 Tilman Blumenbach with Reserved Font Name "Terminus (TTF)"](https://files.ax86.net/terminus-ttf/)
+- Spleen (BSD 2-Clause)
+  - [Copyright (c) 2018-2024, Frederic Cambus](https://github.com/fcambus/spleen)
+
+A full copy of the OFL license can be found at [OFL.txt](./OFL.txt).
+An accompanying FAQ is also available at <https://openfontlicense.org/>.
+
+A full copy of the MIT license can be found at [MIT.txt](./MIT.txt).
+
+A full copy of the BSD 2-Clause license can be found at [BSD-2-Clause.txt](./BSD-2-Clause.txt).
+
+## Ghosttea fallback additions
+
+- STIX Two Math (OFL-1.1)
+  - Copyright 2001-2021 The STI Pub Companies, consisting of the American Chemical Society, the American Institute of Physics, the American Mathematical Society, the American Physical Society, Elsevier, Inc., and The Institute of Electrical and Electronic Engineers, Inc.
+  - https://github.com/stipub/stixfonts
+- Noto Sans Symbols 2 (OFL-1.1)
+  - Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
+  - https://github.com/notofonts/symbols
+
+================================================================================
+LICENSE-044 · LICENSE-MIT
 SHA-256: 74da489b69dcbd3ab41e84e289d66ff9f57f4ee8791de98523550f6f34027766
 Used by: swash 0.2.9, zeno 0.3.3
 --------------------------------------------------------------------------------
@@ -3122,7 +3188,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-044 · LICENSE.txt
+LICENSE-045 · LICENSE.txt
 SHA-256: 7abd9b6960dcf7d4d0a48606a5b71bfe37d472db68d70637f3a58a56785f1621
 Used by: untrusted 0.9.0
 --------------------------------------------------------------------------------
@@ -3141,7 +3207,7 @@ Used by: untrusted 0.9.0
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
-LICENSE-045 · LICENSE-MIT
+LICENSE-046 · LICENSE-MIT
 SHA-256: 7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0
 Used by: unicode-segmentation 1.13.3, unicode-width 0.2.2
 --------------------------------------------------------------------------------
@@ -3172,7 +3238,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-046 · LICENSE-ISC
+LICENSE-047 · LICENSE-ISC
 SHA-256: 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4
 Used by: rustls 0.23.42
 --------------------------------------------------------------------------------
@@ -3193,7 +3259,7 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ================================================================================
-LICENSE-047 · LICENSE.txt
+LICENSE-048 · LICENSE.txt
 SHA-256: 7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a
 Used by: OpenSSL openssl-3.5.7
 --------------------------------------------------------------------------------
@@ -3376,7 +3442,7 @@ Used by: OpenSSL openssl-3.5.7
    END OF TERMS AND CONDITIONS
 
 ================================================================================
-LICENSE-048 · LICENSE-MIT
+LICENSE-049 · LICENSE-MIT
 SHA-256: 7e5886959f67f8c75063a9d55cd3cb08c5a8cbea9a944fa1df2d4ae038f53721
 Used by: ureq 3.3.0
 --------------------------------------------------------------------------------
@@ -3403,7 +3469,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-LICENSE-049 · LICENSE-ZLIB, LICENSE-ZLIB.md
+LICENSE-050 · LICENSE-ZLIB, LICENSE-ZLIB.md
 SHA-256: 84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151
 Used by: bytemuck 1.25.1, bytemuck_derive 1.11.0, tinyvec 1.12.0
 --------------------------------------------------------------------------------
@@ -3420,7 +3486,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 
 ================================================================================
-LICENSE-050 · LICENSE-MIT
+LICENSE-051 · LICENSE-MIT
 SHA-256: 8764a597675778ddfd4e25f81b08a05dbcf089ac05662df7613fe67f150e3aa2
 Used by: errno 0.3.14
 --------------------------------------------------------------------------------
@@ -3451,7 +3517,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-051 · LICENSE-MIT
+LICENSE-052 · LICENSE-MIT
 SHA-256: 8811bcec8c5b5262bd309874eed9d865545fc8a7dfafcf538a18e6b30968db2e
 Used by: yazi 0.2.1
 --------------------------------------------------------------------------------
@@ -3476,7 +3542,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-LICENSE-052 · LICENSE-MIT
+LICENSE-053 · LICENSE-MIT
 SHA-256: 8a62fa27ffdccc3df19dce90f8bb3d572e27aecffc1a383d0c2601834dcec434
 Used by: font-types 0.11.3, read-fonts 0.39.2, skrifa 0.42.1
 --------------------------------------------------------------------------------
@@ -3507,7 +3573,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-053 · LICENSE-MIT
+LICENSE-054 · LICENSE-MIT
 SHA-256: 8b427f5bc501764575e52ba4f9d95673cf8f6d80a86d0d06599852e1a9a20a36
 Used by: tempfile 3.27.0, xattr 1.6.1
 --------------------------------------------------------------------------------
@@ -3538,7 +3604,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-054 · LICENSE-MIT
+LICENSE-055 · LICENSE-MIT
 SHA-256: 8b6e9feec03e7c9a5facb26855cecd31662bf989b636bcfe79521bdf8ac863f0
 Used by: rand_core 0.10.1
 --------------------------------------------------------------------------------
@@ -3569,7 +3635,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-055 · LICENSE-APACHE
+LICENSE-056 · LICENSE-APACHE
 SHA-256: 8bb1b50b0e5c9399ae33bd35fab2769010fa6c14e8860c729a52295d84896b7a
 Used by: http 1.4.2
 --------------------------------------------------------------------------------
@@ -3776,7 +3842,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-LICENSE-056 · LICENSE-MIT
+LICENSE-057 · LICENSE-MIT
 SHA-256: 8c7516d4b27b1e495be5e38b612298b63de48d05f49cdac94f70f3cd70f8864b
 Used by: zeroize 1.9.0
 --------------------------------------------------------------------------------
@@ -3807,7 +3873,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-057 · LICENSE-MIT
+LICENSE-058 · LICENSE-MIT
 SHA-256: 8ca6b96cea9e67c6c5c63f452c31bd396db8bd2406231fdea5d48ef462b48077
 Used by: tar 0.4.45
 --------------------------------------------------------------------------------
@@ -3838,7 +3904,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-058 · LICENSE-MIT
+LICENSE-059 · LICENSE-MIT
 SHA-256: 9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639
 Used by: rustls-pki-types 1.15.0
 --------------------------------------------------------------------------------
@@ -3869,7 +3935,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-059 · COPYING
+LICENSE-060 · COPYING
 SHA-256: 9b35b8485f69cd298fccbb3c40a827dc06cf1185553bef827903497d2944a8d7
 Used by: harfbuzz-sys 0.5.0
 --------------------------------------------------------------------------------
@@ -3970,7 +4036,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
-LICENSE-060 · LICENSE-MIT
+LICENSE-061 · LICENSE-MIT
 SHA-256: 9df9ba60a11af705f2e451b53762686e615d86f76b169cf075c3237730dbd7e2
 Used by: bytemuck 1.25.1, bytemuck_derive 1.11.0
 --------------------------------------------------------------------------------
@@ -3985,7 +4051,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-061 · LICENSE-MIT
+LICENSE-062 · LICENSE-MIT
 SHA-256: 9e0dfd2dd4173a530e238cb6adb37aa78c34c6bc7444e0e10c1ab5d8881f63ba
 Used by: digest 0.10.7
 --------------------------------------------------------------------------------
@@ -4016,7 +4082,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-LICENSE-062 · LICENSE
+LICENSE-063 · LICENSE
 SHA-256: 9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f
 Used by: ring 0.17.14
 --------------------------------------------------------------------------------
@@ -4037,7 +4103,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-LICENSE-063 · LICENSE-APACHE
+LICENSE-064 · LICENSE-APACHE
 SHA-256: a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2
 Used by: base64 0.22.1, bitflags 1.3.2, bitflags 2.13.1, cc 1.2.67, cfg-if 1.0.4, core-foundation 0.9.4, core-foundation-sys 0.8.7, core-graphics 0.22.3, core-graphics-types 0.1.3, core-text 19.2.0, errno 0.3.14, fastrand 2.4.1, filetime 0.2.27, find-msvc-tools 0.1.9, httparse 1.10.1, log 0.4.33, once_cell 1.21.4, percent-encoding 2.3.2, pkg-config 0.3.33, ring 0.17.14, roxmltree 0.20.0, rustix 1.1.4, rustls 0.23.42, smallvec 1.15.2, swash 0.2.9, tar 0.4.45, tempfile 3.27.0, ttf-parser 0.25.1, unicode-segmentation 1.13.3, unicode-width 0.2.2, version_check 0.9.5, xattr 1.6.1, yazi 0.2.1, zeno 0.3.3
 --------------------------------------------------------------------------------
@@ -4244,7 +4310,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-LICENSE-064 · LICENSE-Apache-2.0_WITH_LLVM-exception
+LICENSE-065 · LICENSE-Apache-2.0_WITH_LLVM-exception
 SHA-256: a6c48161a09acc75a0e25503bab66a731eb5fba5392ed4bb4743e4ba5085327a
 Used by: rustix 1.1.4
 --------------------------------------------------------------------------------
@@ -4469,7 +4535,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 
 ================================================================================
-LICENSE-065 · LICENSE-MIT
+LICENSE-066 · LICENSE-MIT
 SHA-256: a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f
 Used by: typenum 1.20.1
 --------------------------------------------------------------------------------
@@ -4496,7 +4562,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-LICENSE-066 · LICENSE-APACHE
+LICENSE-067 · LICENSE-APACHE
 SHA-256: a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5
 Used by: block-buffer 0.10.4, cpufeatures 0.2.17, crypto-common 0.1.7, digest 0.10.7, sha2 0.10.9
 --------------------------------------------------------------------------------
@@ -4703,7 +4769,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-LICENSE-067 · LICENSE-APACHE
+LICENSE-068 · LICENSE-APACHE
 SHA-256: aaff376532ea30a0cd5330b9502ad4a4c8bf769c539c87ffe78819d188a18ebf
 Used by: getrandom 0.2.17, getrandom 0.4.3
 --------------------------------------------------------------------------------
@@ -4910,7 +4976,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-LICENSE-068 · LICENSE-MIT
+LICENSE-069 · LICENSE-MIT
 SHA-256: ae9baa7beea910273c2f384c2a6b721fb7bd02bda3436074a1072e4ee689f985
 Used by: cpufeatures 0.2.17
 --------------------------------------------------------------------------------
@@ -4939,51 +5005,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-LICENSE-069 · FONT-NOTICES.md
-SHA-256: b3177ac25cc57c976ae9e2a458a23cf840b7d4c919e4f87fdc8cab7875c3ea17
-Used by: JetBrainsMonoNerdFont-Bold.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-BoldItalic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Italic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoColorEmoji.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
---------------------------------------------------------------------------------
-# Fonts and Licenses
-
-This project uses several fonts which fall under the SIL Open Font License (OFL-1.1), MIT License, and BSD 2-Clause License:
-
-- Code New Roman (OFL-1.1)
-  - [© 2014 Sam Radian. All Rights Reserved.](https://github.com/chrissimpkins/codeface/blob/master/fonts/code-new-roman/license.txt)
-- Geist Mono (OFL-1.1)
-  - [Copyright (c) 2023 Vercel, in collaboration with basement.studio](https://github.com/vercel/geist-font/blob/main/LICENSE.txt)
-- Inconsolata (OFL-1.1)
-  - [Copyright 2006 The Inconsolata Project Authors](https://github.com/google/fonts/blob/main/ofl/inconsolata/OFL.txt)
-- JetBrains Mono (OFL-1.1)
-  - [Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)](https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt)
-- JuliaMono (OFL-1.1)
-  - [Copyright (c) 2020 - 2023, cormullion
-    with Reserved Font Name JuliaMono.](https://github.com/cormullion/juliamono/blob/master/LICENSE)
-- Kawkab Mono (OFL-1.1)
-  - [Copyright (c) 2015, Abdullah Arif (abdullah.a@gmail.com). Copyright 2010, 2012, 2014 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe Systems Incorporated in the United States and/or other countries.
-    ](https://github.com/aiaf/kawkab-mono/blob/master/OFL.txt)
-- Lilex (OFL-1.1)
-  - [Copyright 2019 The Lilex Project Authors (https://github.com/mishamyrt/Lilex)](https://github.com/mishamyrt/Lilex/blob/master/OFL.txt)
-- Monaspace Neon (OFL-1.1)
-  - [Copyright (c) 2023, GitHub https://github.com/githubnext/monaspace
-    with Reserved Font Name "Monaspace", including subfamilies: "Argon", "Neon", "Xenon", "Radon", and "Krypton"](https://github.com/githubnext/monaspace/blob/main/LICENSE)
-- Noto Emoji (OFL-1.1)
-  - [Copyright 2013 Google LLC](https://github.com/googlefonts/noto-emoji/blob/main/LICENSE)
-- Cozette (MIT)
-  - [Copyright (c) 2020, Slavfox](https://github.com/slavfox/Cozette/blob/main/LICENSE)
-- Terminus TTF (OFL-1.1)
-  - [Copyright (c) 2010-2020 Dimitar Toshkov Zhekov with Reserved Font Name "Terminus Font"](https://sourceforge.net/projects/terminus-font/)
-  - [Copyright (c) 2011-2023 Tilman Blumenbach with Reserved Font Name "Terminus (TTF)"](https://files.ax86.net/terminus-ttf/)
-- Spleen (BSD 2-Clause)
-  - [Copyright (c) 2018-2024, Frederic Cambus](https://github.com/fcambus/spleen)
-
-A full copy of the OFL license can be found at [OFL.txt](./OFL.txt).
-An accompanying FAQ is also available at <https://openfontlicense.org/>.
-
-A full copy of the MIT license can be found at [MIT.txt](./MIT.txt).
-
-A full copy of the BSD 2-Clause license can be found at [BSD-2-Clause.txt](./BSD-2-Clause.txt).
 
 ================================================================================
 LICENSE-070 · LICENSE-MIT
@@ -6394,7 +6415,7 @@ in the source collection may be redistributed.
 ================================================================================
 LICENSE-096 · OFL-1.1.txt
 SHA-256: fb755fa3280d1d215a20df2e64fe6a0f75f8208439b11671978214aae60d2997
-Used by: JetBrainsMonoNerdFont-Bold.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-BoldItalic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Italic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoColorEmoji.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69
+Used by: JetBrainsMonoNerdFont-Bold.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-BoldItalic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Italic.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, JetBrainsMonoNerdFont-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoColorEmoji.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoEmoji-Regular.ttf f8041e849b36efbbb9736b6ecf0ccfcb01d94e69, NotoSansSymbols2-Regular.ttf NotoSansSymbols2-v2.008, STIXTwoMath-Regular.otf v2.13b171
 --------------------------------------------------------------------------------
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

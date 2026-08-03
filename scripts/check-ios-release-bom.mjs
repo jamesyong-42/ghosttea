@@ -49,7 +49,9 @@ const truffleRef = `pkg:github/${githubSlug(truffle.package.repository)}@${truff
 const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
 const themeCatalogRef = `pkg:github/mbadolato/iTerm2-Color-Schemes@${themeCatalog.revision}`;
 const shaderCollectionRef = `pkg:github/0xhckr/ghostty-shaders@${shaderCollectionRevision}`;
-const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
+const fontVersion = (font) => font.source?.revision ?? fonts.source.commit;
+const fontRepository = (font) => font.source?.repository ?? fonts.source.repository;
+const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fontVersion(font)}`);
 const xcodeRef = `ghosttea:toolchain/xcode@${toolchain.apple.xcodeVersion}+${toolchain.apple.xcodeBuild}`;
 const swiftRef = `ghosttea:toolchain/swift@${toolchain.apple.swiftVersion}`;
 const rustcRef = `ghosttea:toolchain/rustc@${toolchain.rust.release}`;
@@ -316,10 +318,10 @@ const expected = {
         type: "file",
         ref: fontRefs[index],
         name: font.path.split("/").at(-1),
-        version: fonts.source.commit,
+        version: fontVersion(font),
         license: fonts.license.id,
         hashes: [{ alg: "SHA-256", content: font.sha256 }],
-        repository: fonts.source.repository,
+        repository: fontRepository(font),
         properties: [
           { name: "ghosttea:font-role", value: font.role },
           { name: "ghosttea:source-path", value: font.path },

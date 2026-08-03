@@ -36,6 +36,8 @@ typedef enum ghosttea_font_role {
   GHOSTTEA_FONT_ITALIC = 2,
   GHOSTTEA_FONT_BOLD_ITALIC = 3,
   GHOSTTEA_FONT_FALLBACK = 4,
+  GHOSTTEA_FONT_FALLBACK_TEXT = 5,
+  GHOSTTEA_FONT_FALLBACK_EMOJI = 6,
 } ghosttea_font_role_t;
 
 typedef enum ghosttea_effect_kind {
@@ -199,6 +201,11 @@ ghosttea_status_t ghosttea_replica_publish_snapshot_json(
     ghosttea_update_t *out_update);
 ghosttea_status_t ghosttea_replica_publish_patch_json(
     ghosttea_replica_t *replica, ghosttea_bytes_view_t patch_json,
+    ghosttea_update_t *out_update);
+ghosttea_status_t ghosttea_replica_publish_selection(
+    ghosttea_replica_t *replica, bool has_selection,
+    uint16_t anchor_column, uint32_t anchor_row,
+    uint16_t focus_column, uint32_t focus_row,
     ghosttea_update_t *out_update);
 ghosttea_status_t ghosttea_replica_refresh(ghosttea_replica_t *replica,
                                            ghosttea_update_t *out_update);

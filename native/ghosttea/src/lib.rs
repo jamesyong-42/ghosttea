@@ -23,7 +23,7 @@ pub use ghosttea_core::{
     ResumeEvidence, StateStreamCancel, TakeOver, ViewAccess,
 };
 pub use ghosttea_text::{
-    FontMode, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
+    FontMode, FontPresentation, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
 };
 pub use mesh::{
     HostShutdownAnnouncer, MeshReconnectConfig, RemoteActivityChanged, RemoteAttachment,

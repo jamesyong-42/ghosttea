@@ -23,7 +23,8 @@ use ghosttea_core::{
     AttachRejection, ClipboardRequest, ControlChanged, ControlClaim, ControlSnapshot,
     ControllerState, InputOrderState, LogicalTerminalSnapshot, RenderRequest, ResumeEvidence,
     StateStreamCancel, TakeOver, TakeOverRequest, TerminalEffect, TerminalModel,
-    TerminalModelOptions, TerminalRuntime, TerminalUpdate, ViewAccess, ViewAuthority,
+    TerminalModelOptions, TerminalRuntime, TerminalSelection, TerminalUpdate, ViewAccess,
+    ViewAuthority,
 };
 use ghosttea_text::TextEngine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -684,6 +685,7 @@ pub struct Session {
     termination_started: AtomicBool,
     requested_termination: Mutex<Option<TerminationSource>>,
     logical_tx: broadcast::Sender<LogicalTerminalSnapshot>,
+    selection_txs: Mutex<HashMap<String, watch::Sender<Option<TerminalSelection>>>>,
     control_tx: broadcast::Sender<ControlChanged>,
     control_state_tx: broadcast::Sender<ControlSnapshot>,
     activity_tx: broadcast::Sender<SessionActivity>,
@@ -1275,6 +1277,7 @@ impl Session {
             termination_started: AtomicBool::new(false),
             requested_termination: Mutex::new(None),
             logical_tx,
+            selection_txs: Mutex::new(HashMap::new()),
             control_tx,
             control_state_tx,
             activity_tx,
@@ -1496,6 +1499,7 @@ impl Session {
     }
 
     fn execute_update(&self, update: TerminalUpdate) {
+        self.announce_selections(self.model.lock().unwrap().view_selections());
         for effect in update {
             match effect {
                 TerminalEffect::WriteToTransport(bytes) => {
@@ -1577,6 +1581,7 @@ impl Session {
 
     pub fn selection_text(
         &self,
+        view_id: &str,
         start_column: u16,
         start_row: u32,
         end_column: u16,
@@ -1584,11 +1589,20 @@ impl Session {
         select_all: bool,
     ) -> Result<String> {
         let _operation = self.model_operation.lock().unwrap();
-        self.model
-            .lock()
-            .unwrap()
-            .selection_text((start_column, start_row), (end_column, end_row), select_all)
-            .context("format terminal selection")
+        let (text, selection) = {
+            let mut model = self.model.lock().unwrap();
+            let text = model
+                .selection_text_for(
+                    view_id,
+                    (start_column, start_row),
+                    (end_column, end_row),
+                    select_all,
+                )
+                .context("format terminal selection")?;
+            (text, model.selection_for(view_id))
+        };
+        self.announce_selection(view_id, selection);
+        Ok(text)
     }
     pub fn session_epoch(&self) -> u64 {
         self.model.lock().unwrap().session_epoch()
@@ -1601,6 +1615,40 @@ impl Session {
     }
     pub fn subscribe_logical(&self) -> broadcast::Receiver<LogicalTerminalSnapshot> {
         self.logical_tx.subscribe()
+    }
+    pub fn selection_snapshot(&self, view_id: &str) -> Option<TerminalSelection> {
+        self.model.lock().unwrap().selection_for(view_id)
+    }
+    pub fn subscribe_selection(&self, view_id: &str) -> watch::Receiver<Option<TerminalSelection>> {
+        let initial = self.model.lock().unwrap().selection_for(view_id);
+        self.selection_txs
+            .lock()
+            .unwrap()
+            .entry(view_id.to_owned())
+            .or_insert_with(|| watch::channel(initial).0)
+            .subscribe()
+    }
+
+    fn announce_selection(&self, view_id: &str, selection: Option<TerminalSelection>) {
+        let mut publishers = self.selection_txs.lock().unwrap();
+        let publisher = publishers
+            .entry(view_id.to_owned())
+            .or_insert_with(|| watch::channel(selection).0);
+        if *publisher.borrow() != selection {
+            publisher.send_replace(selection);
+        }
+    }
+
+    fn announce_selections(&self, selections: Vec<(String, Option<TerminalSelection>)>) {
+        for (view_id, selection) in selections {
+            self.announce_selection(&view_id, selection);
+        }
+    }
+
+    fn remove_view_selection(&self, view_id: &str) {
+        let _operation = self.model_operation.lock().unwrap();
+        self.model.lock().unwrap().remove_view_selection(view_id);
+        self.selection_txs.lock().unwrap().remove(view_id);
     }
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::Acquire)
@@ -1690,13 +1738,19 @@ impl Session {
     }
 
     pub fn detach_view(&self, view_id: &str, client_id: &str) -> bool {
-        let mut authority = self.authority.lock().unwrap();
-        let revision = authority.control_revision();
-        let detached = authority.detach(view_id, client_id);
-        if authority.control_revision() != revision {
-            let snapshot = authority.control_snapshot();
-            drop(authority);
+        let (detached, control_snapshot) = {
+            let mut authority = self.authority.lock().unwrap();
+            let revision = authority.control_revision();
+            let detached = authority.detach(view_id, client_id);
+            let control_snapshot =
+                (authority.control_revision() != revision).then(|| authority.control_snapshot());
+            (detached, control_snapshot)
+        };
+        if let Some(snapshot) = control_snapshot {
             self.announce_control_state(snapshot);
+        }
+        if detached {
+            self.remove_view_selection(view_id);
         }
         detached
     }
@@ -1709,13 +1763,19 @@ impl Session {
         client_id: &str,
         attachment_epoch: u64,
     ) -> bool {
-        let mut authority = self.authority.lock().unwrap();
-        let revision = authority.control_revision();
-        let detached = authority.detach_view_if_epoch(view_id, client_id, attachment_epoch);
-        if authority.control_revision() != revision {
-            let snapshot = authority.control_snapshot();
-            drop(authority);
+        let (detached, control_snapshot) = {
+            let mut authority = self.authority.lock().unwrap();
+            let revision = authority.control_revision();
+            let detached = authority.detach_view_if_epoch(view_id, client_id, attachment_epoch);
+            let control_snapshot =
+                (authority.control_revision() != revision).then(|| authority.control_snapshot());
+            (detached, control_snapshot)
+        };
+        if let Some(snapshot) = control_snapshot {
             self.announce_control_state(snapshot);
+        }
+        if detached {
+            self.remove_view_selection(view_id);
         }
         detached
     }
@@ -2777,6 +2837,84 @@ mod tests {
             "detaching a non-controlling view is not a controller change"
         );
 
+        session
+            .terminate(TerminationSource::ServiceShutdown)
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_selection_updates_are_isolated_per_view() {
+        let frames = FrameHub::new(8);
+        let session = Session::spawn(
+            SpawnOptions {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                cwd: None,
+                env: HashMap::new(),
+                environment: Some(SessionEnvironment::Clean {
+                    variables: HashMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+                }),
+                cols: 12,
+                rows: 3,
+                persistence: Persistence::KeepUntilExit,
+                program_kind: SessionProgramKind::Application,
+                owner_id: None,
+            },
+            frames,
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+            Arc::new(move |_, _| {}),
+        )
+        .unwrap();
+        session.attach_view("view-a", "client").unwrap();
+        session.attach_view("view-b", "client").unwrap();
+        let mut view_a = session.subscribe_selection("view-a");
+        let mut view_b = session.subscribe_selection("view-b");
+
+        {
+            let _operation = session.model_operation.lock().unwrap();
+            let update = session
+                .model
+                .lock()
+                .unwrap()
+                .feed(b"\x1b[?1049hfirst\r\nsecond\r\nthird", RenderRequest::None)
+                .unwrap();
+            session.execute_update(update);
+        }
+        assert_eq!(
+            session.selection_text("view-a", 0, 1, 5, 1, false).unwrap(),
+            "second"
+        );
+        assert!(view_a.has_changed().unwrap());
+        assert_eq!(view_a.borrow_and_update().unwrap().anchor.row, 1);
+        assert!(!view_b.has_changed().unwrap());
+
+        assert_eq!(
+            session.selection_text("view-b", 0, 2, 4, 2, false).unwrap(),
+            "third"
+        );
+        assert!(!view_a.has_changed().unwrap());
+        assert!(view_b.has_changed().unwrap());
+        assert_eq!(view_b.borrow_and_update().unwrap().anchor.row, 2);
+
+        {
+            let _operation = session.model_operation.lock().unwrap();
+            let update = session
+                .model
+                .lock()
+                .unwrap()
+                .feed(b"\x1b[1S", RenderRequest::None)
+                .unwrap();
+            session.execute_update(update);
+        }
+        assert!(view_a.has_changed().unwrap());
+        assert!(view_b.has_changed().unwrap());
+        assert_eq!(view_a.borrow_and_update().unwrap().anchor.row, 0);
+        assert_eq!(view_b.borrow_and_update().unwrap().anchor.row, 1);
+
+        assert!(session.detach_view("view-a", "client"));
+        assert_eq!(session.selection_snapshot("view-a"), None);
+        assert_eq!(session.selection_snapshot("view-b").unwrap().anchor.row, 1);
         session
             .terminate(TerminationSource::ServiceShutdown)
             .unwrap();

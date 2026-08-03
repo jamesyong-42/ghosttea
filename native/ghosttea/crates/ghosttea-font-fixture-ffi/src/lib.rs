@@ -1,7 +1,8 @@
 use std::{panic::AssertUnwindSafe, ptr, slice};
 
 use ghosttea_text::{
-    FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics, phase2_fixture_cases,
+    FontPresentation, FontResource, FontResources, RASTER_SCALE, TextEngine, TextMetrics,
+    phase2_fixture_cases,
 };
 
 pub const GHOSTTEA_FONT_FIXTURE_OK: i32 = 0;
@@ -47,6 +48,9 @@ fn generate(
     italic: GhostteaFontBytes,
     bold_italic: GhostteaFontBytes,
     emoji: GhostteaFontBytes,
+    symbols_math: GhostteaFontBytes,
+    symbols: GhostteaFontBytes,
+    emoji_text: GhostteaFontBytes,
 ) -> Result<Vec<u8>, i32> {
     let mut fonts = FontResources::new(
         copy_font(regular, "JetBrainsMonoNerdFont-Regular.ttf")
@@ -64,8 +68,20 @@ fn generate(
         copy_font(bold_italic, "JetBrainsMonoNerdFont-BoldItalic.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?,
     );
-    fonts.fallbacks =
-        vec![copy_font(emoji, "NotoColorEmoji.ttf").ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?];
+    fonts.fallbacks = vec![
+        copy_font(emoji, "NotoColorEmoji.ttf")
+            .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
+            .with_presentation(FontPresentation::Emoji),
+        copy_font(symbols_math, "STIXTwoMath-Regular.otf")
+            .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
+            .with_presentation(FontPresentation::Text),
+        copy_font(symbols, "NotoSansSymbols2-Regular.ttf")
+            .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
+            .with_presentation(FontPresentation::Text),
+        copy_font(emoji_text, "NotoEmoji-Regular.ttf")
+            .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
+            .with_presentation(FontPresentation::Text),
+    ];
     let mut engine = TextEngine::from_fonts(fonts, TextMetrics::default(), RASTER_SCALE)
         .map_err(|_| GHOSTTEA_FONT_FIXTURE_FAILED)?;
     let fixture = engine
@@ -87,6 +103,9 @@ pub unsafe extern "C" fn ghosttea_font_fixture_generate(
     italic: GhostteaFontBytes,
     bold_italic: GhostteaFontBytes,
     emoji: GhostteaFontBytes,
+    symbols_math: GhostteaFontBytes,
+    symbols: GhostteaFontBytes,
+    emoji_text: GhostteaFontBytes,
     out: *mut GhostteaOwnedBytes,
 ) -> i32 {
     if out.is_null() {
@@ -95,7 +114,16 @@ pub unsafe extern "C" fn ghosttea_font_fixture_generate(
     // SAFETY: `out` is non-null and the caller promises it is writable.
     unsafe { out.write(GhostteaOwnedBytes::EMPTY) };
     match std::panic::catch_unwind(AssertUnwindSafe(|| {
-        generate(regular, bold, italic, bold_italic, emoji)
+        generate(
+            regular,
+            bold,
+            italic,
+            bold_italic,
+            emoji,
+            symbols_math,
+            symbols,
+            emoji_text,
+        )
     })) {
         Ok(Ok(mut bytes)) => {
             let owned = GhostteaOwnedBytes {
@@ -136,7 +164,17 @@ mod tests {
         let mut output = GhostteaOwnedBytes::EMPTY;
         assert_eq!(
             unsafe {
-                ghosttea_font_fixture_generate(empty, empty, empty, empty, empty, &mut output)
+                ghosttea_font_fixture_generate(
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    &mut output,
+                )
             },
             GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT
         );

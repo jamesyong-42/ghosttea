@@ -15,6 +15,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
   let onSoftwareInput: (GhostteaSoftwareInputEvent) -> Void
   let onMouseInput: (GhostteaTerminalMouseEvent) -> Void
   let onScrollRows: (Int) -> Void
+  let onClipboardWrite: (String) -> Void
   let onSelectionCommit: (GhostteaTerminalSelection) -> Void
   let onSelectAll: () -> Void
 
@@ -66,6 +67,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
     view.onSoftwareInputEvent = onSoftwareInput
     view.onMouseInputEvent = onMouseInput
     view.onScrollRows = onScrollRows
+    view.onClipboardWrite = onClipboardWrite
     view.onSelectionCommit = onSelectionCommit
     view.onSelectAll = onSelectAll
     view.accessibilityTerminalTitle = accessibilityTitle

@@ -358,6 +358,21 @@ private let blinkingCursor = TRF1CursorState(
       == GhostteaViewportCellPoint(column: 0, row: 0)
   )
 
+  let singleCell = GhostteaTerminalCellPoint(column: 4, row: 52)
+  #expect(
+    GhostteaSelectionCompletion.resolve(
+      anchor: singleCell,
+      focus: singleCell
+    ) == nil
+  )
+  let adjacentCell = GhostteaTerminalCellPoint(column: 5, row: 52)
+  #expect(
+    GhostteaSelectionCompletion.resolve(
+      anchor: singleCell,
+      focus: adjacentCell
+    ) == GhostteaTerminalSelection(anchor: singleCell, focus: adjacentCell)
+  )
+
   var wheel = GhostteaWheelAccumulator()
   #expect(wheel.consume(deltaPoints: 4, lineHeight: 19) == 0)
   #expect(wheel.remainder == 8)
@@ -365,6 +380,19 @@ private let blinkingCursor = TRF1CursorState(
   #expect(wheel.remainder == 1)
   #expect(wheel.consume(deltaPoints: -10, lineHeight: 19) == -1)
   #expect(wheel.remainder == 0)
+  #expect(
+    GhostteaScrollGesture.deltaPoints(translationDelta: -20, directTouch: true) == 20
+  )
+  #expect(
+    GhostteaScrollGesture.deltaPoints(translationDelta: -20, directTouch: false) == -20
+  )
+  let decelerated = GhostteaScrollMomentum.deceleratedVelocity(
+    1_000,
+    elapsedSeconds: 0.1
+  )
+  #expect(decelerated > 800 && decelerated < 820)
+  #expect(GhostteaScrollMomentum.shouldContinue(velocity: decelerated))
+  #expect(!GhostteaScrollMomentum.shouldContinue(velocity: 11))
 
   let selectAll = GhostteaTerminalSelection.selectAll(totalRows: 100, columns: 80)
   #expect(selectAll?.anchor == GhostteaTerminalCellPoint(column: 0, row: 0))
@@ -373,6 +401,25 @@ private let blinkingCursor = TRF1CursorState(
   #expect(GhostteaSelectionAutoScroll.direction(y: -1, minimum: 0, maximum: 100) == -1)
   #expect(GhostteaSelectionAutoScroll.direction(y: 50, minimum: 0, maximum: 100) == 0)
   #expect(GhostteaSelectionAutoScroll.direction(y: 101, minimum: 0, maximum: 100) == 1)
+}
+
+@Test func retainedFramesSurfaceTerminalClipboardWrites() async throws {
+  let runtime = try GhostteaRuntime()
+  let terminal = try GhostteaTerminal(
+    runtime: runtime,
+    configuration: .init(sessionHandle: 119, columns: 20, rows: 4)
+  )
+  let update = try await terminal.feed(
+    Data("\u{1b}]52;c;aGVsbG8=\u{7}".utf8),
+    render: .full
+  )
+  let frame = try #require(update.effects.first { $0.kind == .frameReady }?.payload)
+  var state = RetainedTRF1State()
+  guard case .applied(_, _, _, let clipboardWrites) = try state.apply(frame) else {
+    Issue.record("OSC 52 frame was not applied")
+    return
+  }
+  #expect(clipboardWrites == ["hello"])
 }
 
 @Test func accessibilitySnapshotUsesNativeRowsAndAbsoluteScrollbackCoordinates() async throws {

@@ -30,8 +30,8 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
     runtime: GhostteaRuntime,
     sessionHandle: UInt64,
     presentation: GhostteaTerminalPresentationConfig?,
-    output: @escaping @Sendable (GhostteaAttachmentSinkEvent, GhostteaAttachmentStateToken) async ->
-      Void
+    output:
+      @escaping @Sendable (GhostteaAttachmentSinkEvent, GhostteaAttachmentStateToken) async -> Void
   ) throws {
     self.output = output
     publisher = try GhostteaReplicaPublisher(
@@ -45,7 +45,12 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
   /// scrollback; this is what remains available once it cannot, and it covers
   /// the visible screen only.
   public func retainedSelection(_ request: GhostteaSelectionRequest) async -> String? {
-    GhostteaViewportSelection.extract(request, from: await publisher.retainedRows)
+    let viewport = await publisher.retainedViewport
+    return GhostteaViewportSelection.extract(
+      request,
+      from: viewport.rows,
+      viewportOffset: viewport.offset
+    )
   }
 
   /// The replica this sink renders into. It is replaced whenever the host
@@ -81,6 +86,20 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
     case .configurationChanged(let next):
       guard try await publisher.adopt(next) else { return }
       await output(.presentation(next), token)
+
+    case .selectionChanged(let selection):
+      #if DEBUG
+        if ProcessInfo.processInfo.environment["GHOSTTEA_SELECTION_TRACE"] == "1" {
+          if let selection {
+            print(
+              "[GhostteaSelection] sink publish (\(selection.anchor.column),\(selection.anchor.row))->(\(selection.focus.column),\(selection.focus.row)) generation=\(token.generation)"
+            )
+          } else {
+            print("[GhostteaSelection] sink publish nil generation=\(token.generation)")
+          }
+        }
+      #endif
+      await output(.frame(try await publisher.publish(selection), fullSnapshot: false), token)
 
     // The lifecycle consumes both before the sink is called; they are listed
     // rather than defaulted so a new state message cannot be silently ignored.

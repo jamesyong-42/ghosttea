@@ -29,6 +29,11 @@ private enum RetainedTRF1Preparation {
   case transaction(RetainedTRF1Transaction)
 }
 
+private enum RetainedTRF1SelectionUpdate {
+  case unchanged
+  case replace(TRF1SelectionState?)
+}
+
 private struct RetainedTRF1Transaction {
   let frame: TRF1Frame
   let fullSnapshot: Bool
@@ -41,6 +46,7 @@ private struct RetainedTRF1Transaction {
   let styles: [TRF1StyleDefinition]
   let cursor: TRF1CursorState
   let scrollbar: TRF1ScrollbarState?
+  let selection: RetainedTRF1SelectionUpdate
   let clipboardWrites: [String]
   let changedRows: [UInt16]
 }
@@ -57,6 +63,7 @@ struct RetainedTRF1State: Equatable, Sendable {
   private(set) var styleDefinitions: [UInt32: TRF1StyleDefinition] = [:]
   private(set) var cursor: TRF1CursorState?
   private(set) var scrollbar: TRF1ScrollbarState?
+  private(set) var selection: TRF1SelectionState?
   private(set) var mouseTracking = false
   private(set) var awaitingResync = false
 
@@ -166,6 +173,7 @@ struct RetainedTRF1State: Equatable, Sendable {
     let glyphs = try sections[.glyphDefinitions].map(decodeTRF1GlyphDefinitions) ?? []
     let styles = try sections[.styleDefinitions].map(decodeTRF1StyleDefinitions) ?? []
     let nextScrollbar = try sections[.scrollbarState].map(decodeTRF1ScrollbarState)
+    let nextSelection = try sections[.selectionSpans].map(decodeTRF1SelectionState)
     let clipboardWrites = try clipboardSections.map(decodeTRF1ClipboardWrite)
 
     let changedSession = sessionEpoch != 0 && frame.sessionEpoch != sessionEpoch
@@ -220,6 +228,7 @@ struct RetainedTRF1State: Equatable, Sendable {
         styles: styles,
         cursor: nextCursor,
         scrollbar: nextScrollbar,
+        selection: sections[.selectionSpans] == nil ? .unchanged : .replace(nextSelection ?? nil),
         clipboardWrites: clipboardWrites,
         changedRows: changedRows
       )
@@ -265,6 +274,9 @@ struct RetainedTRF1State: Equatable, Sendable {
     mouseTracking = frame.flags.contains(.mouseTracking)
     if let scrollbar = transaction.scrollbar {
       self.scrollbar = scrollbar
+    }
+    if case .replace(let selection) = transaction.selection {
+      self.selection = selection
     }
     awaitingResync = false
   }

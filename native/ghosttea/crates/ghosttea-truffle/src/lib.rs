@@ -43,9 +43,10 @@ use ghosttea::{
         REMOTE_RECONNECT_PROTOCOL_MINOR, ResumeHint, RowReplacement,
         SESSION_ACTIVITY_PROTOCOL_MINOR, SessionControlMessage, SessionEndReason,
         SessionStatusKind, SharedSessionSummary, StateCodec, StateMessage, StreamKind,
-        StreamPreface, TERMINAL_PRESENTATION_PROTOCOL_MINOR, TerminalHostAdvertisement,
-        TunnelInput, decode_compact_message, decode_message, decode_preface, decode_state_message,
-        encode_compact_message, encode_message, encode_preface, encode_state_message,
+        StreamPreface, TERMINAL_PRESENTATION_PROTOCOL_MINOR, TRACKED_SELECTION_PROTOCOL_MINOR,
+        TerminalHostAdvertisement, TunnelInput, decode_compact_message, decode_message,
+        decode_preface, decode_state_message, encode_compact_message, encode_message,
+        encode_preface, encode_state_message,
     },
 };
 
@@ -2575,6 +2576,9 @@ impl MeshRuntime {
                     // this projection directly; desktop per-pane presentation
                     // is a separate UI boundary.
                     StateMessage::ConfigurationChanged { .. } => {}
+                    // Native desktop surfaces retain their selection locally;
+                    // Apple replicas consume this through their TRF1 bridge.
+                    StateMessage::SelectionChanged { .. } => {}
                     // Carrying a nullable controller through to the mesh API
                     // needs a shape that can say "no controller", which the
                     // current RemoteControlClaim cannot. No host emits this
@@ -4744,6 +4748,7 @@ where
         let mut controls = session.subscribe_control_state();
         let mut activities = session.subscribe_activity();
         let mut snapshots = session.subscribe_logical();
+        let mut selections = session.subscribe_selection(&view_id);
         let mut concluded = session.subscribe_conclusion();
         let mut previous = session.logical_snapshot();
         let mut patch_sequence = 0_u64;
@@ -4796,6 +4801,17 @@ where
                 control
                     .write_compact_state_message(
                         &StateMessage::Snapshot(snapshot.clone()),
+                        state_codec,
+                    )
+                    .await?;
+            }
+            if protocol_minor >= TRACKED_SELECTION_PROTOCOL_MINOR {
+                let selection = *selections.borrow_and_update();
+                control
+                    .write_compact_state_message(
+                        &StateMessage::SelectionChanged {
+                            selection: selection.map(Into::into),
+                        },
                         state_codec,
                     )
                     .await?;
@@ -5025,6 +5041,7 @@ where
                             select_all,
                         } if incoming_view == view_id && epoch == attachment_epoch => {
                             let text = session.selection_text(
+                                &view_id,
                                 start_column,
                                 start_row,
                                 end_column,
@@ -5043,6 +5060,21 @@ where
                         } if incoming_view == view_id && epoch == attachment_epoch => break,
                         _ => bail!("invalid, stale, or misrouted compact session message"),
                     }
+                }
+                // Selection is view-owned state. Keep it ahead of the shared
+                // redraw feed in this biased loop: an animated TUI can make
+                // `snapshots.recv()` continuously ready, and choosing it first
+                // would leave the selected cells pinned correctly on the host
+                // while the viewer never learns their new coordinates.
+                changed = selections.changed(), if wants_state && protocol_minor >= TRACKED_SELECTION_PROTOCOL_MINOR => {
+                    changed.context("selection publisher closed")?;
+                    let selection = *selections.borrow_and_update();
+                    control.write_compact_state_message(
+                        &StateMessage::SelectionChanged {
+                            selection: selection.map(Into::into),
+                        },
+                        state_codec,
+                    ).await?;
                 }
                 snapshot = snapshots.recv(), if wants_state => {
                     let message = match snapshot {
@@ -5953,6 +5985,7 @@ async fn session_control_loop(
                 select_all,
             } if view_id == attached_view_id && epoch == attachment_epoch => {
                 let text = session.selection_text(
+                    attached_view_id,
                     start_column,
                     start_row,
                     end_column,
@@ -6003,6 +6036,7 @@ async fn spawn_state_stream(
     let mut controls = session.subscribe_control_state();
     let mut activities = session.subscribe_activity();
     let mut snapshots = session.subscribe_logical();
+    let mut selections = session.subscribe_selection(view_id);
     let mut concluded = session.subscribe_conclusion();
     let mut previous = session.logical_snapshot();
     // Setup is not exempt from cancellation. The guarantee this stream is held
@@ -6023,6 +6057,12 @@ async fn spawn_state_stream(
     }
     if let Some(snapshot) = previous.as_ref() {
         write_setup!(&StateMessage::Snapshot(snapshot.clone()));
+    }
+    if protocol_minor >= TRACKED_SELECTION_PROTOCOL_MINOR {
+        let selection = *selections.borrow_and_update();
+        write_setup!(&StateMessage::SelectionChanged {
+            selection: selection.map(Into::into),
+        });
     }
     // Same contract as the compact path: the opening frame is the live-update
     // shape, so a viewer that opens a stream after a clear learns of it and one
@@ -6110,6 +6150,17 @@ async fn spawn_state_stream(
                             .await;
                     }
                     break;
+                },
+                // As on compact, a busy shared redraw feed may never outrank
+                // view-owned selection state in this biased scheduler.
+                changed = selections.changed(), if protocol_minor >= TRACKED_SELECTION_PROTOCOL_MINOR => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let selection = *selections.borrow_and_update();
+                    Some(StateMessage::SelectionChanged {
+                        selection: selection.map(Into::into),
+                    })
                 },
                 snapshot = snapshots.recv() => match snapshot {
                     Ok(snapshot) => {
@@ -12113,6 +12164,86 @@ mod tests {
         );
         drop(current.io);
         drop(legacy.io);
+        Ok(())
+    }
+
+    /// A terminal can redraw continuously while an animated TUI is idle. The
+    /// compact loop is deliberately biased, so this stages a redraw and a
+    /// tracked-selection change without yielding: both receivers are ready on
+    /// the next poll and the view-owned selection must win. Putting the shared
+    /// snapshot first reproduces the iOS failure where the highlight remains
+    /// at fixed screen coordinates while the selected cells move underneath.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_compact_selection_cannot_be_starved_by_a_ready_redraw() -> Result<()> {
+        let mut host = CompactHost::new()?;
+        let mut peer = host.attached("r:pane-selection", 1).await?;
+        let opening = peer
+            .frames_until(|frame| {
+                matches!(
+                    frame,
+                    CompactFrame::State(StateMessage::ActivityChanged { .. })
+                )
+            })
+            .await?;
+        assert!(
+            opening.iter().any(|frame| matches!(
+                frame,
+                CompactFrame::State(StateMessage::SelectionChanged { selection: None })
+            )),
+            "the current protocol did not seed the view-owned selection: {opening:?}"
+        );
+
+        // The harness child is a quiet `cat`; give Ghostty one real cell to
+        // retain before asking it to select all. Terminal input is processed
+        // on the session worker, so wait on the model's own published state
+        // rather than on an arbitrary sleep.
+        let session = host.session();
+        let attachment_epoch = session
+            .view_attachment_epoch("r:pane-selection")
+            .context("the selection fixture view was not attached")?;
+        session.claim_control("r:pane-selection", COMPACT_CLIENT, 80, 24)?;
+        session.send_text(
+            "r:pane-selection",
+            COMPACT_CLIENT,
+            attachment_epoch,
+            1,
+            "selected\r".into(),
+        )?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if session.logical_snapshot().is_some_and(|snapshot| {
+                    snapshot
+                        .rows
+                        .iter()
+                        .any(|row| row.text.contains("selected"))
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("the compact selection fixture never produced terminal text")?;
+        while peer
+            .frame_within(Duration::from_millis(50))
+            .await?
+            .is_some()
+        {}
+
+        // No await between these operations: the server's next biased select
+        // sees both receivers ready at once, which makes their source ordering
+        // observable and keeps the regression deterministic.
+        let _ = session.selection_text("r:pane-selection", 0, 0, 0, 0, true)?;
+        session.refresh()?;
+
+        assert!(
+            matches!(
+                peer.next_state().await?,
+                StateMessage::SelectionChanged { selection: Some(_) }
+            ),
+            "a ready terminal redraw overtook the view's tracked selection"
+        );
+        drop(peer.io);
         Ok(())
     }
 

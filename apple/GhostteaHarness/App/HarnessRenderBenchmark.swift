@@ -624,7 +624,8 @@ enum HarnessRenderBenchmark {
       return try await replica.publishSnapshotJSON(encoder.encode(snapshot))
     case .patch(let patch):
       return try await replica.publishPatchJSON(encoder.encode(patch))
-    case .controlChanged, .activityChanged:
+    case .controlChanged, .controlState, .activityChanged, .configurationChanged,
+      .sessionEnded, .hostShutdown:
       throw HarnessRenderBenchmarkError.invalidConfiguration(
         "metadata messages cannot produce replica frames"
       )
@@ -1053,7 +1054,9 @@ enum HarnessRenderBenchmark {
     return payloads
   }
 
-  private static func compactStateObject(_ message: GhostteaTerminalStateMessage) -> [String: Any] {
+  private static func compactStateObject(
+    _ message: GhostteaTerminalStateMessage
+  ) throws -> [String: Any] {
     switch message {
     case .snapshot(let snapshot):
       return [
@@ -1088,6 +1091,14 @@ enum HarnessRenderBenchmark {
       ]
     case .controlChanged(let viewID, let epoch, let cols, let rows, let layout):
       return ["c": [viewID, epoch, cols, rows, layout]]
+    case .controlState(let controller, let revision, let cols, let rows, let layout):
+      let compactController: Any
+      if let controller {
+        compactController = [controller.controllerViewID, controller.controlEpoch] as [Any]
+      } else {
+        compactController = NSNull()
+      }
+      return ["cs": [compactController, revision, cols, rows, layout]]
     case .activityChanged(let activity):
       return [
         "a": [
@@ -1100,6 +1111,18 @@ enum HarnessRenderBenchmark {
           "observedAtMs": activity.observedAtMs,
         ]
       ]
+    case .configurationChanged(let presentation):
+      let encoded = try JSONEncoder().encode(presentation)
+      return ["g": try JSONSerialization.jsonObject(with: encoded)]
+    case .sessionEnded(let reason):
+      switch reason {
+      case .exited(let code):
+        return ["se": ["exited", code.map { $0 as Any } ?? NSNull()]]
+      case .closed:
+        return ["se": ["closed", NSNull()]]
+      }
+    case .hostShutdown:
+      return ["hs": []]
     }
   }
 

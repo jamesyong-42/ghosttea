@@ -6,6 +6,8 @@ public enum GhostteaBundledFontRole: UInt32, Sendable {
   case italic = 2
   case boldItalic = 3
   case fallback = 4
+  case fallbackText = 5
+  case fallbackEmoji = 6
 }
 
 public struct GhostteaBundledFont: Sendable {
@@ -21,22 +23,27 @@ public struct GhostteaBundledFont: Sendable {
 }
 
 public enum GhostteaBundledFonts {
-  private static let resources: [(String, GhostteaBundledFontRole)] = [
-    ("JetBrainsMonoNerdFont-Regular", .regular),
-    ("JetBrainsMonoNerdFont-Bold", .bold),
-    ("JetBrainsMonoNerdFont-Italic", .italic),
-    ("JetBrainsMonoNerdFont-BoldItalic", .boldItalic),
-    ("NotoColorEmoji", .fallback),
+  private static let resources: [(String, String, GhostteaBundledFontRole)] = [
+    ("JetBrainsMonoNerdFont-Regular", "ttf", .regular),
+    ("JetBrainsMonoNerdFont-Bold", "ttf", .bold),
+    ("JetBrainsMonoNerdFont-Italic", "ttf", .italic),
+    ("JetBrainsMonoNerdFont-BoldItalic", "ttf", .boldItalic),
+    ("NotoColorEmoji", "ttf", .fallbackEmoji),
+    ("STIXTwoMath-Regular", "otf", .fallbackText),
+    ("NotoSansSymbols2-Regular", "ttf", .fallbackText),
+    ("NotoEmoji-Regular", "ttf", .fallbackText),
   ]
 
   public static func load() throws -> [GhostteaBundledFont] {
-    try resources.map { name, role in
+    try resources.map { name, fileExtension, role in
       guard
         let url = Bundle.module.url(
-          forResource: name, withExtension: "ttf", subdirectory: "Fonts")
-          ?? Bundle.module.url(forResource: name, withExtension: "ttf")
+          forResource: name, withExtension: fileExtension, subdirectory: "Fonts")
+          ?? Bundle.module.url(forResource: name, withExtension: fileExtension)
       else {
-        throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: "Fonts/\(name).ttf"])
+        throw CocoaError(
+          .fileNoSuchFile,
+          userInfo: [NSFilePathErrorKey: "Fonts/\(name).\(fileExtension)"])
       }
       return GhostteaBundledFont(
         role: role,

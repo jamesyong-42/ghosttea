@@ -1,6 +1,13 @@
 import Foundation
 import Truffle
 
+private func ghostteaTraceSelection(_ message: @autoclosure () -> String) {
+  #if DEBUG
+    guard ProcessInfo.processInfo.environment["GHOSTTEA_SELECTION_TRACE"] == "1" else { return }
+    print("[GhostteaSelection] lifecycle \(message())")
+  #endif
+}
+
 /// Why an attachment is over. A closed set: each reason requires the evidence
 /// §6.4 defines, and absence is never upgraded to a claim.
 public enum GhostteaAttachmentEndReason: String, Codable, Equatable, Sendable {
@@ -510,6 +517,9 @@ public actor GhostteaAttachmentLifecycle {
   public func selectionText(_ selection: GhostteaSelectionRequest) async throws -> String {
     let attachment = try requireLiveAttachment()
     let requestID = UUID().uuidString
+    ghostteaTraceSelection(
+      "request id=\(requestID) view=\(attachment.viewID) selection=(\(selection.startColumn),\(selection.startRow))->(\(selection.endColumn),\(selection.endRow)) all=\(selection.selectAll) minor=\(attachment.info.negotiatedMinor)"
+    )
     // Register *before* sending. Writing first opens a window in which the
     // answer — or a teardown — arrives while no waiter is installed: the
     // answer finds nothing to resume and is dropped, and the continuation
@@ -532,7 +542,11 @@ public actor GhostteaAttachmentLifecycle {
     let sentIncarnation = incarnation
     do {
       _ = try await attachment.requestSelectionText(selection, requestID: requestID)
+      ghostteaTraceSelection("request sent id=\(requestID)")
     } catch {
+      ghostteaTraceSelection(
+        "request send failed id=\(requestID) error=\(String(describing: error))"
+      )
       commitDisconnect(generation: sentGeneration, incarnation: sentIncarnation)
       if let waiter = selectionWaiters.removeValue(forKey: requestID) {
         waiter.resume(
@@ -938,7 +952,10 @@ public actor GhostteaAttachmentLifecycle {
       // the caller awaiting one asked on this incarnation, and a stale answer
       // simply finds no waiter.
       if let waiter = selectionWaiters.removeValue(forKey: requestID) {
+        ghostteaTraceSelection("response id=\(requestID) bytes=\(text.utf8.count)")
         waiter.resume(returning: text)
+      } else {
+        ghostteaTraceSelection("orphan response id=\(requestID) bytes=\(text.utf8.count)")
       }
       return true
     case .state(let message):
@@ -971,6 +988,14 @@ public actor GhostteaAttachmentLifecycle {
         terminalRevision = snapshot.terminalRevision
       case .patch(let patch):
         terminalRevision = patch.terminalRevision
+      case .selectionChanged(let selection):
+        if let selection {
+          ghostteaTraceSelection(
+            "state selection=(\(selection.anchor.column),\(selection.anchor.row))->(\(selection.focus.column),\(selection.focus.row)) generation=\(generation)"
+          )
+        } else {
+          ghostteaTraceSelection("state selection=nil generation=\(generation)")
+        }
       case .activityChanged, .configurationChanged:
         break
       }

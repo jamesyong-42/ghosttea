@@ -429,7 +429,16 @@ final class GhostteaAppModel: ObservableObject {
     sendGesture(.scroll(Int64(rows)))
   }
 
+  func handleClipboardWrite(_ text: String) {
+    UIPasteboard.general.string = text
+    traceSelection("clipboard wrote bytes=\(text.utf8.count) source=terminal")
+    localStatus = "Copied \(text.utf8.count) bytes"
+  }
+
   func copySelection(_ selection: GhostteaTerminalSelection) {
+    traceSelection(
+      "ui commit (\(selection.anchor.column),\(selection.anchor.row))->(\(selection.focus.column),\(selection.focus.row))"
+    )
     copy(
       GhostteaSelectionRequest(
         startColumn: selection.anchor.column,
@@ -516,9 +525,12 @@ final class GhostteaAppModel: ObservableObject {
       guard let self else { return }
       if isLive, let lifecycle {
         do {
-          commit(try await lifecycle.selectionText(request), scopedToViewport: false)
+          let text = try await lifecycle.selectionText(request)
+          traceSelection("rpc completed bytes=\(text.utf8.count)")
+          commit(text, scopedToViewport: false)
           return
         } catch {
+          traceSelection("rpc failed error=\(String(describing: error))")
           record(.truffleSelectionFailed)
         }
       }
@@ -537,6 +549,9 @@ final class GhostteaAppModel: ObservableObject {
 
   private func commit(_ text: String, scopedToViewport: Bool) {
     UIPasteboard.general.string = text
+    traceSelection(
+      "clipboard wrote bytes=\(text.utf8.count) source=\(scopedToViewport ? "retained" : "host")"
+    )
     localStatus = "Copied \(text.utf8.count) bytes"
     guard scopedToViewport else { return }
     bannerPresenter?.noteCue("Copied the visible screen.", at: clock.nowMs)
@@ -796,6 +811,15 @@ final class GhostteaAppModel: ObservableObject {
   private func trace(_ message: String) {
     #if DEBUG
       print("[Ghosttea] \(message)")
+    #endif
+  }
+
+  private func traceSelection(_ message: @autoclosure () -> String) {
+    #if DEBUG
+      guard ProcessInfo.processInfo.environment["GHOSTTEA_SELECTION_TRACE"] == "1" else {
+        return
+      }
+      print("[GhostteaSelection] app \(message())")
     #endif
   }
 

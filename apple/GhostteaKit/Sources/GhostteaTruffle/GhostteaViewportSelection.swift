@@ -18,42 +18,66 @@ public enum GhostteaViewportSelection {
   /// real selection that happens to cover blank cells.
   public static func extract(
     _ request: GhostteaSelectionRequest,
-    from rows: [GhostteaLogicalRow]
+    from rows: [GhostteaLogicalRow],
+    viewportOffset: UInt64 = 0
   ) -> String? {
     guard !rows.isEmpty else { return nil }
     if request.selectAll {
       return rows.map { trimmedTrailing($0.text) }.joined(separator: "\n")
     }
 
-    let lastIndex = rows.count - 1
-    let start = min(Int(request.startRow), lastIndex)
-    let end = min(Int(request.endRow), lastIndex)
-    guard start <= end else { return nil }
+    let startPoint = (request.startRow, request.startColumn)
+    let endPoint = (request.endRow, request.endColumn)
+    let (start, end) = startPoint <= endPoint ? (startPoint, endPoint) : (endPoint, startPoint)
+    guard UInt64(start.0) >= viewportOffset, UInt64(end.0) >= viewportOffset else {
+      return nil
+    }
+    let first = UInt64(start.0) - viewportOffset
+    let last = UInt64(end.0) - viewportOffset
+    guard first < UInt64(rows.count) else { return nil }
+    let firstIndex = Int(first)
+    let lastIndex = Int(min(last, UInt64(rows.count - 1)))
 
     // A single row is clipped at both ends; a span keeps everything between
     // its first and last row whole, which is how a terminal selection reads.
-    if start == end {
-      return clip(rows[start].text, from: Int(request.startColumn), to: Int(request.endColumn))
+    if firstIndex == lastIndex {
+      return trimmedTrailing(rowColumns(rows[firstIndex], from: start.1, through: end.1))
     }
     var lines: [String] = [
-      clip(rows[start].text, from: Int(request.startColumn), to: nil)
+      trimmedTrailing(rowColumns(rows[firstIndex], from: start.1, through: UInt16.max))
     ]
-    if start + 1 <= end - 1 {
-      lines.append(contentsOf: rows[(start + 1)...(end - 1)].map { trimmedTrailing($0.text) })
+    if firstIndex + 1 < lastIndex {
+      lines.append(
+        contentsOf: rows[(firstIndex + 1)..<lastIndex].map { trimmedTrailing($0.text) }
+      )
     }
-    lines.append(clip(rows[end].text, from: 0, to: Int(request.endColumn)))
+    lines.append(trimmedTrailing(rowColumns(rows[lastIndex], from: 0, through: end.1)))
     return lines.joined(separator: "\n")
   }
 
-  /// Columns index characters, matching how the rows were rendered. An end
-  /// column past the row's width clips to the row rather than failing: the
-  /// selection is describing the screen, and the screen is shorter there.
-  private static func clip(_ text: String, from startColumn: Int, to endColumn: Int?) -> String {
-    let characters = Array(text)
-    guard startColumn < characters.count else { return "" }
-    let upper = min(endColumn ?? characters.count, characters.count)
-    guard startColumn < upper else { return "" }
-    return trimmedTrailing(String(characters[startColumn..<upper]))
+  /// Column-accurate slice of one logical row. Cell spans are authoritative
+  /// for wide graphemes; legacy rows without cells fall back to character
+  /// offsets. The end column is inclusive, matching the host selection RPC.
+  private static func rowColumns(
+    _ row: GhostteaLogicalRow,
+    from startColumn: UInt16,
+    through endColumn: UInt16
+  ) -> String {
+    guard startColumn <= endColumn else { return "" }
+    if row.cells.isEmpty {
+      let characters = Array(row.text)
+      guard Int(startColumn) < characters.count else { return "" }
+      let count = Int(endColumn - startColumn) + 1
+      return String(characters.dropFirst(Int(startColumn)).prefix(count))
+    }
+    return row.cells
+      .filter { cell in
+        let last = cell.column.addingReportingOverflow(max(1, cell.span) - 1)
+        let lastColumn = last.overflow ? UInt16.max : last.partialValue
+        return cell.column <= endColumn && lastColumn >= startColumn
+      }
+      .map(\.text)
+      .joined()
   }
 
   /// Terminal rows are padded to their width; copying that padding would paste

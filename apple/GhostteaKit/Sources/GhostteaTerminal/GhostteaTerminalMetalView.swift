@@ -1,6 +1,7 @@
 #if os(iOS)
   import Foundation
   import GhostteaCore
+  import GhostteaFrame
   import GhostteaPerformance
   import MetalKit
   import UIKit
@@ -102,8 +103,32 @@
 
     private enum PointerInteraction {
       case none
-      case remote
+      /// The application owns the visible interaction. Direct touch also
+      /// records its terminal anchor so iOS can copy authoritatively on lift;
+      /// indirect pointers leave it nil and retain desktop's OSC 52 path.
+      case remote(copyAnchor: GhostteaTerminalCellPoint?)
       case selection(anchor: GhostteaTerminalCellPoint)
+    }
+
+    private enum SelectionSource {
+      case host
+      case local
+      case awaitingHost(
+        expected: GhostteaTerminalSelection,
+        previous: TRF1SelectionState?
+      )
+    }
+
+    private final class ScrollMomentumDisplayLinkTarget: NSObject {
+      weak var owner: GhostteaTerminalMetalView?
+
+      @MainActor @objc func tick(_ displayLink: CADisplayLink) {
+        guard let owner else {
+          displayLink.invalidate()
+          return
+        }
+        owner.advanceScrollMomentum(displayLink)
+      }
     }
 
     public var onNeedsFullRefresh: (() -> Void)?
@@ -112,6 +137,7 @@
     public var onMarkedTextChange: ((GhostteaMarkedTextState?) -> Void)?
     public var onMouseInputEvent: ((GhostteaTerminalMouseEvent) -> Void)?
     public var onScrollRows: ((Int) -> Void)?
+    public var onClipboardWrite: ((String) -> Void)?
     public var onSelectionChange: ((GhostteaTerminalSelection?) -> Void)?
     public var onSelectionCommit: ((GhostteaTerminalSelection) -> Void)?
     public var onSelectAll: (() -> Void)?
@@ -205,6 +231,7 @@
     private var accessoryInputState = GhostteaAccessoryInputState()
     private var pointerInteraction = PointerInteraction.none
     private var absoluteSelection: GhostteaTerminalSelection?
+    private var selectionSource = SelectionSource.host
     private var wheelAccumulator = GhostteaWheelAccumulator()
     private var terminalCellWidth: CGFloat {
       CGFloat(terminalTextMetrics.cellWidthPixels)
@@ -213,9 +240,20 @@
       CGFloat(terminalTextMetrics.lineHeightPixels)
     }
     private var previousScrollTranslation: CGFloat = 0
+    private var previousDirectScrollTranslation: CGFloat = 0
+    private var scrollMomentumDisplayLink: CADisplayLink?
+    private var scrollMomentumVelocity: CGFloat = 0
+    private var scrollMomentumLastTimestamp: CFTimeInterval = 0
+    private var scrollMomentumLocation = CGPoint.zero
+    private lazy var scrollMomentumTarget: ScrollMomentumDisplayLinkTarget = {
+      let target = ScrollMomentumDisplayLinkTarget()
+      target.owner = self
+      return target
+    }()
     private var selectionAutoScrollDirection = 0
     private var selectionAutoScrollColumn: UInt16 = 0
     private var selectionAutoScrollTask: Task<Void, Never>?
+    private let selectionFeedbackGenerator = UISelectionFeedbackGenerator()
     private var accessibilityElementUpdateTask: Task<Void, Never>?
     private var accessibilityPageScrollPending = false
     private var pressedHardwareKeys: [UInt16: PressedHardwareKey] = [:]
@@ -245,6 +283,22 @@
       )
       recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
       recognizer.minimumPressDuration = 0.35
+      // A resting finger moves more than a mirrored mouse pointer. Keep the
+      // pre-recognition tolerance slightly above UIKit's default so ordinary
+      // finger jitter does not turn a deliberate hold into a scroll.
+      recognizer.allowableMovement = 12
+      recognizer.numberOfTouchesRequired = 1
+      recognizer.cancelsTouchesInView = false
+      recognizer.delaysTouchesBegan = false
+      return recognizer
+    }()
+    private lazy var directScrollRecognizer: UIPanGestureRecognizer = {
+      let recognizer = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handleDirectScrollPan(_:))
+      )
+      recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+      recognizer.maximumNumberOfTouches = 1
       recognizer.cancelsTouchesInView = false
       return recognizer
     }()
@@ -296,7 +350,13 @@
       inputFocusTapRecognizer.cancelsTouchesInView = false
       addGestureRecognizer(inputFocusTapRecognizer)
       addGestureRecognizer(pointerPanRecognizer)
+      // Let UIKit arbitrate physical finger intent. A pan waits only while the
+      // long press remains possible: moving beyond its tolerance fails the
+      // hold immediately and starts scrolling, while a steady 350 ms hold
+      // claims the gesture and keeps the later drag in selection mode.
+      directScrollRecognizer.require(toFail: touchSelectionRecognizer)
       addGestureRecognizer(touchSelectionRecognizer)
+      addGestureRecognizer(directScrollRecognizer)
       addGestureRecognizer(pointerHoverRecognizer)
       addGestureRecognizer(contextMenuTapRecognizer)
       addInteraction(editMenuInteraction)
@@ -498,6 +558,7 @@
     public func apply(frame data: Data) throws -> Bool {
       do {
         let previousCursor = retainedState.cursor
+        let previousSelection = retainedState.selection
         let applyResult = try GhostteaPerformanceRecorder.shared.measure(
           .frameDecode, byteCount: data.count
         ) {
@@ -507,8 +568,14 @@
           )
         }
         switch applyResult {
-        case .applied(let fullSnapshot, let changedRows, _, _):
+        case .applied(let fullSnapshot, let changedRows, _, let clipboardWrites):
           if fullSnapshot { awaitingMemoryPressureRefresh = false }
+          if previousSelection != retainedState.selection {
+            traceSelection(
+              "frame applied previous=\(Self.describe(previousSelection)) next=\(Self.describe(retainedState.selection))"
+            )
+          }
+          synchronizeTrackedSelection()
           updateAccessibilitySnapshot()
           if accessibilityPageScrollPending {
             accessibilityPageScrollPending = false
@@ -522,6 +589,7 @@
           updateCursorBlinkSurfaceVisibility()
           cursorBlinkController.updateCursor(retainedState.cursor)
           updateMarkedTextOverlay()
+          for text in clipboardWrites { onClipboardWrite?(text) }
           updateDiagnostics(
             acceptedFrames: diagnostics.acceptedFrames + 1,
             residentGlyphBytes: retainedState.residentGlyphPixelBytes,
@@ -570,6 +638,7 @@
     public func clearSelection() {
       guard absoluteSelection != nil || terminalSelection != nil else { return }
       absoluteSelection = nil
+      selectionSource = .local
       terminalSelection = nil
       onSelectionChange?(nil)
       updateAccessibilitySnapshot()
@@ -580,6 +649,7 @@
 
     public func setSelection(_ selection: GhostteaTerminalSelection?) {
       absoluteSelection = selection
+      selectionSource = .local
       updateRenderedSelection()
       onSelectionChange?(selection)
       updateAccessibilitySnapshot()
@@ -780,6 +850,7 @@
     public func setTerminalVisible(_ visible: Bool) {
       guard terminalVisible != visible else { return }
       terminalVisible = visible
+      if !visible { stopScrollMomentum() }
       updateCursorBlinkSurfaceVisibility()
       updateEffectAnimationState()
       if visible { requestEventDrivenDraw(damage: .full) }
@@ -851,6 +922,7 @@
     }
 
     @objc private func handlePointerPan(_ recognizer: UIPanGestureRecognizer) {
+      if recognizer.state == .began { stopScrollMomentum() }
       if recognizer.numberOfTouches == 0, case .none = pointerInteraction {
         handleScrollPan(recognizer)
         return
@@ -863,7 +935,7 @@
         if pointerOwner(
           forceLocalSelection: forceLocalSelection || modifiers.contains(.shift)
         ) == .remoteApplication {
-          pointerInteraction = .remote
+          pointerInteraction = .remote(copyAnchor: nil)
           emitMouse(action: .press, button: .left, at: location, modifiers: modifiers)
         } else {
           let anchor = terminalCell(at: location)
@@ -889,21 +961,93 @@
 
     @objc private func handleTouchSelection(_ recognizer: UILongPressGestureRecognizer) {
       let location = recognizer.location(in: self)
+      let modifiers = currentPointerModifiers
       switch recognizer.state {
       case .began:
+        stopScrollMomentum()
         _ = focusTerminalInput()
-        let anchor = terminalCell(at: location)
-        pointerInteraction = .selection(anchor: anchor)
-        updateLocalSelection(anchor: anchor, focus: anchor)
+        selectionFeedbackGenerator.prepare()
+        selectionFeedbackGenerator.selectionChanged()
+        if pointerOwner(
+          forceLocalSelection: forceLocalSelection || modifiers.contains(.shift)
+        ) == .remoteApplication {
+          clearSelection()
+          // The host copy requested on lift creates tracked pins for this
+          // view. Claude still owns the visible selection, so do not adopt
+          // those pins as a second, fixed-row overlay.
+          selectionSource = .local
+          pointerInteraction = .remote(copyAnchor: terminalCell(at: location))
+          emitMouse(action: .press, button: .left, at: location, modifiers: modifiers)
+          traceSelection("physical hold began owner=application")
+        } else {
+          let anchor = terminalCell(at: location)
+          pointerInteraction = .selection(anchor: anchor)
+          updateLocalSelection(anchor: anchor, focus: anchor)
+          traceSelection(
+            "physical hold began owner=terminal at=(\(anchor.column),\(anchor.row))"
+          )
+        }
       case .changed:
-        guard case .selection(let anchor) = pointerInteraction else { return }
-        updateLocalSelection(anchor: anchor, focus: terminalCell(at: location))
-        updateSelectionAutoScroll(at: location)
+        switch pointerInteraction {
+        case .remote:
+          emitMouse(action: .motion, button: .left, at: location, modifiers: modifiers)
+        case .selection(let anchor):
+          updateLocalSelection(anchor: anchor, focus: terminalCell(at: location))
+          updateSelectionAutoScroll(at: location)
+        case .none:
+          break
+        }
       case .ended, .cancelled, .failed:
-        finishPointerInteraction(at: location, modifiers: [])
+        finishPointerInteraction(at: location, modifiers: modifiers)
       default:
         break
       }
+    }
+
+    @objc private func handleDirectScrollPan(_ recognizer: UIPanGestureRecognizer) {
+      let location = recognizer.location(in: self)
+      let translation = recognizer.translation(in: self).y
+      switch recognizer.state {
+      case .began:
+        stopScrollMomentum()
+        _ = focusTerminalInput()
+        previousDirectScrollTranslation = 0
+        wheelAccumulator.reset()
+        traceSelection("physical pan won gesture arbitration")
+        emitDirectScrollDelta(translation, at: location)
+      case .changed:
+        emitDirectScrollDelta(
+          translation - previousDirectScrollTranslation,
+          at: location
+        )
+      case .ended:
+        emitDirectScrollDelta(
+          translation - previousDirectScrollTranslation,
+          at: location
+        )
+        previousDirectScrollTranslation = 0
+        let velocity = -recognizer.velocity(in: self).y
+        if abs(velocity) >= CGFloat(GhostteaScrollMomentum.launchVelocityPointsPerSecond) {
+          startScrollMomentum(velocity: velocity, at: location)
+        } else {
+          wheelAccumulator.reset()
+        }
+      case .cancelled, .failed:
+        previousDirectScrollTranslation = 0
+        wheelAccumulator.reset()
+      default:
+        break
+      }
+    }
+
+    private func emitDirectScrollDelta(_ delta: CGFloat, at location: CGPoint) {
+      previousDirectScrollTranslation += delta
+      guard abs(delta) > .ulpOfOne else { return }
+      emitScroll(
+        deltaPoints: GhostteaScrollGesture.deltaPoints(
+          translationDelta: Double(delta), directTouch: true),
+        at: location
+      )
     }
 
     @objc private func handlePointerHover(_ recognizer: UIHoverGestureRecognizer) {
@@ -934,31 +1078,112 @@
 
     private func handleScrollPan(_ recognizer: UIPanGestureRecognizer) {
       let translation = recognizer.translation(in: self).y
-      if recognizer.state == .began { previousScrollTranslation = 0 }
+      if recognizer.state == .began {
+        previousScrollTranslation = 0
+        wheelAccumulator.reset()
+      }
       let delta = translation - previousScrollTranslation
       previousScrollTranslation = translation
+      let completesGesture =
+        recognizer.state == .ended || recognizer.state == .cancelled
+        || recognizer.state == .failed
+      defer {
+        if completesGesture {
+          previousScrollTranslation = 0
+          wheelAccumulator.reset()
+        }
+      }
       let rows = wheelAccumulator.consume(
-        deltaPoints: Double(delta),
+        deltaPoints: GhostteaScrollGesture.deltaPoints(
+          translationDelta: Double(delta), directTouch: false),
         lineHeight: Double(terminalLineHeight)
       )
+      emitScrollRows(rows, at: recognizer.location(in: self))
+    }
+
+    private func emitScroll(deltaPoints: Double, at location: CGPoint) {
+      let rows = wheelAccumulator.consume(
+        deltaPoints: deltaPoints,
+        lineHeight: Double(terminalLineHeight)
+      )
+      emitScrollRows(rows, at: location)
+    }
+
+    private func emitScrollRows(_ rows: Int, at location: CGPoint) {
       guard rows != 0 else { return }
       let modifiers = currentPointerModifiers
-      if terminalMouseTrackingEnabled && !(forceLocalSelection || modifiers.contains(.shift)) {
+      let routesToApplication =
+        terminalMouseTrackingEnabled && !(forceLocalSelection || modifiers.contains(.shift))
+      if routesToApplication {
         let button: GhostteaMouseButton = rows < 0 ? .scrollUp : .scrollDown
         for _ in 0..<min(12, abs(rows)) {
           emitMouse(
             action: .press,
             button: button,
-            at: recognizer.location(in: self),
+            at: location,
             modifiers: modifiers
           )
         }
       } else {
         onScrollRows?(rows)
       }
-      if recognizer.state == .ended || recognizer.state == .cancelled {
-        previousScrollTranslation = 0
+    }
+
+    private func startScrollMomentum(velocity: CGFloat, at location: CGPoint) {
+      stopScrollMomentum(resetAccumulator: false)
+      scrollMomentumVelocity = velocity
+      scrollMomentumLocation = location
+      scrollMomentumLastTimestamp = 0
+      let displayLink = CADisplayLink(
+        target: scrollMomentumTarget,
+        selector: #selector(ScrollMomentumDisplayLinkTarget.tick(_:))
+      )
+      displayLink.preferredFrameRateRange = CAFrameRateRange(
+        minimum: 30,
+        maximum: 120,
+        preferred: 120
+      )
+      scrollMomentumDisplayLink = displayLink
+      displayLink.add(to: .main, forMode: .common)
+    }
+
+    private func advanceScrollMomentum(_ displayLink: CADisplayLink) {
+      guard displayLink === scrollMomentumDisplayLink else {
+        displayLink.invalidate()
+        return
       }
+      guard terminalVisible, window != nil else {
+        stopScrollMomentum()
+        return
+      }
+      guard scrollMomentumLastTimestamp != 0 else {
+        scrollMomentumLastTimestamp = displayLink.timestamp
+        return
+      }
+      let elapsed = min(0.05, max(0, displayLink.timestamp - scrollMomentumLastTimestamp))
+      scrollMomentumLastTimestamp = displayLink.timestamp
+      guard elapsed > 0 else { return }
+      emitScroll(
+        deltaPoints: Double(scrollMomentumVelocity) * elapsed,
+        at: scrollMomentumLocation
+      )
+      scrollMomentumVelocity = CGFloat(
+        GhostteaScrollMomentum.deceleratedVelocity(
+          Double(scrollMomentumVelocity),
+          elapsedSeconds: elapsed
+        )
+      )
+      if !GhostteaScrollMomentum.shouldContinue(velocity: Double(scrollMomentumVelocity)) {
+        stopScrollMomentum()
+      }
+    }
+
+    private func stopScrollMomentum(resetAccumulator: Bool = true) {
+      scrollMomentumDisplayLink?.invalidate()
+      scrollMomentumDisplayLink = nil
+      scrollMomentumVelocity = 0
+      scrollMomentumLastTimestamp = 0
+      if resetAccumulator { wheelAccumulator.reset() }
     }
 
     private var currentPointerModifiers: GhostteaInputModifiers {
@@ -980,6 +1205,7 @@
     ) {
       let selection = GhostteaTerminalSelection(anchor: anchor, focus: focus)
       absoluteSelection = selection
+      selectionSource = .local
       updateRenderedSelection()
       onSelectionChange?(selection)
       updateAccessibilitySnapshot()
@@ -991,21 +1217,41 @@
     ) {
       stopSelectionAutoScroll()
       switch pointerInteraction {
-      case .remote:
+      case .remote(let copyAnchor):
         emitMouse(action: .release, button: .left, at: location, modifiers: modifiers)
+        if let copyAnchor,
+          let selection = GhostteaSelectionCompletion.resolve(
+            anchor: copyAnchor,
+            focus: terminalCell(at: location)
+          )
+        {
+          traceSelection("application selection fallback copy=\(Self.describe(selection))")
+          onSelectionCommit?(selection)
+        }
       case .selection(let anchor):
-        let selection = GhostteaTerminalSelection(anchor: anchor, focus: terminalCell(at: location))
-        if selection.anchor == selection.focus {
-          absoluteSelection = nil
-          updateRenderedSelection()
-          onSelectionChange?(nil)
-          updateAccessibilitySnapshot()
-        } else {
+        let focus = terminalCell(at: location)
+        if let selection = GhostteaSelectionCompletion.resolve(
+          anchor: anchor,
+          focus: focus
+        ) {
           absoluteSelection = selection
           updateRenderedSelection()
           onSelectionChange?(selection)
           updateAccessibilitySnapshot()
+          selectionSource = .awaitingHost(
+            expected: selection,
+            previous: retainedState.selection
+          )
+          traceSelection(
+            "commit expected=\(Self.describe(selection)) previous=\(Self.describe(retainedState.selection))"
+          )
           onSelectionCommit?(selection)
+        } else {
+          absoluteSelection = nil
+          selectionSource = .local
+          updateRenderedSelection()
+          onSelectionChange?(nil)
+          updateAccessibilitySnapshot()
         }
       case .none:
         break
@@ -1101,6 +1347,80 @@
       guard next != terminalSelection else { return }
       terminalSelection = next
       requestEventDrivenDraw(damage: .selection)
+    }
+
+    private func synchronizeTrackedSelection() {
+      let tracked = retainedState.selection.map(Self.terminalSelection)
+      switch selectionSource {
+      case .local:
+        return
+      case .host:
+        guard absoluteSelection != tracked else { return }
+        traceSelection("adopt host=\(Self.describe(tracked))")
+        replaceSelectionFromHost(tracked)
+      case .awaitingHost(let expected, let previous):
+        guard let tracked else {
+          traceSelection("awaiting host expected=\(Self.describe(expected)); received clear")
+          return
+        }
+        // Ordinary remote row frames can still contain the host's previous
+        // selection while the selection RPC is in flight. Only hand control
+        // back when the expected selection (or a newly tracked successor) has
+        // actually arrived.
+        guard tracked == expected || retainedState.selection != previous else {
+          traceSelection(
+            "awaiting host expected=\(Self.describe(expected)); retained previous selection"
+          )
+          return
+        }
+        selectionSource = .host
+        traceSelection("host took ownership selection=\(Self.describe(tracked))")
+        replaceSelectionFromHost(tracked)
+      }
+    }
+
+    private func traceSelection(_ message: @autoclosure () -> String) {
+      #if DEBUG
+        guard ProcessInfo.processInfo.environment["GHOSTTEA_SELECTION_TRACE"] == "1" else {
+          return
+        }
+        print("[GhostteaSelection] metal \(message())")
+      #endif
+    }
+
+    private static func describe(_ selection: GhostteaTerminalSelection?) -> String {
+      guard let selection else { return "nil" }
+      let anchor = selection.anchor
+      let focus = selection.focus
+      return "(\(anchor.column),\(anchor.row))->(\(focus.column),\(focus.row))"
+    }
+
+    private static func describe(_ selection: TRF1SelectionState?) -> String {
+      guard let selection else { return "nil" }
+      let anchor = selection.anchor
+      let focus = selection.focus
+      return "(\(anchor.column),\(anchor.row))->(\(focus.column),\(focus.row))"
+    }
+
+    private func replaceSelectionFromHost(_ selection: GhostteaTerminalSelection?) {
+      guard absoluteSelection != selection else { return }
+      absoluteSelection = selection
+      onSelectionChange?(selection)
+    }
+
+    private static func terminalSelection(
+      _ selection: TRF1SelectionState
+    ) -> GhostteaTerminalSelection {
+      GhostteaTerminalSelection(
+        anchor: GhostteaTerminalCellPoint(
+          column: selection.anchor.column,
+          row: selection.anchor.row
+        ),
+        focus: GhostteaTerminalCellPoint(
+          column: selection.focus.column,
+          row: selection.focus.row
+        )
+      )
     }
 
     private func applyCursorBlinkVisibility(_ visible: Bool) {
@@ -1230,6 +1550,7 @@
 
     public func suspendGPU() {
       guard !gpuSuspended else { return }
+      stopScrollMomentum()
       gpuSuspended = true
       updateCursorBlinkSurfaceVisibility()
       updateEffectAnimationState()
@@ -1500,6 +1821,8 @@
     }
 
     @objc private func applicationDidEnterBackground() {
+      previousDirectScrollTranslation = 0
+      stopScrollMomentum()
       stopSelectionAutoScroll()
       suspendGPU()
     }

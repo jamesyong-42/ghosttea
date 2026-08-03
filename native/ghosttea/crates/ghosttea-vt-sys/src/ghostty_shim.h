@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 typedef struct EgTerminal EgTerminal;
+typedef struct EgTrackedSelection EgTrackedSelection;
 
 enum {
   EG_EFFECT_BELL = 1 << 0,
@@ -59,6 +60,13 @@ typedef struct {
   uint64_t len;
 } EgScrollbar;
 
+typedef struct {
+  uint16_t start_column;
+  uint32_t start_row;
+  uint16_t end_column;
+  uint32_t end_row;
+} EgSelection;
+
 EgTerminal* eg_terminal_new(uint16_t cols, uint16_t rows, size_t max_scrollback);
 void eg_terminal_free(EgTerminal* terminal);
 void eg_terminal_write(EgTerminal* terminal, const uint8_t* data, size_t len);
@@ -77,6 +85,22 @@ int eg_terminal_compress_scrollback_full(EgTerminal* terminal);
 bool eg_terminal_scrollbar(EgTerminal* terminal, EgScrollbar* scrollbar);
 bool eg_terminal_mouse_tracking(EgTerminal* terminal);
 bool eg_terminal_alternate_scroll(EgTerminal* terminal);
+EgTrackedSelection* eg_terminal_track_selection(EgTerminal* terminal,
+                                                uint16_t start_column,
+                                                uint32_t start_row,
+                                                uint16_t end_column,
+                                                uint32_t end_row,
+                                                bool select_all);
+void eg_tracked_selection_free(EgTrackedSelection* selection);
+bool eg_terminal_tracked_selection_points(
+    EgTerminal* terminal,
+    const EgTrackedSelection* selection,
+    EgSelection* points);
+size_t eg_terminal_tracked_selection_text(
+    EgTerminal* terminal,
+    const EgTrackedSelection* selection,
+    uint8_t* out,
+    size_t cap);
 size_t eg_terminal_selection_text(EgTerminal* terminal,
                                   uint16_t start_column,
                                   uint32_t start_row,
