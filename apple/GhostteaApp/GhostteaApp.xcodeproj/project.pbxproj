@@ -34,6 +34,9 @@
 		100000000000000000000019 /* Ghosttea-iOS.cdx.json in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* Ghosttea-iOS.cdx.json */; };
 		10000000000000000000001A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* PrivacyInfo.xcprivacy */; };
 		10000000000000000000001B /* GhostteaDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000D /* GhostteaDiagnostics */; };
+		10000000000000000000001E /* GhostteaAppearance in Frameworks */ = {isa = PBXBuildFile; productRef = A0000000000000000000000E /* GhostteaAppearance */; };
+		10000000000000000000001F /* GhostteaConfigurationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* GhostteaConfigurationModel.swift */; };
+		100000000000000000000020 /* GhostteaSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* GhostteaSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,6 +56,8 @@
 		20000000000000000000000D /* THIRD-PARTY-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "THIRD-PARTY-NOTICES.txt"; sourceTree = "<group>"; };
 		20000000000000000000000E /* Ghosttea-iOS.cdx.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Ghosttea-iOS.cdx.json"; sourceTree = "<group>"; };
 		20000000000000000000000F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		200000000000000000000010 /* GhostteaConfigurationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaConfigurationModel.swift; sourceTree = "<group>"; };
+		200000000000000000000011 /* GhostteaSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostteaSettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -73,6 +78,7 @@
 				100000000000000000000011 /* GhostteaWorkspace in Frameworks */,
 				100000000000000000000012 /* GhostteaWorkspaceUI in Frameworks */,
 				10000000000000000000001B /* GhostteaDiagnostics in Frameworks */,
+				10000000000000000000001E /* GhostteaAppearance in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -103,6 +109,8 @@
 				20000000000000000000000A /* GhostteaSharedRuntimeModel.swift */,
 				20000000000000000000000B /* GhostteaMultiSceneProbe.swift */,
 				20000000000000000000000C /* GhostteaAboutView.swift */,
+				200000000000000000000010 /* GhostteaConfigurationModel.swift */,
+				200000000000000000000011 /* GhostteaSettingsView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -153,6 +161,7 @@
 				A0000000000000000000000B /* GhostteaWorkspace */,
 				A0000000000000000000000C /* GhostteaWorkspaceUI */,
 				A0000000000000000000000D /* GhostteaDiagnostics */,
+				A0000000000000000000000E /* GhostteaAppearance */,
 			);
 			productName = Ghosttea;
 			productReference = 200000000000000000000005 /* Ghosttea.app */;
@@ -217,6 +226,8 @@
 				100000000000000000000015 /* GhostteaSharedRuntimeModel.swift in Sources */,
 				100000000000000000000016 /* GhostteaMultiSceneProbe.swift in Sources */,
 				100000000000000000000017 /* GhostteaAboutView.swift in Sources */,
+				10000000000000000000001F /* GhostteaConfigurationModel.swift in Sources */,
+				100000000000000000000020 /* GhostteaSettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -403,6 +414,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
 			productName = GhostteaDiagnostics;
+		};
+		A0000000000000000000000E /* GhostteaAppearance */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B00000000000000000000001 /* XCLocalSwiftPackageReference "GhostteaKit" */;
+			productName = GhostteaAppearance;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

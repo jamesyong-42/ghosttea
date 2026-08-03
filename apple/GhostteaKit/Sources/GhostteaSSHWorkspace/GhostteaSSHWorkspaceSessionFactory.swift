@@ -71,7 +71,7 @@ public actor GhostteaSSHWorkspaceSessionFactory {
   private let defaultProfileID: String?
   private let sessionConfiguration: GhostteaSessionConfiguration
   private let scrollbackBytes: UInt64
-  private let terminalConfiguration: GhostteaConfigSnapshot?
+  private var terminalConfiguration: GhostteaConfigSnapshot?
   private let identityPrefix: String
   private let eventHandler: EventHandler
   private var nextSessionHandle: UInt64?
@@ -192,6 +192,13 @@ public actor GhostteaSSHWorkspaceSessionFactory {
     _ resource: GhostteaSSHWorkspaceSession
   ) async {
     await resource.session.disconnect()
+  }
+
+  /// Updates colors and palette for terminals allocated after this call. The
+  /// shared runtime's font metrics and the factory's scrollback budget remain
+  /// startup-owned until the workspace is recreated.
+  public func updateTerminalConfiguration(_ configuration: GhostteaConfigSnapshot) {
+    terminalConfiguration = configuration
   }
 
   /// Tears down an evicted resource and releases its stable identity so a later

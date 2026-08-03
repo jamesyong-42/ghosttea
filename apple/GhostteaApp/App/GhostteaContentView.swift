@@ -13,6 +13,8 @@ struct GhostteaContentView: View {
         .tabItem { Label("Shared", systemImage: "rectangle.connected.to.line.below") }
       GhostteaSSHView()
         .tabItem { Label("SSH", systemImage: "terminal") }
+      GhostteaSettingsView()
+        .tabItem { Label("Settings", systemImage: "gearshape") }
     }
   }
 
@@ -160,7 +162,7 @@ struct GhostteaContentView: View {
 
   private var terminal: some View {
     ZStack {
-      model.presentationConfiguration.terminalBackgroundColor
+      Rectangle().fill(.ultraThinMaterial)
         .ignoresSafeArea()
       if let frame = model.frame {
         GhostteaSharedTerminalSurface(

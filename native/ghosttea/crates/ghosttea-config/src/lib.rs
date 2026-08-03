@@ -126,13 +126,19 @@ impl ConfigSnapshot {
             foreground: self.renderer.foreground,
             background: self.renderer.background,
             cursor: self.renderer.cursor,
+            cursor_text: self.renderer.cursor_text,
             selection_background: self.renderer.selection_background,
             selection_foreground: self.renderer.selection_foreground,
+            palette: self.renderer.palette.clone(),
+            background_opacity: self.renderer.background_opacity,
+            background_opacity_cells: self.renderer.background_opacity_cells,
             font_size: self.renderer.font_size,
             font_families: self.renderer.font_families.clone(),
             padding_x: self.renderer.padding_x,
             padding_y: self.renderer.padding_y,
             post_process: self.renderer.post_process,
+            shader_effects: self.renderer.shader_effects.clone(),
+            custom_shader_animation: self.renderer.custom_shader_animation,
             custom_shader_count: u32::try_from(self.renderer.custom_shader_paths.len())
                 .unwrap_or(u32::MAX),
         };
@@ -254,7 +260,7 @@ pub struct RendererConfig {
 ///
 /// The session host is authoritative for this projection. View-local input
 /// bindings and retention policy are intentionally not part of it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalPresentationConfig {
     pub schema_version: u32,
@@ -262,15 +268,87 @@ pub struct TerminalPresentationConfig {
     pub foreground: [u8; 3],
     pub background: [u8; 3],
     pub cursor: [u8; 3],
+    pub cursor_text: [u8; 3],
     pub selection_background: [u8; 3],
     pub selection_foreground: [u8; 3],
+    #[serde(default)]
+    pub palette: Vec<PaletteConfigEntry>,
+    #[serde(default = "default_background_opacity")]
+    pub background_opacity: f32,
+    #[serde(default)]
+    pub background_opacity_cells: bool,
     pub font_size: f32,
     pub font_families: Vec<String>,
     pub padding_x: [f32; 2],
     pub padding_y: [f32; 2],
     pub post_process: RendererPostProcess,
+    /// Ordered, distributable effects selected from Ghosttea's built-in registry.
+    #[serde(default)]
+    pub shader_effects: Vec<String>,
+    #[serde(default)]
+    pub custom_shader_animation: bool,
     /// Number of host-local shader paths omitted from this projection.
     pub custom_shader_count: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalPresentationConfigWire {
+    schema_version: u32,
+    revision: String,
+    foreground: [u8; 3],
+    background: [u8; 3],
+    cursor: [u8; 3],
+    #[serde(default)]
+    cursor_text: Option<[u8; 3]>,
+    selection_background: [u8; 3],
+    selection_foreground: [u8; 3],
+    #[serde(default)]
+    palette: Vec<PaletteConfigEntry>,
+    #[serde(default = "default_background_opacity")]
+    background_opacity: f32,
+    #[serde(default)]
+    background_opacity_cells: bool,
+    font_size: f32,
+    font_families: Vec<String>,
+    padding_x: [f32; 2],
+    padding_y: [f32; 2],
+    post_process: RendererPostProcess,
+    #[serde(default)]
+    shader_effects: Vec<String>,
+    #[serde(default)]
+    custom_shader_animation: bool,
+    custom_shader_count: u32,
+}
+
+impl<'de> Deserialize<'de> for TerminalPresentationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TerminalPresentationConfigWire::deserialize(deserializer)?;
+        Ok(Self {
+            schema_version: wire.schema_version,
+            revision: wire.revision,
+            foreground: wire.foreground,
+            background: wire.background,
+            cursor: wire.cursor,
+            cursor_text: wire.cursor_text.unwrap_or(wire.background),
+            selection_background: wire.selection_background,
+            selection_foreground: wire.selection_foreground,
+            palette: wire.palette,
+            background_opacity: wire.background_opacity,
+            background_opacity_cells: wire.background_opacity_cells,
+            font_size: wire.font_size,
+            font_families: wire.font_families,
+            padding_x: wire.padding_x,
+            padding_y: wire.padding_y,
+            post_process: wire.post_process,
+            shader_effects: wire.shader_effects,
+            custom_shader_animation: wire.custom_shader_animation,
+            custom_shader_count: wire.custom_shader_count,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -281,12 +359,12 @@ pub enum RendererPostProcess {
     BetterCrt,
 }
 
-const fn default_cursor_text() -> [u8; 3] {
-    DEFAULT_BACKGROUND
-}
-
 const fn default_background_opacity() -> f32 {
     1.0
+}
+
+const fn default_cursor_text() -> [u8; 3] {
+    DEFAULT_BACKGROUND
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1953,6 +2031,24 @@ mod tests {
         assert_ne!(presentation.revision, baseline.revision);
         assert_eq!(presentation.custom_shader_count, 1);
         assert_eq!(presentation.background, snapshot.renderer.background);
+        assert_eq!(presentation.cursor_text, snapshot.renderer.cursor_text);
+        assert_eq!(presentation.palette, snapshot.renderer.palette);
+        assert_eq!(
+            presentation.background_opacity,
+            snapshot.renderer.background_opacity
+        );
+        assert_eq!(
+            presentation.background_opacity_cells,
+            snapshot.renderer.background_opacity_cells
+        );
+        assert_eq!(
+            presentation.shader_effects,
+            snapshot.renderer.shader_effects
+        );
+        assert_eq!(
+            presentation.custom_shader_animation,
+            snapshot.renderer.custom_shader_animation
+        );
         assert!(json.get("sources").is_none());
         assert!(json.get("diagnostics").is_none());
         assert!(json.get("workspace").is_none());
@@ -1964,6 +2060,33 @@ mod tests {
             snapshot.terminal_presentation().revision,
             presentation.revision
         );
+    }
+
+    #[test]
+    fn older_remote_presentation_defaults_new_fields_from_its_background() {
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "revision": "legacy-peer",
+            "foreground": [1, 2, 3],
+            "background": [4, 5, 6],
+            "cursor": [7, 8, 9],
+            "selectionBackground": [10, 11, 12],
+            "selectionForeground": [13, 14, 15],
+            "fontSize": 13.0,
+            "fontFamilies": [],
+            "paddingX": [2.0, 2.0],
+            "paddingY": [2.0, 2.0],
+            "postProcess": "none",
+            "customShaderCount": 0,
+        });
+        let presentation: TerminalPresentationConfig = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(presentation.cursor_text, presentation.background);
+        assert!(presentation.palette.is_empty());
+        assert_eq!(presentation.background_opacity, 1.0);
+        assert!(!presentation.background_opacity_cells);
+        assert!(presentation.shader_effects.is_empty());
+        assert!(!presentation.custom_shader_animation);
     }
 
     #[test]

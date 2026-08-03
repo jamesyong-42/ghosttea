@@ -396,6 +396,47 @@ public actor GhostteaTerminal {
     }
   }
 
+  public func setAppearance(
+    foreground: (UInt8, UInt8, UInt8),
+    background: (UInt8, UInt8, UInt8),
+    cursor: (UInt8, UInt8, UInt8),
+    palette: [GhostteaPaletteConfigEntry],
+    render: GhostteaRenderRequest = .full
+  ) throws -> GhostteaUpdate {
+    guard palette.count <= 256, palette.allSatisfy({ $0.color.count == 3 }) else {
+      throw GhostteaCoreError.malformedUpdate(
+        "configuration palette must contain at most 256 RGB entries")
+    }
+    let foreground = [foreground.0, foreground.1, foreground.2]
+    let background = [background.0, background.1, background.2]
+    let cursor = [cursor.0, cursor.1, cursor.2]
+    let indices = palette.map(\.index)
+    let colors = palette.flatMap(\.color)
+    return try foreground.withUnsafeBufferPointer { foreground in
+      try background.withUnsafeBufferPointer { background in
+        try cursor.withUnsafeBufferPointer { cursor in
+          try indices.withUnsafeBufferPointer { indices in
+            try colors.withUnsafeBufferPointer { colors in
+              try performUpdate { output in
+                ghosttea_terminal_set_appearance(
+                  handle,
+                  foreground.baseAddress,
+                  background.baseAddress,
+                  cursor.baseAddress,
+                  indices.baseAddress,
+                  colors.baseAddress,
+                  indices.count,
+                  render.rawValue,
+                  &output
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   public func scroll(
     rows: Int64,
     render: GhostteaRenderRequest = .damage

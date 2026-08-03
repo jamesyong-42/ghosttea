@@ -18,9 +18,34 @@ struct GhostteaMetalTheme: Equatable, Sendable {
   var background = GhostteaMetalColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
   var foreground = GhostteaMetalColor(red: 1, green: 1, blue: 1, alpha: 1)
   var cursor = GhostteaMetalColor(red: 1, green: 1, blue: 1, alpha: 1)
+  var cursorText = GhostteaMetalColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
   var selection = GhostteaMetalColor(red: 1, green: 1, blue: 1, alpha: 1)
   var selectionForeground = GhostteaMetalColor(
     red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
+  var backgroundOpacityCells = false
+  var shaderEffects: [GhostteaMetalShaderEffect] = []
+  var shaderAnimation = false
+}
+
+enum GhostteaMetalShaderEffect: UInt32, CaseIterable, Equatable, Sendable {
+  case betterCRT = 1
+  case crt = 2
+  case vhs = 3
+  case sparksFromFire = 4
+
+  init?(configurationID: String) {
+    switch configurationID {
+    case "ghosttea:better-crt": self = .betterCRT
+    case "ghosttea:crt": self = .crt
+    case "ghosttea:vhs": self = .vhs
+    case "ghosttea:sparks-from-fire": self = .sparksFromFire
+    default: return nil
+    }
+  }
+
+  var isAnimated: Bool {
+    self == .vhs || self == .sparksFromFire
+  }
 }
 
 struct GhostteaMetalCellPoint: Equatable, Sendable {
@@ -109,9 +134,13 @@ private struct GhostteaResolvedMetalStyle {
 private struct GhostteaMetalMesh {
   var backgrounds: [GhostteaMetalRectangleInstance] = []
   var selection: [GhostteaMetalRectangleInstance] = []
+  var cursorBackground: [GhostteaMetalRectangleInstance] = []
   var alphaGlyphs: [GhostteaMetalGlyphInstance] = []
   var colorGlyphs: [GhostteaMetalGlyphInstance] = []
   var decorations: [GhostteaMetalRectangleInstance] = []
+  var cursorAlphaGlyphs: [GhostteaMetalGlyphInstance] = []
+  var cursorColorGlyphs: [GhostteaMetalGlyphInstance] = []
+  var cursorDecorations: [GhostteaMetalRectangleInstance] = []
   var cursor: [GhostteaMetalRectangleInstance] = []
 }
 
@@ -120,12 +149,18 @@ private struct GhostteaMetalRowMesh {
   var alphaGlyphs: [GhostteaMetalGlyphInstance] = []
   var colorGlyphs: [GhostteaMetalGlyphInstance] = []
   var decorations: [GhostteaMetalRectangleInstance] = []
+  var cursorAlphaGlyphs: [GhostteaMetalGlyphInstance] = []
+  var cursorColorGlyphs: [GhostteaMetalGlyphInstance] = []
+  var cursorDecorations: [GhostteaMetalRectangleInstance] = []
 
   var residentBytes: Int {
     backgrounds.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
       + alphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
       + colorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
       + decorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + cursorAlphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + cursorColorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + cursorDecorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
   }
 }
 
@@ -145,6 +180,7 @@ private struct GhostteaMetalRowCacheContext: Equatable {
 
 private struct GhostteaMetalRowCacheEntry {
   let revision: UInt64
+  let blockCursorColumn: UInt16?
   let mesh: GhostteaMetalRowMesh
 }
 
@@ -163,6 +199,17 @@ private struct GhostteaMetalGlyphInstance {
   let bounds: SIMD4<Float>
   let uvBounds: SIMD4<Float>
   let color: SIMD4<Float>
+}
+
+private struct GhostteaMetalEffectUniforms {
+  let mode: UInt32
+  let frame: UInt32
+  let effectIndex: UInt32
+  let effectCount: UInt32
+  let resolution: SIMD2<Float>
+  let time: Float
+  let timeDelta: Float
+  let cursor: SIMD4<Float>
 }
 
 private struct GhostteaMetalGeometryKey: Equatable {
@@ -191,9 +238,13 @@ private struct GhostteaMetalBufferSlice {
 private struct GhostteaMetalEncodedMesh {
   let backgrounds: GhostteaMetalBufferSlice?
   let selection: GhostteaMetalBufferSlice?
+  let cursorBackground: GhostteaMetalBufferSlice?
   let alphaGlyphs: GhostteaMetalBufferSlice?
   let colorGlyphs: GhostteaMetalBufferSlice?
   let decorations: GhostteaMetalBufferSlice?
+  let cursorAlphaGlyphs: GhostteaMetalBufferSlice?
+  let cursorColorGlyphs: GhostteaMetalBufferSlice?
+  let cursorDecorations: GhostteaMetalBufferSlice?
   let cursor: GhostteaMetalBufferSlice?
   let rectangleVertexCount: Int
   let alphaGlyphVertexCount: Int
@@ -204,16 +255,34 @@ private struct GhostteaMetalEncodedMesh {
   let uploadLease: GhostteaMetalUploadLease?
 
   var populatedSliceCount: Int {
-    [backgrounds, selection, alphaGlyphs, colorGlyphs, decorations, cursor]
-      .compactMap { $0 }.count
+    [
+      backgrounds, selection, cursorBackground, alphaGlyphs, colorGlyphs, decorations,
+      cursorAlphaGlyphs, cursorColorGlyphs, cursorDecorations, cursor,
+    ].compactMap { $0 }.count
   }
 
   func drawCallCount(showCursor: Bool) -> Int {
-    populatedSliceCount - (!showCursor && cursor != nil ? 1 : 0)
+    populatedSliceCount
+      - (!showCursor && cursor != nil ? 1 : 0)
+      - (!showCursor && cursorBackground != nil ? 1 : 0)
+      - (!showCursor && cursorAlphaGlyphs != nil ? 1 : 0)
+      - (!showCursor && cursorColorGlyphs != nil ? 1 : 0)
+      - (!showCursor && cursorDecorations != nil ? 1 : 0)
   }
 
   func rectangleVertexCount(showCursor: Bool) -> Int {
-    rectangleVertexCount - (!showCursor ? cursor?.vertexCount ?? 0 : 0)
+    rectangleVertexCount
+      - (!showCursor ? cursor?.vertexCount ?? 0 : 0)
+      - (!showCursor ? cursorBackground?.vertexCount ?? 0 : 0)
+      - (!showCursor ? cursorDecorations?.vertexCount ?? 0 : 0)
+  }
+
+  func alphaGlyphVertexCount(showCursor: Bool) -> Int {
+    alphaGlyphVertexCount - (!showCursor ? cursorAlphaGlyphs?.vertexCount ?? 0 : 0)
+  }
+
+  func colorGlyphVertexCount(showCursor: Bool) -> Int {
+    colorGlyphVertexCount - (!showCursor ? cursorColorGlyphs?.vertexCount ?? 0 : 0)
   }
 }
 
@@ -340,6 +409,7 @@ final class GhostteaMetalRenderer {
   private let instancedRectanglePipeline: any MTLRenderPipelineState
   private let instancedAlphaGlyphPipeline: any MTLRenderPipelineState
   private let instancedColorGlyphPipeline: any MTLRenderPipelineState
+  private let effectPipeline: any MTLRenderPipelineState
   private let sampler: any MTLSamplerState
   private let encodedGeometryReuseEnabled: Bool
   private let instancedSubmissionEnabled: Bool
@@ -351,6 +421,15 @@ final class GhostteaMetalRenderer {
   private var rowCache: [Int: GhostteaMetalRowCacheEntry] = [:]
   private var pendingRowRevisions: [Int: UInt64] = [:]
   private var rowCacheBytes = 0
+  private var effectSceneTexture: (any MTLTexture)?
+  private var effectIntermediateTextures: [any MTLTexture] = []
+  private var effectTextureSize = SIMD2<Int>(repeating: 0)
+  private var effectSignature = ""
+  private var effectAnimationEnabled = false
+  private var effectSceneValid = false
+  private var effectFrame: UInt32 = 0
+  private var effectStartTime: TimeInterval?
+  private var lastEffectTime: Float = 0
 
   init(
     runtime: GhostteaMetalRuntime,
@@ -426,6 +505,7 @@ final class GhostteaMetalRenderer {
       fragment: "ghosttea_color_glyph_fragment",
       label: "Ghosttea instanced color glyph pipeline"
     )
+    effectPipeline = try Self.makeEffectPipeline(runtime: runtime, library: library)
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .linear
     samplerDescriptor.magFilter = .linear
@@ -518,8 +598,17 @@ final class GhostteaMetalRenderer {
     }
     let showCursor =
       state.cursor.map {
-        $0.visible && (!$0.blinking || cursorBlinkVisible)
+        $0.visible && (!focused || !$0.blinking || cursorBlinkVisible)
       } ?? false
+    let effectCursor =
+      state.cursor.map {
+        SIMD4<Float>(
+          (Self.originX + contentInsets.left + Float($0.x) * cellWidth) * scale,
+          (Self.originY + contentInsets.top + Float($0.y) * lineHeight) * scale,
+          showCursor ? 1 : 0,
+          Float((focused ? $0.style : TRF1CursorStyle.hollowBlock).rawValue)
+        )
+      } ?? SIMD4<Float>(repeating: 0)
     let recorder = GhostteaPerformanceRecorder.shared
     let lookupKey =
       encodedGeometryReuseEnabled
@@ -538,6 +627,7 @@ final class GhostteaMetalRenderer {
     let vertexUploadBytes: Int
     let bufferAllocationCount: Int
     let rowCacheActivity: GhostteaMetalRowCacheActivity
+    let effectDrawCallCount: Int
     if let lookupKey, let geometryCache, geometryCache.key == lookupKey {
       if recorder.isEnabled {
         recorder.record(.glyphVisibility, durationNanoseconds: 0)
@@ -555,12 +645,13 @@ final class GhostteaMetalRenderer {
       vertexUploadBytes = 0
       bufferAllocationCount = 0
       rowCacheActivity = GhostteaMetalRowCacheActivity()
-      try recorder.measure(.metalEncoding) {
+      effectDrawCallCount = try recorder.measure(.metalEncoding) {
         try encode(
           mesh: encodedMesh,
           target: target,
           theme: theme,
           showCursor: showCursor,
+          effectCursor: effectCursor,
           presenting: drawable
         )
       }
@@ -606,21 +697,24 @@ final class GhostteaMetalRenderer {
       }
       let mesh = meshBuild.mesh
       rowCacheActivity = meshBuild.activity
+      var encodedEffectDrawCallCount = 0
       encodedMesh = try recorder.measure(.metalEncoding) {
         let encodedMesh = try makeEncodedMesh(
           mesh,
           includeCursor: showCursor || willAdmit,
           persistent: willAdmit
         )
-        try encode(
+        encodedEffectDrawCallCount = try encode(
           mesh: encodedMesh,
           target: target,
           theme: theme,
           showCursor: showCursor,
+          effectCursor: effectCursor,
           presenting: drawable
         )
         return encodedMesh
       }
+      effectDrawCallCount = encodedEffectDrawCallCount
       if willAdmit, let completedKey {
         geometryCache = GhostteaMetalGeometryCache(key: completedKey, mesh: encodedMesh)
         pendingGeometryKey = nil
@@ -632,12 +726,12 @@ final class GhostteaMetalRenderer {
     }
     return GhostteaMetalDrawResult(
       rectangleVertexCount: encodedMesh.rectangleVertexCount(showCursor: showCursor),
-      alphaGlyphVertexCount: encodedMesh.alphaGlyphVertexCount,
-      colorGlyphVertexCount: encodedMesh.colorGlyphVertexCount,
+      alphaGlyphVertexCount: encodedMesh.alphaGlyphVertexCount(showCursor: showCursor),
+      colorGlyphVertexCount: encodedMesh.colorGlyphVertexCount(showCursor: showCursor),
       atlasUpload: atlasUpload,
       vertexUploadBytes: vertexUploadBytes,
       bufferAllocationCount: bufferAllocationCount,
-      drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor),
+      drawCallCount: encodedMesh.drawCallCount(showCursor: showCursor) + effectDrawCallCount,
       commandBufferCount: 1,
       damage: damage,
       rowCacheHits: rowCacheActivity.hits,
@@ -709,6 +803,13 @@ final class GhostteaMetalRenderer {
     let originX = Self.originX + contentInsets.left
     let originY = Self.originY + contentInsets.top
     let orderedSelection = ordered(selection)
+    let effectiveCursorStyle = state.cursor.map {
+      focused ? $0.style : TRF1CursorStyle.hollowBlock
+    }
+    let blockCursor = state.cursor.flatMap { cursor -> GhostteaMetalCellPoint? in
+      guard cursor.visible, effectiveCursorStyle == .block else { return nil }
+      return GhostteaMetalCellPoint(column: cursor.x, row: cursor.y)
+    }
     let context = GhostteaMetalRowCacheContext(
       sessionHandle: state.sessionHandle,
       sessionEpoch: state.sessionEpoch,
@@ -739,8 +840,11 @@ final class GhostteaMetalRenderer {
 
     for (rowIndex, row) in state.rows.enumerated() {
       let rowDamaged = damage.rows.contains(UInt16(clamping: rowIndex))
+      let blockCursorColumn =
+        blockCursor?.row == UInt16(rowIndex) ? blockCursor?.column : nil
       if !broadDamage, !rowDamaged, let entry = rowCache[rowIndex],
-        entry.revision == row.revision
+        entry.revision == row.revision,
+        entry.blockCursorColumn == blockCursorColumn
       {
         append(entry.mesh, to: &mesh)
         activity.hits += 1
@@ -760,7 +864,8 @@ final class GhostteaMetalRenderer {
         theme: theme,
         originX: originX,
         originY: originY,
-        selection: orderedSelection
+        selection: orderedSelection,
+        blockCursorColumn: blockCursorColumn
       )
       append(rowMesh, to: &mesh)
       if !broadDamage, pendingRowRevisions[rowIndex] == row.revision,
@@ -769,6 +874,7 @@ final class GhostteaMetalRenderer {
       {
         rowCache[rowIndex] = GhostteaMetalRowCacheEntry(
           revision: row.revision,
+          blockCursorColumn: blockCursorColumn,
           mesh: rowMesh
         )
         rowCacheBytes += rowMesh.residentBytes
@@ -809,18 +915,58 @@ final class GhostteaMetalRenderer {
       }
       let x = (originX + Float(cursor.x) * cellWidth) * scale
       let y = (originY + Float(cursor.y) * lineHeight) * scale
-      let cursorStyle: TRF1CursorStyle = focused ? cursor.style : .hollowBlock
-      let cursorWidth = cursorStyle == .bar ? max(2, (2 * scale).rounded()) : cellWidth * scale
-      pushRectangle(
-        into: &mesh.cursor,
-        x: x,
-        y: y,
-        width: cursorWidth,
-        height: lineHeight * scale,
-        color: theme.cursor,
-        viewportWidth: width,
-        viewportHeight: height
-      )
+      let cursorStyle = effectiveCursorStyle ?? .hollowBlock
+      let cellPixelWidth = cellWidth * scale
+      let cellPixelHeight = lineHeight * scale
+      let stroke = max(2, (2 * scale).rounded())
+      switch cursorStyle {
+      case .block:
+        pushRectangle(
+          into: &mesh.cursorBackground,
+          x: x, y: y,
+          width: cellPixelWidth, height: cellPixelHeight,
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+      case .bar:
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x, y: y,
+          width: stroke, height: cellPixelHeight,
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+      case .underline:
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x, y: y + cellPixelHeight - stroke,
+          width: cellPixelWidth, height: stroke,
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+      case .hollowBlock:
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x, y: y,
+          width: cellPixelWidth, height: stroke,
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x, y: y + cellPixelHeight - stroke,
+          width: cellPixelWidth, height: stroke,
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x, y: y + stroke,
+          width: stroke, height: max(0, cellPixelHeight - stroke * 2),
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+        pushRectangle(
+          into: &mesh.cursor,
+          x: x + cellPixelWidth - stroke, y: y + stroke,
+          width: stroke, height: max(0, cellPixelHeight - stroke * 2),
+          color: theme.cursor,
+          viewportWidth: width, viewportHeight: height)
+      }
     }
     return (mesh, activity)
   }
@@ -835,7 +981,8 @@ final class GhostteaMetalRenderer {
     theme: GhostteaMetalTheme,
     originX: Float,
     originY: Float,
-    selection: GhostteaMetalSelection?
+    selection: GhostteaMetalSelection?,
+    blockCursorColumn: UInt16?
   ) throws -> GhostteaMetalRowMesh {
     var mesh = GhostteaMetalRowMesh()
     for run in row.styles {
@@ -857,8 +1004,14 @@ final class GhostteaMetalRenderer {
       guard let definition = state.glyphDefinitions[instance.glyphID] else { continue }
       let style = resolveStyle(state.styleDefinitions[instance.styleID], theme: theme)
       if style.invisible { continue }
+      let glyphStart = Int(instance.cellStart)
+      let glyphEnd = glyphStart + max(1, Int(instance.cellSpan))
+      let cursorCoversGlyph =
+        blockCursorColumn.map {
+          glyphStart <= Int($0) && Int($0) < glyphEnd
+        } ?? false
       let foreground =
-        selectionContains(selection, row: rowIndex, column: Int(instance.cellStart))
+        selectionContains(selection, row: rowIndex, column: glyphStart)
         ? theme.selectionForeground
         : style.foreground
       guard let location = atlases.location(for: definition) else {
@@ -876,6 +1029,19 @@ final class GhostteaMetalRenderer {
           viewportWidth: width,
           viewportHeight: height
         )
+        if cursorCoversGlyph {
+          pushGlyph(
+            into: &mesh.cursorAlphaGlyphs,
+            x: (originX + instance.x) * scale,
+            y: (originY + Float(rowIndex) * lineHeight + instance.y) * scale,
+            width: instance.width * scale,
+            height: instance.height * scale,
+            location: location,
+            color: theme.cursorText,
+            viewportWidth: width,
+            viewportHeight: height
+          )
+        }
       } else {
         pushGlyph(
           into: &mesh.colorGlyphs,
@@ -888,6 +1054,21 @@ final class GhostteaMetalRenderer {
           viewportWidth: width,
           viewportHeight: height
         )
+        if cursorCoversGlyph {
+          // Color glyphs cannot be meaningfully tinted with cursor-text, but
+          // must be replayed after the block background so they remain visible.
+          pushGlyph(
+            into: &mesh.cursorColorGlyphs,
+            x: (originX + instance.x) * scale,
+            y: (originY + Float(rowIndex) * lineHeight + instance.y) * scale,
+            width: instance.width * scale,
+            height: instance.height * scale,
+            location: location,
+            color: foreground,
+            viewportWidth: width,
+            viewportHeight: height
+          )
+        }
       }
     }
     for run in row.styles {
@@ -898,6 +1079,11 @@ final class GhostteaMetalRenderer {
       let runWidth = Float(run.cellSpan) * cellWidth * scale
       let stroke = max(1, scale.rounded())
       let metricScale = lineHeight / GhostteaTerminalLayout.lineHeight
+      let cursorCoversRun =
+        blockCursorColumn.map {
+          Int(run.cellStart) <= Int($0)
+            && Int($0) < Int(run.cellStart) + max(1, Int(run.cellSpan))
+        } ?? false
       if style.underline {
         pushRectangle(
           into: &mesh.decorations,
@@ -909,6 +1095,18 @@ final class GhostteaMetalRenderer {
           viewportWidth: width,
           viewportHeight: height
         )
+        if cursorCoversRun, let blockCursorColumn {
+          pushRectangle(
+            into: &mesh.cursorDecorations,
+            x: (originX + Float(blockCursorColumn) * cellWidth) * scale,
+            y: (rowTop + 16 * metricScale * scale).rounded(),
+            width: cellWidth * scale,
+            height: stroke,
+            color: theme.cursorText,
+            viewportWidth: width,
+            viewportHeight: height
+          )
+        }
       }
       if style.strikethrough {
         pushRectangle(
@@ -921,6 +1119,18 @@ final class GhostteaMetalRenderer {
           viewportWidth: width,
           viewportHeight: height
         )
+        if cursorCoversRun, let blockCursorColumn {
+          pushRectangle(
+            into: &mesh.cursorDecorations,
+            x: (originX + Float(blockCursorColumn) * cellWidth) * scale,
+            y: (rowTop + 9 * metricScale * scale).rounded(),
+            width: cellWidth * scale,
+            height: stroke,
+            color: theme.cursorText,
+            viewportWidth: width,
+            viewportHeight: height
+          )
+        }
       }
     }
     return mesh
@@ -931,6 +1141,9 @@ final class GhostteaMetalRenderer {
     mesh.alphaGlyphs.append(contentsOf: row.alphaGlyphs)
     mesh.colorGlyphs.append(contentsOf: row.colorGlyphs)
     mesh.decorations.append(contentsOf: row.decorations)
+    mesh.cursorAlphaGlyphs.append(contentsOf: row.cursorAlphaGlyphs)
+    mesh.cursorColorGlyphs.append(contentsOf: row.cursorColorGlyphs)
+    mesh.cursorDecorations.append(contentsOf: row.cursorDecorations)
   }
 
   @discardableResult
@@ -958,6 +1171,10 @@ final class GhostteaMetalRenderer {
     includeCursor: Bool,
     persistent: Bool
   ) throws -> GhostteaMetalEncodedMesh {
+    let cursorBackground = includeCursor ? mesh.cursorBackground : []
+    let cursorAlphaGlyphs = includeCursor ? mesh.cursorAlphaGlyphs : []
+    let cursorColorGlyphs = includeCursor ? mesh.cursorColorGlyphs : []
+    let cursorDecorations = includeCursor ? mesh.cursorDecorations : []
     let cursor = includeCursor ? mesh.cursor : []
     var requiredBytes = 0
     func reserve<T>(_ values: [T]) -> Int {
@@ -967,24 +1184,36 @@ final class GhostteaMetalRenderer {
     }
     let backgroundOffset = reserve(mesh.backgrounds)
     let selectionOffset = reserve(mesh.selection)
+    let cursorBackgroundOffset = reserve(cursorBackground)
     let alphaGlyphOffset = reserve(mesh.alphaGlyphs)
     let colorGlyphOffset = reserve(mesh.colorGlyphs)
     let decorationOffset = reserve(mesh.decorations)
+    let cursorAlphaGlyphOffset = reserve(cursorAlphaGlyphs)
+    let cursorColorGlyphOffset = reserve(cursorColorGlyphs)
+    let cursorDecorationOffset = reserve(cursorDecorations)
     let cursorOffset = reserve(cursor)
     let uploadedBytes =
       mesh.backgrounds.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
       + mesh.selection.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + cursorBackground.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
       + mesh.alphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
       + mesh.colorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
       + mesh.decorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
+      + cursorAlphaGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + cursorColorGlyphs.count * MemoryLayout<GhostteaMetalGlyphInstance>.stride
+      + cursorDecorations.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
       + cursor.count * MemoryLayout<GhostteaMetalRectangleInstance>.stride
     guard requiredBytes > 0 else {
       return GhostteaMetalEncodedMesh(
         backgrounds: nil,
         selection: nil,
+        cursorBackground: nil,
         alphaGlyphs: nil,
         colorGlyphs: nil,
         decorations: nil,
+        cursorAlphaGlyphs: nil,
+        cursorColorGlyphs: nil,
+        cursorDecorations: nil,
         cursor: nil,
         rectangleVertexCount: 0,
         alphaGlyphVertexCount: 0,
@@ -1020,22 +1249,38 @@ final class GhostteaMetalRenderer {
     }
     write(mesh.backgrounds, to: buffer, at: backgroundOffset)
     write(mesh.selection, to: buffer, at: selectionOffset)
+    write(cursorBackground, to: buffer, at: cursorBackgroundOffset)
     write(mesh.alphaGlyphs, to: buffer, at: alphaGlyphOffset)
     write(mesh.colorGlyphs, to: buffer, at: colorGlyphOffset)
     write(mesh.decorations, to: buffer, at: decorationOffset)
+    write(cursorAlphaGlyphs, to: buffer, at: cursorAlphaGlyphOffset)
+    write(cursorColorGlyphs, to: buffer, at: cursorColorGlyphOffset)
+    write(cursorDecorations, to: buffer, at: cursorDecorationOffset)
     write(cursor, to: buffer, at: cursorOffset)
 
     return GhostteaMetalEncodedMesh(
       backgrounds: instanceSlice(mesh.backgrounds, buffer: buffer, offset: backgroundOffset),
       selection: instanceSlice(mesh.selection, buffer: buffer, offset: selectionOffset),
+      cursorBackground: instanceSlice(
+        cursorBackground,
+        buffer: buffer,
+        offset: cursorBackgroundOffset
+      ),
       alphaGlyphs: instanceSlice(mesh.alphaGlyphs, buffer: buffer, offset: alphaGlyphOffset),
       colorGlyphs: instanceSlice(mesh.colorGlyphs, buffer: buffer, offset: colorGlyphOffset),
       decorations: instanceSlice(mesh.decorations, buffer: buffer, offset: decorationOffset),
+      cursorAlphaGlyphs: instanceSlice(
+        cursorAlphaGlyphs, buffer: buffer, offset: cursorAlphaGlyphOffset),
+      cursorColorGlyphs: instanceSlice(
+        cursorColorGlyphs, buffer: buffer, offset: cursorColorGlyphOffset),
+      cursorDecorations: instanceSlice(
+        cursorDecorations, buffer: buffer, offset: cursorDecorationOffset),
       cursor: instanceSlice(cursor, buffer: buffer, offset: cursorOffset),
       rectangleVertexCount: (mesh.backgrounds.count + mesh.selection.count
-        + mesh.decorations.count + cursor.count) * 6,
-      alphaGlyphVertexCount: mesh.alphaGlyphs.count * 6,
-      colorGlyphVertexCount: mesh.colorGlyphs.count * 6,
+        + cursorBackground.count
+        + mesh.decorations.count + cursorDecorations.count + cursor.count) * 6,
+      alphaGlyphVertexCount: (mesh.alphaGlyphs.count + cursorAlphaGlyphs.count) * 6,
+      colorGlyphVertexCount: (mesh.colorGlyphs.count + cursorColorGlyphs.count) * 6,
       uploadedBytes: uploadedBytes,
       allocationCount: allocationCount,
       instanced: true,
@@ -1049,39 +1294,67 @@ final class GhostteaMetalRenderer {
   ) throws -> GhostteaMetalEncodedMesh {
     let backgrounds = expandedRectangleVertices(mesh.backgrounds)
     let selection = expandedRectangleVertices(mesh.selection)
+    let cursorBackground = includeCursor ? expandedRectangleVertices(mesh.cursorBackground) : []
     let alphaGlyphs = expandedGlyphVertices(mesh.alphaGlyphs)
     let colorGlyphs = expandedGlyphVertices(mesh.colorGlyphs)
     let decorations = expandedRectangleVertices(mesh.decorations)
+    let cursorAlphaGlyphs = includeCursor ? expandedGlyphVertices(mesh.cursorAlphaGlyphs) : []
+    let cursorColorGlyphs = includeCursor ? expandedGlyphVertices(mesh.cursorColorGlyphs) : []
+    let cursorDecorations =
+      includeCursor ? expandedRectangleVertices(mesh.cursorDecorations) : []
     let cursor = includeCursor ? expandedRectangleVertices(mesh.cursor) : []
     let slices = try (
       backgrounds: makeBufferSlice(backgrounds, label: "backgrounds", stride: 6),
       selection: makeBufferSlice(selection, label: "selection", stride: 6),
+      cursorBackground: makeBufferSlice(
+        cursorBackground,
+        label: "cursor background",
+        stride: 6
+      ),
       alphaGlyphs: makeBufferSlice(alphaGlyphs, label: "alpha glyphs", stride: 8),
       colorGlyphs: makeBufferSlice(colorGlyphs, label: "color glyphs", stride: 8),
       decorations: makeBufferSlice(decorations, label: "decorations", stride: 6),
+      cursorAlphaGlyphs: makeBufferSlice(
+        cursorAlphaGlyphs, label: "cursor alpha glyphs", stride: 8),
+      cursorColorGlyphs: makeBufferSlice(
+        cursorColorGlyphs, label: "cursor color glyphs", stride: 8),
+      cursorDecorations: makeBufferSlice(
+        cursorDecorations, label: "cursor decorations", stride: 6),
       cursor: makeBufferSlice(cursor, label: "cursor", stride: 6)
     )
     let allocationCount = [
       slices.backgrounds,
       slices.selection,
+      slices.cursorBackground,
       slices.alphaGlyphs,
       slices.colorGlyphs,
       slices.decorations,
+      slices.cursorAlphaGlyphs,
+      slices.cursorColorGlyphs,
+      slices.cursorDecorations,
       slices.cursor,
     ].compactMap { $0 }.count
     return GhostteaMetalEncodedMesh(
       backgrounds: slices.backgrounds,
       selection: slices.selection,
+      cursorBackground: slices.cursorBackground,
       alphaGlyphs: slices.alphaGlyphs,
       colorGlyphs: slices.colorGlyphs,
       decorations: slices.decorations,
+      cursorAlphaGlyphs: slices.cursorAlphaGlyphs,
+      cursorColorGlyphs: slices.cursorColorGlyphs,
+      cursorDecorations: slices.cursorDecorations,
       cursor: slices.cursor,
       rectangleVertexCount: backgrounds.count / 6 + selection.count / 6
-        + decorations.count / 6 + cursor.count / 6,
-      alphaGlyphVertexCount: alphaGlyphs.count / 8,
-      colorGlyphVertexCount: colorGlyphs.count / 8,
-      uploadedBytes: (backgrounds.count + selection.count + alphaGlyphs.count
-        + colorGlyphs.count + decorations.count + cursor.count) * MemoryLayout<Float>.stride,
+        + cursorBackground.count / 6
+        + decorations.count / 6 + cursorDecorations.count / 6 + cursor.count / 6,
+      alphaGlyphVertexCount: (alphaGlyphs.count + cursorAlphaGlyphs.count) / 8,
+      colorGlyphVertexCount: (colorGlyphs.count + cursorColorGlyphs.count) / 8,
+      uploadedBytes: (backgrounds.count + selection.count + cursorBackground.count
+        + alphaGlyphs.count
+        + colorGlyphs.count + decorations.count + cursorAlphaGlyphs.count
+        + cursorColorGlyphs.count + cursorDecorations.count + cursor.count)
+        * MemoryLayout<Float>.stride,
       allocationCount: allocationCount,
       instanced: false,
       uploadLease: nil
@@ -1093,8 +1366,9 @@ final class GhostteaMetalRenderer {
     target: any MTLTexture,
     theme: GhostteaMetalTheme,
     showCursor: Bool,
+    effectCursor: SIMD4<Float>,
     presenting drawable: (any MTLDrawable)?
-  ) throws {
+  ) throws -> Int {
     var uploadSubmitted = false
     defer {
       if !uploadSubmitted { mesh.uploadLease?.release() }
@@ -1102,14 +1376,31 @@ final class GhostteaMetalRenderer {
     guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
       throw GhostteaMetalError.commandQueueUnavailable
     }
+    let stack = Array(theme.shaderEffects.prefix(16))
+    let terminalTarget: any MTLTexture
+    if stack.isEmpty {
+      terminalTarget = target
+      effectSceneValid = false
+      effectSignature = ""
+      effectFrame = 0
+      effectStartTime = nil
+      lastEffectTime = 0
+    } else {
+      terminalTarget = try ensureEffectResources(
+        width: target.width,
+        height: target.height,
+        stack: stack,
+        animationEnabled: theme.shaderAnimation
+      )
+    }
     let descriptor = MTLRenderPassDescriptor()
-    descriptor.colorAttachments[0].texture = target
+    descriptor.colorAttachments[0].texture = terminalTarget
     descriptor.colorAttachments[0].loadAction = .clear
     descriptor.colorAttachments[0].storeAction = .store
     descriptor.colorAttachments[0].clearColor = MTLClearColor(
-      red: Double(theme.background.red),
-      green: Double(theme.background.green),
-      blue: Double(theme.background.blue),
+      red: Double(theme.background.red * theme.background.alpha),
+      green: Double(theme.background.green * theme.background.alpha),
+      blue: Double(theme.background.blue * theme.background.alpha),
       alpha: Double(theme.background.alpha)
     )
     guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
@@ -1140,9 +1431,36 @@ final class GhostteaMetalRenderer {
     }
     draw(mesh.decorations, pipeline: activeRectanglePipeline, encoder: encoder)
     if showCursor {
+      draw(mesh.cursorBackground, pipeline: activeRectanglePipeline, encoder: encoder)
+      drawGlyphs(
+        mesh.cursorAlphaGlyphs,
+        pipeline: activeAlphaGlyphPipeline,
+        texture: atlases.alpha.texture,
+        encoder: encoder
+      )
+      if mesh.cursorColorGlyphs != nil {
+        guard let colorTexture = atlases.colorTexture else {
+          throw GhostteaMetalError.textureUnavailable("Ghosttea color glyph atlas")
+        }
+        drawGlyphs(
+          mesh.cursorColorGlyphs,
+          pipeline: activeColorGlyphPipeline,
+          texture: colorTexture,
+          encoder: encoder
+        )
+      }
+      draw(mesh.cursorDecorations, pipeline: activeRectanglePipeline, encoder: encoder)
       draw(mesh.cursor, pipeline: activeRectanglePipeline, encoder: encoder)
     }
     encoder.endEncoding()
+    let effectDrawCallCount = try encodeEffectStack(
+      stack,
+      theme: theme,
+      target: target,
+      cursor: effectCursor,
+      commandBuffer: commandBuffer
+    )
+    effectSceneValid = !stack.isEmpty
     if GhostteaPerformanceRecorder.shared.isEnabled {
       let started = DispatchTime.now().uptimeNanoseconds
       commandBuffer.addCompletedHandler { _ in
@@ -1159,7 +1477,7 @@ final class GhostteaMetalRenderer {
       commandBuffer.present(drawable)
       commandBuffer.commit()
       uploadSubmitted = true
-      return
+      return effectDrawCallCount
     }
     commandBuffer.commit()
     uploadSubmitted = true
@@ -1167,6 +1485,202 @@ final class GhostteaMetalRenderer {
     guard commandBuffer.status == .completed else {
       throw GhostteaMetalError.commandBufferFailed("Metal command did not complete")
     }
+    return effectDrawCallCount
+  }
+
+  /// Re-runs an animated effect stack against the last complete terminal
+  /// scene. This preserves the event-driven terminal path: animation frames do
+  /// not rebuild meshes, upload atlases, or redraw the terminal pass.
+  func renderEffectsOnly(
+    state: RetainedTRF1State,
+    target: any MTLTexture,
+    scale: Float,
+    theme: GhostteaMetalTheme,
+    contentInsets: GhostteaTerminalContentInsets,
+    focused: Bool,
+    cursorBlinkVisible: Bool,
+    presenting drawable: (any MTLDrawable)?
+  ) throws -> GhostteaMetalDrawResult? {
+    let stack = Array(theme.shaderEffects.prefix(16))
+    guard !stack.isEmpty, effectSceneValid,
+      effectTextureSize == SIMD2(target.width, target.height),
+      effectSignature == stack.map({ String($0.rawValue) }).joined(separator: ","),
+      effectAnimationEnabled == theme.shaderAnimation
+    else { return nil }
+    let showCursor =
+      state.cursor.map {
+        $0.visible && (!focused || !$0.blinking || cursorBlinkVisible)
+      } ?? false
+    let cursor =
+      state.cursor.map {
+        SIMD4<Float>(
+          (Self.originX + contentInsets.left + Float($0.x) * cellWidth) * scale,
+          (Self.originY + contentInsets.top + Float($0.y) * lineHeight) * scale,
+          showCursor ? 1 : 0,
+          Float((focused ? $0.style : TRF1CursorStyle.hollowBlock).rawValue)
+        )
+      } ?? SIMD4<Float>(repeating: 0)
+    guard let commandBuffer = runtime.commandQueue.makeCommandBuffer() else {
+      throw GhostteaMetalError.commandQueueUnavailable
+    }
+    let effectPassCount = try encodeEffectStack(
+      stack,
+      theme: theme,
+      target: target,
+      cursor: cursor,
+      commandBuffer: commandBuffer
+    )
+    if let drawable { commandBuffer.present(drawable) }
+    commandBuffer.commit()
+    if drawable == nil {
+      commandBuffer.waitUntilCompleted()
+      guard commandBuffer.status == .completed else {
+        throw GhostteaMetalError.commandBufferFailed("Metal effect command did not complete")
+      }
+    }
+    return GhostteaMetalDrawResult(
+      rectangleVertexCount: 0,
+      alphaGlyphVertexCount: 0,
+      colorGlyphVertexCount: 0,
+      atlasUpload: GhostteaMetalUploadResult(
+        uploadedBytes: 0,
+        alphaGlyphCount: atlases.alpha.glyphCount,
+        colorGlyphCount: atlases.colorGlyphCount,
+        alphaReset: false,
+        colorReset: false
+      ),
+      vertexUploadBytes: 0,
+      bufferAllocationCount: 0,
+      drawCallCount: effectPassCount,
+      commandBufferCount: 1,
+      damage: GhostteaTerminalRenderDamage(),
+      rowCacheHits: 0,
+      rowCacheAdmissions: 0,
+      rowCacheEvictions: 0
+    )
+  }
+
+  private func ensureEffectResources(
+    width: Int,
+    height: Int,
+    stack: [GhostteaMetalShaderEffect],
+    animationEnabled: Bool
+  ) throws -> any MTLTexture {
+    let size = SIMD2(width, height)
+    if effectTextureSize != size || effectSceneTexture == nil {
+      let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba8Unorm,
+        width: width,
+        height: height,
+        mipmapped: false
+      )
+      descriptor.storageMode = .private
+      descriptor.usage = [.renderTarget, .shaderRead]
+      guard let scene = runtime.device.makeTexture(descriptor: descriptor) else {
+        throw GhostteaMetalError.textureUnavailable("terminal shader scene")
+      }
+      scene.label = "Ghosttea terminal scene before effects"
+      effectSceneTexture = scene
+      effectIntermediateTextures.removeAll(keepingCapacity: false)
+      effectTextureSize = size
+      effectSceneValid = false
+    }
+    let intermediateCount = min(2, max(0, stack.count - 1))
+    while effectIntermediateTextures.count > intermediateCount {
+      effectIntermediateTextures.removeLast()
+    }
+    while effectIntermediateTextures.count < intermediateCount {
+      let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba8Unorm,
+        width: width,
+        height: height,
+        mipmapped: false
+      )
+      descriptor.storageMode = .private
+      descriptor.usage = [.renderTarget, .shaderRead]
+      guard let texture = runtime.device.makeTexture(descriptor: descriptor) else {
+        throw GhostteaMetalError.textureUnavailable("terminal shader ping-pong target")
+      }
+      texture.label = "Ghosttea terminal shader ping-pong \(effectIntermediateTextures.count)"
+      effectIntermediateTextures.append(texture)
+    }
+    let signature = stack.map { String($0.rawValue) }.joined(separator: ",")
+    if signature != effectSignature || animationEnabled != effectAnimationEnabled {
+      effectSignature = signature
+      effectAnimationEnabled = animationEnabled
+      effectFrame = 0
+      effectStartTime = nil
+      lastEffectTime = 0
+    }
+    guard let effectSceneTexture else {
+      throw GhostteaMetalError.textureUnavailable("terminal shader scene")
+    }
+    return effectSceneTexture
+  }
+
+  private func encodeEffectStack(
+    _ stack: [GhostteaMetalShaderEffect],
+    theme: GhostteaMetalTheme,
+    target: any MTLTexture,
+    cursor: SIMD4<Float>,
+    commandBuffer: any MTLCommandBuffer
+  ) throws -> Int {
+    guard !stack.isEmpty else { return 0 }
+    guard let scene = effectSceneTexture else {
+      throw GhostteaMetalError.textureUnavailable("terminal shader scene")
+    }
+    let elapsed: Float
+    let delta: Float
+    if theme.shaderAnimation {
+      let now = ProcessInfo.processInfo.systemUptime
+      let start = effectStartTime ?? now
+      effectStartTime = start
+      elapsed = Float(now - start)
+      delta = lastEffectTime > 0 ? min(0.1, max(0, elapsed - lastEffectTime)) : 0
+      lastEffectTime = elapsed
+    } else {
+      elapsed = 0
+      delta = 0
+      lastEffectTime = 0
+    }
+    for (index, effect) in stack.enumerated() {
+      let input: any MTLTexture =
+        index == 0 ? scene : effectIntermediateTextures[(index - 1) % 2]
+      let isLast = index == stack.count - 1
+      let output: any MTLTexture =
+        isLast ? target : effectIntermediateTextures[index % 2]
+      let descriptor = MTLRenderPassDescriptor()
+      descriptor.colorAttachments[0].texture = output
+      descriptor.colorAttachments[0].loadAction = .clear
+      descriptor.colorAttachments[0].storeAction = .store
+      descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+      guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+        throw GhostteaMetalError.renderTargetUnavailable
+      }
+      encoder.label = "Ghosttea shader effect \(index + 1)/\(stack.count)"
+      var uniforms = GhostteaMetalEffectUniforms(
+        mode: effect.rawValue,
+        frame: effectFrame,
+        effectIndex: UInt32(index),
+        effectCount: UInt32(stack.count),
+        resolution: SIMD2(Float(target.width), Float(target.height)),
+        time: elapsed,
+        timeDelta: delta,
+        cursor: cursor
+      )
+      encoder.setRenderPipelineState(effectPipeline)
+      encoder.setFragmentTexture(input, index: 0)
+      encoder.setFragmentSamplerState(sampler, index: 0)
+      encoder.setFragmentBytes(
+        &uniforms,
+        length: MemoryLayout<GhostteaMetalEffectUniforms>.stride,
+        index: 0
+      )
+      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+      encoder.endEncoding()
+    }
+    effectFrame &+= 1
+    return stack.count
   }
 
   private func draw(
@@ -1339,6 +1853,23 @@ final class GhostteaMetalRenderer {
     }
   }
 
+  private static func makeEffectPipeline(
+    runtime: GhostteaMetalRuntime,
+    library: any MTLLibrary
+  ) throws -> any MTLRenderPipelineState {
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.label = "Ghosttea terminal shader effect pipeline"
+    descriptor.vertexFunction = library.makeFunction(name: "ghosttea_effect_vertex")
+    descriptor.fragmentFunction = library.makeFunction(name: "ghosttea_effect_fragment")
+    descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+    descriptor.colorAttachments[0].isBlendingEnabled = false
+    do {
+      return try runtime.device.makeRenderPipelineState(descriptor: descriptor)
+    } catch {
+      throw GhostteaMetalError.pipelineUnavailable("terminal shader effect pipeline")
+    }
+  }
+
   private static func configureColorAttachment(
     _ attachment: MTLRenderPipelineColorAttachmentDescriptor?
   ) {
@@ -1363,6 +1894,14 @@ private func resolveStyle(
     let originalForeground = foreground
     foreground = background ?? theme.background
     background = originalForeground
+  }
+  if let cellBackground = background, theme.backgroundOpacityCells {
+    background = GhostteaMetalColor(
+      red: cellBackground.red,
+      green: cellBackground.green,
+      blue: cellBackground.blue,
+      alpha: theme.background.alpha
+    )
   }
   if style?.faint == true {
     foreground = GhostteaMetalColor(

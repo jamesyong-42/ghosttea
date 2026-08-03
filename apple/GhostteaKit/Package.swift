@@ -40,6 +40,7 @@ let package = Package(
     .library(name: "GhostteaConnectionProfiles", targets: ["GhostteaConnectionProfiles"]),
     .library(name: "GhostteaConnectionProfilesUI", targets: ["GhostteaConnectionProfilesUI"]),
     .library(name: "GhostteaCore", targets: ["GhostteaCore"]),
+    .library(name: "GhostteaAppearance", targets: ["GhostteaAppearance"]),
     .library(name: "GhostteaFontProof", targets: ["GhostteaFontProof"]),
     .library(name: "GhostteaPerformance", targets: ["GhostteaPerformance"]),
     .library(name: "GhostteaTerminal", targets: ["GhostteaTerminal"]),
@@ -131,6 +132,11 @@ let package = Package(
         .linkedLibrary("c++"),
       ]
     ),
+    .target(
+      name: "GhostteaAppearance",
+      dependencies: ["GhostteaCore"],
+      resources: [.process("Resources")]
+    ),
     .target(name: "GhostteaFrame"),
     .target(
       name: "GhostteaSession",
@@ -214,6 +220,10 @@ let package = Package(
     .testTarget(
       name: "GhostteaCoreTests",
       dependencies: ["GhostteaCore"]
+    ),
+    .testTarget(
+      name: "GhostteaAppearanceTests",
+      dependencies: ["GhostteaAppearance"]
     ),
     .testTarget(
       name: "GhostteaFrameTests",

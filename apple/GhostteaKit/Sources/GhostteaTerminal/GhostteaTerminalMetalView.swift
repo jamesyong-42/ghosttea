@@ -286,6 +286,9 @@
       colorPixelFormat = .rgba8Unorm
       clearColor = MTLClearColor(red: 40 / 255, green: 44 / 255, blue: 52 / 255, alpha: 1)
       framebufferOnly = true
+      isOpaque = false
+      layer.isOpaque = false
+      backgroundColor = .clear
       autoResizeDrawable = true
       isPaused = true
       enableSetNeedsDisplay = true
@@ -315,6 +318,12 @@
         self,
         selector: #selector(applicationDidEnterBackground),
         name: UIApplication.didEnterBackgroundNotification,
+        object: nil
+      )
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(powerStateDidChange),
+        name: .NSProcessInfoPowerStateDidChange,
         object: nil
       )
       NotificationCenter.default.addObserver(
@@ -361,6 +370,7 @@
     public override func didMoveToWindow() {
       super.didMoveToWindow()
       updateCursorBlinkSurfaceVisibility()
+      updateEffectAnimationState()
     }
 
     public override var canBecomeFirstResponder: Bool { true }
@@ -771,6 +781,7 @@
       guard terminalVisible != visible else { return }
       terminalVisible = visible
       updateCursorBlinkSurfaceVisibility()
+      updateEffectAnimationState()
       if visible { requestEventDrivenDraw(damage: .full) }
     }
 
@@ -1106,8 +1117,7 @@
     /// Applies the renderer-owned portion of the shared Ghostty configuration.
     /// The runtime must be built from the same snapshot before terminal
     /// creation so shaping and this view's interactive geometry stay aligned.
-    /// Unsupported post-process shaders are surfaced rather than silently
-    /// approximated on Metal.
+    /// Host-local shader paths are surfaced rather than silently approximated.
     public func applyConfiguration(_ config: GhostteaConfigSnapshot) {
       applyConfiguration(config.terminalPresentation)
     }
@@ -1130,32 +1140,40 @@
         ofSize: CGFloat(terminalTextMetrics.fontSizePixels),
         weight: .regular
       )
-      let color = { (components: [UInt8]) -> GhostteaMetalColor? in
+      func color(_ components: [UInt8], alpha: Float = 1) -> GhostteaMetalColor? {
         guard components.count == 3 else { return nil }
         return GhostteaMetalColor(
           red: Float(components[0]) / 255,
           green: Float(components[1]) / 255,
           blue: Float(components[2]) / 255,
-          alpha: 1
+          alpha: alpha
         )
       }
-      if let background = color(config.background),
+      if let background = color(config.background, alpha: config.backgroundOpacity),
         let foreground = color(config.foreground),
         let cursor = color(config.cursor),
+        let cursorText = color(config.cursorText),
         let selection = color(config.selectionBackground),
         let selectionForeground = color(config.selectionForeground)
       {
+        var effects = config.shaderEffects.compactMap(GhostteaMetalShaderEffect.init)
+        if effects.isEmpty, config.postProcess == .betterCRT { effects = [.betterCRT] }
+        effects = Array(effects.prefix(16))
         terminalTheme = GhostteaMetalTheme(
           background: background,
           foreground: foreground,
           cursor: cursor,
+          cursorText: cursorText,
           selection: selection,
-          selectionForeground: selectionForeground
+          selectionForeground: selectionForeground,
+          backgroundOpacityCells: config.backgroundOpacityCells,
+          shaderEffects: effects,
+          shaderAnimation: config.customShaderAnimation
         )
         clearColor = MTLClearColor(
-          red: Double(background.red),
-          green: Double(background.green),
-          blue: Double(background.blue),
+          red: Double(background.red * background.alpha),
+          green: Double(background.green * background.alpha),
+          blue: Double(background.blue * background.alpha),
           alpha: Double(background.alpha)
         )
         markedTextLabel.backgroundColor = UIColor(
@@ -1180,9 +1198,16 @@
         )
       }
       configurationWarnings = []
-      if config.postProcess != .none {
+      let unknownEffects = config.shaderEffects.filter {
+        GhostteaMetalShaderEffect(configurationID: $0) == nil
+      }
+      if !unknownEffects.isEmpty {
         configurationWarnings.append(
-          "custom-shader post-processing is not available in the Swift Metal renderer")
+          "unsupported built-in shader effects were ignored: \(unknownEffects.joined(separator: ", "))"
+        )
+      }
+      if config.shaderEffects.count > 16 {
+        configurationWarnings.append("only the first 16 shader effects are rendered")
       }
       if config.customShaderCount > 0 {
         configurationWarnings.append(
@@ -1192,6 +1217,7 @@
         configurationWarnings.append(
           "font-family is not available in the bundled-font Apple runtime")
       }
+      updateEffectAnimationState()
       geometryDidChange()
       requestEventDrivenDraw(damage: .full)
     }
@@ -1206,6 +1232,7 @@
       guard !gpuSuspended else { return }
       gpuSuspended = true
       updateCursorBlinkSurfaceVisibility()
+      updateEffectAnimationState()
       evictRendererResources()
     }
 
@@ -1213,6 +1240,7 @@
       guard gpuSuspended else { return }
       gpuSuspended = false
       updateCursorBlinkSurfaceVisibility()
+      updateEffectAnimationState()
       requestEventDrivenDraw(damage: .full)
     }
 
@@ -1226,10 +1254,24 @@
         return
       }
       do {
-        let submittedDamage = pendingDamage.isEmpty ? .full : pendingDamage
         let renderer = try renderer()
         let draw = try GhostteaPerformanceRecorder.shared.measure(.metalSubmission) {
-          try renderer.render(
+          if pendingDamage.isEmpty,
+            let effectDraw = try renderer.renderEffectsOnly(
+              state: retainedState,
+              target: drawable.texture,
+              scale: Float(contentScaleFactor),
+              theme: terminalTheme,
+              contentInsets: effectiveContentInsets(),
+              focused: terminalFocused,
+              cursorBlinkVisible: cursorBlinkVisible,
+              presenting: drawable
+            )
+          {
+            return effectDraw
+          }
+          let submittedDamage = pendingDamage.isEmpty ? .full : pendingDamage
+          return try renderer.render(
             state: retainedState,
             target: drawable.texture,
             scale: Float(contentScaleFactor),
@@ -1309,6 +1351,22 @@
     private func updateCursorBlinkSurfaceVisibility() {
       cursorBlinkController.setSurfaceVisible(
         terminalVisible && window != nil && !isHidden && !gpuSuspended)
+    }
+
+    private func updateEffectAnimationState() {
+      let hasAnimatedEffect = terminalTheme.shaderEffects.contains(where: \.isAnimated)
+      let active =
+        terminalTheme.shaderAnimation && hasAnimatedEffect
+        && terminalVisible && window != nil && !isHidden && !gpuSuspended
+      preferredFramesPerSecond = ProcessInfo.processInfo.isLowPowerModeEnabled ? 30 : 60
+      // `enableSetNeedsDisplay` itself pauses MTKView's internal loop. Static
+      // terminals stay event-driven; animated shader stacks opt into timed draws.
+      enableSetNeedsDisplay = !active
+      isPaused = !active
+    }
+
+    @objc private func powerStateDidChange() {
+      updateEffectAnimationState()
     }
 
     private func geometryDidChange() {

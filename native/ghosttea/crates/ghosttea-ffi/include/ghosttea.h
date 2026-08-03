@@ -14,6 +14,7 @@ extern "C" {
 typedef struct ghosttea_runtime ghosttea_runtime_t;
 typedef struct ghosttea_terminal ghosttea_terminal_t;
 typedef struct ghosttea_replica ghosttea_replica_t;
+typedef struct ghosttea_config_manager ghosttea_config_manager_t;
 
 typedef enum ghosttea_status {
   GHOSTTEA_STATUS_OK = 0,
@@ -148,6 +149,27 @@ ghosttea_status_t ghosttea_config_load_json(
     ghosttea_bytes_view_t overlay_path_utf8, bool load_default_files,
     ghosttea_owned_bytes_t *out_json);
 
+/* Retained configuration/document API. Only the explicit overlay is editable;
+ * imported Ghostty sources and includes remain read-only. All JSON buffers are
+ * released with ghosttea_owned_bytes_free. */
+ghosttea_status_t ghosttea_config_manager_create(
+    ghosttea_bytes_view_t overlay_path_utf8, bool load_default_files,
+    ghosttea_config_manager_t **out_manager);
+void ghosttea_config_manager_destroy(ghosttea_config_manager_t *manager);
+ghosttea_status_t ghosttea_config_manager_snapshot_json(
+    ghosttea_config_manager_t *manager, ghosttea_owned_bytes_t *out_json);
+ghosttea_status_t ghosttea_config_manager_reload_json(
+    ghosttea_config_manager_t *manager, ghosttea_owned_bytes_t *out_json);
+ghosttea_status_t ghosttea_config_manager_document_json(
+    ghosttea_config_manager_t *manager, ghosttea_owned_bytes_t *out_json);
+ghosttea_status_t ghosttea_config_manager_validate_document_json(
+    ghosttea_config_manager_t *manager, ghosttea_bytes_view_t contents_utf8,
+    ghosttea_owned_bytes_t *out_json);
+ghosttea_status_t ghosttea_config_manager_replace_document_json(
+    ghosttea_config_manager_t *manager,
+    ghosttea_bytes_view_t expected_revision_utf8,
+    ghosttea_bytes_view_t contents_utf8, ghosttea_owned_bytes_t *out_json);
+
 ghosttea_status_t ghosttea_runtime_create(const ghosttea_runtime_config_t *config,
                                           ghosttea_runtime_t **out_runtime);
 void ghosttea_runtime_destroy(ghosttea_runtime_t *runtime);
@@ -200,6 +222,12 @@ ghosttea_status_t ghosttea_terminal_set_colors(ghosttea_terminal_t *terminal,
                                                const uint8_t cursor[3],
                                                uint32_t render_request,
                                                ghosttea_update_t *out_update);
+ghosttea_status_t ghosttea_terminal_set_appearance(
+    ghosttea_terminal_t *terminal, const uint8_t foreground[3],
+    const uint8_t background[3], const uint8_t cursor[3],
+    const uint8_t *palette_indices, const uint8_t *palette_colors_rgb,
+    size_t palette_count, uint32_t render_request,
+    ghosttea_update_t *out_update);
 ghosttea_status_t ghosttea_terminal_scroll(ghosttea_terminal_t *terminal,
                                            int64_t rows,
                                            uint32_t render_request,

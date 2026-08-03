@@ -12,6 +12,8 @@ const fonts = readJSON("native/fonts.lock.json");
 const truffle = readJSON("apple/GhostteaKit/Compatibility/truffle-swift.lock.json");
 const rust = readJSON("apple/GhostteaKit/Compatibility/ios-rust-components.lock.json");
 const toolchain = readJSON("apple/GhostteaKit/Compatibility/ios-toolchain.lock.json");
+const themeCatalog = readJSON("apple/GhostteaKit/Sources/GhostteaAppearance/Resources/theme-catalog.generated.json");
+const shaderCollectionRevision = "85898f08fcf4a9274e418912098e99e00a5f8350";
 
 const sha256 = (path) =>
   createHash("sha256")
@@ -45,6 +47,8 @@ const libssh2Ref = `pkg:github/libssh2/libssh2@${ssh.libssh2.commit}`;
 // orgs, and a stale owner in the purl silently misattributes the component.
 const truffleRef = `pkg:github/${githubSlug(truffle.package.repository)}@${truffle.package.revision}`;
 const tailscaleRef = `pkg:github/tailscale/libtailscale@${truffle.tailscaleKit.revision}`;
+const themeCatalogRef = `pkg:github/mbadolato/iTerm2-Color-Schemes@${themeCatalog.revision}`;
+const shaderCollectionRef = `pkg:github/0xhckr/ghostty-shaders@${shaderCollectionRevision}`;
 const fontRefs = fonts.fonts.map((font) => `ghosttea:font/${font.role}@${fonts.source.commit}`);
 const xcodeRef = `ghosttea:toolchain/xcode@${toolchain.apple.xcodeVersion}+${toolchain.apple.xcodeBuild}`;
 const swiftRef = `ghosttea:toolchain/swift@${toolchain.apple.swiftVersion}`;
@@ -275,6 +279,37 @@ const expected = {
         },
       ],
     }),
+    component({
+      type: "library",
+      ref: themeCatalogRef,
+      name: "Ghostty color-theme catalog",
+      version: themeCatalog.revision,
+      license: "MIT",
+      purl: themeCatalogRef,
+      repository: "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      properties: [
+        { name: "ghosttea:theme-count", value: String(themeCatalog.themes.length) },
+        {
+          name: "ghosttea:license-note",
+          value: "The collection is MIT; individual themes retain their authors' terms.",
+        },
+      ],
+    }),
+    component({
+      type: "library",
+      ref: shaderCollectionRef,
+      name: "Ghostty shader adaptations",
+      version: shaderCollectionRevision,
+      license: "Unlicense AND MIT AND CC-BY-3.0 AND CC-BY-NC-SA-3.0",
+      purl: shaderCollectionRef,
+      repository: "https://github.com/0xhckr/ghostty-shaders",
+      properties: [
+        { name: "ghosttea:bundled-port", value: "better-crt" },
+        { name: "ghosttea:bundled-port", value: "crt" },
+        { name: "ghosttea:bundled-port", value: "sparks-from-fire" },
+        { name: "ghosttea:bundled-port", value: "vhs" },
+      ],
+    }),
     ...rustComponents,
     ...fonts.fonts.map((font, index) =>
       component({
@@ -293,13 +328,18 @@ const expected = {
     ),
   ],
   dependencies: [
-    { ref: appRef, dependsOn: [runtimeRef, opensslRef, libssh2Ref, truffleRef, ...fontRefs] },
+    {
+      ref: appRef,
+      dependsOn: [runtimeRef, opensslRef, libssh2Ref, truffleRef, themeCatalogRef, shaderCollectionRef, ...fontRefs],
+    },
     { ref: runtimeRef, dependsOn: [...rust.root.dependencies, ghosttyRef].sort() },
     { ref: ghosttyRef, dependsOn: [] },
     { ref: opensslRef, dependsOn: [] },
     { ref: libssh2Ref, dependsOn: [opensslRef] },
     { ref: truffleRef, dependsOn: [tailscaleRef] },
     { ref: tailscaleRef, dependsOn: [] },
+    { ref: themeCatalogRef, dependsOn: [] },
+    { ref: shaderCollectionRef, dependsOn: [] },
     ...rust.components.map((entry) => ({ ref: entry.ref, dependsOn: entry.dependencies })),
     ...fontRefs.map((ref) => ({ ref, dependsOn: [] })),
   ],

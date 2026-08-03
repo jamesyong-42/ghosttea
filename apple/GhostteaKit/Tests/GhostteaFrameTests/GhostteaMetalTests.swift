@@ -760,8 +760,69 @@ private func productionFrame() async throws -> Data {
         "ghosttea_glyph_instanced_vertex",
         "ghosttea_alpha_glyph_fragment",
         "ghosttea_color_glyph_fragment",
+        "ghosttea_effect_vertex",
+        "ghosttea_effect_fragment",
       ]
   )
+}
+
+@Test func metalRendererComposesTransparencyAndEffectsWithoutRebuildingTheScene() async throws {
+  var state = RetainedTRF1State()
+  _ = try state.apply(await productionFrame())
+  let runtime = try GhostteaMetalRuntime()
+  let renderer = try GhostteaMetalRenderer(
+    runtime: runtime, alphaAtlasSize: 512, colorAtlasSize: 512)
+  let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+    pixelFormat: .rgba8Unorm,
+    width: 420,
+    height: 100,
+    mipmapped: false
+  )
+  descriptor.storageMode = .shared
+  descriptor.usage = [.renderTarget]
+  let target = try #require(runtime.device.makeTexture(descriptor: descriptor))
+
+  var transparent = GhostteaMetalTheme()
+  transparent.background = GhostteaMetalColor(red: 0.2, green: 0.4, blue: 0.6, alpha: 0.4)
+  _ = try renderer.render(state: state, target: target, theme: transparent)
+  var corner = [UInt8](repeating: 0, count: 4)
+  corner.withUnsafeMutableBytes { bytes in
+    target.getBytes(
+      bytes.baseAddress!,
+      bytesPerRow: 4,
+      from: MTLRegionMake2D(target.width - 1, target.height - 1, 1, 1),
+      mipmapLevel: 0
+    )
+  }
+  #expect(abs(Int(corner[0]) - 20) <= 1)
+  #expect(abs(Int(corner[1]) - 41) <= 1)
+  #expect(abs(Int(corner[2]) - 61) <= 1)
+  #expect(abs(Int(corner[3]) - 102) <= 1)
+
+  let plain = try renderer.render(state: state, target: target, theme: GhostteaMetalTheme())
+  var composed = GhostteaMetalTheme()
+  composed.shaderEffects = GhostteaMetalShaderEffect.allCases
+  let effected = try renderer.render(state: state, target: target, theme: composed)
+  #expect(effected.drawCallCount == plain.drawCallCount + composed.shaderEffects.count)
+  #expect(effected.commandBufferCount == 1)
+
+  composed.shaderEffects = [.vhs]
+  composed.shaderAnimation = true
+  _ = try renderer.render(state: state, target: target, theme: composed)
+  let animationOnly = try #require(
+    try renderer.renderEffectsOnly(
+      state: state,
+      target: target,
+      scale: 1,
+      theme: composed,
+      contentInsets: .zero,
+      focused: false,
+      cursorBlinkVisible: false,
+      presenting: nil
+    ))
+  #expect(animationOnly.drawCallCount == 1)
+  #expect(animationOnly.vertexUploadBytes == 0)
+  #expect(animationOnly.atlasUpload.uploadedBytes == 0)
 }
 
 @Test func metalRendererAcceptsConfiguredMetricsAndRejectsInvalidGeometry() throws {

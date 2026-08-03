@@ -26,7 +26,7 @@ final class GhostteaAppModel: ObservableObject {
 
   private let sharedRuntime: GhostteaSharedRuntimeModel
   let diagnostics: GhostteaDiagnosticRecorder
-  let configuration: GhostteaConfigSnapshot
+  private(set) var configuration: GhostteaConfigSnapshot
   private let sceneIdentity: GhostteaSceneTerminalIdentity
   private var runtimeObservation: AnyCancellable?
   private var hostObservation: AnyCancellable?
@@ -119,6 +119,16 @@ final class GhostteaAppModel: ObservableObject {
       }
     }
     sharedRuntime.start()
+  }
+
+  /// Device configuration is only the pre-attach fallback. Once attached, the
+  /// desktop host remains authoritative for presentation and its revision.
+  func deviceConfigurationChanged(_ next: GhostteaConfigSnapshot) {
+    guard next.revision != configuration.revision else { return }
+    configuration = next
+    guard selectedSession == nil else { return }
+    presentationConfiguration = next.terminalPresentation
+    renderRuntime = nil
   }
 
   func stop() {

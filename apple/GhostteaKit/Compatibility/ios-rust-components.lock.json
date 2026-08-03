@@ -10,7 +10,7 @@
       "pkg:cargo/ghosttea-font-fixture-ffi@0.8.0"
     ]
   },
-  "cargoLockSha256": "f3af445e450ea8253b7d8b3394a94da42780e372fd2299d6046164aa1a02fcbf",
+  "cargoLockSha256": "51c1c15a54ae98a8a912ab04179756904ea49ee54ecc9e533eac06ea9ab5b883",
   "components": [
     {
       "ref": "pkg:cargo/anyhow@1.0.103",
@@ -365,6 +365,7 @@
       "source": "workspace",
       "license": "MIT",
       "dependencies": [
+        "pkg:cargo/libc@0.2.186",
         "pkg:cargo/serde@1.0.228",
         "pkg:cargo/serde_json@1.0.150",
         "pkg:cargo/sha2@0.10.9",

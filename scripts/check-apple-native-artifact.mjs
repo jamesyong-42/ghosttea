@@ -58,6 +58,11 @@ const swiftEnvironment = {
 
 const rootManifest = join(root, "Package.swift");
 const localManifest = join(root, "apple/GhostteaKit/Package.swift");
+const desktopThemeCatalog = join(root, "packages/ghosttea-react/src/appearance/theme-catalog.generated.json");
+const appleThemeCatalog = join(
+  root,
+  "apple/GhostteaKit/Sources/GhostteaAppearance/Resources/theme-catalog.generated.json",
+);
 
 // ── 1. The root manifest pins what the lock records ──────────────────────────
 const manifestText = readFileSync(rootManifest, "utf8");
@@ -166,6 +171,21 @@ try {
 
 if (!readFileSync(localManifest, "utf8").includes("Artifacts/ghosttea-apple-native.xcframework")) {
   problems.push(`${localManifest} no longer references the local artifact path.`);
+}
+
+// The two renderer implementations deliberately consume the same generated
+// bytes. Checking this alongside manifest parity prevents a catalog refresh
+// from silently updating only the desktop settings UI.
+if (!existsSync(appleThemeCatalog)) {
+  problems.push(`${appleThemeCatalog} is missing.`);
+} else {
+  const desktopCatalogBytes = readFileSync(desktopThemeCatalog);
+  const appleCatalogBytes = readFileSync(appleThemeCatalog);
+  if (!desktopCatalogBytes.equals(appleCatalogBytes)) {
+    problems.push(
+      "The Apple and desktop Ghostty theme catalogs differ; regenerate both outputs with scripts/sync-ghostty-theme-catalog.mjs.",
+    );
+  }
 }
 
 if (manifestsOnly) {

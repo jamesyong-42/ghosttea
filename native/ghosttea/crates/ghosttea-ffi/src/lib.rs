@@ -14,7 +14,7 @@ use std::{
     },
 };
 
-use ghosttea_config::{ConfigLoadOptions, load_config};
+use ghosttea_config::{ConfigDocumentError, ConfigLoadOptions, ConfigManager, load_config};
 use ghosttea_core::{
     ClipboardRequest, LogicalReplicaModel, LogicalTerminalPatch, LogicalTerminalSnapshot,
     RenderRequest, TerminalEffect, TerminalModel, TerminalModelOptions, TerminalRuntime,
@@ -198,6 +198,12 @@ struct RuntimeState {
 
 pub struct GhostteaRuntimeHandle {
     state: Arc<RuntimeState>,
+}
+
+/// Retained, thread-safe owner for a reloadable Ghostty configuration and its
+/// exact app-owned overlay document.
+pub struct GhostteaConfigManagerHandle {
+    manager: ConfigManager,
 }
 
 pub struct GhostteaTerminalHandle {
@@ -559,6 +565,190 @@ pub extern "C" fn ghosttea_config_load_json(
             GHOSTTEA_STATUS_PANIC
         }
     }
+}
+
+fn config_document_error(error: ConfigDocumentError) -> (i32, String) {
+    let status = match error {
+        ConfigDocumentError::Unavailable
+        | ConfigDocumentError::UnsafeOverlay { .. }
+        | ConfigDocumentError::TooLarge { .. }
+        | ConfigDocumentError::UnsupportedFileType { .. }
+        | ConfigDocumentError::InvalidUtf8 { .. }
+        | ConfigDocumentError::NonUtf8Path { .. }
+        | ConfigDocumentError::Conflict { .. } => GHOSTTEA_STATUS_INVALID_STATE,
+        ConfigDocumentError::Io { .. } => GHOSTTEA_STATUS_INTERNAL,
+    };
+    (status, error.to_string())
+}
+
+fn config_manager_json_operation(
+    manager: *mut GhostteaConfigManagerHandle,
+    out_json: *mut GhostteaOwnedBytes,
+    operation: impl FnOnce(&ConfigManager) -> Result<Vec<u8>, (i32, String)>,
+) -> i32 {
+    clear_error();
+    if out_json.is_null() {
+        set_error("configuration JSON output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer was validated and is writable by contract.
+    unsafe { out_json.write(GhostteaOwnedBytes::EMPTY) };
+    if manager.is_null() {
+        set_error("configuration manager is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: The caller owns a live handle until this synchronous call returns.
+        operation(unsafe { &(*manager).manager })
+    }));
+    match result {
+        Ok(Ok(bytes)) => write_bytes(out_json, bytes),
+        Ok(Err((status, message))) => {
+            set_error(message);
+            status
+        }
+        Err(_) => {
+            set_error("panic caught while accessing Ghosttea configuration");
+            GHOSTTEA_STATUS_PANIC
+        }
+    }
+}
+
+/// Create a retained configuration manager. The path, when non-empty, is the
+/// only document the mutation APIs are permitted to replace.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_create(
+    overlay_path_utf8: GhostteaBytesView,
+    load_default_files: bool,
+    out_manager: *mut *mut GhostteaConfigManagerHandle,
+) -> i32 {
+    clear_error();
+    if out_manager.is_null() {
+        set_error("configuration manager output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer was validated and is writable by contract.
+    unsafe { out_manager.write(ptr::null_mut()) };
+    let overlay = match unsafe { view_utf8(overlay_path_utf8, "configuration overlay path") } {
+        Ok(value) => value,
+        Err((status, message)) => {
+            set_error(message);
+            return status;
+        }
+    };
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        ConfigManager::load(ConfigLoadOptions {
+            load_default_files,
+            explicit_path: (!overlay.is_empty()).then(|| PathBuf::from(overlay)),
+            ..ConfigLoadOptions::default()
+        })
+    }));
+    match result {
+        Ok(manager) => {
+            // SAFETY: The output pointer remains writable for this call.
+            unsafe {
+                out_manager.write(Box::into_raw(Box::new(GhostteaConfigManagerHandle {
+                    manager,
+                })))
+            };
+            GHOSTTEA_STATUS_OK
+        }
+        Err(_) => {
+            set_error("panic caught while creating Ghosttea configuration manager");
+            GHOSTTEA_STATUS_PANIC
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_destroy(manager: *mut GhostteaConfigManagerHandle) {
+    if !manager.is_null() {
+        // SAFETY: Handles are created by `ghosttea_config_manager_create` and destroyed once.
+        unsafe { drop(Box::from_raw(manager)) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_snapshot_json(
+    manager: *mut GhostteaConfigManagerHandle,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    config_manager_json_operation(manager, out_json, |manager| {
+        serde_json::to_vec(&*manager.snapshot())
+            .map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_reload_json(
+    manager: *mut GhostteaConfigManagerHandle,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    config_manager_json_operation(manager, out_json, |manager| {
+        let (config, changed) = manager.reload();
+        serde_json::to_vec(&json!({ "config": &*config, "changed": changed }))
+            .map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_document_json(
+    manager: *mut GhostteaConfigManagerHandle,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    config_manager_json_operation(manager, out_json, |manager| {
+        let document = manager.document().map_err(config_document_error)?;
+        serde_json::to_vec(&document).map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_validate_document_json(
+    manager: *mut GhostteaConfigManagerHandle,
+    contents_utf8: GhostteaBytesView,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    config_manager_json_operation(manager, out_json, |manager| {
+        let contents = unsafe { view_utf8(contents_utf8, "configuration document") }?;
+        let validation = manager
+            .validate_document(contents)
+            .map_err(config_document_error)?;
+        serde_json::to_vec(&validation)
+            .map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_config_manager_replace_document_json(
+    manager: *mut GhostteaConfigManagerHandle,
+    expected_revision_utf8: GhostteaBytesView,
+    contents_utf8: GhostteaBytesView,
+    out_json: *mut GhostteaOwnedBytes,
+) -> i32 {
+    config_manager_json_operation(manager, out_json, |manager| {
+        let expected = unsafe {
+            view_utf8(
+                expected_revision_utf8,
+                "expected configuration document revision",
+            )
+        }?;
+        let contents = unsafe { view_utf8(contents_utf8, "configuration document") }?;
+        match manager.replace_document(expected, contents) {
+            Ok(update) => serde_json::to_vec(&json!({
+                "status": "saved",
+                "document": update.document,
+                "config": &*update.config,
+                "effectiveChanged": update.effective_changed,
+            }))
+            .map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string())),
+            Err(ConfigDocumentError::Conflict { current }) => serde_json::to_vec(&json!({
+                "status": "conflict",
+                "current": current,
+            }))
+            .map_err(|error| (GHOSTTEA_STATUS_INTERNAL, error.to_string())),
+            Err(error) => Err(config_document_error(error)),
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1022,6 +1212,66 @@ pub extern "C" fn ghosttea_terminal_set_colors(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_terminal_set_appearance(
+    terminal: *mut GhostteaTerminalHandle,
+    foreground: *const u8,
+    background: *const u8,
+    cursor: *const u8,
+    palette_indices: *const u8,
+    palette_colors_rgb: *const u8,
+    palette_count: usize,
+    render: u32,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("update output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { out.write(GhostteaUpdate::EMPTY) };
+    if foreground.is_null() || background.is_null() || cursor.is_null() {
+        set_error("foreground, background, and cursor colors are required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    if palette_count > 256 {
+        set_error("palette may contain at most 256 entries");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    if palette_count > 0 && (palette_indices.is_null() || palette_colors_rgb.is_null()) {
+        set_error("palette indices and RGB colors are required when palette entries are present");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: Each base color points to three readable bytes by contract.
+    let color = |pointer: *const u8| unsafe { [*pointer, *pointer.add(1), *pointer.add(2)] };
+    let mut palette = Vec::with_capacity(palette_count);
+    for index in 0..palette_count {
+        // SAFETY: Callers provide one index and three color bytes per advertised entry.
+        let entry = unsafe {
+            (
+                *palette_indices.add(index),
+                [
+                    *palette_colors_rgb.add(index * 3),
+                    *palette_colors_rgb.add(index * 3 + 1),
+                    *palette_colors_rgb.add(index * 3 + 2),
+                ],
+            )
+        };
+        palette.push(entry);
+    }
+    update_operation(terminal, render, out, |model, request| {
+        model
+            .set_appearance(
+                color(foreground),
+                color(background),
+                color(cursor),
+                &palette,
+                request,
+            )
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn ghosttea_terminal_scroll(
     terminal: *mut GhostteaTerminalHandle,
     rows: i64,
@@ -1370,6 +1620,51 @@ mod tests {
         assert_eq!(value["terminal"]["scrollbackBytes"], 10_000_000);
         assert_eq!(value["renderer"]["postProcess"], "none");
         ghosttea_owned_bytes_free(output);
+    }
+
+    #[test]
+    fn malformed_config_document_input_zeroes_owned_outputs() {
+        let empty = GhostteaBytesView {
+            data: ptr::null(),
+            len: 0,
+        };
+        let invalid = GhostteaBytesView {
+            data: ptr::null(),
+            len: 1,
+        };
+        let mut manager = ptr::null_mut();
+        assert_eq!(
+            ghosttea_config_manager_create(empty, false, &mut manager),
+            GHOSTTEA_STATUS_OK
+        );
+
+        let mut output = GhostteaOwnedBytes {
+            data: ptr::dangling_mut(),
+            len: 1,
+            capacity: 1,
+        };
+        assert_eq!(
+            ghosttea_config_manager_validate_document_json(manager, invalid, &mut output),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+        assert!(output.data.is_null());
+        assert_eq!(output.len, 0);
+        assert_eq!(output.capacity, 0);
+
+        output = GhostteaOwnedBytes {
+            data: ptr::dangling_mut(),
+            len: 1,
+            capacity: 1,
+        };
+        assert_eq!(
+            ghosttea_config_manager_replace_document_json(manager, empty, invalid, &mut output),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+        assert!(output.data.is_null());
+        assert_eq!(output.len, 0);
+        assert_eq!(output.capacity, 0);
+
+        ghosttea_config_manager_destroy(manager);
     }
 
     #[test]

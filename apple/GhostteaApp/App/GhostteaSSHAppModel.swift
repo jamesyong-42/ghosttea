@@ -34,14 +34,18 @@ final class GhostteaSSHAppModel: ObservableObject {
   @Published private(set) var sessionStatuses: [String: String] = [:]
   @Published private(set) var status = "Loading saved connections…"
   @Published private(set) var isBusy = false
+  @Published private(set) var presentationConfiguration: GhostteaTerminalPresentationConfig
   @Published var presentsProfileManager = false
   @Published var presentsCommandPalette = false
   @Published var pendingHostKey: GhostteaPendingHostKey?
   @Published var pendingKeyboardChallenge: GhostteaPendingKeyboardChallenge?
 
   private var runtime: GhostteaRuntime?
+  private var runtimePresentation: GhostteaTerminalPresentationConfig?
+  private var configurationTask: Task<Void, Never>?
+  private var configurationGeneration = 0
   private let diagnostics: GhostteaDiagnosticRecorder
-  let configuration: GhostteaConfigSnapshot
+  private(set) var configuration: GhostteaConfigSnapshot
   private var factory: GhostteaSSHWorkspaceSessionFactory?
   private var coordinator: GhostteaWorkspaceSessionCoordinator<GhostteaSSHWorkspaceSession>?
   private var repository: GhostteaSSHConnectionProfileRepository?
@@ -77,6 +81,7 @@ final class GhostteaSSHAppModel: ObservableObject {
   ) {
     self.diagnostics = diagnostics
     self.configuration = configuration
+    presentationConfiguration = configuration.terminalPresentation
     memoryBudget = .recommended(
       forPhysicalMemoryBytes: ProcessInfo.processInfo.physicalMemory)
   }
@@ -84,6 +89,40 @@ final class GhostteaSSHAppModel: ObservableObject {
   deinit {
     networkTask?.cancel()
     memoryWarningTask?.cancel()
+    configurationTask?.cancel()
+  }
+
+  func configurationChanged(_ next: GhostteaConfigSnapshot) {
+    guard next.revision != configuration.revision else { return }
+    configuration = next
+    presentationConfiguration = next.terminalPresentation.preservingRuntimeMetrics(
+      from: runtimePresentation)
+    configurationGeneration += 1
+    let generation = configurationGeneration
+    configurationTask?.cancel()
+    configurationTask = Task { [weak self] in
+      guard let self, !Task.isCancelled,
+        generation == configurationGeneration,
+        next.revision == configuration.revision
+      else { return }
+      await factory?.updateTerminalConfiguration(next)
+      guard !Task.isCancelled, generation == configurationGeneration else { return }
+      guard let coordinator else { return }
+      for sessionID in await coordinator.sessionIDs {
+        guard !Task.isCancelled, generation == configurationGeneration else { return }
+        guard let resource = await coordinator.session(for: sessionID) else { continue }
+        do {
+          let update = try await resource.terminal.apply(config: next, render: .full)
+          guard !Task.isCancelled, generation == configurationGeneration else { return }
+          if let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload {
+            frames[sessionID] = frame
+          }
+        } catch {
+          guard !Task.isCancelled, generation == configurationGeneration else { return }
+          record(.sshSessionOperationFailed, severity: .warning)
+        }
+      }
+    }
   }
 
   var selectedSessionID: String? {
@@ -846,6 +885,9 @@ final class GhostteaSSHAppModel: ObservableObject {
     coldSessionIDs = []
     residency = GhostteaWorkspaceSessionResidency()
     shortcutState = GhostteaWorkspaceShortcutState()
+    runtime = nil
+    runtimePresentation = nil
+    presentationConfiguration = configuration.terminalPresentation
     if clearPersistence { try? await restorationStore?.remove() }
     status = profiles.isEmpty ? "Add an SSH connection to begin." : "Choose a saved connection"
   }
@@ -1268,6 +1310,8 @@ final class GhostteaSSHAppModel: ObservableObject {
     if let runtime { return runtime }
     let runtime = try GhostteaRuntime(config: configuration)
     self.runtime = runtime
+    runtimePresentation = configuration.terminalPresentation
+    presentationConfiguration = configuration.terminalPresentation
     return runtime
   }
 
@@ -1291,6 +1335,35 @@ final class GhostteaSSHAppModel: ObservableObject {
     case .exited(let code): "Session ended · exit \(code)"
     case .signaled(let signal): "Session ended · signal \(signal)"
     }
+  }
+}
+
+extension GhostteaTerminalPresentationConfig {
+  fileprivate func preservingRuntimeMetrics(
+    from runtime: GhostteaTerminalPresentationConfig?
+  ) -> GhostteaTerminalPresentationConfig {
+    guard let runtime else { return self }
+    return GhostteaTerminalPresentationConfig(
+      schemaVersion: schemaVersion,
+      revision: revision,
+      foreground: foreground,
+      background: background,
+      cursor: cursor,
+      cursorText: cursorText,
+      selectionBackground: selectionBackground,
+      selectionForeground: selectionForeground,
+      palette: palette,
+      backgroundOpacity: backgroundOpacity,
+      backgroundOpacityCells: backgroundOpacityCells,
+      fontSize: runtime.fontSize,
+      fontFamilies: runtime.fontFamilies,
+      paddingX: paddingX,
+      paddingY: paddingY,
+      postProcess: postProcess,
+      shaderEffects: shaderEffects,
+      customShaderAnimation: customShaderAnimation,
+      customShaderCount: customShaderCount
+    )
   }
 }
 

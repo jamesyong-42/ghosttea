@@ -62,6 +62,18 @@ addComponent(
 );
 addComponent("Truffle Swift", versionOf("Truffle Swift"), "MIT", [truffleLicensePath]);
 addComponent("TailscaleKit", versionOf("TailscaleKit"), "BSD-3-Clause", [tailscaleLicensePath]);
+addComponent(
+  "Ghostty color-theme catalog",
+  versionOf("Ghostty color-theme catalog"),
+  licenseOf(componentNamed("Ghostty color-theme catalog")),
+  ["THIRD_PARTY_NOTICES.md"],
+);
+addComponent(
+  "Ghostty shader adaptations",
+  versionOf("Ghostty shader adaptations"),
+  licenseOf(componentNamed("Ghostty shader adaptations")),
+  ["THIRD_PARTY_NOTICES.md"],
+);
 
 for (const entry of rustLock.components) {
   if (entry.source === "workspace") {
@@ -200,9 +212,13 @@ function renderNotice(components, documents, idByHash, bomHash) {
 }
 
 function versionOf(name) {
+  return componentNamed(name).version;
+}
+
+function componentNamed(name) {
   const matches = bom.components.filter((entry) => entry.name === name);
   if (matches.length !== 1) throw new Error(`Expected exactly one BOM component named ${name}.`);
-  return matches[0].version;
+  return matches[0];
 }
 
 function licenseOf(component) {

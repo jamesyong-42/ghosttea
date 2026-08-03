@@ -6,11 +6,24 @@ import SwiftUI
 struct GhostteaApp: App {
   @StateObject private var sharedRuntime: GhostteaSharedRuntimeModel
   @StateObject private var sshModel: GhostteaSSHAppModel
-  private let configuration: GhostteaConfigSnapshot
+  @StateObject private var configurationModel: GhostteaConfigurationModel
 
   init() {
-    let configuration = ghostteaApplicationConfiguration()
-    self.configuration = configuration
+    let overlayURL: URL
+    do {
+      overlayURL = try ghostteaApplicationSupportRoot()
+        .appendingPathComponent("config.ghostty")
+    } catch {
+      preconditionFailure("Ghosttea application support is unavailable")
+    }
+    let configurationModel: GhostteaConfigurationModel
+    do {
+      configurationModel = try GhostteaConfigurationModel(overlayURL: overlayURL)
+    } catch {
+      preconditionFailure("Ghosttea configuration engine unavailable: \(error)")
+    }
+    _configurationModel = StateObject(wrappedValue: configurationModel)
+    let configuration = configurationModel.effectiveConfiguration
     let diagnostics: GhostteaDiagnosticRecorder
     #if DEBUG
       if let automationDirectory = ghostteaAutomationDirectory() {
@@ -56,7 +69,7 @@ struct GhostteaApp: App {
         requestedSceneID: requestedSceneID.wrappedValue,
         sharedRuntime: sharedRuntime,
         sshModel: sshModel,
-        configuration: configuration)
+        configurationModel: configurationModel)
     }
   }
 }
@@ -76,23 +89,6 @@ func ghostteaApplicationSupportRoot() throws -> URL {
     }
   #endif
   return root.appendingPathComponent("Ghosttea", isDirectory: true)
-}
-
-private func ghostteaApplicationConfiguration() -> GhostteaConfigSnapshot {
-  let overlayURL = try? ghostteaApplicationSupportRoot()
-    .appendingPathComponent("config.ghostty")
-  do {
-    return try GhostteaConfiguration.load(
-      overlayURL: overlayURL,
-      loadGhosttyFiles: true
-    )
-  } catch {
-    do {
-      return try GhostteaConfiguration.load(loadGhosttyFiles: false)
-    } catch {
-      preconditionFailure("Ghosttea configuration engine unavailable")
-    }
-  }
 }
 
 private enum GhostteaAppBootstrapError: Error {
@@ -133,18 +129,18 @@ private struct GhostteaSceneContainer: View {
   @State private var sceneID: UUID
   let sharedRuntime: GhostteaSharedRuntimeModel
   let sshModel: GhostteaSSHAppModel
-  let configuration: GhostteaConfigSnapshot
+  let configurationModel: GhostteaConfigurationModel
 
   init(
     requestedSceneID: UUID?,
     sharedRuntime: GhostteaSharedRuntimeModel,
     sshModel: GhostteaSSHAppModel,
-    configuration: GhostteaConfigSnapshot
+    configurationModel: GhostteaConfigurationModel
   ) {
     _sceneID = State(initialValue: requestedSceneID ?? UUID())
     self.sharedRuntime = sharedRuntime
     self.sshModel = sshModel
-    self.configuration = configuration
+    self.configurationModel = configurationModel
   }
 
   var body: some View {
@@ -152,7 +148,7 @@ private struct GhostteaSceneContainer: View {
       sceneID: sceneID,
       sharedRuntime: sharedRuntime,
       sshModel: sshModel,
-      configuration: configuration)
+      configurationModel: configurationModel)
   }
 }
 
@@ -163,23 +159,23 @@ private struct GhostteaSceneRoot: View {
   let sceneID: UUID
   let sharedRuntime: GhostteaSharedRuntimeModel
   let sshModel: GhostteaSSHAppModel
-  let configuration: GhostteaConfigSnapshot
+  let configurationModel: GhostteaConfigurationModel
 
   init(
     sceneID: UUID,
     sharedRuntime: GhostteaSharedRuntimeModel,
     sshModel: GhostteaSSHAppModel,
-    configuration: GhostteaConfigSnapshot
+    configurationModel: GhostteaConfigurationModel
   ) {
     self.sceneID = sceneID
     self.sharedRuntime = sharedRuntime
     self.sshModel = sshModel
-    self.configuration = configuration
+    self.configurationModel = configurationModel
     _sharedModel = StateObject(
       wrappedValue: GhostteaAppModel(
         sharedRuntime: sharedRuntime,
         diagnostics: sharedRuntime.diagnostics,
-        configuration: configuration,
+        configuration: configurationModel.effectiveConfiguration,
         sceneID: sceneID))
   }
 
@@ -187,6 +183,11 @@ private struct GhostteaSceneRoot: View {
     GhostteaContentView()
       .environmentObject(sharedModel)
       .environmentObject(sshModel)
+      .environmentObject(configurationModel)
+      .onReceive(configurationModel.$effectiveConfiguration) { configuration in
+        sharedModel.deviceConfigurationChanged(configuration)
+        sshModel.configurationChanged(configuration)
+      }
       .onAppear { runMultiSceneProbeIfRequested() }
       .onDisappear {
         sharedModel.sceneDisconnected()

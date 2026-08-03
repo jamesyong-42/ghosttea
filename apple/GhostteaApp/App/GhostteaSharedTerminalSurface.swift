@@ -75,7 +75,7 @@ struct GhostteaSharedTerminalSurface: UIViewRepresentable {
 
 extension GhostteaTerminalPresentationConfig {
   var terminalBackgroundColor: Color {
-    color(background, fallback: [0x28, 0x2c, 0x34])
+    color(background, fallback: [0x28, 0x2c, 0x34]).opacity(Double(backgroundOpacity))
   }
 
   var terminalForegroundColor: Color {

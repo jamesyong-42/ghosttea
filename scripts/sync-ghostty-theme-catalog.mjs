@@ -4,9 +4,11 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
-const [sourceDirectory, outputFile] = process.argv.slice(2);
-if (!sourceDirectory || !outputFile) {
-  throw new Error("usage: sync-ghostty-theme-catalog.mjs <iTerm2-Color-Schemes/ghostty> <output.json>");
+const [sourceDirectory, ...outputFiles] = process.argv.slice(2);
+if (!sourceDirectory || outputFiles.length === 0) {
+  throw new Error(
+    "usage: sync-ghostty-theme-catalog.mjs <iTerm2-Color-Schemes/ghostty> <output.json> [output.json ...]",
+  );
 }
 const revision = execFileSync("git", ["-C", resolve(sourceDirectory, ".."), "rev-parse", "HEAD"], {
   encoding: "utf8",
@@ -57,17 +59,17 @@ const catalog = readdirSync(resolve(sourceDirectory), { withFileTypes: true })
   .filter(Boolean)
   .sort((left, right) => left.name.localeCompare(right.name));
 
-writeFileSync(
-  resolve(outputFile),
-  `${JSON.stringify(
-    {
-      source: `https://github.com/mbadolato/iTerm2-Color-Schemes/tree/${revision}/ghostty`,
-      revision,
-      themes: catalog,
-    },
-    null,
-    2,
-  )}\n`,
-);
+const serialized = `${JSON.stringify(
+  {
+    source: `https://github.com/mbadolato/iTerm2-Color-Schemes/tree/${revision}/ghostty`,
+    revision,
+    themes: catalog,
+  },
+  null,
+  2,
+)}\n`;
 
-console.log(`wrote ${catalog.length} Ghostty themes to ${outputFile}`);
+for (const outputFile of outputFiles) {
+  writeFileSync(resolve(outputFile), serialized);
+  console.log(`wrote ${catalog.length} Ghostty themes to ${outputFile}`);
+}
