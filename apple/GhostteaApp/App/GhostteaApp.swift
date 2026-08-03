@@ -20,7 +20,7 @@ struct GhostteaApp: App {
     do {
       configurationModel = try GhostteaConfigurationModel(overlayURL: overlayURL)
     } catch {
-      preconditionFailure("Ghosttea configuration engine unavailable: \(error)")
+      preconditionFailure("Ghosttea configuration engine unavailable")
     }
     _configurationModel = StateObject(wrappedValue: configurationModel)
     let configuration = configurationModel.effectiveConfiguration

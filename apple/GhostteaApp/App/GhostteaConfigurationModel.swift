@@ -30,6 +30,7 @@ final class GhostteaConfigurationModel: ObservableObject {
   private let store: GhostteaConfigurationStore
   private var baseContents: String
   private var validationTask: Task<Void, Never>?
+  private var conflictAdoptionTask: Task<Void, Never>?
   private var validationSequence = 0
 
   init(overlayURL: URL) throws {
@@ -48,7 +49,7 @@ final class GhostteaConfigurationModel: ObservableObject {
         contents: ""
       )
       documentAccessError =
-        "The terminal can use its resolved fallback configuration, but this profile cannot be edited: \(error.localizedDescription)"
+        "The terminal can use its resolved fallback configuration, but config.ghostty is not an editable regular UTF-8 file under 64 KiB."
     }
     savedConfiguration = snapshot
     effectiveConfiguration = snapshot
@@ -64,7 +65,10 @@ final class GhostteaConfigurationModel: ObservableObject {
     validationState = documentAccessError == nil ? .valid : .invalid
   }
 
-  deinit { validationTask?.cancel() }
+  deinit {
+    validationTask?.cancel()
+    conflictAdoptionTask?.cancel()
+  }
 
   var isDirty: Bool { rawDraft != baseContents }
   var isDocumentEditable: Bool { documentAccessError == nil }
@@ -104,7 +108,9 @@ final class GhostteaConfigurationModel: ObservableObject {
       appearance = next
       changeDraft(contents)
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = Self.userMessage(
+        for: error,
+        fallback: "Could not update the managed appearance block.")
     }
   }
 
@@ -124,7 +130,9 @@ final class GhostteaConfigurationModel: ObservableObject {
       friendlySections = sections
       changeDraft(contents)
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = Self.userMessage(
+        for: error,
+        fallback: "Could not update the managed common-settings block.")
     }
   }
 
@@ -138,21 +146,29 @@ final class GhostteaConfigurationModel: ObservableObject {
       friendlySections = []
       changeDraft(contents)
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = Self.userMessage(
+        for: error,
+        fallback: "Could not reset the managed common-settings block.")
     }
   }
 
   func importGhosttyProjection(from url: URL, append: Bool) async {
-    await importOperation(append: append) {
+    await importOperation(
+      append: append,
+      failureMessage: "Could not import the selected Ghostty configuration."
+    ) {
       let accessed = url.startAccessingSecurityScopedResource()
       defer { if accessed { url.stopAccessingSecurityScopedResource() } }
       let imported = try GhostteaConfiguration.load(overlayURL: url, loadGhosttyFiles: false)
-      return GhostteaConfigurationDraft.portableConfig(from: imported)
+      return try GhostteaConfigurationDraft.portableConfig(from: imported)
     }
   }
 
   func importRawFile(from url: URL, append: Bool) async {
-    await importOperation(append: append) {
+    await importOperation(
+      append: append,
+      failureMessage: "Could not read the selected configuration file."
+    ) {
       let accessed = url.startAccessingSecurityScopedResource()
       defer { if accessed { url.stopAccessingSecurityScopedResource() } }
       let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
@@ -220,7 +236,9 @@ final class GhostteaConfigurationModel: ObservableObject {
         message = "The file changed on disk. Nothing was overwritten."
       }
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = Self.userMessage(
+        for: error,
+        fallback: "Could not save and reload config.ghostty. Nothing was overwritten.")
     }
   }
 
@@ -229,19 +247,72 @@ final class GhostteaConfigurationModel: ObservableObject {
     case .success(let url):
       errorMessage = nil
       message = "Exported \(url.lastPathComponent)."
-    case .failure(let error):
+    case .failure:
       message = nil
-      errorMessage = error.localizedDescription
+      errorMessage = "Could not export the configuration file."
     }
   }
 
   func adoptConflict(keepDraft: Bool) {
-    guard let conflict else { return }
-    document = conflict
-    baseContents = conflict.contents
-    if !keepDraft { rawDraft = conflict.contents }
-    self.conflict = nil
-    changeDraft(rawDraft)
+    guard let pendingConflict = conflict, !isSaving else { return }
+    let draftAtStart = rawDraft
+    validationTask?.cancel()
+    validationSequence += 1
+    isSaving = true
+    errorMessage = nil
+    message = nil
+    conflict = nil
+    conflictAdoptionTask = Task { [weak self] in
+      await self?.finishConflictAdoption(
+        pendingConflict: pendingConflict,
+        draftAtStart: draftAtStart,
+        keepDraft: keepDraft)
+    }
+  }
+
+  private func finishConflictAdoption(
+    pendingConflict: GhostteaConfigDocument,
+    draftAtStart: String,
+    keepDraft: Bool
+  ) async {
+    defer {
+      isSaving = false
+      conflictAdoptionTask = nil
+    }
+    do {
+      let baseline = try await Task.detached { [store] in
+        try store.reloadDocument()
+      }.value
+      try Task.checkCancellation()
+      let retainedDraft = rawDraft
+      let preserveDraft = keepDraft || retainedDraft != draftAtStart
+      document = baseline.document
+      baseContents = baseline.document.contents
+      savedConfiguration = baseline.config
+      documentAccessError = nil
+
+      if preserveDraft && retainedDraft != baseline.document.contents {
+        changeDraft(retainedDraft)
+        message = "Loaded the latest disk revision. Your draft remains unsaved and is validating."
+      } else {
+        rawDraft = baseline.document.contents
+        effectiveConfiguration = baseline.config
+        validation = GhostteaConfigDocumentValidation(
+          documentRevision: baseline.document.revision,
+          config: baseline.config)
+        validationState = .valid
+        appearance = GhostteaAppearanceSelection(config: baseline.config)
+        friendly = GhostteaFriendlyConfigValues(config: baseline.config)
+        friendlySections = GhostteaConfigurationDraft.friendlySections(
+          in: baseline.document.contents)
+        message = "Loaded the latest disk version."
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      conflict = pendingConflict
+      errorMessage = "Could not reload the latest disk configuration. Your draft was kept."
+    }
   }
 
   func dismissConflict() {
@@ -305,13 +376,14 @@ final class GhostteaConfigurationModel: ObservableObject {
       } catch {
         guard let self, sequence == self.validationSequence else { return }
         self.validationState = .invalid
-        self.errorMessage = error.localizedDescription
+        self.errorMessage = "Could not validate the configuration draft."
       }
     }
   }
 
   private func importOperation(
     append: Bool,
+    failureMessage: String,
     _ operation: @escaping @Sendable () throws -> String
   ) async {
     guard isDocumentEditable else { return }
@@ -325,7 +397,7 @@ final class GhostteaConfigurationModel: ObservableObject {
       if append { appendToDraft(contents) } else { replaceDraft(contents) }
       message = "Imported into the draft. Review validation, then save to load it permanently."
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = Self.userMessage(for: error, fallback: failureMessage)
     }
   }
 
@@ -346,15 +418,32 @@ final class GhostteaConfigurationModel: ObservableObject {
       value.key ?? "",
     ].joined(separator: "\u{0}")
   }
+
+  private static func userMessage(for error: any Error, fallback: String) -> String {
+    if let importError = error as? GhostteaConfigurationImportError {
+      return importError.message
+    }
+    guard let draftError = error as? GhostteaConfigDraftError else { return fallback }
+    switch draftError {
+    case .malformedManagedBlock:
+      return
+        "A managed settings block in config.ghostty is malformed. Repair its markers in the raw editor."
+    case .invalidTheme:
+      return "The selected appearance contains an invalid color, opacity, or shader."
+    case .importedConfigurationHasErrors(let count):
+      return
+        "The selected Ghostty configuration contains \(count) error(s). Fix it before importing."
+    }
+  }
 }
 
-private enum GhostteaConfigurationImportError: Error, LocalizedError {
+private enum GhostteaConfigurationImportError: Error {
   case notRegular
   case tooLarge
   case invalidText
   case validationFailed
 
-  var errorDescription: String? {
+  var message: String {
     switch self {
     case .notRegular: "The selected item is not a regular file."
     case .tooLarge: "The selected configuration exceeds the 64 KiB limit."

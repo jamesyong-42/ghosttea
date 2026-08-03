@@ -426,6 +426,28 @@ public final class GhostteaConfigurationStore: @unchecked Sendable {
     }
   }
 
+  /// Reloads the effective configuration and captures the exact overlay
+  /// document it was resolved from. The overlay may be edited by another
+  /// process between native calls, so retry until the document revision is
+  /// stable on both sides of the reload.
+  public func reloadDocument() throws -> GhostteaConfigDocumentUpdate {
+    var effectiveChanged = false
+    for _ in 0..<3 {
+      let before = try document()
+      let reloaded = try reload()
+      effectiveChanged = effectiveChanged || reloaded.changed
+      let after = try document()
+      guard before.revision == after.revision else { continue }
+      return GhostteaConfigDocumentUpdate(
+        document: after,
+        config: reloaded.config,
+        effectiveChanged: effectiveChanged
+      )
+    }
+    throw GhostteaCoreError.malformedUpdate(
+      "configuration document changed repeatedly while it was being reloaded")
+  }
+
   public func document() throws -> GhostteaConfigDocument {
     try decodeJSON(GhostteaConfigDocument.self) { output in
       ghosttea_config_manager_document_json(handle, &output)

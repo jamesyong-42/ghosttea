@@ -167,6 +167,7 @@ public struct GhostteaFriendlyConfigValues: Equatable, Sendable {
 public enum GhostteaConfigDraftError: Error, LocalizedError, Equatable {
   case malformedManagedBlock(String)
   case invalidTheme
+  case importedConfigurationHasErrors(Int)
 
   public var errorDescription: String? {
     switch self {
@@ -174,6 +175,8 @@ public enum GhostteaConfigDraftError: Error, LocalizedError, Equatable {
       "The managed \(name) block in config.ghostty is malformed."
     case .invalidTheme:
       "The selected theme contains an invalid color or palette."
+    case .importedConfigurationHasErrors(let count):
+      "The selected Ghostty configuration contains \(count) error(s) and was not imported."
     }
   }
 }
@@ -419,7 +422,11 @@ public enum GhostteaConfigurationDraft {
   /// Serializes only values Ghosttea can honor. This is used for the explicit
   /// “Import from Ghostty” projection and never pretends to preserve unknown
   /// source text.
-  public static func portableConfig(from config: GhostteaConfigSnapshot) -> String {
+  public static func portableConfig(from config: GhostteaConfigSnapshot) throws -> String {
+    let errorCount = config.diagnostics.count { $0.severity == .error }
+    guard errorCount == 0 else {
+      throw GhostteaConfigDraftError.importedConfigurationHasErrors(errorCount)
+    }
     let values = GhostteaFriendlyConfigValues(config: config)
     var lines = friendlyBlock(values, sections: Set(GhostteaFriendlyConfigSection.allCases))
       .components(separatedBy: "\n")

@@ -65,7 +65,9 @@ struct GhostteaSettingsView: View {
           if !presented { configuration.dismissConflict() }
         })
     ) {
-      Button("Use disk version") { configuration.adoptConflict(keepDraft: false) }
+      Button("Use disk version") {
+        configuration.adoptConflict(keepDraft: false)
+      }
       Button("Keep my draft on latest revision") {
         configuration.adoptConflict(keepDraft: true)
       }

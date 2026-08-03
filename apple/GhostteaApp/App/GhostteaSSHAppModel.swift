@@ -199,6 +199,9 @@ final class GhostteaSSHAppModel: ObservableObject {
         let runtime = try terminalRuntime()
         let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
         let allocation = try await factory.allocate(.newTab)
+        try await synchronizeTerminalConfiguration(
+          factory: factory,
+          sessions: [allocation.sessionID: allocation.session])
         let paneID = identity("pane")
         let tabID = identity("tab")
         let pane = GhostteaWorkspacePane(id: paneID, sessionID: allocation.sessionID)
@@ -521,6 +524,9 @@ final class GhostteaSSHAppModel: ObservableObject {
       try await restorationStore.remove()
       return false
     }
+    try await synchronizeTerminalConfiguration(
+      factory: factory,
+      sessions: result.sessions)
 
     let liveIDs = Set(result.sessions.keys)
     sessionProfileIDs = persisted.profileIDBySessionID.filter { liveIDs.contains($0.key) }
@@ -565,6 +571,46 @@ final class GhostteaSSHAppModel: ObservableObject {
       eventHandler: { [weak self] event in await self?.handle(event) })
   }
 
+  /// Brings a factory and every not-yet-published terminal to the latest
+  /// device configuration. Configuration changes can arrive while allocation
+  /// or restoration is suspended, before `configurationChanged(_:)` can see
+  /// either object through the model's published workspace state.
+  private func synchronizeTerminalConfiguration(
+    factory: GhostteaSSHWorkspaceSessionFactory,
+    sessions: [String: GhostteaSSHWorkspaceSession]
+  ) async throws {
+    do {
+      while true {
+        try Task.checkCancellation()
+        let generation = configurationGeneration
+        let latest = configuration
+        await factory.updateTerminalConfiguration(latest)
+
+        var renderedFrames: [String: Data] = [:]
+        for (sessionID, resource) in sessions {
+          let update = try await resource.terminal.apply(config: latest, render: .full)
+          try Task.checkCancellation()
+          if let frame = update.effects.last(where: { $0.kind == .frameReady })?.payload {
+            renderedFrames[sessionID] = frame
+          }
+        }
+        guard generation == configurationGeneration else { continue }
+        for (sessionID, frame) in renderedFrames {
+          frames[sessionID] = frame
+        }
+        return
+      }
+    } catch {
+      // None of these sessions is coordinator-owned yet. Tear down the whole
+      // unpublished allocation set so a failed reconciliation cannot leave a
+      // connected transport or a reserved factory identity behind.
+      for resource in sessions.values {
+        await factory.evict(resource)
+      }
+      throw error
+    }
+  }
+
   private func makeCoordinator(
     document: GhostteaWorkspaceTabsDocument,
     sessions: [String: GhostteaSSHWorkspaceSession],
@@ -597,6 +643,9 @@ final class GhostteaSSHAppModel: ObservableObject {
       sessionID: nil,
       profileID: profileID,
       connect: true)
+    try await synchronizeTerminalConfiguration(
+      factory: factory,
+      sessions: [allocation.sessionID: allocation.session])
     sessionProfileIDs[allocation.sessionID] = profileID
     grids[allocation.sessionID] = GhostteaTerminalGridSize(
       columns: UInt16(profile.columns), rows: UInt16(profile.rows))
@@ -1015,6 +1064,9 @@ final class GhostteaSSHAppModel: ObservableObject {
       let runtime = try terminalRuntime()
       let factory = try makeFactory(runtime: runtime, defaultProfile: profile)
       let allocation = try await factory.allocate(.newTab, connect: false)
+      try await synchronizeTerminalConfiguration(
+        factory: factory,
+        sessions: [allocation.sessionID: allocation.session])
       let pane = GhostteaWorkspacePane(id: "automation-pane", sessionID: allocation.sessionID)
       let terminal = try GhostteaWorkspaceDocument(root: .pane(pane), activePaneID: pane.id)
       let document = try GhostteaWorkspaceTabsDocument(
@@ -1177,6 +1229,7 @@ final class GhostteaSSHAppModel: ObservableObject {
         selectedTabID: "memory-tab-4",
         tabs: tabs
       )
+      try await synchronizeTerminalConfiguration(factory: factory, sessions: sessions)
       self.factory = factory
       coordinator = try makeCoordinator(
         document: document,

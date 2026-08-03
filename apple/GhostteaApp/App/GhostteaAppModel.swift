@@ -128,7 +128,16 @@ final class GhostteaAppModel: ObservableObject {
     configuration = next
     guard selectedSession == nil else { return }
     presentationConfiguration = next.terminalPresentation
-    renderRuntime = nil
+    do {
+      // `attach(to:)` treats this retained runtime as the renderer readiness
+      // invariant. Refresh it in place while the browser is live; a TabView or
+      // another iPad scene does not re-run `start()` merely because Settings
+      // published a new configuration.
+      renderRuntime = try GhostteaRuntime(config: next)
+    } catch {
+      renderRuntime = nil
+      fail("Could not reload terminal renderer", code: .rendererStartFailed)
+    }
   }
 
   func stop() {

@@ -176,6 +176,33 @@ import Testing
   }
 }
 
+@Test func configurationStoreReloadsAStableDocumentAndEffectiveSnapshotTogether() throws {
+  let directory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ghosttea-config-reload-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let configURL = directory.appendingPathComponent("config.ghostty")
+  let store = try GhostteaConfigurationStore(overlayURL: configURL, loadGhosttyFiles: false)
+  let initial = try store.snapshot()
+
+  let external = "foreground = 123456\nfont-size = 18\n"
+  try external.write(to: configURL, atomically: true, encoding: .utf8)
+  let loaded = try store.reloadDocument()
+  #expect(loaded.document.exists)
+  #expect(loaded.document.contents == external)
+  #expect(loaded.config.revision != initial.revision)
+  #expect(try store.snapshot() == loaded.config)
+  #expect(loaded.config.renderer.foreground == [0x12, 0x34, 0x56])
+  #expect(loaded.config.renderer.fontSize == 18)
+
+  try FileManager.default.removeItem(at: configURL)
+  let removed = try store.reloadDocument()
+  #expect(!removed.document.exists)
+  #expect(removed.document.contents.isEmpty)
+  #expect(try store.snapshot() == removed.config)
+  #expect(removed.config.renderer.foreground == [0xff, 0xff, 0xff])
+}
+
 @Test func configurationBuildsRuntimeMetricsAndAppliesTerminalColors() async throws {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("ghosttea-runtime-config-\(UUID().uuidString)", isDirectory: true)

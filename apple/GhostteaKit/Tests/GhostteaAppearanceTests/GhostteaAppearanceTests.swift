@@ -106,6 +106,26 @@ import Testing
   #expect(GhostteaConfigurationDraft.friendlySections(in: malformed).isEmpty)
 }
 
+@Test func portableImportRejectsConfigurationsWithErrorDiagnostics() throws {
+  let directory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ghosttea-invalid-import-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let configURL = directory.appendingPathComponent("config.ghostty")
+  try "background = definitely-not-a-color\n".write(
+    to: configURL,
+    atomically: true,
+    encoding: .utf8)
+  let configuration = try GhostteaConfiguration.load(
+    overlayURL: configURL,
+    loadGhosttyFiles: false)
+  #expect(configuration.hasErrors)
+
+  #expect(throws: GhostteaConfigDraftError.self) {
+    try GhostteaConfigurationDraft.portableConfig(from: configuration)
+  }
+}
+
 private func testConfiguration() throws -> GhostteaConfigSnapshot {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("ghosttea-appearance-test-\(UUID().uuidString)", isDirectory: true)

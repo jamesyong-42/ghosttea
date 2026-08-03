@@ -98,10 +98,10 @@ private func testSSHConfiguration() throws -> GhostteaSSHConfiguration {
   defer { try? FileManager.default.removeItem(at: directory) }
   let configURL = directory.appendingPathComponent("config.ghostty")
   try """
-    foreground = 123456
-    background = 654321
-    cursor-color = abcdef
-    """.write(to: configURL, atomically: true, encoding: .utf8)
+  foreground = 123456
+  background = 654321
+  cursor-color = abcdef
+  """.write(to: configURL, atomically: true, encoding: .utf8)
   let configuration = try GhostteaConfiguration.load(
     overlayURL: configURL,
     loadGhosttyFiles: false
@@ -128,6 +128,51 @@ private func testSSHConfiguration() throws -> GhostteaSSHConfiguration {
   #expect(responseText.contains("]10;rgb:1212/3434/5656"))
   #expect(responseText.contains("]11;rgb:6565/4343/2121"))
   #expect(responseText.contains("]12;rgb:abab/cdcd/efef"))
+}
+
+@Test func factoryUsesAConfigurationUpdateForSubsequentAllocations() async throws {
+  let directory = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ghosttea-ssh-config-update-\(UUID().uuidString)", isDirectory: true)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let configURL = directory.appendingPathComponent("config.ghostty")
+  try "foreground = 010203\nbackground = 040506\ncursor-color = 070809\n".write(
+    to: configURL,
+    atomically: true,
+    encoding: .utf8)
+  let initial = try GhostteaConfiguration.load(
+    overlayURL: configURL,
+    loadGhosttyFiles: false)
+  let factory = try GhostteaSSHWorkspaceSessionFactory(
+    runtime: GhostteaRuntime(config: initial),
+    ssh: testSSHConfiguration(),
+    sessionConfiguration: .ssh(
+      initialPath: TerminalNetworkPath(availability: .unsatisfied)
+    ),
+    terminalConfiguration: initial,
+    identityPrefix: "updated"
+  )
+
+  try "foreground = a1b2c3\nbackground = d4e5f6\ncursor-color = 102030\n".write(
+    to: configURL,
+    atomically: true,
+    encoding: .utf8)
+  let updated = try GhostteaConfiguration.load(
+    overlayURL: configURL,
+    loadGhosttyFiles: false)
+  await factory.updateTerminalConfiguration(updated)
+
+  let allocation = try await factory.allocate(.newTab, connect: false)
+  let update = try await allocation.session.terminal.feed(
+    Data("\u{1b}]10;?\u{1b}\\\u{1b}]11;?\u{1b}\\\u{1b}]12;?\u{1b}\\".utf8),
+    render: .none)
+  let response = update.effects
+    .filter { $0.kind == .writeToTransport }
+    .reduce(into: Data()) { $0.append($1.payload) }
+  let responseText = String(decoding: response, as: UTF8.self)
+  #expect(responseText.contains("]10;rgb:a1a1/b2b2/c3c3"))
+  #expect(responseText.contains("]11;rgb:d4d4/e5e5/f6f6"))
+  #expect(responseText.contains("]12;rgb:1010/2020/3030"))
 }
 
 @Test func factoryRejectsZeroInitialHandle() throws {
