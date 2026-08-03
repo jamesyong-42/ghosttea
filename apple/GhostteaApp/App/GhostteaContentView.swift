@@ -1,3 +1,4 @@
+import GhostteaCore
 import SafariServices
 import SwiftUI
 
@@ -27,7 +28,10 @@ struct GhostteaContentView: View {
           browser
         }
       }
-      .navigationTitle(model.selectedSession?.title ?? "Ghosttea")
+      .navigationTitle(
+        model.selectedSession.map { GhostteaTerminalTitle.textPresentation($0.title) }
+          ?? "Ghosttea"
+      )
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         if UIDevice.current.userInterfaceIdiom == .pad {
@@ -44,9 +48,7 @@ struct GhostteaContentView: View {
             Button("Done") { model.disconnect() }
           }
           ToolbarItem(placement: .topBarTrailing) {
-            Text(model.hasControl ? "Control" : "Read-only")
-              .font(.caption)
-              .foregroundStyle(model.hasControl ? .green : .secondary)
+            controlStatus
           }
         } else {
           ToolbarItem(placement: .topBarLeading) {
@@ -141,7 +143,7 @@ struct GhostteaContentView: View {
             } label: {
               HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                  Text(session.title)
+                  Text(GhostteaTerminalTitle.textPresentation(session.title))
                     .foregroundStyle(.primary)
                   if let cwd = session.cwdLabel {
                     Text(cwd)
@@ -162,7 +164,7 @@ struct GhostteaContentView: View {
 
   private var terminal: some View {
     ZStack {
-      Rectangle().fill(.ultraThinMaterial)
+      GhostteaTerminalTransparencyBackdrop()
         .ignoresSafeArea()
       if let frame = model.frame {
         GhostteaSharedTerminalSurface(
@@ -202,6 +204,33 @@ struct GhostteaContentView: View {
     }
   }
 
+  @ViewBuilder private var controlStatus: some View {
+    if model.hasControl {
+      Label("Control", systemImage: "checkmark.circle.fill")
+        .labelStyle(.titleOnly)
+        .font(.caption)
+        .foregroundStyle(.green)
+    } else if model.canTakeControl {
+      Button {
+        model.takeControl()
+      } label: {
+        if model.isClaimingControl {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("Taking control")
+        } else {
+          Text("Take Control")
+            .font(.caption)
+        }
+      }
+      .disabled(model.isClaimingControl)
+    } else {
+      Text("Read-only")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
   /// Whether the frame on screen is retained rather than live.
   private var isCooled: Bool { model.banner?.coolsTerminal == true }
 
@@ -214,6 +243,65 @@ struct GhostteaContentView: View {
     case .starting, .stopping: "network"
     case .stopped: "circle"
     }
+  }
+}
+
+/// A deliberately recognizable app-owned layer behind the terminal. At full
+/// terminal background opacity it disappears; reducing `background-opacity`
+/// reveals the colored shapes and watermark without making the iOS window
+/// itself transparent.
+struct GhostteaTerminalTransparencyBackdrop: View {
+  var body: some View {
+    GeometryReader { proxy in
+      let width = max(proxy.size.width, 1)
+      let height = max(proxy.size.height, 1)
+      ZStack {
+        LinearGradient(
+          colors: [
+            Color(red: 0.05, green: 0.10, blue: 0.20),
+            Color(red: 0.15, green: 0.08, blue: 0.24),
+            Color(red: 0.03, green: 0.19, blue: 0.22),
+          ],
+          startPoint: .topLeading,
+          endPoint: .bottomTrailing)
+
+        Circle()
+          .fill(Color.cyan.opacity(0.48))
+          .frame(width: width * 0.62, height: width * 0.62)
+          .blur(radius: 10)
+          .offset(x: width * 0.34, y: -height * 0.31)
+
+        Circle()
+          .fill(Color.orange.opacity(0.42))
+          .frame(width: width * 0.44, height: width * 0.44)
+          .blur(radius: 8)
+          .offset(x: -width * 0.38, y: height * 0.28)
+
+        RoundedRectangle(cornerRadius: 42, style: .continuous)
+          .stroke(Color.white.opacity(0.2), lineWidth: 2)
+          .frame(width: width * 0.78, height: min(height * 0.38, 280))
+          .rotationEffect(.degrees(-14))
+          .offset(x: width * 0.22, y: height * 0.12)
+
+        VStack(alignment: .leading, spacing: 4) {
+          HStack(spacing: 8) {
+            Image(systemName: "circle.lefthalf.filled")
+            Text("SWIFTUI BACKDROP")
+          }
+          .font(.caption2.weight(.semibold))
+          .tracking(1.8)
+          Text("GHOSTTEA GLASS")
+            .font(.system(size: min(width * 0.1, 48), weight: .black, design: .rounded))
+        }
+        .foregroundStyle(Color.white.opacity(0.22))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .multilineTextAlignment(.trailing)
+        .padding(28)
+      }
+      .clipped()
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
   }
 }
 

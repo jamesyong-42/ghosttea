@@ -1,4 +1,5 @@
 import GhostteaConnectionProfilesUI
+import GhostteaCore
 import GhostteaSSH
 import GhostteaTerminal
 import GhostteaWorkspace
@@ -121,9 +122,13 @@ struct GhostteaSSHView: View {
     return GhostteaWorkspaceView(
       document: document,
       tabTitle: { tab in
-        tab.workspace.sessionIDs.first.map(model.title) ?? "Terminal"
+        tab.workspace.sessionIDs.first
+          .map(model.title)
+          .map(GhostteaTerminalTitle.textPresentation) ?? "Terminal"
       },
-      paneTitle: { model.title(for: $0.sessionID) },
+      paneTitle: {
+        GhostteaTerminalTitle.textPresentation(model.title(for: $0.sessionID))
+      },
       onAction: model.apply,
       onNewTab: { model.createTab() },
       onSplit: model.split,
@@ -158,14 +163,14 @@ private struct GhostteaSSHWorkspacePane: View {
 
   var body: some View {
     ZStack {
-      Rectangle().fill(.ultraThinMaterial)
+      GhostteaTerminalTransparencyBackdrop()
       if let frame {
         GhostteaSharedTerminalSurface(
           frame: frame,
           visible: visible,
           configuration: model.presentationConfiguration,
           controlsGridSize: controlsGridSize,
-          accessibilityTitle: model.title(for: sessionID),
+          accessibilityTitle: GhostteaTerminalTitle.textPresentation(model.title(for: sessionID)),
           accessibilityConnectionState: status,
           onGridSize: { model.updateGrid($0, sessionID: sessionID) },
           onNeedsFullRefresh: { model.requestFullRefresh(sessionID: sessionID) },

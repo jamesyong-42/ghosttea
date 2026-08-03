@@ -17,6 +17,7 @@ final class GhostteaAppModel: ObservableObject {
   @Published private(set) var presentationConfiguration: GhostteaTerminalPresentationConfig
   @Published private(set) var hasControl = false
   @Published private(set) var readWriteAllowed = false
+  @Published private(set) var isClaimingControl = false
   /// The §8.1 outage banner, or `nil` when the session needs no explanation.
   @Published private(set) var banner: GhostteaAttachmentBanner?
   /// A transient note that a keystroke was dropped (§4.3).
@@ -75,6 +76,11 @@ final class GhostteaAppModel: ObservableObject {
   var status: String { localStatus ?? sharedRuntime.status }
   var hosts: [GhostteaTruffleHostCandidate] { sharedRuntime.hosts }
   var isBusy: Bool { localBusy || sharedRuntime.isBusy }
+  var canTakeControl: Bool {
+    guard readWriteAllowed, !hasControl else { return false }
+    if case .live? = currentPhase { return true }
+    return false
+  }
   var terminalViewID: String { sceneIdentity.viewID }
   var authPage: GhostteaLoginPage? {
     get { sharedRuntime.authPage }
@@ -324,8 +330,41 @@ final class GhostteaAppModel: ObservableObject {
       } catch {
         // Control refusals are thrown to the caller and deliberately kept off
         // the event stream, so this is the only place they can become visible.
-        note(error)
+        noteControlFailure(error, action: "Resize")
       }
+    }
+  }
+
+  /// A user-directed takeover is intentionally separate from automatic
+  /// reclaim. Focus and geometry changes never fight another controller, while
+  /// this explicit action compare-and-swaps against the state the phone
+  /// actually observed and includes its current viewport in the claim.
+  func takeControl() {
+    guard
+      canTakeControl, !isClaimingControl, let lifecycle
+    else { return }
+    isClaimingControl = true
+    let size = grid
+    let attach = attachID
+    Task { [weak self] in
+      do {
+        try await lifecycle.claimControl(cols: size.columns, rows: size.rows)
+      } catch {
+        guard let self, attach == attachID else { return }
+        noteControlFailure(error, action: "Take Control")
+        isClaimingControl = false
+        return
+      }
+      // The write only submits the fenced request; the controller
+      // announcement is its authoritative answer. Keep the button
+      // single-flight until that arrives, but do not strand the UI if a peer
+      // remains connected without answering.
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, attach == attachID else { return }
+      guard isClaimingControl else { return }
+      isClaimingControl = false
+      bannerPresenter?.noteCue("Control request timed out. Try again.", at: clock.nowMs)
+      republishBanner()
     }
   }
 
@@ -507,9 +546,22 @@ final class GhostteaAppModel: ObservableObject {
   /// Surface a refusal the lifecycle threw rather than published. Keystroke
   /// rejections arrive on the event stream instead and must not come through
   /// here, or they would render twice.
-  private func note(_ error: Error) {
+  private func noteControlFailure(_ error: Error, action: String) {
     guard let rejection = error as? GhostteaAttachmentInputRejection else { return }
-    bannerPresenter?.apply(.inputRejected(rejection), at: clock.nowMs)
+    let message: String
+    switch rejection.reason {
+    case .readOnly:
+      message = "This session is read-only."
+    case .writeFailed:
+      message = "\(action) failed — reconnecting."
+    case .noControl:
+      message = "Take control before resizing the terminal."
+    case .attachmentEnded:
+      message = "\(action) did not finish before the connection dropped."
+    case .notLive:
+      message = "\(action) is unavailable while the session reconnects."
+    }
+    bannerPresenter?.noteCue(message, at: clock.nowMs)
     republishBanner()
   }
 
@@ -534,6 +586,7 @@ final class GhostteaAppModel: ObservableObject {
         attachmentGeneration &+= 1
         reevaluateReclaim()
       case .ended(let reason):
+        isClaimingControl = false
         trace("session \(snapshot.sessionID) ended: \(reason.rawValue)")
         // Only the endings nobody asked for are diagnostics. A process that
         // exited, a session someone closed, and a local disconnect are the
@@ -546,6 +599,7 @@ final class GhostteaAppModel: ObservableObject {
           break
         }
       case .opening, .synchronizing, .reconnecting, .suspended:
+        isClaimingControl = false
         break
       }
     }
@@ -589,7 +643,7 @@ final class GhostteaAppModel: ObservableObject {
       do {
         try await lifecycle.claimControl(cols: size.columns, rows: size.rows)
       } catch {
-        self?.note(error)
+        self?.noteControlFailure(error, action: "Control")
       }
     }
   }
@@ -651,6 +705,7 @@ final class GhostteaAppModel: ObservableObject {
         let state = await lifecycle.currentControlState
         guard let self, attach == attachID else { return }
         hasControl = held
+        isClaimingControl = false
         localStatus = held ? "Read-write control" : "Read-only · another view has control"
         // Controller state is one of the funnel's inputs (§4.2.3): a clear that
         // arrives while this pane is focused is exactly when a reclaim is due.
@@ -708,6 +763,7 @@ final class GhostteaAppModel: ObservableObject {
     localBusy = false
     hasControl = false
     readWriteAllowed = false
+    isClaimingControl = false
     inputAccepted = false
     currentPhase = nil
     attachedHostDeviceID = nil

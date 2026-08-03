@@ -129,7 +129,7 @@ private struct GhostteaAppearanceSettingsView: View {
             get: { configuration.appearance.backgroundOpacityCells },
             set: { value in update { $0.backgroundOpacityCells = value } }))
         Text(
-          "On iOS, transparency reveals the app's system material behind the terminal layer; the app window itself remains opaque."
+          "On iOS, transparency reveals Ghosttea's decorative SwiftUI backdrop behind the terminal layer; the app window itself remains opaque."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
