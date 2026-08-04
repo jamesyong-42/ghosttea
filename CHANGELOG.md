@@ -3,6 +3,53 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.9.0 - 2026-08-03
+
+### Added
+
+- A shared terminal-appearance system for desktop and iOS. Settings now expose
+  terminal-layer background opacity, a pinned catalog of 602 Ghostty-compatible
+  color themes, and four distributable shader ports: Better CRT, CRT, VHS, and
+  Sparks from Fire. WebGPU and Metal use the same configuration semantics,
+  including animated effects and transparent cell backgrounds, while preserving
+  each platform's native renderer and lifecycle.
+- Advanced Ghostty configuration editing on both app tracks. The raw editor
+  validates and applies changes continuously, reports line-specific diagnostics,
+  and supports importing the local Ghostty config or another file and exporting
+  the result. A friendly editor covers the commonly supported colors, opacity,
+  typography, scrollback, padding, and keybinding fields with controls such as
+  native color pickers, while retaining unknown raw configuration entries.
+- License and provenance metadata for the bundled theme catalog, shader ports,
+  and additional symbol/text-presentation fonts. Upstream shaders without clear
+  redistribution terms remain named but unavailable instead of being silently
+  redistributed.
+
+### Changed
+
+- A shared session now carries terminal semantics rather than the host's visual
+  choices. Desktop keeps its own theme, opacity, and shaders, while an attached
+  iPhone consistently renders that same session with the phone's local settings.
+  Indexed and default cell colors remain distinguishable across the compact
+  protocol so either viewer can resolve them through its own palette.
+- The iOS terminal surface now matches desktop interaction more closely:
+  controller takeover resizes the PTY to the phone viewport, touch scrolling has
+  momentum, and a selection remains anchored to terminal rows while content
+  scrolls. Completing a native long-press selection uses the terminal selection
+  RPC and places the selected text on the iPhone clipboard.
+- The macOS Electron window again exposes visible native title-bar chrome and
+  traffic-light controls while preserving the draggable region and clickable
+  settings control.
+
+### Fixed
+
+- Terminal symbols such as text-presentation emoji, mathematical glyphs, and
+  status marks render through deterministic bundled fallbacks on iOS instead of
+  becoming colorful emoji or missing-glyph boxes.
+- A terminal whose process exited could deadlock during its final refresh when
+  selection publication tried to snapshot a still-locked model. The refresh now
+  releases the model guard before executing update effects, so exit events and
+  cleanup complete on macOS and Windows.
+
 ## 0.8.0 - 2026-08-01
 
 ### Added

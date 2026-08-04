@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -16,6 +16,11 @@ function capture(command, args, cwd = root) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function copyResource(source, destination) {
+  cpSync(source, destination);
+  chmodSync(destination, 0o644);
 }
 
 if (!existsSync(join(vendor, ".git"))) {
@@ -36,8 +41,8 @@ for (const font of lock.fonts) {
   const digest = sha256(source);
   if (digest !== font.sha256) throw new Error(`Digest mismatch for locked font ${font.path}.`);
   const filename = basename(font.path);
-  cpSync(source, join(output, filename));
-  cpSync(source, join(appleFonts, filename));
+  copyResource(source, join(output, filename));
+  copyResource(source, join(appleFonts, filename));
   manifestFonts.push({ role: font.role, filename, sha256: digest });
 }
 
@@ -45,8 +50,8 @@ const licenseSource = join(vendor, lock.license.text);
 if (!existsSync(licenseSource)) {
   throw new Error(`Missing font license material ${lock.license.text}.`);
 }
-cpSync(licenseSource, join(output, "OFL-1.1.txt"));
-cpSync(licenseSource, join(appleResources, "OFL-1.1.txt"));
+copyResource(licenseSource, join(output, "OFL-1.1.txt"));
+copyResource(licenseSource, join(appleResources, "OFL-1.1.txt"));
 
 const noticesSource = join(vendor, lock.license.notices);
 if (!existsSync(noticesSource)) {
@@ -61,7 +66,7 @@ const notices = `${readFileSync(noticesSource, "utf8").trimEnd()}\n${
 writeFileSync(join(output, "FONT-NOTICES.md"), notices);
 writeFileSync(join(appleResources, "FONT-NOTICES.md"), notices);
 
-cpSync(join(root, "native/ghosttea/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
+copyResource(join(root, "native/ghosttea/fixtures/phase2/font-parity.json"), join(appleResources, "font-parity.json"));
 
 writeFileSync(
   join(output, "manifest.json"),
