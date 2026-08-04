@@ -16,10 +16,17 @@ public enum GhostteaTruffleContract {
   /// settled on, which is what every reconnect behaviour is gated by — never
   /// this number. Counterpart: `PROTOCOL_MINOR` in
   /// `native/ghosttea/src/tunnel_protocol.rs`.
-  public static let protocolMinor: UInt16 = 7
+  public static let protocolMinor: UInt16 = 8
+  public static let semanticCellColorProtocolMinor: UInt16 = 8
   public static let maximumControlMessageBytes = 1 * 1024 * 1024
   public static let maximumStateMessageBytes = 16 * 1024 * 1024
   public static let maximumPrefaceMetadataBytes = 4 * 1024
+}
+
+extension CodingUserInfoKey {
+  static let ghostteaProtocolMinor = CodingUserInfoKey(
+    rawValue: "dev.vibecook.ghosttea.protocol-minor"
+  )!
 }
 
 /// A host identity safe to persist across launches. Truffle `PeerRef`,

@@ -177,17 +177,92 @@ private func presentation(
       ))
 }
 
-@Test func compactStateDecoderRejectsExtensionsFlagsAndMalformedColors() {
+@Test func compactStateDecoderGatesSemanticColorsAndRejectsMalformedColors() throws {
+  let semantic =
+    #"{"s":[1,1,1,1,[["x",[[0,1,"x",[128,4,null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#
+  let decoded = try GhostteaTerminalStateCodec.decode(
+    Data(semantic.utf8), codec: .compactJSONV1, protocolMinor: 8)
+  guard case .snapshot(let snapshot) = decoded else {
+    Issue.record("expected semantic compact snapshot")
+    return
+  }
+  #expect(snapshot.rows[0].cells[0].style.foregroundPalette == 4)
+  #expect(snapshot.rows[0].cells[0].style.background == nil)
+  #expect(throws: GhostteaTruffleError.self) {
+    try GhostteaTerminalStateCodec.decode(
+      Data(semantic.utf8), codec: .compactJSONV1, protocolMinor: 7)
+  }
+
   let malformed = [
     #"{"p":[1,1,1,1,[],null,null,null,1]}"#,
-    #"{"s":[1,1,1,1,[["x",[[0,1,"x",[128,null,null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#,
     #"{"s":[1,1,1,1,[["x",[[0,1,"x",[0,[1,2],null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#,
+    #"{"s":[1,1,1,1,[["x",[[0,1,"x",[128,999,null]]]]],[0,0,true,0,false],false,[1,0,1],null,null]}"#,
   ]
   for value in malformed {
     do {
       _ = try GhostteaTerminalStateCodec.decode(Data(value.utf8), codec: .compactJSONV1)
       Issue.record("accepted malformed compact state")
     } catch {}
+  }
+}
+
+@Test func jsonSemanticColorsAreAlsoMinorGated() throws {
+  let semantic =
+    """
+    {
+      "type": "snapshot", "sessionEpoch": 1, "layoutEpoch": 1,
+      "terminalRevision": 1, "cols": 1,
+      "rows": [{"text": "x", "cells": [{
+        "column": 0, "span": 1, "text": "x",
+        "style": {
+          "bold": false, "italic": false, "faint": false,
+          "inverse": false, "invisible": false, "strikethrough": false,
+          "underline": false, "foreground": [18, 52, 86], "background": null,
+          "foregroundPalette": 4
+        }
+      }]}],
+      "cursor": {"x": 0, "y": 0, "visible": true, "style": 0, "blinking": false},
+      "mouseTracking": false,
+      "scrollbar": {"total": 1, "offset": 0, "len": 1},
+      "title": null, "cwd": null
+    }
+    """
+  let decoded = try GhostteaTerminalStateCodec.decode(
+    Data(semantic.utf8), codec: .json, protocolMinor: 8)
+  guard case .snapshot(let snapshot) = decoded else {
+    Issue.record("expected semantic JSON snapshot")
+    return
+  }
+  #expect(snapshot.rows[0].cells[0].style.foregroundPalette == 4)
+  #expect(throws: GhostteaTruffleError.self) {
+    try GhostteaTerminalStateCodec.decode(
+      Data(semantic.utf8), codec: .json, protocolMinor: 7)
+  }
+
+  let contradictory = semantic.replacingOccurrences(
+    of: #""foregroundPalette": 4"#,
+    with: #""foregroundDefault": true, "foregroundPalette": 4"#
+  )
+  #expect(throws: GhostteaTruffleError.self) {
+    try GhostteaTerminalStateCodec.decode(
+      Data(contradictory.utf8), codec: .json, protocolMinor: 8)
+  }
+
+  let invalidStyle = GhostteaLogicalCellStyle(
+    bold: false,
+    italic: false,
+    faint: false,
+    inverse: false,
+    invisible: false,
+    strikethrough: false,
+    underline: false,
+    foreground: nil,
+    background: nil,
+    foregroundDefault: true,
+    foregroundPalette: 4
+  )
+  #expect(throws: GhostteaTruffleError.self) {
+    try JSONEncoder().encode(invalidStyle)
   }
 }
 
@@ -315,9 +390,9 @@ private func presentation(
 
   #expect(Data(data.prefix(4)) == Data("TSP1".utf8))
   #expect(data[4] == 0 && data[5] == 1)
-  // The header carries the minor this client offers, which the reconnect work
-  // moved to 6. Hosts ignore it and negotiate through the hello.
-  #expect(data[6] == 0 && data[7] == 6)
+  // The header carries the minor this client offers. Hosts settle it through
+  // the hello before minor-8 semantic colors can appear on the state stream.
+  #expect(data[6] == 0 && data[7] == 8)
   #expect(data[8] == 2)
   #expect(data[9] == 0 && data[10] == 0 && data[11] == 0)
 

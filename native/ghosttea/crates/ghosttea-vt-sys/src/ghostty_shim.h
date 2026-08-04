@@ -37,10 +37,12 @@ typedef void (*EgRowFn)(void* userdata,
 typedef struct {
   uint8_t flags;
   uint8_t fg_kind;
+  uint8_t fg_palette;
   uint8_t fg_r;
   uint8_t fg_g;
   uint8_t fg_b;
   uint8_t bg_kind;
+  uint8_t bg_palette;
   uint8_t bg_r;
   uint8_t bg_g;
   uint8_t bg_b;
@@ -79,6 +81,7 @@ int eg_terminal_set_palette(EgTerminal* terminal,
                             const uint8_t* indices,
                             const uint8_t* colors,
                             size_t len);
+int eg_default_palette(uint8_t* colors, size_t len);
 void eg_terminal_scroll(EgTerminal* terminal, intptr_t rows);
 void eg_terminal_scroll_to(EgTerminal* terminal, size_t row);
 int eg_terminal_compress_scrollback_full(EgTerminal* terminal);

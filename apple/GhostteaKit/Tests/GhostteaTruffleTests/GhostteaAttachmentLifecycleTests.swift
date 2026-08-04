@@ -202,7 +202,7 @@ import Truffle
   #expect(GhostteaReconnectDefaults.suspendAfterMs == 600_000)
   #expect(GhostteaReconnectDefaults.synchronizeTimeoutMs == 10_000)
   #expect(GhostteaReconnectDefaults.remoteReconnectProtocolMinor == 6)
-  #expect(UInt64(GhostteaTruffleContract.protocolMinor) == 7)
+  #expect(UInt64(GhostteaTruffleContract.protocolMinor) == 8)
 }
 
 // MARK: - Controller revision rule (§4.2.3)

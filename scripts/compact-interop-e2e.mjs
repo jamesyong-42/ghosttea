@@ -36,7 +36,7 @@ let shutdownRowRan = false;
 
 const MAGIC = Buffer.from("TSP1");
 const PROTOCOL_MAJOR = 1;
-const PROTOCOL_MINOR = 7;
+const PROTOCOL_MINOR = 8;
 const STREAM_KIND_SESSION_CONTROL = 2;
 const CHANNEL_CONTROL = 1;
 const CHANNEL_STATE = 2;
@@ -72,6 +72,19 @@ function encodePreface(preface) {
   header.writeUInt8(STREAM_KIND_SESSION_CONTROL, 8);
   header.writeUInt32BE(metadata.length, 12);
   return Buffer.concat([header, metadata]);
+}
+
+function usesSemanticCellColors(message) {
+  const rows = Array.isArray(message.s?.[4])
+    ? message.s[4]
+    : Array.isArray(message.p?.[4])
+      ? message.p[4].map((replacement) => replacement?.[2])
+      : [];
+  return rows.some(
+    (row) =>
+      Array.isArray(row?.[1]) &&
+      row[1].some((cell) => Array.isArray(cell?.[3]) && (Number(cell[3][0]) & 0x80) !== 0),
+  );
 }
 
 /**
@@ -184,7 +197,8 @@ async function smokeCheck({ port, sessionId, deviceId }) {
     // The frames the host sends carry their channel in the first byte.
     let attached = null;
     let sawSessionOutput = false;
-    for (let i = 0; i < 40 && !(attached && sawSessionOutput); i += 1) {
+    let sawSemanticCellColors = false;
+    for (let i = 0; i < 40 && !(attached && sawSessionOutput && sawSemanticCellColors); i += 1) {
       const frame = await nextFrame();
       const channel = frame.readUInt8(0);
       const body = JSON.parse(frame.subarray(1).toString());
@@ -195,11 +209,15 @@ async function smokeCheck({ port, sessionId, deviceId }) {
         if (body.type === "view-attached") attached = body;
       } else if (channel === CHANNEL_STATE) {
         if (JSON.stringify(body).includes("interop-line-1")) sawSessionOutput = true;
+        if (usesSemanticCellColors(body)) sawSemanticCellColors = true;
       }
     }
     if (!attached) throw new Error("host never answered the attach");
     if (!attached.readWrite) throw new Error("the attach came back read-only; control rows would fail");
     if (!sawSessionOutput) throw new Error("attached, but the session's output never arrived");
+    if (!sawSemanticCellColors) {
+      throw new Error("minor-8 state never carried a semantic default or palette color");
+    }
     return attached;
   } finally {
     socket.destroy();

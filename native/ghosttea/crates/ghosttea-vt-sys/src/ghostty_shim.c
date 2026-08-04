@@ -68,6 +68,19 @@ int eg_terminal_set_palette(EgTerminal* state,
       state->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
 }
 
+int eg_default_palette(uint8_t* colors, size_t len) {
+  if (colors == NULL || len != 256 * 3) return GHOSTTY_INVALID_VALUE;
+  GhosttyColorRgb palette[256];
+  ghostty_color_palette_default(palette);
+  for (size_t i = 0; i < 256; i++) {
+    const size_t offset = i * 3;
+    colors[offset] = palette[i].r;
+    colors[offset + 1] = palette[i].g;
+    colors[offset + 2] = palette[i].b;
+  }
+  return GHOSTTY_SUCCESS;
+}
+
 enum { EG_MAX_CLIPBOARD_BYTES = 4 * 1024 * 1024 };
 
 static bool eg_buffer_reserve(EgBuffer* buffer, size_t required) {
@@ -457,7 +470,125 @@ size_t eg_terminal_selection_text(EgTerminal* state,
   return written;
 }
 
-static void eg_cell_style(GhosttyRenderStateRowCells cells, EgCellStyle* compact) {
+enum {
+  EG_CELL_COLOR_DEFAULT = 0,
+  EG_CELL_COLOR_RGB = 1,
+  EG_CELL_COLOR_PALETTE = 2,
+};
+
+typedef struct {
+  GhosttyColorRgb foreground;
+  GhosttyColorRgb foreground_default;
+  GhosttyColorRgb background;
+  GhosttyColorRgb background_default;
+  GhosttyColorRgb palette[256];
+  GhosttyColorRgb palette_default[256];
+  bool has_foreground;
+  bool has_foreground_default;
+  bool has_background;
+  bool has_background_default;
+} EgColorState;
+
+static bool eg_color_equal(GhosttyColorRgb lhs, GhosttyColorRgb rhs) {
+  return lhs.r == rhs.r && lhs.g == rhs.g && lhs.b == rhs.b;
+}
+
+static int eg_color_state(EgTerminal* state, EgColorState* colors) {
+  memset(colors, 0, sizeof(*colors));
+  GhosttyResult result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE, colors->palette);
+  if (result != GHOSTTY_SUCCESS) return result;
+  result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT,
+      colors->palette_default);
+  if (result != GHOSTTY_SUCCESS) return result;
+
+  result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND,
+      &colors->foreground);
+  if (result == GHOSTTY_SUCCESS) colors->has_foreground = true;
+  else if (result != GHOSTTY_NO_VALUE) return result;
+  result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT,
+      &colors->foreground_default);
+  if (result == GHOSTTY_SUCCESS) colors->has_foreground_default = true;
+  else if (result != GHOSTTY_NO_VALUE) return result;
+
+  result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND,
+      &colors->background);
+  if (result == GHOSTTY_SUCCESS) colors->has_background = true;
+  else if (result != GHOSTTY_NO_VALUE) return result;
+  result = ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT,
+      &colors->background_default);
+  if (result == GHOSTTY_SUCCESS) colors->has_background_default = true;
+  else if (result != GHOSTTY_NO_VALUE) return result;
+  return GHOSTTY_SUCCESS;
+}
+
+static void eg_compact_color(GhosttyStyleColor source,
+                             GhosttyColorRgb resolved,
+                             bool has_resolved,
+                             GhosttyColorRgb effective_default,
+                             bool has_effective_default,
+                             const EgColorState* colors,
+                             uint8_t* kind,
+                             uint8_t* palette,
+                             uint8_t* r,
+                             uint8_t* g,
+                             uint8_t* b) {
+  *kind = EG_CELL_COLOR_DEFAULT;
+  *palette = 0;
+  *r = 0;
+  *g = 0;
+  *b = 0;
+  switch (source.tag) {
+    case GHOSTTY_STYLE_COLOR_NONE:
+      // An OSC 10/11 override is terminal content, not an embedder theme.
+      // Preserve it as direct RGB; an unchanged default remains semantic so
+      // a replica can resolve it against its own presentation.
+      if (has_resolved &&
+          (!has_effective_default ||
+           !eg_color_equal(resolved, effective_default))) {
+        *kind = EG_CELL_COLOR_RGB;
+        *r = resolved.r;
+        *g = resolved.g;
+        *b = resolved.b;
+      }
+      return;
+    case GHOSTTY_STYLE_COLOR_PALETTE: {
+      const uint8_t index = source.value.palette;
+      const GhosttyColorRgb current = colors->palette[index];
+      const GhosttyColorRgb configured = colors->palette_default[index];
+      if (eg_color_equal(current, configured)) {
+        *kind = EG_CELL_COLOR_PALETTE;
+        *palette = index;
+      } else {
+        // OSC 4 overrides travel as application-owned RGB, while configured
+        // palette entries remain an index the receiving device can theme.
+        *kind = EG_CELL_COLOR_RGB;
+      }
+      *r = current.r;
+      *g = current.g;
+      *b = current.b;
+      return;
+    }
+    case GHOSTTY_STYLE_COLOR_RGB:
+      *kind = EG_CELL_COLOR_RGB;
+      *r = source.value.rgb.r;
+      *g = source.value.rgb.g;
+      *b = source.value.rgb.b;
+      return;
+    default:
+      return;
+  }
+}
+
+static void eg_cell_style(GhosttyRenderStateRowCells cells,
+                          GhosttyCell raw,
+                          const EgColorState* colors,
+                          EgCellStyle* compact) {
   GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
   memset(compact, 0, sizeof(*compact));
   ghostty_render_state_row_cells_get(
@@ -469,17 +600,49 @@ static void eg_cell_style(GhosttyRenderStateRowCells cells, EgCellStyle* compact
                    (style.invisible ? 16 : 0) |
                    (style.strikethrough ? 32 : 0) |
                    (style.underline ? 64 : 0);
-  GhosttyColorRgb color = {0};
-  if (ghostty_render_state_row_cells_get(
-          cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &color) == GHOSTTY_SUCCESS) {
-    compact->fg_kind = 1;
-    compact->fg_r = color.r; compact->fg_g = color.g; compact->fg_b = color.b;
+  GhosttyColorRgb foreground = {0};
+  const bool has_foreground = ghostty_render_state_row_cells_get(
+      cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
+      &foreground) == GHOSTTY_SUCCESS;
+  if (!has_foreground && colors->has_foreground)
+    foreground = colors->foreground;
+  eg_compact_color(
+      style.fg_color, foreground, has_foreground || colors->has_foreground,
+      colors->foreground_default, colors->has_foreground_default, colors,
+      &compact->fg_kind, &compact->fg_palette,
+      &compact->fg_r, &compact->fg_g, &compact->fg_b);
+
+  GhosttyStyleColor background_source = style.bg_color;
+  GhosttyCellContentTag content_tag = GHOSTTY_CELL_CONTENT_CODEPOINT;
+  if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &content_tag) ==
+      GHOSTTY_SUCCESS) {
+    if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+      GhosttyColorPaletteIndex index = 0;
+      if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_PALETTE, &index) ==
+          GHOSTTY_SUCCESS) {
+        background_source.tag = GHOSTTY_STYLE_COLOR_PALETTE;
+        background_source.value.palette = index;
+      }
+    } else if (content_tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+      GhosttyColorRgb rgb = {0};
+      if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_RGB, &rgb) ==
+          GHOSTTY_SUCCESS) {
+        background_source.tag = GHOSTTY_STYLE_COLOR_RGB;
+        background_source.value.rgb = rgb;
+      }
+    }
   }
-  if (ghostty_render_state_row_cells_get(
-          cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &color) == GHOSTTY_SUCCESS) {
-    compact->bg_kind = 1;
-    compact->bg_r = color.r; compact->bg_g = color.g; compact->bg_b = color.b;
-  }
+  GhosttyColorRgb background = {0};
+  const bool has_background = ghostty_render_state_row_cells_get(
+      cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
+      &background) == GHOSTTY_SUCCESS;
+  if (!has_background && colors->has_background)
+    background = colors->background;
+  eg_compact_color(
+      background_source, background, has_background || colors->has_background,
+      colors->background_default, colors->has_background_default, colors,
+      &compact->bg_kind, &compact->bg_palette,
+      &compact->bg_r, &compact->bg_g, &compact->bg_b);
 }
 
 int eg_terminal_snapshot(EgTerminal* state,
@@ -489,6 +652,9 @@ int eg_terminal_snapshot(EgTerminal* state,
                          void* userdata) {
   if (state == NULL || meta == NULL || row_fn == NULL || cell_fn == NULL) return GHOSTTY_INVALID_VALUE;
   GhosttyResult result = ghostty_render_state_update(state->render, state->terminal);
+  if (result != GHOSTTY_SUCCESS) return result;
+  EgColorState colors;
+  result = eg_color_state(state, &colors);
   if (result != GHOSTTY_SUCCESS) return result;
 
   GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
@@ -571,13 +737,13 @@ int eg_terminal_snapshot(EgTerminal* state,
         if (wide == GHOSTTY_CELL_WIDE_NARROW) {
           const uint8_t space = ' ';
           EgCellStyle compact;
-          eg_cell_style(state->cells, &compact);
+          eg_cell_style(state->cells, raw, &colors, &compact);
           cell_fn(userdata, row_index, column, 1, &space, 1, &compact);
           if (!eg_buffer_append(&state->row, &space, 1)) return GHOSTTY_OUT_OF_MEMORY;
         }
       } else {
         EgCellStyle compact;
-        eg_cell_style(state->cells, &compact);
+        eg_cell_style(state->cells, raw, &colors, &compact);
         uint16_t span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1;
         cell_fn(userdata, row_index, column, span, grapheme.ptr, grapheme.len, &compact);
         if (!already_appended && !eg_buffer_append(&state->row, grapheme.ptr, grapheme.len))

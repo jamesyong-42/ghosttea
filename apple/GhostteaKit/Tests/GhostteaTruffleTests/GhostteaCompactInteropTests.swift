@@ -53,7 +53,10 @@ struct GhostteaCompactInteropTests {
   /// authority.
   @Test func aMinorSixPairRecoversFromAFrozenHostByTakingOver() async throws {
     let events = InteropEvents()
-    let lifecycle = try interopLifecycle(localViewID: "interop-cycle", events: events)
+    let lifecycle = try interopLifecycle(
+      localViewID: "interop-cycle",
+      events: events,
+      offeredMinor: 6)
     await lifecycle.start()
     defer { Task { await lifecycle.close() } }
 
@@ -77,7 +80,8 @@ struct GhostteaCompactInteropTests {
     #expect(kill(pid, SIGCONT) == 0)
     thawed = true
     let resumed = try #require(
-      await waitFor(lifecycle, seconds: 60) { $0.phase == .live && $0.lifecycleSeq > live.lifecycleSeq
+      await waitFor(lifecycle, seconds: 60) {
+        $0.phase == .live && $0.lifecycleSeq > live.lifecycleSeq
       })
     #expect(resumed.negotiatedMinor == 6)
 

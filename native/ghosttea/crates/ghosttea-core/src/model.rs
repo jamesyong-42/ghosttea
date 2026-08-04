@@ -640,6 +640,10 @@ fn logical_snapshot(
                             underline: cell.style.underline,
                             foreground: cell.style.foreground,
                             background: cell.style.background,
+                            foreground_default: cell.foreground_default,
+                            foreground_palette: cell.foreground_palette,
+                            background_default: cell.background_default,
+                            background_palette: cell.background_palette,
                         },
                     })
                     .collect(),

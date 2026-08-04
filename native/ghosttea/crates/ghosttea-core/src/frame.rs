@@ -152,30 +152,54 @@ impl PreparedFrameStyles {
     }
 }
 
-fn append_style_run(runs: &mut Vec<(u32, u16, u16)>, cell: &TerminalCell, id: u32) {
+/// The frame encoder only needs grid geometry and resolved style. Local VT
+/// snapshots carry grapheme text and semantic color provenance as well, while
+/// replicas can use a compact cell and avoid cloning data this path never reads.
+pub(crate) trait FrameCell {
+    fn column(&self) -> u16;
+    fn span(&self) -> u16;
+    fn style(&self) -> CellStyle;
+}
+
+impl FrameCell for TerminalCell {
+    fn column(&self) -> u16 {
+        self.column
+    }
+
+    fn span(&self) -> u16 {
+        self.span
+    }
+
+    fn style(&self) -> CellStyle {
+        self.style
+    }
+}
+
+fn append_style_run<C: FrameCell>(runs: &mut Vec<(u32, u16, u16)>, cell: &C, id: u32) {
     if id == 0 {
         return;
     }
     if let Some((previous_id, start, span)) = runs.last_mut()
         && *previous_id == id
-        && start.saturating_add(*span) == cell.column
+        && start.saturating_add(*span) == cell.column()
     {
-        *span = span.saturating_add(cell.span);
+        *span = span.saturating_add(cell.span());
         return;
     }
-    runs.push((id, cell.column, cell.span));
+    runs.push((id, cell.column(), cell.span()));
 }
 
-fn prepare_row_styles(
-    cells: &[TerminalCell],
+fn prepare_row_styles<C: FrameCell>(
+    cells: &[C],
     shaped: &ShapedRow,
     styles: &mut HashMap<u32, CellStyle>,
 ) -> PreparedRowStyles {
     let cell_ids = cells
         .iter()
         .map(|cell| {
-            let id = style_id(cell.style);
-            styles.entry(id).or_insert(cell.style);
+            let style = cell.style();
+            let id = style_id(style);
+            styles.entry(id).or_insert(style);
             id
         })
         .collect::<Vec<_>>();
@@ -189,8 +213,8 @@ fn prepare_row_styles(
     // The old lookup selected the first matching cell. Fill in reverse so
     // earlier cells still win for malformed or overlapping input.
     for (cell, id) in cells.iter().zip(&cell_ids).rev() {
-        let start = (cell.column as usize).min(column_ids.len());
-        let end = (cell.column.saturating_add(cell.span) as usize).min(column_ids.len());
+        let start = (cell.column() as usize).min(column_ids.len());
+        let end = (cell.column().saturating_add(cell.span()) as usize).min(column_ids.len());
         column_ids[start..end].fill(*id);
     }
     PreparedRowStyles {
@@ -231,8 +255,54 @@ pub struct TextSnapshot<'a> {
     pub cursor: &'a FrameCursor,
 }
 
+pub(crate) struct FrameTextSnapshot<'a, C: FrameCell> {
+    pub session_handle: u64,
+    pub session_epoch: u64,
+    pub layout_epoch: u64,
+    pub sequence: u64,
+    pub revision: u64,
+    pub cols: u16,
+    pub rows: &'a [String],
+    pub shaped_rows: &'a [ShapedRow],
+    pub cells: &'a [Vec<C>],
+    pub updated_rows: &'a [u16],
+    pub full_snapshot: bool,
+    pub catalog_reset: bool,
+    pub mouse_tracking: bool,
+    pub scrollbar: &'a TerminalScrollbar,
+    pub selection: Option<&'a TerminalSelection>,
+    pub new_glyph_definitions: &'a [GlyphDefinition],
+    pub clipboard: Option<&'a [u8]>,
+    pub cursor: &'a FrameCursor,
+}
+
 pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
-    let TextSnapshot {
+    encode_frame_text_snapshot(FrameTextSnapshot {
+        session_handle: snapshot.session_handle,
+        session_epoch: snapshot.session_epoch,
+        layout_epoch: snapshot.layout_epoch,
+        sequence: snapshot.sequence,
+        revision: snapshot.revision,
+        cols: snapshot.cols,
+        rows: snapshot.rows,
+        shaped_rows: snapshot.shaped_rows,
+        cells: snapshot.cells,
+        updated_rows: snapshot.updated_rows,
+        full_snapshot: snapshot.full_snapshot,
+        catalog_reset: snapshot.catalog_reset,
+        mouse_tracking: snapshot.mouse_tracking,
+        scrollbar: snapshot.scrollbar,
+        selection: snapshot.selection,
+        new_glyph_definitions: snapshot.new_glyph_definitions,
+        clipboard: snapshot.clipboard,
+        cursor: snapshot.cursor,
+    })
+}
+
+pub(crate) fn encode_frame_text_snapshot<C: FrameCell>(
+    snapshot: FrameTextSnapshot<'_, C>,
+) -> Result<Vec<u8>> {
+    let FrameTextSnapshot {
         session_handle,
         session_epoch,
         layout_epoch,
@@ -277,9 +347,8 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         definitions.insert(0, CellStyle::default());
         for row in updated_rows {
             for cell in &cells[*row as usize] {
-                definitions
-                    .entry(style_id(cell.style))
-                    .or_insert(cell.style);
+                let style = cell.style();
+                definitions.entry(style_id(style)).or_insert(style);
             }
         }
         PreparedFrameStyles::Linear(definitions)
@@ -310,7 +379,7 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
         match &prepared_styles {
             PreparedFrameStyles::Linear(_) => {
                 for cell in row_cells {
-                    append_style_run(&mut runs, cell, style_id(cell.style));
+                    append_style_run(&mut runs, cell, style_id(cell.style()));
                 }
             }
             PreparedFrameStyles::Indexed { rows, .. } => {
@@ -327,10 +396,10 @@ pub fn encode_text_snapshot(snapshot: TextSnapshot<'_>) -> Result<Vec<u8>> {
                     let id = row_cells
                         .iter()
                         .find(|cell| {
-                            glyph.cell_start >= cell.column
-                                && glyph.cell_start < cell.column.saturating_add(cell.span)
+                            glyph.cell_start >= cell.column()
+                                && glyph.cell_start < cell.column().saturating_add(cell.span())
                         })
-                        .map(|cell| style_id(cell.style))
+                        .map(|cell| style_id(cell.style()))
                         .unwrap_or(0);
                     encode_glyph_instance(&mut replacements, glyph, id);
                 }
@@ -503,18 +572,21 @@ mod tests {
                 span: 3,
                 text: "abc".into(),
                 style: styles[0],
+                ..TerminalCell::default()
             },
             TerminalCell {
                 column: 0,
                 span: 4,
                 text: "defg".into(),
                 style: styles[1],
+                ..TerminalCell::default()
             },
             TerminalCell {
                 column: 5,
                 span: 1,
                 text: "h".into(),
                 style: styles[2],
+                ..TerminalCell::default()
             },
         ];
         let cells = cells
@@ -524,6 +596,7 @@ mod tests {
                 span: 0,
                 text: String::new(),
                 style: CellStyle::default(),
+                ..TerminalCell::default()
             }))
             .collect::<Vec<_>>();
         let shaped = ShapedRow {
@@ -576,6 +649,7 @@ mod tests {
             span: 1,
             text: "h".into(),
             style: CellStyle::default(),
+            ..TerminalCell::default()
         }]];
         let cursor = FrameCursor {
             x: 5,
@@ -684,7 +758,7 @@ mod tests {
                 .shape_row("changed", ghosttea_text::FontStyle::default())
                 .unwrap(),
         ];
-        let cells = vec![Vec::new(), Vec::new()];
+        let cells: Vec<Vec<TerminalCell>> = vec![Vec::new(), Vec::new()];
         let cursor = FrameCursor {
             x: 7,
             y: 1,
@@ -744,7 +818,7 @@ mod tests {
             cols: 80,
             rows: &[String::new()],
             shaped_rows: &shaped,
-            cells: &[Vec::new()],
+            cells: &[Vec::<TerminalCell>::new()],
             updated_rows: &[0],
             full_snapshot: false,
             catalog_reset: false,

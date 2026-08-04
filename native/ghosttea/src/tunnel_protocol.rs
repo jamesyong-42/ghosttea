@@ -6,14 +6,14 @@ pub use ghosttea_core::{
 };
 use serde::{
     Deserialize, Serialize,
-    de::DeserializeOwned,
-    ser::{SerializeSeq, SerializeTuple, SerializeTupleVariant},
+    de::{DeserializeOwned, Error as _, IgnoredAny, SeqAccess, Visitor},
+    ser::{Error as _, SerializeSeq, SerializeTuple, SerializeTupleVariant},
 };
 
 use crate::session::{KeyInput, MouseInput, SessionActivity};
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 7;
+pub const PROTOCOL_MINOR: u16 = 8;
 pub const SESSION_ACTIVITY_PROTOCOL_MINOR: u16 = 4;
 pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
 /// Gates every remote-reconnect behaviour: resume takeover, heartbeats,
@@ -23,6 +23,9 @@ pub const TERMINAL_PRESENTATION_PROTOCOL_MINOR: u16 = 5;
 /// presentation sync before this work landed, so it ships as minor 6.
 pub const REMOTE_RECONNECT_PROTOCOL_MINOR: u16 = 6;
 pub const TRACKED_SELECTION_PROTOCOL_MINOR: u16 = 7;
+/// Carries terminal-default and palette-index cell colors without baking the
+/// host presentation into a replica's logical state.
+pub const SEMANTIC_CELL_COLOR_PROTOCOL_MINOR: u16 = 8;
 pub const MAX_PREFACE_METADATA_BYTES: usize = 4 * 1024;
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_STATE_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -182,9 +185,31 @@ pub fn encode_state_message(
     codec: StateCodec,
     limit: usize,
 ) -> Result<Vec<u8>> {
+    encode_state_message_for_minor(message, codec, PROTOCOL_MINOR, limit)
+}
+
+pub fn encode_state_message_for_minor(
+    message: &StateMessage,
+    codec: StateCodec,
+    protocol_minor: u16,
+    limit: usize,
+) -> Result<Vec<u8>> {
     match codec {
-        StateCodec::Json => encode_message(message, limit),
-        StateCodec::CompactJsonV1 => encode_message(&CompactStateMessageRef(message), limit),
+        StateCodec::Json => {
+            let uses_semantic_colors = validate_semantic_colors(message)?;
+            if protocol_minor < SEMANTIC_CELL_COLOR_PROTOCOL_MINOR && uses_semantic_colors {
+                encode_message(&legacy_state_message(message), limit)
+            } else {
+                encode_message(message, limit)
+            }
+        }
+        StateCodec::CompactJsonV1 => encode_message(
+            &CompactStateMessageRef {
+                message,
+                semantic_colors: protocol_minor >= SEMANTIC_CELL_COLOR_PROTOCOL_MINOR,
+            },
+            limit,
+        ),
     }
 }
 
@@ -193,10 +218,31 @@ pub fn decode_state_message(
     codec: StateCodec,
     limit: usize,
 ) -> Result<(StateMessage, usize)> {
+    decode_state_message_for_minor(bytes, codec, PROTOCOL_MINOR, limit)
+}
+
+pub fn decode_state_message_for_minor(
+    bytes: &[u8],
+    codec: StateCodec,
+    protocol_minor: u16,
+    limit: usize,
+) -> Result<(StateMessage, usize)> {
     match codec {
-        StateCodec::Json => decode_message(bytes, limit),
+        StateCodec::Json => {
+            let (message, consumed) = decode_message(bytes, limit)?;
+            let uses_semantic_colors = validate_semantic_colors(&message)?;
+            if protocol_minor < SEMANTIC_CELL_COLOR_PROTOCOL_MINOR && uses_semantic_colors {
+                bail!("semantic cell colors require protocol minor 8");
+            }
+            Ok((message, consumed))
+        }
         StateCodec::CompactJsonV1 => {
             let (message, consumed) = decode_message::<CompactStateMessage>(bytes, limit)?;
+            if protocol_minor < SEMANTIC_CELL_COLOR_PROTOCOL_MINOR
+                && compact_message_uses_semantic_colors(&message)
+            {
+                bail!("semantic compact cell colors require protocol minor 8");
+            }
             Ok((message.try_into()?, consumed))
         }
     }
@@ -641,6 +687,59 @@ pub enum StateMessage {
     HostShutdown {},
 }
 
+fn visit_styles_mut(message: &mut StateMessage, mut visit: impl FnMut(&mut LogicalCellStyle)) {
+    let rows: Box<dyn Iterator<Item = &mut LogicalRow> + '_> = match message {
+        StateMessage::Snapshot(snapshot) => Box::new(snapshot.rows.iter_mut()),
+        StateMessage::Patch(patch) => Box::new(
+            patch
+                .row_replacements
+                .iter_mut()
+                .map(|value| &mut value.row),
+        ),
+        _ => return,
+    };
+    for row in rows {
+        for cell in &mut row.cells {
+            visit(&mut cell.style);
+        }
+    }
+}
+
+fn legacy_state_message(message: &StateMessage) -> StateMessage {
+    let mut legacy = message.clone();
+    visit_styles_mut(&mut legacy, |style| {
+        style.foreground_default = false;
+        style.foreground_palette = None;
+        style.background_default = false;
+        style.background_palette = None;
+    });
+    legacy
+}
+
+fn validate_semantic_colors(message: &StateMessage) -> Result<bool> {
+    let rows: Box<dyn Iterator<Item = &LogicalRow> + '_> = match message {
+        StateMessage::Snapshot(snapshot) => Box::new(snapshot.rows.iter()),
+        StateMessage::Patch(patch) => {
+            Box::new(patch.row_replacements.iter().map(|value| &value.row))
+        }
+        _ => return Ok(false),
+    };
+    let mut uses_semantic_colors = false;
+    for style in rows.flat_map(|row| row.cells.iter().map(|cell| &cell.style)) {
+        if style.foreground_default && style.foreground_palette.is_some() {
+            bail!("foreground color cannot be both default and palette-indexed");
+        }
+        if style.background_default && style.background_palette.is_some() {
+            bail!("background color cannot be both default and palette-indexed");
+        }
+        uses_semantic_colors |= style.foreground_default
+            || style.foreground_palette.is_some()
+            || style.background_default
+            || style.background_palette.is_some();
+    }
+    Ok(uses_semantic_colors)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackedSelectionPoint {
@@ -678,25 +777,34 @@ pub enum StateCodec {
     CompactJsonV1,
 }
 
-struct CompactStateMessageRef<'a>(&'a StateMessage);
+struct CompactStateMessageRef<'a> {
+    message: &'a StateMessage,
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactStateMessageRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        match self.0 {
+        match self.message {
             StateMessage::Snapshot(snapshot) => serializer.serialize_newtype_variant(
                 "CompactStateMessage",
                 0,
                 "s",
-                &CompactSnapshotRef(snapshot),
+                &CompactSnapshotRef {
+                    snapshot,
+                    semantic_colors: self.semantic_colors,
+                },
             ),
             StateMessage::Patch(patch) => serializer.serialize_newtype_variant(
                 "CompactStateMessage",
                 1,
                 "p",
-                &CompactPatchRef(patch),
+                &CompactPatchRef {
+                    patch,
+                    semantic_colors: self.semantic_colors,
+                },
             ),
             StateMessage::ControlChanged {
                 controller_view_id,
@@ -759,7 +867,10 @@ impl Serialize for CompactStateMessageRef<'_> {
     }
 }
 
-struct CompactSnapshotRef<'a>(&'a LogicalTerminalSnapshot);
+struct CompactSnapshotRef<'a> {
+    snapshot: &'a LogicalTerminalSnapshot,
+    semantic_colors: bool,
+}
 
 struct CompactTrackedSelectionRef<'a>(Option<&'a TrackedSelection>);
 
@@ -785,13 +896,16 @@ impl Serialize for CompactSnapshotRef<'_> {
     where
         S: serde::Serializer,
     {
-        let snapshot = self.0;
+        let snapshot = self.snapshot;
         let mut tuple = serializer.serialize_tuple(10)?;
         tuple.serialize_element(&snapshot.session_epoch)?;
         tuple.serialize_element(&snapshot.layout_epoch)?;
         tuple.serialize_element(&snapshot.terminal_revision)?;
         tuple.serialize_element(&snapshot.cols)?;
-        tuple.serialize_element(&CompactRowsRef(&snapshot.rows))?;
+        tuple.serialize_element(&CompactRowsRef {
+            rows: &snapshot.rows,
+            semantic_colors: self.semantic_colors,
+        })?;
         tuple.serialize_element(&CompactCursor::from(snapshot.cursor))?;
         tuple.serialize_element(&snapshot.mouse_tracking)?;
         tuple.serialize_element(&CompactScrollbar::from(snapshot.scrollbar))?;
@@ -801,20 +915,26 @@ impl Serialize for CompactSnapshotRef<'_> {
     }
 }
 
-struct CompactPatchRef<'a>(&'a LogicalTerminalPatch);
+struct CompactPatchRef<'a> {
+    patch: &'a LogicalTerminalPatch,
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactPatchRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let patch = self.0;
+        let patch = self.patch;
         let mut tuple = serializer.serialize_tuple(9)?;
         tuple.serialize_element(&patch.session_epoch)?;
         tuple.serialize_element(&patch.layout_epoch)?;
         tuple.serialize_element(&patch.patch_sequence)?;
         tuple.serialize_element(&patch.terminal_revision)?;
-        tuple.serialize_element(&CompactReplacementsRef(&patch.row_replacements))?;
+        tuple.serialize_element(&CompactReplacementsRef {
+            replacements: &patch.row_replacements,
+            semantic_colors: self.semantic_colors,
+        })?;
         tuple.serialize_element(&patch.cursor.map(CompactCursor::from))?;
         tuple.serialize_element(&patch.mouse_tracking)?;
         tuple.serialize_element(&patch.scrollbar.map(CompactScrollbar::from))?;
@@ -823,53 +943,74 @@ impl Serialize for CompactPatchRef<'_> {
     }
 }
 
-struct CompactRowsRef<'a>(&'a [LogicalRow]);
+struct CompactRowsRef<'a> {
+    rows: &'a [LogicalRow],
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactRowsRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let mut rows = serializer.serialize_seq(Some(self.0.len()))?;
-        for row in self.0 {
-            rows.serialize_element(&CompactRowRef(row))?;
+        let mut rows = serializer.serialize_seq(Some(self.rows.len()))?;
+        for row in self.rows {
+            rows.serialize_element(&CompactRowRef {
+                row,
+                semantic_colors: self.semantic_colors,
+            })?;
         }
         rows.end()
     }
 }
 
-struct CompactReplacementsRef<'a>(&'a [RowReplacement]);
+struct CompactReplacementsRef<'a> {
+    replacements: &'a [RowReplacement],
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactReplacementsRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let mut replacements = serializer.serialize_seq(Some(self.0.len()))?;
-        for replacement in self.0 {
-            replacements.serialize_element(&CompactReplacementRef(replacement))?;
+        let mut replacements = serializer.serialize_seq(Some(self.replacements.len()))?;
+        for replacement in self.replacements {
+            replacements.serialize_element(&CompactReplacementRef {
+                replacement,
+                semantic_colors: self.semantic_colors,
+            })?;
         }
         replacements.end()
     }
 }
 
-struct CompactReplacementRef<'a>(&'a RowReplacement);
+struct CompactReplacementRef<'a> {
+    replacement: &'a RowReplacement,
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactReplacementRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let replacement = self.0;
+        let replacement = self.replacement;
         let mut tuple = serializer.serialize_tuple(3)?;
         tuple.serialize_element(&replacement.row_index)?;
         tuple.serialize_element(&replacement.row_revision)?;
-        tuple.serialize_element(&CompactRowRef(&replacement.row))?;
+        tuple.serialize_element(&CompactRowRef {
+            row: &replacement.row,
+            semantic_colors: self.semantic_colors,
+        })?;
         tuple.end()
     }
 }
 
-struct CompactRowRef<'a>(&'a LogicalRow);
+struct CompactRowRef<'a> {
+    row: &'a LogicalRow,
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactRowRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -877,40 +1018,55 @@ impl Serialize for CompactRowRef<'_> {
         S: serde::Serializer,
     {
         let mut tuple = serializer.serialize_tuple(2)?;
-        tuple.serialize_element(&self.0.text)?;
-        tuple.serialize_element(&CompactCellsRef(&self.0.cells))?;
+        tuple.serialize_element(&self.row.text)?;
+        tuple.serialize_element(&CompactCellsRef {
+            cells: &self.row.cells,
+            semantic_colors: self.semantic_colors,
+        })?;
         tuple.end()
     }
 }
 
-struct CompactCellsRef<'a>(&'a [LogicalCell]);
+struct CompactCellsRef<'a> {
+    cells: &'a [LogicalCell],
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactCellsRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let mut cells = serializer.serialize_seq(Some(self.0.len()))?;
-        for cell in self.0 {
-            cells.serialize_element(&CompactCellRef(cell))?;
+        let mut cells = serializer.serialize_seq(Some(self.cells.len()))?;
+        for cell in self.cells {
+            cells.serialize_element(&CompactCellRef {
+                cell,
+                semantic_colors: self.semantic_colors,
+            })?;
         }
         cells.end()
     }
 }
 
-struct CompactCellRef<'a>(&'a LogicalCell);
+struct CompactCellRef<'a> {
+    cell: &'a LogicalCell,
+    semantic_colors: bool,
+}
 
 impl Serialize for CompactCellRef<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let cell = self.0;
+        let cell = self.cell;
         let mut tuple = serializer.serialize_tuple(4)?;
         tuple.serialize_element(&cell.column)?;
         tuple.serialize_element(&cell.span)?;
         tuple.serialize_element(&cell.text)?;
-        tuple.serialize_element(&CompactCellStyle::from(cell.style))?;
+        tuple.serialize_element(&CompactCellStyleRef {
+            style: cell.style,
+            semantic_colors: self.semantic_colors,
+        })?;
         tuple.end()
     }
 }
@@ -1054,19 +1210,207 @@ struct CompactRow(String, Vec<CompactCell>);
 #[derive(Deserialize)]
 struct CompactCell(u16, u16, String, CompactCellStyle);
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
-struct CompactCellStyle(u8, Option<[u8; 3]>, Option<[u8; 3]>);
+struct CompactCellStyleRef {
+    style: LogicalCellStyle,
+    semantic_colors: bool,
+}
 
-impl From<LogicalCellStyle> for CompactCellStyle {
-    fn from(style: LogicalCellStyle) -> Self {
-        let flags = u8::from(style.bold)
+#[derive(Clone, Copy)]
+enum CompactSemanticColorRef {
+    Default,
+    Palette(u8),
+    Rgb([u8; 3]),
+}
+
+impl Serialize for CompactSemanticColorRef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Default => serializer.serialize_none(),
+            Self::Palette(index) => serializer.serialize_u8(*index),
+            Self::Rgb(rgb) => rgb.serialize(serializer),
+        }
+    }
+}
+
+fn compact_semantic_color(
+    is_default: bool,
+    palette: Option<u8>,
+    rgb: Option<[u8; 3]>,
+) -> CompactSemanticColorRef {
+    if is_default {
+        CompactSemanticColorRef::Default
+    } else if let Some(index) = palette {
+        CompactSemanticColorRef::Palette(index)
+    } else if let Some(rgb) = rgb {
+        CompactSemanticColorRef::Rgb(rgb)
+    } else {
+        CompactSemanticColorRef::Default
+    }
+}
+
+impl Serialize for CompactCellStyleRef {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let style = self.style;
+        if style.foreground_default && style.foreground_palette.is_some() {
+            return Err(S::Error::custom(
+                "foreground color cannot be both default and palette-indexed",
+            ));
+        }
+        if style.background_default && style.background_palette.is_some() {
+            return Err(S::Error::custom(
+                "background color cannot be both default and palette-indexed",
+            ));
+        }
+        let mut flags = u8::from(style.bold)
             | (u8::from(style.italic) << 1)
             | (u8::from(style.faint) << 2)
             | (u8::from(style.inverse) << 3)
             | (u8::from(style.invisible) << 4)
             | (u8::from(style.strikethrough) << 5)
             | (u8::from(style.underline) << 6);
-        Self(flags, style.foreground, style.background)
+        let mut tuple = serializer.serialize_tuple(3)?;
+        let uses_semantic_colors = self.semantic_colors
+            && (style.foreground_default
+                || style.foreground_palette.is_some()
+                || style.background_default
+                || style.background_palette.is_some());
+        if uses_semantic_colors {
+            flags |= 0x80;
+            tuple.serialize_element(&flags)?;
+            tuple.serialize_element(&compact_semantic_color(
+                style.foreground_default,
+                style.foreground_palette,
+                style.foreground,
+            ))?;
+            tuple.serialize_element(&compact_semantic_color(
+                style.background_default,
+                style.background_palette,
+                style.background,
+            ))?;
+        } else {
+            tuple.serialize_element(&flags)?;
+            tuple.serialize_element(&style.foreground)?;
+            tuple.serialize_element(&style.background)?;
+        }
+        tuple.end()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CompactCellColor {
+    Palette(u8),
+    Rgb([u8; 3]),
+}
+
+struct CompactCellColorVisitor;
+
+impl<'de> Visitor<'de> for CompactCellColorVisitor {
+    type Value = CompactCellColor;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a palette index or three-byte RGB array")
+    }
+
+    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        u8::try_from(value)
+            .map(CompactCellColor::Palette)
+            .map_err(|_| E::custom("compact palette index is outside 0...255"))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        u8::try_from(value)
+            .map(CompactCellColor::Palette)
+            .map_err(|_| E::custom("compact palette index is outside 0...255"))
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut rgb = [0_u8; 3];
+        for (index, component) in rgb.iter_mut().enumerate() {
+            *component = sequence
+                .next_element()?
+                .ok_or_else(|| A::Error::custom(format!("RGB component {index} is missing")))?;
+        }
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "compact RGB color has more than three components",
+            ));
+        }
+        Ok(CompactCellColor::Rgb(rgb))
+    }
+}
+
+impl<'de> Deserialize<'de> for CompactCellColor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(CompactCellColorVisitor)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CompactCellStyle(u8, Option<CompactCellColor>, Option<CompactCellColor>);
+
+struct CompactCellStyleVisitor;
+
+impl<'de> Visitor<'de> for CompactCellStyleVisitor {
+    type Value = CompactCellStyle;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a three-element compact cell-style tuple")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let flags: u8 = sequence
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("compact cell style is missing flags"))?;
+        let (foreground, background) = if flags & 0x80 != 0 {
+            let foreground = sequence
+                .next_element::<Option<CompactCellColor>>()?
+                .ok_or_else(|| A::Error::custom("compact cell style is missing foreground"))?;
+            let background = sequence
+                .next_element::<Option<CompactCellColor>>()?
+                .ok_or_else(|| A::Error::custom("compact cell style is missing background"))?;
+            (foreground, background)
+        } else {
+            let foreground = sequence
+                .next_element::<Option<[u8; 3]>>()?
+                .ok_or_else(|| A::Error::custom("compact cell style is missing foreground"))?
+                .map(CompactCellColor::Rgb);
+            let background = sequence
+                .next_element::<Option<[u8; 3]>>()?
+                .ok_or_else(|| A::Error::custom("compact cell style is missing background"))?
+                .map(CompactCellColor::Rgb);
+            (foreground, background)
+        };
+        Ok(CompactCellStyle(flags, foreground, background))
+    }
+}
+
+impl<'de> Deserialize<'de> for CompactCellStyle {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(3, CompactCellStyleVisitor)
     }
 }
 
@@ -1074,9 +1418,24 @@ impl TryFrom<CompactCellStyle> for LogicalCellStyle {
     type Error = anyhow::Error;
 
     fn try_from(style: CompactCellStyle) -> Result<Self> {
-        if style.0 & !0x7f != 0 {
-            bail!("compact state cell style has unknown flags");
-        }
+        let semantic = style.0 & 0x80 != 0;
+        let color = |value: Option<CompactCellColor>| -> Result<_> {
+            Ok(match (semantic, value) {
+                // `null` is a semantic default on this wire. The in-memory
+                // optional RGB already represents that faithfully, so it need
+                // not retain a second marker after decoding.
+                (true, None) => (None, false, None),
+                (true, Some(CompactCellColor::Palette(index))) => (None, false, Some(index)),
+                (true, Some(CompactCellColor::Rgb(rgb))) => (Some(rgb), false, None),
+                (false, None) => (None, false, None),
+                (false, Some(CompactCellColor::Rgb(rgb))) => (Some(rgb), false, None),
+                (false, Some(CompactCellColor::Palette(_))) => {
+                    bail!("legacy compact cell color cannot be a palette index")
+                }
+            })
+        };
+        let foreground = color(style.1)?;
+        let background = color(style.2)?;
         Ok(Self {
             bold: style.0 & 1 != 0,
             italic: style.0 & 2 != 0,
@@ -1085,8 +1444,12 @@ impl TryFrom<CompactCellStyle> for LogicalCellStyle {
             invisible: style.0 & 16 != 0,
             strikethrough: style.0 & 32 != 0,
             underline: style.0 & 64 != 0,
-            foreground: style.1,
-            background: style.2,
+            foreground: foreground.0,
+            background: background.0,
+            foreground_default: foreground.1,
+            foreground_palette: foreground.2,
+            background_default: background.1,
+            background_palette: background.2,
         })
     }
 }
@@ -1151,6 +1514,18 @@ struct CompactSessionEnded(String, Option<i32>);
 
 #[derive(Deserialize)]
 struct CompactTrackedSelection(u16, u32, u16, u32);
+
+fn compact_message_uses_semantic_colors(message: &CompactStateMessage) -> bool {
+    let rows: Box<dyn Iterator<Item = &CompactRow> + '_> = match message {
+        CompactStateMessage::Snapshot(snapshot) => Box::new(snapshot.4.iter()),
+        CompactStateMessage::Patch(patch) => {
+            Box::new(patch.4.iter().map(|replacement| &replacement.2))
+        }
+        _ => return false,
+    };
+    rows.flat_map(|row| row.1.iter())
+        .any(|cell| cell.3.0 & 0x80 != 0)
+}
 
 impl TryFrom<CompactSessionEnded> for SessionEndReason {
     type Error = anyhow::Error;
@@ -1605,6 +1980,14 @@ mod tests {
         let message = StateMessage::Snapshot(snapshot.clone());
         let json = encode_state_message(&message, StateCodec::Json, 4096).unwrap();
         let compact = encode_state_message(&message, StateCodec::CompactJsonV1, 4096).unwrap();
+        let legacy_compact = encode_state_message_for_minor(
+            &message,
+            StateCodec::CompactJsonV1,
+            TRACKED_SELECTION_PROTOCOL_MINOR,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(compact, legacy_compact);
         let (decoded, consumed) =
             decode_state_message(&compact, StateCodec::CompactJsonV1, 4096).unwrap();
 
@@ -1656,10 +2039,163 @@ mod tests {
             let compact: CompactStateMessage =
                 serde_json::from_value(fixture[key].clone()).unwrap();
             let state = StateMessage::try_from(compact).unwrap();
-            let encoded = encode_state_message(&state, StateCodec::CompactJsonV1, 4096).unwrap();
+            let encoded = encode_state_message_for_minor(
+                &state,
+                StateCodec::CompactJsonV1,
+                TRACKED_SELECTION_PROTOCOL_MINOR,
+                4096,
+            )
+            .unwrap();
             let encoded_value: serde_json::Value = serde_json::from_slice(&encoded[4..]).unwrap();
             assert_eq!(encoded_value, fixture[key], "fixture mismatch for {key}");
         }
+    }
+
+    #[test]
+    fn semantic_colors_are_minor_gated_and_legacy_bytes_keep_resolved_rgb() {
+        let snapshot = LogicalTerminalSnapshot {
+            session_epoch: 1,
+            layout_epoch: 1,
+            terminal_revision: 1,
+            cols: 1,
+            rows: vec![LogicalRow {
+                text: "x".into(),
+                cells: vec![LogicalCell {
+                    column: 0,
+                    span: 1,
+                    text: "x".into(),
+                    style: LogicalCellStyle {
+                        foreground: Some([0x12, 0x34, 0x56]),
+                        foreground_palette: Some(1),
+                        background_default: true,
+                        ..LogicalCellStyle::default()
+                    },
+                }],
+            }],
+            cursor: LogicalCursor::default(),
+            mouse_tracking: false,
+            scrollbar: LogicalScrollbar::default(),
+            title: None,
+            cwd: None,
+        };
+        let message = StateMessage::Snapshot(snapshot.clone());
+        let legacy = encode_state_message_for_minor(
+            &message,
+            StateCodec::CompactJsonV1,
+            TRACKED_SELECTION_PROTOCOL_MINOR,
+            4096,
+        )
+        .unwrap();
+        let current = encode_state_message_for_minor(
+            &message,
+            StateCodec::CompactJsonV1,
+            SEMANTIC_CELL_COLOR_PROTOCOL_MINOR,
+            4096,
+        )
+        .unwrap();
+        let legacy_json: serde_json::Value = serde_json::from_slice(&legacy[4..]).unwrap();
+        let current_json: serde_json::Value = serde_json::from_slice(&current[4..]).unwrap();
+        assert_eq!(
+            legacy_json["s"][4][0][1][0][3],
+            serde_json::json!([0, [18, 52, 86], null])
+        );
+        assert_eq!(
+            current_json["s"][4][0][1][0][3],
+            serde_json::json!([128, 1, null])
+        );
+        assert!(current.len() < legacy.len());
+        assert!(
+            decode_state_message_for_minor(
+                &current,
+                StateCodec::CompactJsonV1,
+                TRACKED_SELECTION_PROTOCOL_MINOR,
+                4096,
+            )
+            .is_err()
+        );
+        let decoded = decode_state_message_for_minor(
+            &current,
+            StateCodec::CompactJsonV1,
+            SEMANTIC_CELL_COLOR_PROTOCOL_MINOR,
+            4096,
+        )
+        .unwrap()
+        .0;
+        let StateMessage::Snapshot(decoded) = decoded else {
+            panic!("semantic snapshot decoded as another state variant")
+        };
+        assert_eq!(decoded.rows[0].cells[0].style.foreground_palette, Some(1));
+        assert_eq!(decoded.rows[0].cells[0].style.foreground, None);
+        assert_eq!(decoded.rows[0].cells[0].style.background, None);
+
+        let legacy_json = encode_state_message_for_minor(
+            &message,
+            StateCodec::Json,
+            TRACKED_SELECTION_PROTOCOL_MINOR,
+            4096,
+        )
+        .unwrap();
+        let legacy_json: serde_json::Value = serde_json::from_slice(&legacy_json[4..]).unwrap();
+        let style = &legacy_json["rows"][0]["cells"][0]["style"];
+        assert!(style.get("foregroundPalette").is_none());
+        assert!(style.get("backgroundDefault").is_none());
+    }
+
+    #[test]
+    fn contradictory_semantic_colors_are_rejected_on_encode_and_json_decode() {
+        let snapshot = LogicalTerminalSnapshot {
+            session_epoch: 1,
+            layout_epoch: 1,
+            terminal_revision: 1,
+            cols: 1,
+            rows: vec![LogicalRow {
+                text: "x".into(),
+                cells: vec![LogicalCell {
+                    column: 0,
+                    span: 1,
+                    text: "x".into(),
+                    style: LogicalCellStyle {
+                        foreground_default: true,
+                        foreground_palette: Some(4),
+                        ..LogicalCellStyle::default()
+                    },
+                }],
+            }],
+            cursor: LogicalCursor::default(),
+            mouse_tracking: false,
+            scrollbar: LogicalScrollbar::default(),
+            title: None,
+            cwd: None,
+        };
+        let message = StateMessage::Snapshot(snapshot);
+
+        for codec in [StateCodec::Json, StateCodec::CompactJsonV1] {
+            assert!(
+                encode_state_message_for_minor(
+                    &message,
+                    codec,
+                    SEMANTIC_CELL_COLOR_PROTOCOL_MINOR,
+                    4096,
+                )
+                .is_err()
+            );
+        }
+
+        let invalid_json = encode_message(&message, 4096).unwrap();
+        assert!(
+            decode_state_message_for_minor(
+                &invalid_json,
+                StateCodec::Json,
+                SEMANTIC_CELL_COLOR_PROTOCOL_MINOR,
+                4096,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn compact_cell_style_rejects_trailing_tuple_values() {
+        assert!(serde_json::from_str::<CompactCellStyle>("[0,null,null,0]").is_err());
     }
 
     /// The four framed forms a compact state message can take, minus the

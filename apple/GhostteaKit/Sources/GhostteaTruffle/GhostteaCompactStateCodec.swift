@@ -4,7 +4,8 @@ import GhostteaCore
 public enum GhostteaTerminalStateCodec {
   public static func decode(
     _ payload: Data,
-    codec: GhostteaStateCodec
+    codec: GhostteaStateCodec,
+    protocolMinor: UInt16 = GhostteaTruffleContract.protocolMinor
   ) throws -> GhostteaTerminalStateMessage {
     guard payload.count <= GhostteaTruffleContract.maximumStateMessageBytes else {
       throw GhostteaTruffleError.messageTooLarge(
@@ -13,9 +14,13 @@ public enum GhostteaTerminalStateCodec {
     }
     switch codec {
     case .json:
-      return try JSONDecoder().decode(GhostteaTerminalStateMessage.self, from: payload)
+      let decoder = JSONDecoder()
+      decoder.userInfo[.ghostteaProtocolMinor] = protocolMinor
+      return try decoder.decode(GhostteaTerminalStateMessage.self, from: payload)
     case .compactJSONV1:
-      return try JSONDecoder().decode(CompactStateMessage.self, from: payload).message
+      let decoder = JSONDecoder()
+      decoder.userInfo[.ghostteaProtocolMinor] = protocolMinor
+      return try decoder.decode(CompactStateMessage.self, from: payload).message
     }
   }
 }
@@ -225,9 +230,24 @@ private struct CompactCellStyle: Decodable {
   init(from decoder: Decoder) throws {
     var tuple = try decoder.unkeyedContainer()
     let flags = try tuple.decode(UInt8.self)
-    guard flags & 0x80 == 0 else { throw GhostteaTruffleError.malformedMessage }
-    let foreground = try decodeColor(&tuple)
-    let background = try decodeColor(&tuple)
+    let semantic = flags & 0x80 != 0
+    let protocolMinor =
+      decoder.userInfo[.ghostteaProtocolMinor] as? UInt16
+      ?? GhostteaTruffleContract.protocolMinor
+    guard
+      !semantic || protocolMinor >= GhostteaTruffleContract.semanticCellColorProtocolMinor
+    else {
+      throw GhostteaTruffleError.malformedMessage
+    }
+    let foreground: CompactDecodedColor
+    let background: CompactDecodedColor
+    if semantic {
+      foreground = try decodeSemanticColor(&tuple)
+      background = try decodeSemanticColor(&tuple)
+    } else {
+      foreground = try decodeLegacyColor(&tuple)
+      background = try decodeLegacyColor(&tuple)
+    }
     try requireEnd(tuple)
     value = GhostteaLogicalCellStyle(
       bold: flags & 1 != 0,
@@ -237,8 +257,12 @@ private struct CompactCellStyle: Decodable {
       invisible: flags & 16 != 0,
       strikethrough: flags & 32 != 0,
       underline: flags & 64 != 0,
-      foreground: foreground,
-      background: background
+      foreground: foreground.rgb,
+      background: background.rgb,
+      foregroundDefault: foreground.isDefault,
+      foregroundPalette: foreground.palette,
+      backgroundDefault: background.isDefault,
+      backgroundPalette: background.palette
     )
   }
 }
@@ -273,12 +297,36 @@ private struct CompactScrollbar: Decodable {
   }
 }
 
-private func decodeColor(_ container: inout UnkeyedDecodingContainer) throws -> [UInt8]? {
+private struct CompactDecodedColor {
+  let rgb: [UInt8]?
+  let isDefault: Bool
+  let palette: UInt8?
+}
+
+private func decodeLegacyColor(
+  _ container: inout UnkeyedDecodingContainer
+) throws -> CompactDecodedColor {
   let color = try container.decodeIfPresent([UInt8].self)
   guard color == nil || color?.count == 3 else {
     throw GhostteaTruffleError.malformedMessage
   }
-  return color
+  return CompactDecodedColor(rgb: color, isDefault: false, palette: nil)
+}
+
+private func decodeSemanticColor(
+  _ container: inout UnkeyedDecodingContainer
+) throws -> CompactDecodedColor {
+  let decoder = try container.superDecoder()
+  let value = try decoder.singleValueContainer()
+  if value.decodeNil() {
+    return CompactDecodedColor(rgb: nil, isDefault: false, palette: nil)
+  }
+  if let palette = try? value.decode(UInt8.self) {
+    return CompactDecodedColor(rgb: nil, isDefault: false, palette: palette)
+  }
+  let rgb = try value.decode([UInt8].self)
+  guard rgb.count == 3 else { throw GhostteaTruffleError.malformedMessage }
+  return CompactDecodedColor(rgb: rgb, isDefault: false, palette: nil)
 }
 
 private func requireEnd(_ container: UnkeyedDecodingContainer) throws {

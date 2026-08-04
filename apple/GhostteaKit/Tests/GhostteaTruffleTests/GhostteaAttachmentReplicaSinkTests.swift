@@ -81,18 +81,66 @@ private actor SinkOutput {
   }
 }
 
+private actor BlockingFrameOutput {
+  private var entered = false
+  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func record(_ event: GhostteaAttachmentSinkEvent) async {
+    guard !entered, case .frame = event else { return }
+    entered = true
+    let waiters = entryWaiters
+    entryWaiters.removeAll()
+    for waiter in waiters { waiter.resume() }
+    await withCheckedContinuation { releaseContinuation = $0 }
+  }
+
+  func waitUntilBlocked() async {
+    guard !entered else { return }
+    await withCheckedContinuation { entryWaiters.append($0) }
+  }
+
+  func release() {
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+}
+
+private actor DevicePresentationOutput {
+  private(set) var count = 0
+
+  func record(_ result: GhostteaDevicePresentationResult) {
+    if result.applied { count += 1 }
+  }
+}
+
 private func makeSink(
   presentation: GhostteaTerminalPresentationConfig? = nil,
+  presentationAuthority: GhostteaPresentationAuthority = .host,
   output: SinkOutput
 ) throws -> GhostteaAttachmentReplicaSink {
   let runtime = try presentation.map { try GhostteaRuntime(presentation: $0) } ?? GhostteaRuntime()
   return try GhostteaAttachmentReplicaSink(
     runtime: runtime,
     sessionHandle: 4_201,
-    presentation: presentation
+    presentation: presentation,
+    presentationAuthority: presentationAuthority
   ) { event, _ in
     await output.record(event)
   }
+}
+
+private func presentation(
+  revision: String,
+  fontSize: Float = 13,
+  palette: [GhostteaPaletteConfigEntry] = []
+) -> GhostteaTerminalPresentationConfig {
+  GhostteaTerminalPresentationConfig(
+    schemaVersion: 1, revision: revision, foreground: [0xee, 0xee, 0xee],
+    background: [0x11, 0x22, 0x33], cursor: [0xaa, 0xbb, 0xcc],
+    selectionBackground: [0x44, 0x55, 0x66], selectionForeground: [0xff, 0xff, 0xff],
+    palette: palette, fontSize: fontSize, fontFamilies: ["JetBrains Mono"],
+    paddingX: [3, 4], paddingY: [5, 6], postProcess: .none, customShaderCount: 0)
 }
 
 @Test func theSinkRendersSnapshotsAndContiguousPatchesThroughTheSharedCore() async throws {
@@ -158,12 +206,7 @@ private func makeSink(
 }
 
 @Test func onlyAChangedPresentationRebuildsTheReplicaAndIsReported() async throws {
-  let initial = GhostteaTerminalPresentationConfig(
-    schemaVersion: 1, revision: "initial", foreground: [0xee, 0xee, 0xee],
-    background: [0x11, 0x22, 0x33], cursor: [0xaa, 0xbb, 0xcc],
-    selectionBackground: [0x44, 0x55, 0x66], selectionForeground: [0xff, 0xff, 0xff],
-    fontSize: 13, fontFamilies: ["JetBrains Mono"], paddingX: [3, 4], paddingY: [5, 6],
-    postProcess: .none, customShaderCount: 0)
+  let initial = presentation(revision: "initial")
   let output = SinkOutput()
   let sink = try makeSink(presentation: initial, output: output)
   let original = await sink.replica
@@ -188,6 +231,108 @@ private func makeSink(
   // A presentation re-specifies the grid, so the replica is rebuilt rather
   // than reconfigured in place.
   #expect(await sink.replica !== original)
+}
+
+@Test func deviceAuthorityIgnoresHostPresentationAndReconfiguresInPlace() async throws {
+  let initial = presentation(
+    revision: "phone-1",
+    palette: [GhostteaPaletteConfigEntry(index: 1, color: [0x11, 0x22, 0x33])])
+  let output = SinkOutput()
+  let sink = try makeSink(
+    presentation: initial,
+    presentationAuthority: .device,
+    output: output)
+  let original = await sink.replica
+  try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
+
+  // A desktop configuration remains valid protocol state but is not renderer
+  // authority for an iOS scene.
+  try await sink.apply(.configurationChanged(presentation(revision: "desktop")), from: token)
+  #expect(await output.presentations.isEmpty)
+  #expect(await sink.replica === original)
+
+  let recolored = presentation(
+    revision: "phone-2",
+    palette: [GhostteaPaletteConfigEntry(index: 1, color: [0xaa, 0xbb, 0xcc])])
+  let result = try await sink.reconfigureDevicePresentation(
+    recolored, runtime: nil, generation: 10)
+  #expect(result.applied)
+  #expect(result.update?.effects.contains { $0.kind == .frameReady } == true)
+  #expect(await sink.replica === original)
+  #expect(
+    await sink.retainedSelection(GhostteaSelectionRequest(selectAll: true)) == "shared")
+
+  let stale = try await sink.reconfigureDevicePresentation(
+    initial, runtime: nil, generation: 9)
+  #expect(!stale.applied)
+  #expect(stale.update == nil)
+
+  let invalid = presentation(
+    revision: "phone-invalid",
+    palette: [
+      GhostteaPaletteConfigEntry(index: 1, color: [1, 2, 3]),
+      GhostteaPaletteConfigEntry(index: 1, color: [4, 5, 6]),
+    ])
+  await #expect(throws: GhostteaCoreError.self) {
+    try await sink.reconfigureDevicePresentation(
+      invalid, runtime: nil, generation: 11)
+  }
+  #expect(!(await original.isPoisoned))
+
+  // A rejected transaction does not consume its generation. Corrected input
+  // can retry it without manufacturing a new ordering event.
+  let resizedText = presentation(
+    revision: "phone-3", fontSize: 17, palette: recolored.palette)
+  let reshaped = try await sink.reconfigureDevicePresentation(
+    resizedText,
+    runtime: GhostteaRuntime(presentation: resizedText),
+    generation: 11)
+  #expect(reshaped.applied)
+  #expect(reshaped.update?.effects.contains { $0.kind == .frameReady } == true)
+  #expect(await sink.replica === original)
+  #expect(await output.frames.count == 1, "local renderer updates are not network frames")
+}
+
+@Test func devicePresentationPublicationCannotRaceAnOlderHostFrame() async throws {
+  let initial = presentation(revision: "phone-1")
+  let blockingOutput = BlockingFrameOutput()
+  let deviceOutput = DevicePresentationOutput()
+  let sink = try GhostteaAttachmentReplicaSink(
+    runtime: GhostteaRuntime(presentation: initial),
+    sessionHandle: 4_201,
+    presentation: initial,
+    presentationAuthority: .device
+  ) { event, _ in
+    await blockingOutput.record(event)
+  }
+
+  let snapshotTask = Task {
+    try await sink.apply(decoded(snapshotJSON(terminalRevision: 13)), from: token)
+  }
+  await blockingOutput.waitUntilBlocked()
+
+  let recolored = presentation(
+    revision: "phone-2",
+    palette: [GhostteaPaletteConfigEntry(index: 1, color: [0xaa, 0xbb, 0xcc])])
+  let presentationTask = Task {
+    try await sink.reconfigureDevicePresentation(
+      recolored,
+      runtime: nil,
+      generation: 1
+    ) { result in
+      await deviceOutput.record(result)
+    }
+  }
+  for _ in 0..<64 { await Task.yield() }
+  #expect(
+    await deviceOutput.count == 0,
+    "the local frame must wait until the older host frame finishes publishing")
+
+  await blockingOutput.release()
+  try await snapshotTask.value
+  let result = try await presentationTask.value
+  #expect(result.applied)
+  #expect(await deviceOutput.count == 1)
 }
 
 @Test func theSinkReportsAClearedControllerTheRenderedVocabularyCannotExpress() async throws {

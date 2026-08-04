@@ -26,7 +26,7 @@ struct GhostteaSettingsView: View {
 
         Section {
           Text(
-            "These device settings own direct SSH terminals. Shared sessions keep the desktop host's colors, opacity, and shader stack so the transmitted terminal remains authoritative."
+            "These device settings own the appearance of direct SSH and shared terminals, including colors, opacity, and shaders. Shared sessions still use the desktop for terminal content, scrollback, selection state and copy, and control."
           )
           .font(.footnote)
           .foregroundStyle(.secondary)

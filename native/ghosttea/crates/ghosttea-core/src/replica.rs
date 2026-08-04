@@ -6,18 +6,41 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use ghosttea_text::{FontStyle, GlyphDefinition, ShapedRow, StyleSpan};
-use ghosttea_vt::{CellStyle, TerminalCell, TerminalScrollbar, TerminalSelection};
+use ghosttea_vt::{
+    CellStyle, TerminalPalette, TerminalScrollbar, TerminalSelection, resolved_palette,
+};
 
+use crate::frame::{FrameCell, FrameTextSnapshot, encode_frame_text_snapshot};
 use crate::{
     FrameCursor, LogicalCellStyle, LogicalRow, LogicalTerminalPatch, LogicalTerminalSnapshot,
-    TerminalEffect, TerminalRuntime, TerminalUpdate, TextEnginePerformanceSnapshot, TextSnapshot,
-    encode_text_snapshot,
+    TerminalEffect, TerminalRuntime, TerminalUpdate, TextEnginePerformanceSnapshot,
 };
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ReplicaFrameCell {
+    column: u16,
+    span: u16,
+    style: CellStyle,
+}
+
+impl FrameCell for ReplicaFrameCell {
+    fn column(&self) -> u16 {
+        self.column
+    }
+
+    fn span(&self) -> u16 {
+        self.span
+    }
+
+    fn style(&self) -> CellStyle {
+        self.style
+    }
+}
 
 #[derive(Default)]
 struct ReplicaRenderCache {
     rows: Vec<String>,
-    cells: Vec<Vec<TerminalCell>>,
+    cells: Vec<Vec<ReplicaFrameCell>>,
     shape_spans: Vec<Vec<(usize, usize, FontStyle)>>,
     shaped_rows: Vec<ShapedRow>,
     sent_glyphs: HashSet<u32>,
@@ -33,6 +56,7 @@ pub struct ReplicaRenderPerformanceSnapshot {
 /// Reconstructs and renders logical terminal state received from another host.
 pub struct LogicalReplicaModel {
     runtime: Arc<TerminalRuntime>,
+    palette: TerminalPalette,
     session_handle: u64,
     frame_sequence: u64,
     latest: Option<LogicalTerminalSnapshot>,
@@ -47,6 +71,7 @@ impl LogicalReplicaModel {
     pub fn new(runtime: Arc<TerminalRuntime>, session_handle: u64) -> Self {
         Self {
             runtime,
+            palette: resolved_palette(&[]),
             session_handle,
             frame_sequence: 0,
             latest: None,
@@ -74,9 +99,11 @@ impl LogicalReplicaModel {
         if snapshot.rows.len() > u16::MAX as usize {
             bail!("remote terminal snapshot has too many rows");
         }
+        // `publish` rejects snapshots above u16::MAX rows before retaining
+        // them, so every retained index is representable here.
         let updated_rows = (0..snapshot.rows.len())
-            .map(u16::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .map(|index| index as u16)
+            .collect::<Vec<_>>();
         let frame = self.render(&snapshot, &updated_rows, true)?;
         self.latest = Some(snapshot);
         self.patch_sequence = 0;
@@ -195,6 +222,139 @@ impl LogicalReplicaModel {
         self.publish(snapshot)
     }
 
+    /// Re-resolve semantic palette cells without touching shaped rows or the
+    /// glyph catalog. This is a local presentation transaction: logical patch
+    /// sequencing and retained selection remain exactly where the host left
+    /// them, and a failure restores the previous palette and cell cache.
+    pub fn reconfigure_palette(&mut self, entries: &[(u8, [u8; 3])]) -> Result<TerminalUpdate> {
+        let next_palette = resolved_palette(entries);
+        if self.palette == next_palette {
+            return Ok(TerminalUpdate::new());
+        }
+        let Some(snapshot) = self.latest.take() else {
+            self.palette = next_palette;
+            return Ok(TerminalUpdate::new());
+        };
+        let previous_palette = self.palette;
+        self.palette = next_palette;
+        let result = self.render_palette_frame(&snapshot);
+        if result.is_err() {
+            self.palette = previous_palette;
+        }
+        self.latest = Some(snapshot);
+        result.map(|frame| [TerminalEffect::FrameReady(frame)].into_iter().collect())
+    }
+
+    /// Atomically replace text metrics and palette while retaining remote
+    /// logical continuity. A candidate owns the expensive fresh shaping cache;
+    /// `self` is replaced only after its full frame encoded successfully.
+    pub fn reconfigure_runtime(
+        &mut self,
+        runtime: Arc<TerminalRuntime>,
+        entries: &[(u8, [u8; 3])],
+    ) -> Result<TerminalUpdate> {
+        let palette = resolved_palette(entries);
+        let Some(snapshot) = self.latest.take() else {
+            self.runtime = runtime;
+            self.palette = palette;
+            return Ok(TerminalUpdate::new());
+        };
+        let updated_rows = (0..snapshot.rows.len())
+            .map(|index| index as u16)
+            .collect::<Vec<_>>();
+        let mut candidate = Self::new(runtime, self.session_handle);
+        candidate.palette = palette;
+        candidate.frame_sequence = self.frame_sequence;
+        candidate.patch_sequence = self.patch_sequence;
+        candidate.selection = self.selection;
+        candidate.text_engine_performance = self.text_engine_performance;
+        candidate.render_performance = self.render_performance;
+        match candidate.render(&snapshot, &updated_rows, true) {
+            Ok(frame) => {
+                candidate.latest = Some(snapshot);
+                *self = candidate;
+                Ok([TerminalEffect::FrameReady(frame)].into_iter().collect())
+            }
+            Err(error) => {
+                self.latest = Some(snapshot);
+                Err(error)
+            }
+        }
+    }
+
+    fn render_palette_frame(&mut self, snapshot: &LogicalTerminalSnapshot) -> Result<Vec<u8>> {
+        ensure!(
+            self.render_cache.cells.len() == snapshot.rows.len(),
+            "remote terminal palette reconfigure changed row count"
+        );
+        let prepare_started = Instant::now();
+        let next_cells = snapshot
+            .rows
+            .iter()
+            .map(|row| prepare_logical_cells(row, &self.palette))
+            .collect::<Vec<_>>();
+        let updated_rows = (0..snapshot.rows.len())
+            .map(u16::try_from)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let previous_cells = std::mem::replace(&mut self.render_cache.cells, next_cells);
+        let previous_frame_sequence = self.frame_sequence;
+        let previous_text_performance = self.text_engine_performance;
+        let previous_render_performance = self.render_performance;
+        self.text_engine_performance.record_no_acquisition();
+        self.frame_sequence = self.frame_sequence.saturating_add(1);
+        let cursor = FrameCursor {
+            x: snapshot.cursor.x,
+            y: snapshot.cursor.y,
+            visible: snapshot.cursor.visible,
+            style: snapshot.cursor.style,
+            blinking: snapshot.cursor.blinking,
+        };
+        let scrollbar = TerminalScrollbar {
+            total: snapshot.scrollbar.total,
+            offset: snapshot.scrollbar.offset,
+            len: snapshot.scrollbar.len,
+        };
+        let encode_started = Instant::now();
+        let result = encode_frame_text_snapshot(FrameTextSnapshot {
+            session_handle: self.session_handle,
+            session_epoch: snapshot.session_epoch,
+            layout_epoch: snapshot.layout_epoch,
+            sequence: self.frame_sequence,
+            revision: snapshot.terminal_revision,
+            cols: snapshot.cols,
+            rows: &self.render_cache.rows,
+            shaped_rows: &self.render_cache.shaped_rows,
+            cells: &self.render_cache.cells,
+            updated_rows: &updated_rows,
+            full_snapshot: false,
+            catalog_reset: false,
+            mouse_tracking: snapshot.mouse_tracking,
+            scrollbar: &scrollbar,
+            selection: self.selection.as_ref(),
+            new_glyph_definitions: &[],
+            clipboard: None,
+            cursor: &cursor,
+        });
+        match result {
+            Ok(frame) => {
+                self.render_performance.sequence =
+                    self.render_performance.sequence.saturating_add(1);
+                self.render_performance.row_prepare_nanoseconds =
+                    duration_nanoseconds(prepare_started.elapsed());
+                self.render_performance.frame_encode_nanoseconds =
+                    duration_nanoseconds(encode_started.elapsed());
+                Ok(frame)
+            }
+            Err(error) => {
+                self.render_cache.cells = previous_cells;
+                self.frame_sequence = previous_frame_sequence;
+                self.text_engine_performance = previous_text_performance;
+                self.render_performance = previous_render_performance;
+                Err(error)
+            }
+        }
+    }
+
     fn render(
         &mut self,
         snapshot: &LogicalTerminalSnapshot,
@@ -225,7 +385,12 @@ impl LogicalReplicaModel {
             let index = row_index as usize;
             let needs_shape = cache.rows[index] != logical.text
                 || !shape_spans_match(logical, &cache.shape_spans[index]);
-            prepared.push(prepare_logical_row(index, logical, needs_shape));
+            prepared.push(prepare_logical_row(
+                index,
+                logical,
+                needs_shape,
+                &self.palette,
+            ));
         }
         let mut prepare_duration = prepare_started.elapsed();
 
@@ -295,7 +460,7 @@ impl LogicalReplicaModel {
             len: snapshot.scrollbar.len,
         };
         let encode_started = Instant::now();
-        let frame = encode_text_snapshot(TextSnapshot {
+        let frame = encode_frame_text_snapshot(FrameTextSnapshot {
             session_handle: self.session_handle,
             session_epoch: snapshot.session_epoch,
             layout_epoch: snapshot.layout_epoch,
@@ -330,22 +495,18 @@ fn duration_nanoseconds(duration: Duration) -> u64 {
 struct PreparedReplicaRow {
     index: usize,
     text: String,
-    cells: Vec<TerminalCell>,
+    cells: Vec<ReplicaFrameCell>,
     shape_spans: Option<Vec<(usize, usize, FontStyle)>>,
 }
 
-fn prepare_logical_row(index: usize, row: &LogicalRow, needs_shape: bool) -> PreparedReplicaRow {
+fn prepare_logical_row(
+    index: usize,
+    row: &LogicalRow,
+    needs_shape: bool,
+    palette: &TerminalPalette,
+) -> PreparedReplicaRow {
     let text = row.text.clone();
-    let cells = row
-        .cells
-        .iter()
-        .map(|cell| TerminalCell {
-            column: cell.column,
-            span: cell.span,
-            text: cell.text.clone(),
-            style: cell_style(cell.style),
-        })
-        .collect::<Vec<_>>();
+    let cells = prepare_logical_cells(row, palette);
     let shape_spans = needs_shape.then(|| logical_shape_spans(row));
     PreparedReplicaRow {
         index,
@@ -353,6 +514,17 @@ fn prepare_logical_row(index: usize, row: &LogicalRow, needs_shape: bool) -> Pre
         cells,
         shape_spans,
     }
+}
+
+fn prepare_logical_cells(row: &LogicalRow, palette: &TerminalPalette) -> Vec<ReplicaFrameCell> {
+    row.cells
+        .iter()
+        .map(|cell| ReplicaFrameCell {
+            column: cell.column,
+            span: cell.span,
+            style: cell_style(cell.style, palette),
+        })
+        .collect()
 }
 
 fn logical_shape_spans(row: &LogicalRow) -> Vec<(usize, usize, FontStyle)> {
@@ -402,7 +574,7 @@ fn shape_spans_match(row: &LogicalRow, cached: &[(usize, usize, FontStyle)]) -> 
     span_index == cached.len()
 }
 
-fn cell_style(style: LogicalCellStyle) -> CellStyle {
+fn cell_style(style: LogicalCellStyle, palette: &TerminalPalette) -> CellStyle {
     CellStyle {
         bold: style.bold,
         italic: style.italic,
@@ -411,8 +583,20 @@ fn cell_style(style: LogicalCellStyle) -> CellStyle {
         invisible: style.invisible,
         strikethrough: style.strikethrough,
         underline: style.underline,
-        foreground: style.foreground,
-        background: style.background,
+        foreground: if style.foreground_default {
+            None
+        } else if let Some(index) = style.foreground_palette {
+            Some(palette[index as usize])
+        } else {
+            style.foreground
+        },
+        background: if style.background_default {
+            None
+        } else if let Some(index) = style.background_palette {
+            Some(palette[index as usize])
+        } else {
+            style.background
+        },
     }
 }
 
@@ -565,6 +749,108 @@ mod tests {
         assert_eq!(performance.acquisition_count, 0);
         assert_eq!(performance.wait_nanoseconds, 0);
         assert_eq!(performance.hold_nanoseconds, 0);
+    }
+
+    #[test]
+    fn semantic_palette_uses_the_replica_palette_without_touching_truecolor() {
+        let palette = resolved_palette(&[(1, [0x12, 0x34, 0x56])]);
+        let indexed = cell_style(
+            LogicalCellStyle {
+                foreground: Some([0xaa, 0xbb, 0xcc]),
+                foreground_palette: Some(1),
+                ..LogicalCellStyle::default()
+            },
+            &palette,
+        );
+        let truecolor = cell_style(
+            LogicalCellStyle {
+                foreground: Some([9, 8, 7]),
+                ..LogicalCellStyle::default()
+            },
+            &palette,
+        );
+        assert_eq!(indexed.foreground, Some([0x12, 0x34, 0x56]));
+        assert_eq!(truecolor.foreground, Some([9, 8, 7]));
+    }
+
+    #[test]
+    fn palette_reconfigure_preserves_patch_and_selection_continuity_without_shaping() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut replica = LogicalReplicaModel::new(runtime, 42);
+        let mut initial = snapshot("hello");
+        initial.rows[0].cells[0].style.foreground_palette = Some(1);
+        initial.rows[0].cells[0].style.foreground = Some([0xaa, 0xbb, 0xcc]);
+        replica.publish(initial).unwrap();
+        let selection = TerminalSelection {
+            anchor: ghosttea_vt::TerminalSelectionPoint { column: 1, row: 4 },
+            focus: ghosttea_vt::TerminalSelectionPoint { column: 3, row: 5 },
+        };
+        replica.publish_selection(Some(selection)).unwrap();
+
+        let recolored = frame(
+            replica
+                .reconfigure_palette(&[(1, [0x12, 0x34, 0x56])])
+                .unwrap(),
+        );
+        assert_eq!(
+            u16::from_le_bytes(recolored[6..8].try_into().unwrap()) & 1,
+            0
+        );
+        assert_eq!(replica.text_engine_performance().acquisition_count, 0);
+        assert_eq!(
+            u32::from_le_bytes(recolored[172..176].try_into().unwrap()),
+            1
+        );
+
+        replica
+            .publish_patch(LogicalTerminalPatch {
+                session_epoch: 7,
+                layout_epoch: 3,
+                patch_sequence: 1,
+                terminal_revision: 12,
+                row_replacements: vec![],
+                cursor: None,
+                mouse_tracking: None,
+                scrollbar: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn runtime_reconfigure_emits_one_full_frame_and_keeps_patch_sequence() {
+        let runtime = Arc::new(TerminalRuntime::discover().unwrap());
+        let mut replica = LogicalReplicaModel::new(runtime, 42);
+        replica.publish(snapshot("hello")).unwrap();
+        replica
+            .publish_patch(LogicalTerminalPatch {
+                session_epoch: 7,
+                layout_epoch: 3,
+                patch_sequence: 1,
+                terminal_revision: 12,
+                row_replacements: vec![],
+                cursor: None,
+                mouse_tracking: None,
+                scrollbar: None,
+            })
+            .unwrap();
+        let rebuilt = frame(
+            replica
+                .reconfigure_runtime(Arc::new(TerminalRuntime::discover().unwrap()), &[])
+                .unwrap(),
+        );
+        assert_eq!(u16::from_le_bytes(rebuilt[6..8].try_into().unwrap()) & 1, 1);
+        replica
+            .publish_patch(LogicalTerminalPatch {
+                session_epoch: 7,
+                layout_epoch: 3,
+                patch_sequence: 2,
+                terminal_revision: 13,
+                row_replacements: vec![],
+                cursor: None,
+                mouse_tracking: None,
+                scrollbar: None,
+            })
+            .unwrap();
     }
 
     #[test]

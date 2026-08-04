@@ -1,6 +1,23 @@
 import Foundation
 import GhostteaCore
 
+public enum GhostteaPresentationAuthority: Equatable, Sendable {
+  /// Preserve the existing GhostteaKit contract for generic replicated views.
+  case host
+  /// Keep renderer presentation local while the host owns terminal semantics.
+  case device
+}
+
+public struct GhostteaDevicePresentationResult: Sendable {
+  public let applied: Bool
+  public let update: GhostteaUpdate?
+
+  fileprivate init(applied: Bool, update: GhostteaUpdate?) {
+    self.applied = applied
+    self.update = update
+  }
+}
+
 /// What the sink reports after a frame has been applied.
 public enum GhostteaAttachmentSinkEvent: Sendable {
   case frame(GhostteaUpdate, fullSnapshot: Bool)
@@ -23,6 +40,10 @@ public enum GhostteaAttachmentSinkEvent: Sendable {
 /// lifecycle asks for a snapshot without ever acking the frame it refused.
 public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
   private let publisher: GhostteaReplicaPublisher
+  private let presentationAuthority: GhostteaPresentationAuthority
+  private var devicePresentationGeneration: UInt64 = 0
+  private var replicaOperationActive = false
+  private var replicaOperationWaiters: [CheckedContinuation<Void, Never>] = []
   private let output:
     @Sendable (GhostteaAttachmentSinkEvent, GhostteaAttachmentStateToken) async -> Void
 
@@ -30,10 +51,12 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
     runtime: GhostteaRuntime,
     sessionHandle: UInt64,
     presentation: GhostteaTerminalPresentationConfig?,
+    presentationAuthority: GhostteaPresentationAuthority = .host,
     output:
       @escaping @Sendable (GhostteaAttachmentSinkEvent, GhostteaAttachmentStateToken) async -> Void
   ) throws {
     self.output = output
+    self.presentationAuthority = presentationAuthority
     publisher = try GhostteaReplicaPublisher(
       runtime: runtime, sessionHandle: sessionHandle, presentation: presentation)
   }
@@ -59,6 +82,52 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
     get async { await publisher.replica }
   }
 
+  /// Commits a validated device presentation in generation order. It returns
+  /// the local frame instead of routing through the host state token, so a
+  /// settings update cannot advance or masquerade as network state.
+  public func reconfigureDevicePresentation(
+    _ presentation: GhostteaTerminalPresentationConfig,
+    runtime: GhostteaRuntime?,
+    generation: UInt64,
+    publish: (@Sendable (GhostteaDevicePresentationResult) async -> Void)? = nil
+  ) async throws -> GhostteaDevicePresentationResult {
+    guard presentationAuthority == .device else {
+      return GhostteaDevicePresentationResult(applied: false, update: nil)
+    }
+    if replicaOperationActive {
+      await withCheckedContinuation { replicaOperationWaiters.append($0) }
+    } else {
+      replicaOperationActive = true
+    }
+    defer { releaseReplicaOperation() }
+    try Task.checkCancellation()
+    guard generation > devicePresentationGeneration else {
+      return GhostteaDevicePresentationResult(applied: false, update: nil)
+    }
+    let update = try await publisher.reconfigureDevicePresentation(
+      presentation,
+      runtime: runtime
+    )
+    devicePresentationGeneration = generation
+    let result = GhostteaDevicePresentationResult(applied: true, update: update)
+    // Keep publication inside the same transaction as the native mutation.
+    // Otherwise a state patch can publish a newer frame while this method is
+    // returning, only for its caller to overwrite it with this older frame.
+    await publish?(result)
+    return result
+  }
+
+  /// Swift actors are reentrant at `await`; this small FIFO keeps replica
+  /// mutation and frame publication in one total order across host frames and
+  /// local presentation changes.
+  private func releaseReplicaOperation() {
+    guard !replicaOperationWaiters.isEmpty else {
+      replicaOperationActive = false
+      return
+    }
+    replicaOperationWaiters.removeFirst().resume()
+  }
+
   /// Every report carries the token of the frame that produced it, unchanged.
   /// This sink cannot know whether its lifecycle has since moved on — only the
   /// consumer holding the current token can — so it forwards rather than
@@ -66,6 +135,26 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
   public func apply(
     _ message: GhostteaTerminalStateMessage, from token: GhostteaAttachmentStateToken
   ) async throws {
+    let ordersReplica: Bool
+    switch message {
+    case .snapshot, .patch, .selectionChanged:
+      ordersReplica = true
+    case .configurationChanged:
+      ordersReplica = presentationAuthority == .host
+    case .controlState, .controlChanged, .activityChanged, .sessionEnded, .hostShutdown:
+      ordersReplica = false
+    }
+    if ordersReplica {
+      if replicaOperationActive {
+        await withCheckedContinuation { replicaOperationWaiters.append($0) }
+      } else {
+        replicaOperationActive = true
+      }
+    }
+    defer {
+      if ordersReplica { releaseReplicaOperation() }
+    }
+
     switch message {
     case .snapshot(let snapshot):
       await output(.frame(try await publisher.publish(snapshot), fullSnapshot: true), token)
@@ -84,6 +173,7 @@ public actor GhostteaAttachmentReplicaSink: GhostteaAttachmentStateSink {
       await output(.activity(activity), token)
 
     case .configurationChanged(let next):
+      guard presentationAuthority == .host else { return }
       guard try await publisher.adopt(next) else { return }
       await output(.presentation(next), token)
 

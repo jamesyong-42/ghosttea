@@ -66,6 +66,13 @@ typedef struct ghosttea_font {
   uint32_t role;
 } ghosttea_font_t;
 
+typedef struct ghosttea_palette_entry {
+  uint8_t index;
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+} ghosttea_palette_entry_t;
+
 typedef struct ghosttea_runtime_config {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -206,6 +213,13 @@ ghosttea_status_t ghosttea_replica_publish_selection(
     ghosttea_replica_t *replica, bool has_selection,
     uint16_t anchor_column, uint32_t anchor_row,
     uint16_t focus_column, uint32_t focus_row,
+    ghosttea_update_t *out_update);
+/* Atomically re-resolves retained logical state with a sparse device palette.
+ * Pass NULL for runtime to retain current text metrics. A non-NULL runtime
+ * performs one full local re-shape without resetting logical patch state. */
+ghosttea_status_t ghosttea_replica_reconfigure(
+    ghosttea_replica_t *replica, ghosttea_runtime_t *runtime,
+    const ghosttea_palette_entry_t *palette, size_t palette_count,
     ghosttea_update_t *out_update);
 ghosttea_status_t ghosttea_replica_refresh(ghosttea_replica_t *replica,
                                            ghosttea_update_t *out_update);

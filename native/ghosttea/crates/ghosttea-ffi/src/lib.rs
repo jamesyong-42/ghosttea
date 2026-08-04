@@ -93,6 +93,15 @@ pub struct GhostteaFont {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhostteaPaletteEntry {
+    pub index: u8,
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+#[repr(C)]
 pub struct GhostteaRuntimeConfig {
     pub abi_version: u32,
     pub struct_size: u32,
@@ -213,9 +222,13 @@ pub struct GhostteaTerminalHandle {
 }
 
 pub struct GhostteaReplicaHandle {
-    runtime: Arc<RuntimeState>,
     poisoned: AtomicBool,
-    model: Mutex<LogicalReplicaModel>,
+    state: Mutex<ReplicaState>,
+}
+
+struct ReplicaState {
+    runtime: Arc<RuntimeState>,
+    model: LogicalReplicaModel,
 }
 
 enum PanicScope {
@@ -394,17 +407,21 @@ fn replica_operation<T>(
     }
     // SAFETY: The caller supplies a live handle created by this library.
     let handle = unsafe { &*replica };
-    if handle.poisoned.load(Ordering::Acquire) || handle.runtime.poisoned.load(Ordering::Acquire) {
-        set_error("replica or its runtime is poisoned");
+    if handle.poisoned.load(Ordering::Acquire) {
+        set_error("replica is poisoned");
         return Err(GHOSTTEA_STATUS_INVALID_STATE);
     }
-    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut model = handle
-            .model
-            .lock()
-            .map_err(|_| "replica model lock is poisoned".to_owned())?;
-        operation(&mut model)
-    }));
+    let mut state = handle.state.lock().map_err(|_| {
+        set_error("replica state lock is poisoned");
+        GHOSTTEA_STATUS_INVALID_STATE
+    })?;
+    if state.runtime.poisoned.load(Ordering::Acquire) {
+        set_error("replica runtime is poisoned");
+        return Err(GHOSTTEA_STATUS_INVALID_STATE);
+    }
+    // The guard remains outside the unwind boundary, so a caught model panic
+    // does not poison the mutex and obscure the ABI's explicit poison state.
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| operation(&mut state.model)));
     match result {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(message)) => {
@@ -413,7 +430,7 @@ fn replica_operation<T>(
         }
         Err(_) => {
             handle.poisoned.store(true, Ordering::Release);
-            handle.runtime.poisoned.store(true, Ordering::Release);
+            state.runtime.poisoned.store(true, Ordering::Release);
             set_error("panic caught at Ghosttea replica C ABI boundary; handle poisoned");
             Err(GHOSTTEA_STATUS_PANIC)
         }
@@ -950,12 +967,11 @@ pub extern "C" fn ghosttea_replica_create(
         return GHOSTTEA_STATUS_INVALID_STATE;
     }
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| GhostteaReplicaHandle {
-        runtime: runtime.state.clone(),
         poisoned: AtomicBool::new(false),
-        model: Mutex::new(LogicalReplicaModel::new(
-            runtime.state.core.clone(),
-            session_handle,
-        )),
+        state: Mutex::new(ReplicaState {
+            runtime: runtime.state.clone(),
+            model: LogicalReplicaModel::new(runtime.state.core.clone(), session_handle),
+        }),
     }));
     match result {
         Ok(replica) => {
@@ -985,7 +1001,13 @@ pub extern "C" fn ghosttea_replica_is_poisoned(replica: *const GhostteaReplicaHa
     }
     // SAFETY: A non-null pointer is a live handle by contract.
     let replica = unsafe { &*replica };
-    replica.poisoned.load(Ordering::Acquire) || replica.runtime.poisoned.load(Ordering::Acquire)
+    if replica.poisoned.load(Ordering::Acquire) {
+        return true;
+    }
+    replica
+        .state
+        .lock()
+        .map_or(true, |state| state.runtime.poisoned.load(Ordering::Acquire))
 }
 
 #[unsafe(no_mangle)]
@@ -1121,6 +1143,108 @@ pub extern "C" fn ghosttea_replica_publish_selection(
             .publish_selection(selection)
             .map_err(|error| error.to_string())
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ghosttea_replica_reconfigure(
+    replica: *mut GhostteaReplicaHandle,
+    runtime: *mut GhostteaRuntimeHandle,
+    palette: *const GhostteaPaletteEntry,
+    palette_count: usize,
+    out: *mut GhostteaUpdate,
+) -> i32 {
+    clear_error();
+    if out.is_null() {
+        set_error("update output pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The output pointer is writable by contract.
+    unsafe { out.write(GhostteaUpdate::EMPTY) };
+    if replica.is_null() {
+        set_error("replica pointer is required");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    if palette_count > 256 || (palette_count != 0 && palette.is_null()) {
+        set_error("replica palette must contain at most 256 readable entries");
+        return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+    }
+    // SAFETY: The caller supplies `palette_count` readable entries for this call.
+    let raw_palette = if palette_count == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(palette, palette_count) }
+    };
+    let mut seen = [false; 256];
+    let mut entries = Vec::with_capacity(raw_palette.len());
+    for entry in raw_palette {
+        if std::mem::replace(&mut seen[entry.index as usize], true) {
+            set_error("replica palette contains a duplicate index");
+            return GHOSTTEA_STATUS_INVALID_ARGUMENT;
+        }
+        entries.push((entry.index, [entry.red, entry.green, entry.blue]));
+    }
+    let next_runtime = if runtime.is_null() {
+        None
+    } else {
+        // SAFETY: A non-null runtime pointer is live for this call by contract.
+        let runtime = unsafe { &*runtime }.state.clone();
+        if runtime.poisoned.load(Ordering::Acquire) {
+            set_error("replacement replica runtime is poisoned");
+            return GHOSTTEA_STATUS_INVALID_STATE;
+        }
+        Some(runtime)
+    };
+    // SAFETY: The non-null replica pointer is live for this call by contract.
+    let handle = unsafe { &*replica };
+    if handle.poisoned.load(Ordering::Acquire) {
+        set_error("replica is poisoned");
+        return GHOSTTEA_STATUS_INVALID_STATE;
+    }
+    let mut state = match handle.state.lock() {
+        Ok(state) => state,
+        Err(_) => {
+            set_error("replica state lock is poisoned");
+            return GHOSTTEA_STATUS_INVALID_STATE;
+        }
+    };
+    let previous_runtime = state.runtime.clone();
+    if previous_runtime.poisoned.load(Ordering::Acquire) {
+        set_error("replica runtime is poisoned");
+        return GHOSTTEA_STATUS_INVALID_STATE;
+    }
+    let panic_runtime = next_runtime.clone();
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let update = if let Some(runtime) = next_runtime {
+            let update = state
+                .model
+                .reconfigure_runtime(runtime.core.clone(), &entries)
+                .map_err(|error| error.to_string())?;
+            state.runtime = runtime;
+            update
+        } else {
+            state
+                .model
+                .reconfigure_palette(&entries)
+                .map_err(|error| error.to_string())?
+        };
+        Ok::<_, String>(update)
+    }));
+    match result {
+        Ok(Ok(update)) => write_update(out, update),
+        Ok(Err(message)) => {
+            set_error(message);
+            GHOSTTEA_STATUS_INTERNAL
+        }
+        Err(_) => {
+            handle.poisoned.store(true, Ordering::Release);
+            previous_runtime.poisoned.store(true, Ordering::Release);
+            if let Some(runtime) = panic_runtime {
+                runtime.poisoned.store(true, Ordering::Release);
+            }
+            set_error("panic caught while reconfiguring Ghosttea replica; handle poisoned");
+            GHOSTTEA_STATUS_PANIC
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1997,6 +2121,77 @@ mod tests {
         };
         assert!(frame.starts_with(b"TRF1"));
         ghosttea_update_destroy(update);
+
+        let palette = [GhostteaPaletteEntry {
+            index: 1,
+            red: 0x12,
+            green: 0x34,
+            blue: 0x56,
+        }];
+        let mut recolored = GhostteaUpdate::EMPTY;
+        assert_eq!(
+            ghosttea_replica_reconfigure(
+                replica,
+                ptr::null_mut(),
+                palette.as_ptr(),
+                palette.len(),
+                &mut recolored,
+            ),
+            GHOSTTEA_STATUS_OK
+        );
+        assert_eq!(recolored.effect_count, 1);
+        ghosttea_update_destroy(recolored);
+
+        // Supplying a runtime reshapes in the same replica handle. The caller
+        // can keep its patch and selection identity while swapping resources.
+        let mut reshaped = GhostteaUpdate {
+            storage: GhostteaOwnedBytes {
+                data: ptr::dangling_mut(),
+                len: 1,
+                capacity: 1,
+            },
+            effects: ptr::dangling(),
+            effect_count: 1,
+        };
+        assert_eq!(
+            ghosttea_replica_reconfigure(ptr::null_mut(), runtime, ptr::null(), 0, &mut reshaped,),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+        assert!(reshaped.storage.data.is_null());
+        assert!(reshaped.effects.is_null());
+        assert_eq!(reshaped.effect_count, 0);
+        assert_eq!(
+            ghosttea_replica_reconfigure(replica, runtime, ptr::null(), 0, &mut reshaped),
+            GHOSTTEA_STATUS_OK
+        );
+        assert_eq!(reshaped.effect_count, 1);
+        ghosttea_update_destroy(reshaped);
+
+        let duplicates = [palette[0], palette[0]];
+        let mut rejected = GhostteaUpdate {
+            storage: GhostteaOwnedBytes {
+                data: ptr::dangling_mut(),
+                len: 1,
+                capacity: 1,
+            },
+            effects: ptr::dangling(),
+            effect_count: 1,
+        };
+        assert_eq!(
+            ghosttea_replica_reconfigure(
+                replica,
+                ptr::null_mut(),
+                duplicates.as_ptr(),
+                duplicates.len(),
+                &mut rejected,
+            ),
+            GHOSTTEA_STATUS_INVALID_ARGUMENT
+        );
+        assert!(rejected.storage.data.is_null());
+        assert!(rejected.effects.is_null());
+        assert_eq!(rejected.effect_count, 0);
+        assert!(!ghosttea_replica_is_poisoned(replica));
+
         ghosttea_replica_destroy(replica);
         ghosttea_runtime_destroy(runtime);
     }

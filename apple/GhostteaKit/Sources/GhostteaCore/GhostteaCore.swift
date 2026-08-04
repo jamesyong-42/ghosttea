@@ -615,12 +615,16 @@ public actor GhostteaTerminal {
 /// session into the same TRF1 frames used by a local terminal. The caller owns
 /// snapshot-gap recovery; a rejected patch must be followed by a full snapshot.
 public actor GhostteaLogicalReplica {
-  public let runtime: GhostteaRuntime
+  public private(set) var runtime: GhostteaRuntime
   private let nativeHandle: GhostteaNativeReplicaHandle
   private var lastTextEnginePerformanceSequence: UInt64 = 0
   private var handle: OpaquePointer { nativeHandle.pointer }
 
-  public init(runtime: GhostteaRuntime, sessionHandle: UInt64) throws {
+  public init(
+    runtime: GhostteaRuntime,
+    sessionHandle: UInt64,
+    palette: [GhostteaPaletteConfigEntry] = []
+  ) throws {
     self.runtime = runtime
     var created: OpaquePointer?
     try check(ghosttea_replica_create(runtime.handle, sessionHandle, &created))
@@ -628,6 +632,10 @@ public actor GhostteaLogicalReplica {
       throw GhostteaCoreError.malformedUpdate("replica creation returned no handle")
     }
     nativeHandle = GhostteaNativeReplicaHandle(created)
+    if !palette.isEmpty {
+      _ = try Self.performReconfiguration(
+        handle: created, runtime: nil, palette: palette)
+    }
   }
 
   public var isPoisoned: Bool {
@@ -671,8 +679,71 @@ public actor GhostteaLogicalReplica {
     }
   }
 
+  /// Applies local presentation resources without replacing logical state.
+  /// A nil runtime is the recolor-only path and never acquires the text engine.
+  public func reconfigure(
+    runtime nextRuntime: GhostteaRuntime? = nil,
+    palette: [GhostteaPaletteConfigEntry]
+  ) throws -> GhostteaUpdate {
+    let update = try reconfigureNative(runtime: nextRuntime, palette: palette)
+    if let nextRuntime { runtime = nextRuntime }
+    return update
+  }
+
   public func refresh() throws -> GhostteaUpdate {
     try performUpdate { output in ghosttea_replica_refresh(handle, &output) }
+  }
+
+  private func reconfigureNative(
+    runtime: GhostteaRuntime?,
+    palette: [GhostteaPaletteConfigEntry]
+  ) throws -> GhostteaUpdate {
+    let update = try Self.performReconfiguration(
+      handle: handle, runtime: runtime, palette: palette)
+    recordTextEnginePerformance()
+    return update
+  }
+
+  /// Actor initializers cannot call an isolated instance method. Keeping the
+  /// raw ABI operation stateless also makes that initialization path identical
+  /// to later reconfiguration without weakening actor isolation.
+  nonisolated private static func performReconfiguration(
+    handle: OpaquePointer,
+    runtime: GhostteaRuntime?,
+    palette: [GhostteaPaletteConfigEntry]
+  ) throws -> GhostteaUpdate {
+    let nativePalette = try palette.map { entry in
+      guard entry.color.count == 3 else {
+        throw GhostteaCoreError.malformedUpdate("palette color must contain exactly three bytes")
+      }
+      return ghosttea_palette_entry_t(
+        index: entry.index,
+        red: entry.color[0],
+        green: entry.color[1],
+        blue: entry.color[2]
+      )
+    }
+    return try nativePalette.withUnsafeBufferPointer { palette in
+      var output = ghosttea_update_t(
+        storage: ghosttea_owned_bytes_t(data: nil, len: 0, capacity: 0),
+        effects: nil,
+        effect_count: 0
+      )
+      let status =
+        ghosttea_replica_reconfigure(
+          handle,
+          runtime?.handle,
+          palette.baseAddress,
+          palette.count,
+          &output
+        )
+      guard status == GHOSTTEA_STATUS_OK else {
+        ghosttea_update_destroy(output)
+        try check(status)
+        fatalError("unreachable")
+      }
+      return try decodeUpdate(output)
+    }
   }
 
   private func publish(

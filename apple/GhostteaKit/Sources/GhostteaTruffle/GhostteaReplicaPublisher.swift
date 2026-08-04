@@ -38,7 +38,11 @@ actor GhostteaReplicaPublisher {
   ) throws {
     self.sessionHandle = sessionHandle
     self.presentation = presentation
-    replica = try GhostteaLogicalReplica(runtime: runtime, sessionHandle: sessionHandle)
+    replica = try GhostteaLogicalReplica(
+      runtime: runtime,
+      sessionHandle: sessionHandle,
+      palette: presentation?.palette ?? []
+    )
   }
 
   func publish(_ snapshot: GhostteaLogicalSnapshot) async throws -> GhostteaUpdate {
@@ -103,11 +107,34 @@ actor GhostteaReplicaPublisher {
   func adopt(_ next: GhostteaTerminalPresentationConfig) throws -> Bool {
     guard presentation != next else { return false }
     replica = try GhostteaLogicalReplica(
-      runtime: try GhostteaRuntime(presentation: next), sessionHandle: sessionHandle)
+      runtime: try GhostteaRuntime(presentation: next),
+      sessionHandle: sessionHandle,
+      palette: next.palette
+    )
     presentation = next
     // The new replica has painted nothing yet, so nothing is on screen to
     // copy until the host's next frame arrives.
     retainedViewport = .empty
     return true
+  }
+
+  /// Device-owned presentation changes keep the logical replica and retained
+  /// viewport. View-only fields need no TRF1; palette changes recolor locally,
+  /// and a supplied runtime performs one atomic full reshape.
+  func reconfigureDevicePresentation(
+    _ next: GhostteaTerminalPresentationConfig,
+    runtime: GhostteaRuntime?
+  ) async throws -> GhostteaUpdate? {
+    let previous = presentation
+    let paletteChanged = previous?.palette != next.palette
+    let update: GhostteaUpdate?
+    if runtime != nil || paletteChanged {
+      let candidate = try await replica.reconfigure(runtime: runtime, palette: next.palette)
+      update = candidate.effects.isEmpty ? nil : candidate
+    } else {
+      update = nil
+    }
+    presentation = next
+    return update
   }
 }

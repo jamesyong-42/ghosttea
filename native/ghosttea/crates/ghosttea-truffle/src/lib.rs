@@ -45,8 +45,7 @@ use ghosttea::{
         SessionStatusKind, SharedSessionSummary, StateCodec, StateMessage, StreamKind,
         StreamPreface, TERMINAL_PRESENTATION_PROTOCOL_MINOR, TRACKED_SELECTION_PROTOCOL_MINOR,
         TerminalHostAdvertisement, TunnelInput, decode_compact_message, decode_message,
-        decode_preface, decode_state_message, encode_compact_message, encode_message,
-        encode_preface, encode_state_message,
+        decode_preface, encode_compact_message, encode_message, encode_preface,
     },
 };
 
@@ -2424,7 +2423,10 @@ impl MeshRuntime {
                         }
                         continue;
                     }
-                    message = state.read_state_message(remote_host.state_codec) => message,
+                    message = state.read_state_message(
+                        remote_host.state_codec,
+                        remote_host.protocol_minor,
+                    ) => message,
                 };
                 let message = match message {
                     Ok(Some(message)) => message,
@@ -4759,7 +4761,11 @@ where
         // a viewer keeps the only signal it has ever had — the stream ending.
         if *shutdown.borrow_and_update() && protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
             control
-                .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                .write_compact_state_message(
+                    &StateMessage::HostShutdown {},
+                    state_codec,
+                    protocol_minor,
+                )
                 .await?;
             return Ok(());
         }
@@ -4775,6 +4781,7 @@ where
                             reason: session_end_reason(&session),
                         },
                         state_codec,
+                        protocol_minor,
                     )
                     .await?;
             }
@@ -4794,6 +4801,7 @@ where
                     .write_compact_state_message(
                         &StateMessage::ConfigurationChanged { presentation },
                         state_codec,
+                        protocol_minor,
                     )
                     .await?;
             }
@@ -4802,6 +4810,7 @@ where
                     .write_compact_state_message(
                         &StateMessage::Snapshot(snapshot.clone()),
                         state_codec,
+                        protocol_minor,
                     )
                     .await?;
             }
@@ -4813,6 +4822,7 @@ where
                             selection: selection.map(Into::into),
                         },
                         state_codec,
+                        protocol_minor,
                     )
                     .await?;
             }
@@ -4826,7 +4836,7 @@ where
                 control_state_message(&session.control_snapshot(), protocol_minor)
             {
                 control
-                    .write_compact_state_message(&message, state_codec)
+                    .write_compact_state_message(&message, state_codec, protocol_minor)
                     .await?;
             }
             if protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR {
@@ -4836,6 +4846,7 @@ where
                             activity: session.summary().activity,
                         },
                         state_codec,
+                        protocol_minor,
                     )
                     .await?;
             }
@@ -4852,7 +4863,11 @@ where
                     }
                     if protocol_minor >= REMOTE_RECONNECT_PROTOCOL_MINOR {
                         control
-                            .write_compact_state_message(&StateMessage::HostShutdown {}, state_codec)
+                            .write_compact_state_message(
+                                &StateMessage::HostShutdown {},
+                                state_codec,
+                                protocol_minor,
+                            )
                             .await?;
                     }
                     return Ok(());
@@ -4875,6 +4890,7 @@ where
                                     reason: session_end_reason(&session),
                                 },
                                 state_codec,
+                                protocol_minor,
                             )
                             .await?;
                     }
@@ -4897,6 +4913,7 @@ where
                     control.write_compact_state_message(
                         &StateMessage::ConfigurationChanged { presentation },
                         state_codec,
+                        protocol_minor,
                     ).await?;
                     if let Some(snapshot) = session.logical_snapshot() {
                         previous = Some(snapshot.clone());
@@ -4904,6 +4921,7 @@ where
                         control.write_compact_state_message(
                             &StateMessage::Snapshot(snapshot),
                             state_codec,
+                            protocol_minor,
                         ).await?;
                     }
                 }
@@ -5014,6 +5032,7 @@ where
                             control.write_compact_state_message(
                                 &StateMessage::Snapshot(snapshot),
                                 state_codec,
+                                protocol_minor,
                             ).await?;
                         }
                         SessionControlMessage::StateAck { .. } => {}
@@ -5074,6 +5093,7 @@ where
                             selection: selection.map(Into::into),
                         },
                         state_codec,
+                        protocol_minor,
                     ).await?;
                 }
                 snapshot = snapshots.recv(), if wants_state => {
@@ -5106,6 +5126,7 @@ where
                     control.write_compact_state_message(
                         &message,
                         state_codec,
+                        protocol_minor,
                     ).await?;
                 }
                 changed = controls.recv(), if wants_state => {
@@ -5118,7 +5139,9 @@ where
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
                     if let Some(message) = control_state_message(&changed, protocol_minor) {
-                        control.write_compact_state_message(&message, state_codec).await?;
+                        control
+                            .write_compact_state_message(&message, state_codec, protocol_minor)
+                            .await?;
                     }
                 }
                 changed = activities.recv(), if wants_state && protocol_minor >= SESSION_ACTIVITY_PROTOCOL_MINOR => {
@@ -5133,6 +5156,7 @@ where
                     control.write_compact_state_message(
                         &StateMessage::ActivityChanged { activity },
                         state_codec,
+                        protocol_minor,
                     ).await?;
                 }
             }
@@ -6048,7 +6072,9 @@ async fn spawn_state_stream(
             if *cancelled.borrow_and_update() {
                 return Ok(());
             }
-            state.write_state_message($message, state_codec).await?;
+            state
+                .write_state_message($message, state_codec, protocol_minor)
+                .await?;
         };
     }
     if protocol_minor >= TERMINAL_PRESENTATION_PROTOCOL_MINOR {
@@ -6102,6 +6128,7 @@ async fn spawn_state_stream(
                         .write_state_message(
                             &StateMessage::ConfigurationChanged { presentation },
                             state_codec,
+                            protocol_minor,
                         )
                         .await
                         .is_err()
@@ -6112,7 +6139,11 @@ async fn spawn_state_stream(
                         previous = Some(snapshot.clone());
                         patch_sequence = 0;
                         if state
-                            .write_state_message(&StateMessage::Snapshot(snapshot), state_codec)
+                            .write_state_message(
+                                &StateMessage::Snapshot(snapshot),
+                                state_codec,
+                                protocol_minor,
+                            )
                             .await
                             .is_err()
                         {
@@ -6146,6 +6177,7 @@ async fn spawn_state_stream(
                                     reason: session_end_reason(&session),
                                 },
                                 state_codec,
+                                protocol_minor,
                             )
                             .await;
                     }
@@ -6205,7 +6237,7 @@ async fn spawn_state_stream(
             };
             if let Some(message) = message
                 && state
-                    .write_state_message(&message, state_codec)
+                    .write_state_message(&message, state_codec, protocol_minor)
                     .await
                     .is_err()
             {
@@ -6422,8 +6454,14 @@ where
         &mut self,
         message: &StateMessage,
         codec: StateCodec,
+        protocol_minor: u16,
     ) -> Result<()> {
-        let encoded = encode_state_message(message, codec, MAX_STATE_MESSAGE_BYTES)?;
+        let encoded = ghosttea::tunnel_protocol::encode_state_message_for_minor(
+            message,
+            codec,
+            protocol_minor,
+            MAX_STATE_MESSAGE_BYTES,
+        )?;
         let payload = &encoded[4..];
         let framed_len = payload
             .len()
@@ -6576,11 +6614,13 @@ impl ProtocolStream {
         &mut self,
         message: &StateMessage,
         codec: StateCodec,
+        protocol_minor: u16,
     ) -> Result<()> {
         self.stream
-            .write_chunk(&encode_state_message(
+            .write_chunk(&ghosttea::tunnel_protocol::encode_state_message_for_minor(
                 message,
                 codec,
+                protocol_minor,
                 MAX_STATE_MESSAGE_BYTES,
             )?)
             .await?;
@@ -6608,7 +6648,11 @@ impl ProtocolStream {
         Ok(Some(message))
     }
 
-    async fn read_state_message(&mut self, codec: StateCodec) -> Result<Option<StateMessage>> {
+    async fn read_state_message(
+        &mut self,
+        codec: StateCodec,
+        protocol_minor: u16,
+    ) -> Result<Option<StateMessage>> {
         if !self.fill(4).await? {
             return Ok(None);
         }
@@ -6621,8 +6665,13 @@ impl ProtocolStream {
         if !self.fill(total).await? {
             bail!("EOF in terminal protocol state message");
         }
-        let message =
-            decode_state_message(self.buffered.unread(total), codec, MAX_STATE_MESSAGE_BYTES)?.0;
+        let message = ghosttea::tunnel_protocol::decode_state_message_for_minor(
+            self.buffered.unread(total),
+            codec,
+            protocol_minor,
+            MAX_STATE_MESSAGE_BYTES,
+        )?
+        .0;
         self.buffered.consume(total);
         Ok(Some(message))
     }
@@ -6904,6 +6953,7 @@ mod tests {
                     layout_epoch: 3,
                 },
                 StateCodec::CompactJsonV1,
+                PROTOCOL_MINOR,
             )
             .await
             .unwrap();
@@ -7420,6 +7470,7 @@ mod tests {
                         .write_state_message(
                             &StateMessage::Snapshot(logical_snapshot(1, "scripted")),
                             StateCodec::CompactJsonV1,
+                            PROTOCOL_MINOR,
                         )
                         .await;
                     // Hold the stream open; a dropped stream would read as a
@@ -7579,6 +7630,7 @@ mod tests {
                         .write_state_message(
                             &StateMessage::Snapshot(logical_snapshot(1, "rejecting")),
                             StateCodec::CompactJsonV1,
+                            PROTOCOL_MINOR,
                         )
                         .await;
                     std::future::pending::<()>().await;
@@ -11266,8 +11318,13 @@ mod tests {
                     prefixed.extend_from_slice(&u32::try_from(payload.len())?.to_be_bytes());
                     prefixed.extend_from_slice(payload);
                     CompactFrame::State(
-                        decode_state_message(&prefixed, self.state_codec, MAX_STATE_MESSAGE_BYTES)?
-                            .0,
+                        ghosttea::tunnel_protocol::decode_state_message_for_minor(
+                            &prefixed,
+                            self.state_codec,
+                            self.negotiated_minor,
+                            MAX_STATE_MESSAGE_BYTES,
+                        )?
+                        .0,
                     )
                 }
             })

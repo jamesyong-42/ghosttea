@@ -122,10 +122,22 @@ public struct GhostteaLogicalCellStyle: Codable, Equatable, Sendable {
   public let underline: Bool
   public let foreground: [UInt8]?
   public let background: [UInt8]?
+  public let foregroundDefault: Bool
+  public let foregroundPalette: UInt8?
+  public let backgroundDefault: Bool
+  public let backgroundPalette: UInt8?
+
+  private enum CodingKeys: String, CodingKey {
+    case bold, italic, faint, inverse, invisible, strikethrough, underline
+    case foreground, background
+    case foregroundDefault, foregroundPalette, backgroundDefault, backgroundPalette
+  }
 
   public init(
     bold: Bool, italic: Bool, faint: Bool, inverse: Bool, invisible: Bool,
-    strikethrough: Bool, underline: Bool, foreground: [UInt8]?, background: [UInt8]?
+    strikethrough: Bool, underline: Bool, foreground: [UInt8]?, background: [UInt8]?,
+    foregroundDefault: Bool = false, foregroundPalette: UInt8? = nil,
+    backgroundDefault: Bool = false, backgroundPalette: UInt8? = nil
   ) {
     self.bold = bold
     self.italic = italic
@@ -136,6 +148,67 @@ public struct GhostteaLogicalCellStyle: Codable, Equatable, Sendable {
     self.underline = underline
     self.foreground = foreground
     self.background = background
+    self.foregroundDefault = foregroundDefault
+    self.foregroundPalette = foregroundPalette
+    self.backgroundDefault = backgroundDefault
+    self.backgroundPalette = backgroundPalette
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    bold = try values.decode(Bool.self, forKey: .bold)
+    italic = try values.decode(Bool.self, forKey: .italic)
+    faint = try values.decode(Bool.self, forKey: .faint)
+    inverse = try values.decode(Bool.self, forKey: .inverse)
+    invisible = try values.decode(Bool.self, forKey: .invisible)
+    strikethrough = try values.decode(Bool.self, forKey: .strikethrough)
+    underline = try values.decode(Bool.self, forKey: .underline)
+    foreground = try values.decodeIfPresent([UInt8].self, forKey: .foreground)
+    background = try values.decodeIfPresent([UInt8].self, forKey: .background)
+    foregroundDefault = try values.decodeIfPresent(Bool.self, forKey: .foregroundDefault) ?? false
+    foregroundPalette = try values.decodeIfPresent(UInt8.self, forKey: .foregroundPalette)
+    backgroundDefault = try values.decodeIfPresent(Bool.self, forKey: .backgroundDefault) ?? false
+    backgroundPalette = try values.decodeIfPresent(UInt8.self, forKey: .backgroundPalette)
+    let usesSemanticColors =
+      foregroundDefault || foregroundPalette != nil || backgroundDefault || backgroundPalette != nil
+    let protocolMinor =
+      decoder.userInfo[.ghostteaProtocolMinor] as? UInt16
+      ?? GhostteaTruffleContract.protocolMinor
+    guard
+      foreground?.count == 3 || foreground == nil,
+      background?.count == 3 || background == nil,
+      !(foregroundDefault && foregroundPalette != nil),
+      !(backgroundDefault && backgroundPalette != nil),
+      !usesSemanticColors
+        || protocolMinor >= GhostteaTruffleContract.semanticCellColorProtocolMinor
+    else {
+      throw GhostteaTruffleError.malformedMessage
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    guard
+      foreground?.count == 3 || foreground == nil,
+      background?.count == 3 || background == nil,
+      !(foregroundDefault && foregroundPalette != nil),
+      !(backgroundDefault && backgroundPalette != nil)
+    else {
+      throw GhostteaTruffleError.malformedMessage
+    }
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(bold, forKey: .bold)
+    try values.encode(italic, forKey: .italic)
+    try values.encode(faint, forKey: .faint)
+    try values.encode(inverse, forKey: .inverse)
+    try values.encode(invisible, forKey: .invisible)
+    try values.encode(strikethrough, forKey: .strikethrough)
+    try values.encode(underline, forKey: .underline)
+    try values.encodeIfPresent(foreground, forKey: .foreground)
+    try values.encodeIfPresent(background, forKey: .background)
+    if foregroundDefault { try values.encode(true, forKey: .foregroundDefault) }
+    try values.encodeIfPresent(foregroundPalette, forKey: .foregroundPalette)
+    if backgroundDefault { try values.encode(true, forKey: .backgroundDefault) }
+    try values.encodeIfPresent(backgroundPalette, forKey: .backgroundPalette)
   }
 }
 
@@ -820,7 +893,11 @@ public actor GhostteaTruffleAttachment {
           .truffleStateDecode,
           byteCount: payload.count
         ) {
-          try GhostteaTerminalStateCodec.decode(payload, codec: stateCodec)
+          try GhostteaTerminalStateCodec.decode(
+            payload,
+            codec: stateCodec,
+            protocolMinor: info.negotiatedMinor
+          )
         }
       )
     case .control:

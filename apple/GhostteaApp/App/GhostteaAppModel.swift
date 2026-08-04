@@ -44,6 +44,11 @@ final class GhostteaAppModel: ObservableObject {
   private var replicaSink: GhostteaAttachmentReplicaSink?
   private var pendingAttachmentTask: Task<Void, Never>?
   private var lifecycleTask: Task<Void, Never>?
+  /// Orders live device-presentation updates independently of the host state
+  /// generation. A settings edit is local renderer state, never a network ack.
+  private var presentationTask: Task<Void, Never>?
+  private var pendingPresentationConfiguration: GhostteaTerminalPresentationConfig?
+  private var presentationGeneration: UInt64 = 0
   /// Wakes the banner when it would change without a new event — the grace
   /// window opening, a countdown ticking, the resumed flash closing.
   private var bannerRefreshTask: Task<Void, Never>?
@@ -127,22 +132,135 @@ final class GhostteaAppModel: ObservableObject {
     sharedRuntime.start()
   }
 
-  /// Device configuration is only the pre-attach fallback. Once attached, the
-  /// desktop host remains authoritative for presentation and its revision.
+  /// Validated device configuration owns presentation for both local and
+  /// shared terminals. Shared-session semantics remain host-owned; colors,
+  /// opacity, padding, and shaders do not.
   func deviceConfigurationChanged(_ next: GhostteaConfigSnapshot) {
     guard next.revision != configuration.revision else { return }
     configuration = next
-    guard selectedSession == nil else { return }
-    presentationConfiguration = next.terminalPresentation
-    do {
-      // `attach(to:)` treats this retained runtime as the renderer readiness
-      // invariant. Refresh it in place while the browser is live; a TabView or
-      // another iPad scene does not re-run `start()` merely because Settings
-      // published a new configuration.
-      renderRuntime = try GhostteaRuntime(config: next)
-    } catch {
-      renderRuntime = nil
-      fail("Could not reload terminal renderer", code: .rendererStartFailed)
+    let presentation = next.terminalPresentation
+    if let pendingPresentationConfiguration,
+      presentation.hasSameDevicePresentation(as: pendingPresentationConfiguration)
+    {
+      // Document revisions are not renderer revisions. Let an already-ordered
+      // transaction finish when the values it will apply are still current.
+      return
+    }
+    let supersededTask = presentationTask
+    let supersededPresentation = pendingPresentationConfiguration
+    guard
+      !presentation.hasSameDevicePresentation(as: presentationConfiguration)
+        || supersededTask != nil
+    else { return }
+    supersededTask?.cancel()
+    presentationGeneration &+= 1
+    let generation = presentationGeneration
+    let attachedSink = replicaSink
+    let attachedID = attachID
+    let needsRuntime =
+      renderRuntime == nil
+      || presentation.requiresNewRuntime(comparedTo: presentationConfiguration)
+      || supersededPresentation.map {
+        presentation.requiresNewRuntime(comparedTo: $0)
+      } == true
+    pendingPresentationConfiguration = presentation
+    presentationTask = Task { [weak self] in
+      // A native reconfiguration is atomic but not itself cancellable. Let an
+      // in-flight predecessor leave the replica before applying its successor;
+      // this makes generation order physical, not merely an output filter.
+      await supersededTask?.value
+      guard let self else { return }
+      defer {
+        if generation == presentationGeneration {
+          presentationTask = nil
+          pendingPresentationConfiguration = nil
+        }
+      }
+      do {
+        // A superseded task can be canceled while it is waiting for its
+        // predecessor. Stop here so rapid raw-config edits do not build every
+        // intermediate font runtime in sequence.
+        try Task.checkCancellation()
+        let runtime = try await Self.makeRuntimeIfNeeded(
+          needsRuntime, presentation: presentation)
+        try Task.checkCancellation()
+        guard generation == presentationGeneration,
+          presentation.hasSameDevicePresentation(as: configuration.terminalPresentation)
+        else { return }
+
+        if let attachedSink {
+          guard replicaSink === attachedSink, attachID == attachedID else { return }
+          _ = try await attachedSink.reconfigureDevicePresentation(
+            presentation,
+            runtime: runtime,
+            generation: generation
+          ) { [weak self] result in
+            await self?.publishDevicePresentation(
+              result,
+              presentation: presentation,
+              runtime: runtime,
+              generation: generation,
+              sink: attachedSink,
+              attach: attachedID
+            )
+          }
+        } else {
+          guard replicaSink == nil else { return }
+          if let runtime { renderRuntime = runtime }
+          presentationConfiguration = presentation
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        guard generation == presentationGeneration else { return }
+        record(.rendererStartFailed, severity: .warning)
+        localStatus = "Could not reload terminal appearance"
+      }
+    }
+  }
+
+  /// Runs from inside the sink's replica transaction. Applying the Metal
+  /// configuration and its optional frame before returning prevents a newer
+  /// host frame from being overwritten by a delayed settings continuation.
+  private func publishDevicePresentation(
+    _ result: GhostteaDevicePresentationResult,
+    presentation: GhostteaTerminalPresentationConfig,
+    runtime: GhostteaRuntime?,
+    generation: UInt64,
+    sink: GhostteaAttachmentReplicaSink,
+    attach: UInt64
+  ) {
+    guard result.applied,
+      generation == presentationGeneration,
+      presentation.hasSameDevicePresentation(as: configuration.terminalPresentation),
+      replicaSink === sink,
+      attachID == attach
+    else { return }
+    if let runtime { renderRuntime = runtime }
+    // `updateUIView` applies the configuration before the frame. Publishing
+    // both on this MainActor turn keeps new metrics and reshaped cells in one
+    // SwiftUI transaction.
+    presentationConfiguration = presentation
+    if let rendered = result.update?.effects.last(where: {
+      $0.kind == .frameReady
+    })?.payload {
+      frame = rendered
+    }
+  }
+
+  nonisolated private static func makeRuntimeIfNeeded(
+    _ needed: Bool,
+    presentation: GhostteaTerminalPresentationConfig
+  ) async throws -> GhostteaRuntime? {
+    guard needed else { return nil }
+    let creation = Task.detached(priority: .userInitiated) {
+      try Task.checkCancellation()
+      return try GhostteaRuntime(presentation: presentation)
+    }
+    return try await withTaskCancellationHandler {
+      try await creation.value
+    } onCancel: {
+      creation.cancel()
     }
   }
 
@@ -214,18 +332,20 @@ final class GhostteaAppModel: ObservableObject {
       do {
         let handle = nextSessionHandle
         nextSessionHandle = handle == UInt64.max ? 1 : handle + 1
-        // The host opens every state stream with its presentation, so this
-        // default only ever renders the gap before the first frame.
+        let localDeviceID = try await directory.localDeviceID()
+        // Presentation is sampled after the last suspension point so a valid
+        // Settings edit made while the directory lookup was in flight cannot
+        // seed the attachment with stale device resources.
         let presentation = configuration.terminalPresentation
         let attachmentRuntime = try GhostteaRuntime(presentation: presentation)
-        let localDeviceID = try await directory.localDeviceID()
         attachID &+= 1
         let attach = attachID
         appliedGeneration = 0
         let sink = try GhostteaAttachmentReplicaSink(
           runtime: attachmentRuntime,
           sessionHandle: handle,
-          presentation: presentation
+          presentation: presentation,
+          presentationAuthority: .device
         ) { [weak self] event, token in
           await self?.handle(event, token: token, attach: attach)
         }
@@ -728,8 +848,11 @@ final class GhostteaAppModel: ObservableObject {
       }
     case .activity(let activity):
       selectedActivity = activity
-    case .presentation(let presentation):
-      presentationConfiguration = presentation
+    case .presentation:
+      // Device-authoritative sinks consume host presentation events without
+      // publishing them. Keep this defensive boundary in case an older/custom
+      // sink is ever wired into the iOS scene.
+      break
     }
   }
 
@@ -758,6 +881,10 @@ final class GhostteaAppModel: ObservableObject {
     clearSelection: Bool,
     cancelPending: Bool = true
   ) async {
+    presentationTask?.cancel()
+    presentationTask = nil
+    pendingPresentationConfiguration = nil
+    presentationGeneration &+= 1
     if cancelPending {
       pendingAttachmentTask?.cancel()
       pendingAttachmentTask = nil
@@ -823,4 +950,35 @@ final class GhostteaAppModel: ObservableObject {
     #endif
   }
 
+}
+
+extension GhostteaTerminalPresentationConfig {
+  /// Revision is a document identity, not a renderer value. Ignoring it keeps
+  /// unrelated config edits off the Metal and replica paths.
+  fileprivate func hasSameDevicePresentation(as other: Self) -> Bool {
+    foreground == other.foreground
+      && background == other.background
+      && cursor == other.cursor
+      && cursorText == other.cursorText
+      && selectionBackground == other.selectionBackground
+      && selectionForeground == other.selectionForeground
+      && palette == other.palette
+      && backgroundOpacity == other.backgroundOpacity
+      && backgroundOpacityCells == other.backgroundOpacityCells
+      && fontSize == other.fontSize
+      && fontFamilies == other.fontFamilies
+      && paddingX == other.paddingX
+      && paddingY == other.paddingY
+      && postProcess == other.postProcess
+      && shaderEffects == other.shaderEffects
+      && customShaderAnimation == other.customShaderAnimation
+      && customShaderCount == other.customShaderCount
+  }
+
+  /// Apple currently shapes with bundled fonts; only the resolved size changes
+  /// native text metrics. Font-family values remain presentation metadata until
+  /// arbitrary family loading is supported on this platform.
+  fileprivate func requiresNewRuntime(comparedTo other: Self) -> Bool {
+    fontSize != other.fontSize
+  }
 }

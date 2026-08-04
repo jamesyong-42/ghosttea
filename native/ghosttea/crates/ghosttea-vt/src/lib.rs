@@ -38,10 +38,12 @@ type RowCallback = unsafe extern "C" fn(*mut c_void, u16, *const u8, usize, bool
 struct RawCellStyle {
     flags: u8,
     fg_kind: u8,
+    fg_palette: u8,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
     bg_kind: u8,
+    bg_palette: u8,
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
@@ -90,6 +92,7 @@ unsafe extern "C" {
         colors: *const u8,
         len: usize,
     ) -> i32;
+    fn eg_default_palette(colors: *mut u8, len: usize) -> i32;
     fn eg_terminal_scroll(terminal: *mut RawTerminal, rows: isize);
     fn eg_terminal_scroll_to(terminal: *mut RawTerminal, row: usize);
     fn eg_terminal_compress_scrollback_full(terminal: *mut RawTerminal) -> i32;
@@ -226,6 +229,32 @@ pub struct TerminalCell {
     pub span: u16,
     pub text: String,
     pub style: CellStyle,
+    /// Semantic color source retained for replicated renderers. The resolved
+    /// RGB remains in `style` as the protocol-minor-7 fallback.
+    pub foreground_default: bool,
+    pub foreground_palette: Option<u8>,
+    pub background_default: bool,
+    pub background_palette: Option<u8>,
+}
+
+pub type TerminalPalette = [[u8; 3]; 256];
+
+/// Ghostty's canonical 256-color palette with sparse embedder overrides.
+/// Keeping this in the VT boundary prevents Swift and the replica renderer
+/// from growing subtly different xterm palette tables.
+pub fn resolved_palette(entries: &[(u8, [u8; 3])]) -> TerminalPalette {
+    let mut bytes = [0_u8; 256 * 3];
+    let result = unsafe { eg_default_palette(bytes.as_mut_ptr(), bytes.len()) };
+    debug_assert_eq!(result, 0, "Ghostty default palette lookup must succeed");
+    let mut palette = [[0_u8; 3]; 256];
+    for (index, color) in palette.iter_mut().enumerate() {
+        let offset = index * 3;
+        *color = [bytes[offset], bytes[offset + 1], bytes[offset + 2]];
+    }
+    for &(index, color) in entries {
+        palette[index as usize] = color;
+    }
+    palette
 }
 
 #[derive(Debug, Clone, Default)]
@@ -684,9 +713,13 @@ impl GhosttyTerminalCore {
                     invisible: raw.flags & 16 != 0,
                     strikethrough: raw.flags & 32 != 0,
                     underline: raw.flags & 64 != 0,
-                    foreground: (raw.fg_kind == 1).then_some([raw.fg_r, raw.fg_g, raw.fg_b]),
-                    background: (raw.bg_kind == 1).then_some([raw.bg_r, raw.bg_g, raw.bg_b]),
+                    foreground: (raw.fg_kind != 0).then_some([raw.fg_r, raw.fg_g, raw.fg_b]),
+                    background: (raw.bg_kind != 0).then_some([raw.bg_r, raw.bg_g, raw.bg_b]),
                 },
+                foreground_default: raw.fg_kind == 0,
+                foreground_palette: (raw.fg_kind == 2).then_some(raw.fg_palette),
+                background_default: raw.bg_kind == 0,
+                background_palette: (raw.bg_kind == 2).then_some(raw.bg_palette),
             });
         }
 
@@ -835,6 +868,8 @@ mod tests {
         assert!(snapshot.bell);
         assert!(snapshot.damage.full || !snapshot.damage.dirty_rows.is_empty());
         assert_eq!(snapshot.cells[0][6].style.foreground, Some([204, 102, 102]));
+        assert_eq!(snapshot.cells[0][6].foreground_palette, Some(1));
+        assert!(!snapshot.cells[0][6].foreground_default);
     }
 
     #[test]
@@ -853,6 +888,37 @@ mod tests {
             snapshot.cells[0][3].style.foreground,
             Some([0xab, 0xcd, 0xef])
         );
+        assert_eq!(snapshot.cells[0][0].foreground_palette, Some(1));
+        assert_eq!(snapshot.cells[0][3].foreground_palette, Some(4));
+    }
+
+    #[test]
+    fn distinguishes_defaults_palette_truecolor_and_osc_overrides() {
+        let mut terminal = GhosttyTerminalCore::new(20, 2, 100).unwrap();
+        terminal
+            .set_colors([1, 2, 3], [4, 5, 6], [7, 8, 9])
+            .unwrap();
+        terminal.feed(b"d\x1b[31mp\x1b[38;2;10;20;30mt");
+        let snapshot = terminal.snapshot().unwrap();
+        assert!(snapshot.cells[0][0].foreground_default);
+        assert_eq!(snapshot.cells[0][0].style.foreground, None);
+        assert_eq!(snapshot.cells[0][1].foreground_palette, Some(1));
+        assert_eq!(snapshot.cells[0][2].foreground_palette, None);
+        assert_eq!(snapshot.cells[0][2].style.foreground, Some([10, 20, 30]));
+
+        terminal.feed(b"\x1b]4;1;rgb:aa/bb/cc\x1b\\");
+        let snapshot = terminal.snapshot().unwrap();
+        assert_eq!(snapshot.cells[0][1].foreground_palette, None);
+        assert_eq!(
+            snapshot.cells[0][1].style.foreground,
+            Some([0xaa, 0xbb, 0xcc])
+        );
+
+        terminal.feed(b"\x1b]10;rgb:11/22/33\x1b\\\x1b[0m x");
+        let snapshot = terminal.snapshot().unwrap();
+        let default_cell = snapshot.cells[0].last().unwrap();
+        assert!(!default_cell.foreground_default);
+        assert_eq!(default_cell.style.foreground, Some([0x11, 0x22, 0x33]));
     }
 
     #[test]

@@ -72,6 +72,21 @@ pub struct LogicalCellStyle {
     pub underline: bool,
     pub foreground: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
+    /// `true` means the sender's configured default, while an absent semantic
+    /// marker is legacy/direct RGB. Resolved RGB remains alongside palette
+    /// indices as a protocol-minor-7 fallback.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub foreground_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_palette: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_palette: Option<u8>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
