@@ -89,6 +89,15 @@ jobs:
 
       - run: npm run build:apple-native
 
+      - name: Require clean candidate provenance
+        run: |
+          test \
+            "$(node -p "require('./native/build/ghosttea-apple-native/metadata.json').sourceCommit")" \
+            = "$GITHUB_SHA"
+          test \
+            "$(node -p "require('./native/build/ghosttea-apple-native/metadata.json').sourceDirty")" \
+            = "false"
+
       - name: Run the complete SwiftPM suite against the candidate
         run: swift test --disable-sandbox --package-path apple/GhostteaKit
 
