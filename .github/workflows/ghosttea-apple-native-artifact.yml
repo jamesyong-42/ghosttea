@@ -15,9 +15,28 @@ on:
         type: boolean
         default: false
   pull_request:
+    # Keep this list in sync with `nativeSourceInputs` in
+    # scripts/ghosttea-apple-native-artifact.mjs. The manifest check verifies
+    # that every provenance input is covered, so a release-version bump cannot
+    # bypass the published-artifact audit again.
     paths:
+      - ".github/workflows/ghosttea-apple-native-artifact.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
       - "Package.swift"
+      - "apple/GhostteaKit/Compatibility/ios-toolchain.lock.json"
       - "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json"
+      - "native/fonts.lock.json"
+      - "native/ghosttea/**"
+      - "native/ghostty.lock.json"
+      - "native/ssh.lock.json"
+      - "scripts/build-ghosttea-apple-native.mjs"
+      - "scripts/build-ghostty-vt-apple.mjs"
+      - "scripts/build-ssh-candidate-apple.mjs"
+      - "scripts/check-apple-native-artifact.mjs"
+      - "scripts/ghosttea-apple-native-artifact.mjs"
+      - "scripts/package-ghosttea-apple-native.mjs"
+      - "scripts/verify-ghosttea-apple-native-package.mjs"
   schedule:
     - cron: "17 9 * * 1"
 
@@ -63,6 +82,16 @@ jobs:
     outputs:
       attestation_url: ${{ steps.attest.outputs.attestation-url }}
     steps:
+      - name: Require the protected release branch for publication
+        if: inputs.publish
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [[ "$DISPATCH_REF" != refs/heads/release/* ]]; then
+            echo "Apple artifact publication must be dispatched from a release/* branch; got $DISPATCH_REF." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
