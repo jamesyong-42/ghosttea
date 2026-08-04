@@ -1036,13 +1036,21 @@ fn load_file(
 }
 
 fn read_config_source(path: &Path, remaining_total_bytes: usize) -> io::Result<(String, usize)> {
-    let mut file = open_config_source(path)?;
+    let mut file = match open_config_source(path) {
+        Ok(file) => file,
+        Err(open_error) => {
+            // Windows rejects opening a directory before we can inspect the
+            // resulting handle. Normalize that platform-specific error to the
+            // same diagnostic produced after a successful open on Unix.
+            match fs::metadata(path) {
+                Ok(metadata) if !metadata.is_file() => return Err(non_regular_source_error()),
+                _ => return Err(open_error),
+            }
+        }
+    };
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "configuration source must be a regular file",
-        ));
+        return Err(non_regular_source_error());
     }
 
     let limit = MAX_CONFIG_SOURCE_BYTES.min(remaining_total_bytes);
@@ -1075,6 +1083,13 @@ fn read_config_source(path: &Path, remaining_total_bytes: usize) -> io::Result<(
                 "configuration source is not valid UTF-8",
             )
         })
+}
+
+fn non_regular_source_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "configuration source must be a regular file",
+    )
 }
 
 fn open_config_source(path: &Path) -> io::Result<fs::File> {

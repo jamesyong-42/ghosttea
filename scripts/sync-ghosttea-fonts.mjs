@@ -53,10 +53,7 @@ if (!existsSync(noticesSource)) {
   throw new Error(`Missing font license material ${lock.license.notices}.`);
 }
 const additions = (lock.additionalNotices ?? [])
-  .map(
-    (notice) =>
-      `- ${notice.name} (${notice.license})\n  - ${notice.copyright}\n  - ${notice.repository}`,
-  )
+  .map((notice) => `- ${notice.name} (${notice.license})\n  - ${notice.copyright}\n  - ${notice.repository}`)
   .join("\n");
 const notices = `${readFileSync(noticesSource, "utf8").trimEnd()}\n${
   additions ? `\n## Ghosttea fallback additions\n\n${additions}\n` : ""

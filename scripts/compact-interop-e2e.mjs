@@ -82,8 +82,7 @@ function usesSemanticCellColors(message) {
       : [];
   return rows.some(
     (row) =>
-      Array.isArray(row?.[1]) &&
-      row[1].some((cell) => Array.isArray(cell?.[3]) && (Number(cell[3][0]) & 0x80) !== 0),
+      Array.isArray(row?.[1]) && row[1].some((cell) => Array.isArray(cell?.[3]) && (Number(cell[3][0]) & 0x80) !== 0),
   );
 }
 

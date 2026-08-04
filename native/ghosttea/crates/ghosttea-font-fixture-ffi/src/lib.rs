@@ -42,7 +42,7 @@ fn copy_font(input: GhostteaFontBytes, name: &str) -> Option<FontResource> {
     Some(FontResource::new(name, bytes))
 }
 
-fn generate(
+struct FontInputs {
     regular: GhostteaFontBytes,
     bold: GhostteaFontBytes,
     italic: GhostteaFontBytes,
@@ -51,34 +51,36 @@ fn generate(
     symbols_math: GhostteaFontBytes,
     symbols: GhostteaFontBytes,
     emoji_text: GhostteaFontBytes,
-) -> Result<Vec<u8>, i32> {
+}
+
+fn generate(inputs: FontInputs) -> Result<Vec<u8>, i32> {
     let mut fonts = FontResources::new(
-        copy_font(regular, "JetBrainsMonoNerdFont-Regular.ttf")
+        copy_font(inputs.regular, "JetBrainsMonoNerdFont-Regular.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?,
     );
     fonts.bold = Some(
-        copy_font(bold, "JetBrainsMonoNerdFont-Bold.ttf")
+        copy_font(inputs.bold, "JetBrainsMonoNerdFont-Bold.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?,
     );
     fonts.italic = Some(
-        copy_font(italic, "JetBrainsMonoNerdFont-Italic.ttf")
+        copy_font(inputs.italic, "JetBrainsMonoNerdFont-Italic.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?,
     );
     fonts.bold_italic = Some(
-        copy_font(bold_italic, "JetBrainsMonoNerdFont-BoldItalic.ttf")
+        copy_font(inputs.bold_italic, "JetBrainsMonoNerdFont-BoldItalic.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?,
     );
     fonts.fallbacks = vec![
-        copy_font(emoji, "NotoColorEmoji.ttf")
+        copy_font(inputs.emoji, "NotoColorEmoji.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
             .with_presentation(FontPresentation::Emoji),
-        copy_font(symbols_math, "STIXTwoMath-Regular.otf")
+        copy_font(inputs.symbols_math, "STIXTwoMath-Regular.otf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
             .with_presentation(FontPresentation::Text),
-        copy_font(symbols, "NotoSansSymbols2-Regular.ttf")
+        copy_font(inputs.symbols, "NotoSansSymbols2-Regular.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
             .with_presentation(FontPresentation::Text),
-        copy_font(emoji_text, "NotoEmoji-Regular.ttf")
+        copy_font(inputs.emoji_text, "NotoEmoji-Regular.ttf")
             .ok_or(GHOSTTEA_FONT_FIXTURE_INVALID_ARGUMENT)?
             .with_presentation(FontPresentation::Text),
     ];
@@ -114,7 +116,7 @@ pub unsafe extern "C" fn ghosttea_font_fixture_generate(
     // SAFETY: `out` is non-null and the caller promises it is writable.
     unsafe { out.write(GhostteaOwnedBytes::EMPTY) };
     match std::panic::catch_unwind(AssertUnwindSafe(|| {
-        generate(
+        generate(FontInputs {
             regular,
             bold,
             italic,
@@ -123,7 +125,7 @@ pub unsafe extern "C" fn ghosttea_font_fixture_generate(
             symbols_math,
             symbols,
             emoji_text,
-        )
+        })
     })) {
         Ok(Ok(mut bytes)) => {
             let owned = GhostteaOwnedBytes {
