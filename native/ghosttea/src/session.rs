@@ -1476,7 +1476,11 @@ impl Session {
                 }
                 if session.has_active_views() {
                     let _operation = session.model_operation.lock().unwrap();
-                    match session.model.lock().unwrap().refresh(RenderRequest::Damage) {
+                    // Drop the model guard before executing effects: selection
+                    // publication snapshots the model again, and a match
+                    // scrutinee temporary otherwise lives through the arm.
+                    let update = session.model.lock().unwrap().refresh(RenderRequest::Damage);
+                    match update {
                         Ok(update) => session.execute_update(update),
                         Err(error) => eprintln!(
                             "terminal model final refresh failed for {}: {error:#}",

@@ -650,7 +650,7 @@ final class GhostteaAppModel: ObservableObject {
           commit(text, scopedToViewport: false)
           return
         } catch {
-          traceSelection("rpc failed error=\(String(describing: error))")
+          traceSelection("rpc failed diagnostic=truffleSelectionFailed")
           record(.truffleSelectionFailed)
         }
       }

@@ -980,15 +980,17 @@ mod tests {
         let mut fonts = FontResources::new(FontResource::new(
             "JetBrainsMonoNerdFont-Regular.ttf",
             include_bytes!(
-                "../../../../vendor/ghostty/src/font/res/JetBrainsMonoNerdFont-Regular.ttf"
+                "../../../../../apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/JetBrainsMonoNerdFont-Regular.ttf"
             )
             .to_vec(),
         ));
         fonts.fallbacks = vec![
             FontResource::new(
                 "NotoColorEmoji.ttf",
-                include_bytes!("../../../../vendor/ghostty/src/font/res/NotoColorEmoji.ttf")
-                    .to_vec(),
+                include_bytes!(
+                    "../../../../../apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/NotoColorEmoji.ttf"
+                )
+                .to_vec(),
             )
             .with_presentation(FontPresentation::Emoji),
             FontResource::new(
@@ -1003,8 +1005,10 @@ mod tests {
             .with_presentation(FontPresentation::Text),
             FontResource::new(
                 "NotoEmoji-Regular.ttf",
-                include_bytes!("../../../../vendor/ghostty/src/font/res/NotoEmoji-Regular.ttf")
-                    .to_vec(),
+                include_bytes!(
+                    "../../../../../apple/GhostteaKit/Sources/GhostteaFontProof/Resources/Fonts/NotoEmoji-Regular.ttf"
+                )
+                .to_vec(),
             )
             .with_presentation(FontPresentation::Text),
         ];

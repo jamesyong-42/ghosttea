@@ -465,11 +465,12 @@ try {
     ]);
     if (
       frame.readUInt32LE(0) !== 0x31465254 ||
-      frame.readUInt16LE(60) !== 6 ||
+      frame.readUInt16LE(60) !== 7 ||
       frame.readUInt16LE(64) !== 1 ||
       frame.readUInt16LE(80) !== 2 ||
       frame.readUInt16LE(96) !== 3 ||
-      frame.readUInt16LE(144) !== 8
+      frame.readUInt16LE(144) !== 8 ||
+      frame.readUInt16LE(160) !== 5
     ) {
       throw new Error("ghosttead did not emit the Phase 4 native-glyph frame layout");
     }
