@@ -49,6 +49,52 @@ editor preserves untouched mixed line endings and source bytes, reports
 inherited versus draft-blocking diagnostics separately, and can notify native
 hosts while an unsaved draft needs close/quit protection.
 
+## Host-local appearance contract
+
+Embedding hosts may keep visual preferences with the viewer instead of writing
+them into a shared Ghostty configuration document. `GhostteaWorkspace` accepts
+independent `theme` and `effects` props for that purpose. Each supplied prop is
+authoritative for every pane in that workspace; an omitted prop continues to
+come from the current configuration snapshot, then falls back to Ghosttea's
+default when no snapshot is available:
+
+```text
+host prop > preview/live ConfigSnapshot > Ghosttea default
+```
+
+This is facet-by-facet: a host can override colors and opacity while retaining
+config-derived shaders, or override shaders while retaining config-derived
+colors. A supplied prop also outranks the corresponding preview from the
+config-backed internal Settings dialog. Hosts that own viewer-local appearance
+should therefore render their own controls and pass stable `theme`/`effects`
+values; Ghosttea retains semantically equivalent effects to prevent redundant
+surface invalidation when a parent rerenders.
+
+The following UI-independent exports from
+`@vibecook/ghosttea-react/workspace` are the supported data contract for hosts
+that build appearance controls in their own design system:
+
+- `GHOSTTY_COLOR_THEMES`, `GHOSTTY_THEME_CATALOG_SOURCE`, and
+  `GHOSTTY_THEME_CATALOG_REVISION`
+- `GHOSTTEA_SHADER_OPTIONS` (including `id`, `license`, and `animated`) and
+  `UNAVAILABLE_UPSTREAM_SHADERS`
+- `TERMINAL_THEMES`
+- `GhostteaColorTheme`, `GhostteaShaderOption`, `GhostteaAppearanceUpdate`, and
+  the exported configuration-editor types
+
+Renderer-facing `TerminalTheme`, `TerminalEffects`, and
+`TerminalShaderEffect` remain exported from the package root. Hosts may also
+derive those types from `GhostteaWorkspaceProps["theme"]` and
+`GhostteaWorkspaceProps["effects"]`.
+
+Export names and TypeScript shapes follow the package's semver policy. Data is
+deliberately allowed to evolve: themes may be added, removed, or reordered when
+the catalog revision changes; shader options may be added, and names may move
+from the unavailable list once redistribution is cleared. Persist theme names
+and shader IDs rather than array positions, use the catalog revision as a cache
+or differ key, and treat the unavailable list as informational rather than a
+feature entitlement.
+
 Architecture:
 
 1. **Match** — `matchGhostteaBinding` (Ghostty defaults + extensions)
