@@ -25,6 +25,7 @@ import {
   collectEntries,
   contentDigest,
   lockPath,
+  nativeSourceInputs,
   nativeSourceDigest,
   readLock,
   releaseTag,
@@ -63,6 +64,44 @@ const appleThemeCatalog = join(
   root,
   "apple/GhostteaKit/Sources/GhostteaAppearance/Resources/theme-catalog.generated.json",
 );
+const artifactWorkflow = join(root, ".github/workflows/ghosttea-apple-native-artifact.yml");
+
+// The published-artifact audit must run whenever an input to sourceDigest
+// changes. Keeping this assertion in the manifests-only gate makes path-filter
+// drift fail in the ordinary repository check, before a release tag is cut.
+const workflowText = readFileSync(artifactWorkflow, "utf8");
+const pullRequestPaths = workflowText
+  .match(/\n {2}pull_request:\n([\s\S]*?)(?=\n {2}[a-z_]+:)/)?.[1]
+  ?.matchAll(/^ {6}- "([^"]+)"$/gm);
+const auditedPaths = new Set(Array.from(pullRequestPaths ?? [], (match) => match[1]));
+const requiredAuditPaths = [
+  ".github/workflows/ghosttea-apple-native-artifact.yml",
+  "Package.swift",
+  "apple/GhostteaKit/Compatibility/apple-native-artifact.lock.json",
+  "scripts/check-apple-native-artifact.mjs",
+  "scripts/ghosttea-apple-native-artifact.mjs",
+  "scripts/package-ghosttea-apple-native.mjs",
+  "scripts/verify-ghosttea-apple-native-package.mjs",
+  ...nativeSourceInputs,
+];
+
+function auditCovers(path) {
+  return [...auditedPaths].some((filter) => {
+    if (filter === path) return true;
+    if (!filter.endsWith("/**")) return false;
+    const directory = filter.slice(0, -3);
+    return path === directory || path.startsWith(`${directory}/`);
+  });
+}
+
+for (const path of requiredAuditPaths) {
+  if (!auditCovers(path)) {
+    problems.push(
+      `${artifactWorkflow}'s pull_request paths do not cover native artifact input ${path}; ` +
+        "a source change could reach a product release without auditing the published SwiftPM bytes.",
+    );
+  }
+}
 
 // ── 1. The root manifest pins what the lock records ──────────────────────────
 const manifestText = readFileSync(rootManifest, "utf8");
@@ -197,20 +236,26 @@ if (manifestsOnly) {
   process.exit(0);
 }
 
-// ── 3. The lock still describes the artifact on disk ────────────────────────
-if (existsSync(sourceArtifact)) {
-  const entries = collectEntries();
-  const digest = contentDigest(entries);
-  if (digest !== lock.contentDigest) {
-    problems.push(
-      `The composed artifact has content digest ${digest}, but the lock records ${lock.contentDigest}. ` +
-        `Re-run \`npm run package:ghosttea-apple-native\`, publish the new tag, and update ${lockPath}.`,
-    );
+// ── 3. The lock still describes the local artifact, when checking locally ───
+// Release mode independently unpacks and hashes the served archive in section
+// 5. A developer's older gitignored build is irrelevant to those published
+// bytes and must not make a valid release audit fail. The ordinary check keeps
+// enforcing local build freshness for candidate development.
+if (!releaseMode) {
+  if (existsSync(sourceArtifact)) {
+    const entries = collectEntries();
+    const digest = contentDigest(entries);
+    if (digest !== lock.contentDigest) {
+      problems.push(
+        `The composed artifact has content digest ${digest}, but the lock records ${lock.contentDigest}. ` +
+          `Re-run \`npm run package:ghosttea-apple-native\`, publish the new tag, and update ${lockPath}.`,
+      );
+    }
+  } else {
+    // Not a failure: the artifact is a gitignored build output, and this check
+    // has to pass on a machine that has never run the Apple build.
+    console.warn("The composed artifact is absent; skipping the content-digest comparison.");
   }
-} else {
-  // Not a failure: the artifact is a gitignored build output, and this check has
-  // to pass on a machine that has never run the Apple build.
-  console.warn("The composed artifact is absent; skipping the content-digest comparison.");
 }
 
 // ── 4. The artifact was built from the sources being shipped ────────────────
@@ -243,10 +288,15 @@ if (!lock.sourceDigest) {
 // the one unverified human claim among these locks — and which stayed true across
 // a release that changed the artifact's contents.
 if (releaseMode) {
-  const response = await fetch(lock.url, { redirect: "follow" });
-  if (!response.ok) {
+  let response;
+  try {
+    response = await fetch(lock.url, { redirect: "follow" });
+  } catch (error) {
+    problems.push(`${lock.url} could not be fetched: ${error instanceof Error ? error.message : String(error)}.`);
+  }
+  if (response && !response.ok) {
     problems.push(`${lock.url} is not resolvable: HTTP ${response.status} ${response.statusText}.`);
-  } else {
+  } else if (response) {
     const archive = Buffer.from(await response.arrayBuffer());
     if (archive.length !== lock.size) {
       problems.push(`The published archive is ${archive.length} bytes; the lock records ${lock.size}.`);

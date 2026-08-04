@@ -148,7 +148,9 @@ commit, and build environment.
 1. Open or update the native-source pull request. The iOS hardening workflow
    builds and qualifies a local candidate without requiring an artifact that
    cannot exist until the source is approved.
-2. Dispatch the artifact workflow on the exact reviewed source ref.
+2. Dispatch the artifact workflow on the exact reviewed source ref. A
+   publication request must use the protected `release/*` branch convention;
+   the workflow rejects any other ref before starting the expensive build.
 3. Leave `publish` false to produce a qualified Actions artifact only.
 4. Set `publish` true to request promotion through the protected `release`
    environment.
@@ -182,6 +184,13 @@ let the pull-request artifact audit verify the served bytes before merge. The
 environment must explicitly allow that protected branch pattern; GitHub matches
 environment rules against the dispatch ref.
 
+The artifact audit's pull-request paths cover every `nativeSourceInputs` entry,
+including the workspace `Cargo.toml` and `Cargo.lock`. A release-only Cargo
+version bump therefore moves `sourceDigest` and intentionally leaves the audit
+red until a candidate from that exact commit is promoted and its immutable pin
+is committed. `check:swiftpm:manifests` verifies this path coverage so adding a
+new provenance input cannot silently bypass the audit.
+
 GitHub artifact attestations are the provenance record:
 <https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations>.
 
@@ -211,11 +220,19 @@ npm run check:apple-native-artifact:release
 npm run test:swiftpm:consumer
 ```
 
+The release audit intentionally ignores any gitignored local XCFramework and
+re-derives identity from the served archive; use
+`check:apple-native-artifact` without `--release` when validating a local
+candidate. This prevents an older developer build from contaminating a remote
+publication decision while preserving local stale-build detection.
+
 The iOS hardening workflow rebuilds and qualifies a local candidate, so it checks
-the source build independently. A separate pull-request job, triggered only by
-root-manifest or artifact-lock changes, checks the served artifact. This split
-avoids a circular gate: a source pull request can create a candidate, but the new
-remote URL cannot be validated until CI has published it.
+the source build independently. A separate pull-request job, triggered by the
+root manifest, artifact lock, and every native provenance input, checks the
+served artifact. This split avoids a circular build dependency: a source pull
+request can create a candidate while its served-artifact audit is expected to
+remain red; after protected promotion and the pin update, the same audit verifies
+the immutable URL before merge.
 
 For the same reason, the repository-wide `npm run check` uses
 `check:swiftpm:manifests`. The stricter `check:apple-native-artifact` and

@@ -24,6 +24,11 @@ share one version.
   preventing parent rerenders from causing redundant terminal invalidations.
   Animated effects continue to honor the existing WebGPU focus and occlusion
   gate, so hidden workspaces schedule no shader frames.
+- The SwiftPM native target is republished as
+  `ghosttea-apple-native-9aaf82fbe5d3` from the exact 0.9.1 sources. Native
+  provenance inputs now trigger the published-artifact audit directly, and the
+  workflow rejects publication outside the protected `release/*` convention
+  before starting an expensive Apple build.
 
 ## 0.9.0 - 2026-08-03
 
