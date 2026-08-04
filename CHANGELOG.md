@@ -3,6 +3,28 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.9.1 - 2026-08-04
+
+### Added
+
+- Embedding hosts can pass `effects` to `GhostteaWorkspace` alongside `theme`,
+  giving each viewer independent shader selection and animation without writing
+  visual preferences into a shared Ghostty configuration document. An omitted
+  prop retains the existing config-derived behavior, and effects remain isolated
+  per rendered surface even when multiple viewers attach to one session.
+- The theme catalog, catalog source and revision, built-in themes, shader
+  metadata, unavailable-upstream list, and appearance types are now documented
+  as the supported UI-independent host appearance contract. Export shapes are
+  semver-protected while catalog contents and shader availability remain
+  explicitly revisioned and extensible.
+
+### Changed
+
+- Semantically equivalent host effect objects retain a stable renderer value,
+  preventing parent rerenders from causing redundant terminal invalidations.
+  Animated effects continue to honor the existing WebGPU focus and occlusion
+  gate, so hidden workspaces schedule no shader frames.
+
 ## 0.9.0 - 2026-08-03
 
 ### Added

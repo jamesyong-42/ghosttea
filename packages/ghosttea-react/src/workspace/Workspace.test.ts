@@ -1,7 +1,69 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { unknownSessionActivity, type SessionSummary } from "@vibecook/ghosttea-protocol";
-import { initializeWorkspace, workspaceOwnsHotkey, type GhostteaPaneRehydration } from "./Workspace";
+import { unknownSessionActivity, type RendererConfig, type SessionSummary } from "@vibecook/ghosttea-protocol";
+import {
+  initializeWorkspace,
+  resolveWorkspaceEffects,
+  workspaceEffectsKey,
+  workspaceOwnsHotkey,
+  type GhostteaPaneRehydration,
+} from "./Workspace";
+import { DEFAULT_EFFECTS, type TerminalEffects } from "../renderers/types";
 import { pane } from "./pane-layout";
+
+const rendererConfig: RendererConfig = {
+  foreground: [255, 255, 255],
+  background: [0, 0, 0],
+  cursor: [255, 255, 255],
+  selectionBackground: [64, 64, 64],
+  selectionForeground: [255, 255, 255],
+  fontSize: 13,
+  fontFamilies: [],
+  paddingX: [0, 0],
+  paddingY: [0, 0],
+  postProcess: "none",
+  shaderEffects: ["ghosttea:crt"],
+  customShaderAnimation: false,
+  customShaderPaths: [],
+};
+
+describe("workspace appearance authority", () => {
+  it("prefers viewer-local effects and preserves the config/default fallbacks", () => {
+    const local: TerminalEffects = {
+      postProcess: "none",
+      shaderEffects: ["ghosttea:vhs"],
+      animate: true,
+    };
+
+    expect(resolveWorkspaceEffects(local, { renderer: rendererConfig })).toBe(local);
+    expect(resolveWorkspaceEffects(undefined, { renderer: rendererConfig })).toEqual({
+      postProcess: "none",
+      shaderEffects: ["ghosttea:crt"],
+      animate: false,
+    });
+    expect(resolveWorkspaceEffects(undefined, undefined)).toBe(DEFAULT_EFFECTS);
+  });
+
+  it("keys equivalent values alike but treats shader order as rendering state", () => {
+    const current: TerminalEffects = {
+      postProcess: "none",
+      shaderEffects: ["ghosttea:crt", "ghosttea:vhs"],
+      animate: true,
+    };
+    const equivalent: TerminalEffects = {
+      postProcess: "none",
+      shaderEffects: ["ghosttea:crt", "ghosttea:vhs"],
+      animate: true,
+    };
+    const reordered: TerminalEffects = {
+      postProcess: "none",
+      shaderEffects: ["ghosttea:vhs", "ghosttea:crt"],
+      animate: true,
+    };
+
+    expect(workspaceEffectsKey(equivalent)).toBe(workspaceEffectsKey(current));
+    expect(workspaceEffectsKey(reordered)).not.toBe(workspaceEffectsKey(current));
+  });
+});
 
 describe("workspaceOwnsHotkey", () => {
   it("allows only the active workspace containing the event or focused element", () => {

@@ -124,7 +124,17 @@ export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
   sidebar?: ComponentType<{ workspace: GhostteaWorkspaceContext }>;
+  /**
+   * Viewer-local color and opacity override. When omitted, the live configuration
+   * snapshot remains authoritative.
+   */
   theme?: TerminalTheme;
+  /**
+   * Viewer-local shader override. When omitted, effects continue to come from the
+   * live configuration snapshot. Keep this value referentially stable when practical;
+   * Ghosttea also retains semantically equivalent values to avoid redundant redraws.
+   */
+  effects?: TerminalEffects;
   decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
   /** Attach durable, embedder-defined data to a pane as it is persisted; opaque to Ghosttea. */
   paneMeta?: ((session: SessionSummary, paneId: string) => unknown) | undefined;
@@ -149,6 +159,28 @@ interface InitialWorkspace {
   layout: PaneNode;
   activePaneId: string;
   zoomedPaneId: string | null;
+}
+
+/** Internal test seam for the workspace's host/config/default precedence. */
+export function resolveWorkspaceEffects(
+  effects: TerminalEffects | undefined,
+  config: Pick<ConfigSnapshot, "renderer"> | undefined,
+): TerminalEffects {
+  return effects ?? (config ? terminalEffectsFromConfig(config) : DEFAULT_EFFECTS);
+}
+
+/** Canonicalize renderer semantics so equivalent host objects share a memo dependency. */
+export function workspaceEffectsKey(effects: TerminalEffects): string {
+  return JSON.stringify([effects.postProcess, effects.animate ?? false, effects.shaderEffects ?? []]);
+}
+
+function workspaceEffectsFromKey(key: string): TerminalEffects {
+  const [postProcess, animate, shaderEffects] = JSON.parse(key) as [
+    TerminalEffects["postProcess"],
+    boolean,
+    NonNullable<TerminalEffects["shaderEffects"]>,
+  ];
+  return { postProcess, animate, shaderEffects };
 }
 
 function windowTitle(session: SessionSummary | undefined): string {
@@ -467,6 +499,7 @@ export function GhostteaWorkspace({
   storageKey = DEFAULT_STORAGE_KEY,
   sidebar,
   theme,
+  effects: effectsOverride,
   decoratePane,
   paneMeta,
   onRehydratePane,
@@ -512,10 +545,12 @@ export function GhostteaWorkspace({
     () => theme ?? (renderConfig ? terminalThemeFromConfig(renderConfig) : TERMINAL_THEMES.midnight),
     [renderConfig, theme],
   );
-  const effects = useMemo<TerminalEffects>(
-    () => (renderConfig ? terminalEffectsFromConfig(renderConfig) : DEFAULT_EFFECTS),
-    [renderConfig],
+  const nextEffects = useMemo<TerminalEffects>(
+    () => resolveWorkspaceEffects(effectsOverride, renderConfig),
+    [effectsOverride, renderConfig],
   );
+  const effectsKey = workspaceEffectsKey(nextEffects);
+  const effects = useMemo<TerminalEffects>(() => workspaceEffectsFromKey(effectsKey), [effectsKey]);
   const bindings = useMemo(
     () => configuredBindingsForPlatform(config?.workspace, platform.platform),
     [config?.workspace, platform.platform],
