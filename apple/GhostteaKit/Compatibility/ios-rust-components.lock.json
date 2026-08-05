@@ -7,7 +7,7 @@
     "version": "0.9.1",
     "dependencies": ["pkg:cargo/ghosttea-ffi@0.9.1", "pkg:cargo/ghosttea-font-fixture-ffi@0.9.1"]
   },
-  "cargoLockSha256": "ce7bc4095012481414b1cda7d50c5429eb42b5ccfa7efd22259f88a9ad892e86",
+  "cargoLockSha256": "b51daf31c8c39abd41e3ad710d5e64751e691152c48adcde7890ae96fe36ffce",
   "components": [
     {
       "ref": "pkg:cargo/anyhow@1.0.103",

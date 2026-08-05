@@ -3,6 +3,20 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## Unreleased
+
+### Changed
+
+- Pin the registry release of Truffle 0.7.12, replacing 0.7.11. Every crate
+  sharing an application-owned Truffle node must resolve the same version and
+  source, so a consumer still pinned to `=0.7.11` cannot resolve alongside this
+  release and must move too. The upgrade carries a sidecar fix confining static
+  routes to a rooted filesystem, and records no breaking API changes.
+- Advance the Swift package lock to the `truffle-v0.7.12` tag. Every hash-locked
+  input is byte-identical at the new revision — the Truffle license, the
+  TailscaleKit binary artifact URL and checksum, and the pinned libtailscale
+  revision — so only the recorded revision string differs.
+
 ## 0.9.1 - 2026-08-04
 
 ### Added
