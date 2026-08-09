@@ -121,7 +121,7 @@ fn main() {
     let layout = layout();
     if let Some(prefix) = env::var_os("GHOSTTY_VT_PREFIX") {
         let prefix = PathBuf::from(prefix);
-        validate_local_override(&prefix, &layout);
+        validate_local_override(&prefix, &out, &layout);
         link(&prefix, &out, &layout);
         return;
     }
@@ -149,6 +149,9 @@ fn main() {
         Prefix::Bundle(path) => {
             validate_headers(path, artifact);
             validate_library(path, artifact, &layout);
+            // Nothing to declare: a bundle is always extracted into OUT_DIR, so
+            // the install tree here is this script's output. The bundle it came
+            // from is declared at the point it was resolved.
         }
         Prefix::Repository(path) => {
             // Headers are generated from the pinned Ghostty source and are
@@ -162,6 +165,11 @@ fn main() {
             if artifact.reproducible {
                 validate_library(path, artifact, &layout);
             }
+            // A repository install tree is a genuine input. It is produced
+            // outside this script by a separate Ghostty build, so rebuilding
+            // the checkout must relink even though no manifest input moved.
+            rerun_if_changed(&path.join(artifact.library_path(&layout)), &out);
+            rerun_if_changed(&path.join("include"), &out);
         }
     }
     link(prefix.path(), &out, &layout);
@@ -175,7 +183,12 @@ fn resolve_prefix(
     layout: &Layout,
 ) -> Prefix {
     if let Some(bundle) = env::var_os("GHOSTTEA_GHOSTTY_VT_BUNDLE") {
-        return Prefix::Bundle(extract_bundle(&PathBuf::from(bundle), out, artifact));
+        let bundle = PathBuf::from(bundle);
+        // A caller-supplied bundle is a genuine input: it lives outside OUT_DIR
+        // and the caller can swap it without the variable's value changing, so
+        // `rerun-if-env-changed` alone would miss it.
+        rerun_if_changed(&bundle, out);
+        return Prefix::Bundle(extract_bundle(&bundle, out, artifact));
     }
 
     // Repository builds keep one install tree per target so a checkout can hold
@@ -212,10 +225,13 @@ fn resolve_prefix(
         .read_to_vec()
         .unwrap_or_else(|error| panic!("failed to read Ghostty VT bundle from {url}: {error}"));
     fs::write(&bundle, contents).expect("write downloaded Ghostty VT bundle");
+    // The download is not declared as an input. It lands in OUT_DIR, and
+    // `artifacts.json` — already declared above — pins its URL, size, and
+    // SHA-256, so the manifest is a complete fingerprint of these bytes.
     Prefix::Bundle(extract_bundle(&bundle, out, artifact))
 }
 
-fn validate_local_override(prefix: &Path, layout: &Layout) {
+fn validate_local_override(prefix: &Path, out: &Path, layout: &Layout) {
     let library = prefix.join(layout.library_path);
     let header = prefix.join("include/ghostty/vt.h");
     assert!(
@@ -223,12 +239,27 @@ fn validate_local_override(prefix: &Path, layout: &Layout) {
         "GHOSTTY_VT_PREFIX must contain {} and include/ghostty/vt.h",
         layout.library_path
     );
-    println!("cargo:rerun-if-changed={}", library.display());
-    println!("cargo:rerun-if-changed={}", header.display());
+    // Both are caller-supplied files outside OUT_DIR, so both are real inputs.
+    rerun_if_changed(&library, out);
+    rerun_if_changed(&header, out);
+}
+
+/// Declares a build-script input, refusing any path this script produced.
+///
+/// Cargo compares each declared path against the build unit's own `output` file
+/// and re-runs the script when a path is newer. That reference is written
+/// before the script finishes populating `OUT_DIR`, so a declared path under
+/// `OUT_DIR` is permanently newer than it and the unit invalidates itself on
+/// every build — taking the whole dependent chain with it. Provenance is
+/// decided by the caller; this keeps a future one from reintroducing the loop.
+fn rerun_if_changed(path: &Path, out: &Path) {
+    if path.starts_with(out) {
+        return;
+    }
+    println!("cargo:rerun-if-changed={}", path.display());
 }
 
 fn extract_bundle(bundle: &Path, out: &Path, artifact: &TargetArtifact) -> PathBuf {
-    println!("cargo:rerun-if-changed={}", bundle.display());
     let contents = fs::read(bundle).unwrap_or_else(|error| {
         panic!(
             "failed to read Ghostty VT bundle {}: {error}",
@@ -264,7 +295,6 @@ fn validate_library(prefix: &Path, artifact: &TargetArtifact, layout: &Layout) {
         )
     });
     verify_hash(&library, &contents, &artifact.library_sha256);
-    println!("cargo:rerun-if-changed={}", library.display());
 }
 
 /// Headers come from the pinned Ghostty source rather than the compiler, so
@@ -279,7 +309,6 @@ fn validate_headers(prefix: &Path, artifact: &TargetArtifact) {
         "checksum mismatch for {}; refusing an untrusted native artifact",
         include.display()
     );
-    println!("cargo:rerun-if-changed={}", include.display());
 }
 
 fn header_tree_hash(include: &Path) -> String {
