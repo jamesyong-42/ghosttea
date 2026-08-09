@@ -3,6 +3,33 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.9.3 - 2026-08-09
+
+### Fixed
+
+- **A repeat `cargo build` is a no-op again for every crate that links
+  ghosttea.** `ghosttea-vt-sys`'s build script declared three paths under its
+  own `OUT_DIR` as `rerun-if-changed` inputs — the downloaded release bundle and
+  the library and header tree it extracts. Cargo writes the fingerprint
+  reference before the script finishes populating `OUT_DIR`, so those paths were
+  unconditionally newer than it: the unit invalidated itself on every build,
+  re-downloaded and re-extracted the artifact, and dragged `ghosttea-vt`,
+  `ghosttea-core`, `ghosttea`, and the embedding crate through a full recompile
+  behind it. Each declaration is now made where the artifact's provenance is
+  known, so only genuine inputs are declared — a caller's
+  `GHOSTTEA_GHOSTTY_VT_BUNDLE` file, a `GHOSTTY_VT_PREFIX` tree, or a repository
+  install tree — and never the script's own output. The downloaded bundle needs
+  no declaration of its own: `artifacts.json`, already an input, pins its URL,
+  size, and SHA-256, so the manifest is a complete fingerprint of those bytes.
+  Verification is unchanged, every byte is still checked, and the environment
+  contract is untouched; embedders consume the fix by bumping the pin. Builds
+  from a repository checkout never showed the symptom, which is why it survived
+  to 0.9.2 — only consumers taking the download path were affected.
+- A repository install tree for a target marked `reproducible: false` now
+  relinks when its static archive changes. The library was previously declared
+  as an input only on the path that also checksummed it, so on those targets a
+  local Ghostty rebuild left the stale archive linked.
+
 ## 0.9.2 - 2026-08-05
 
 ### Changed
