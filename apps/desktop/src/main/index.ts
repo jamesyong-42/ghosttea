@@ -275,6 +275,26 @@ ipcMain.on("terminal-close-tab", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
+ipcMain.on("terminal-close-pane-session", (event, sessionId: unknown, remainingSessionIds: unknown) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (
+    !window ||
+    typeof sessionId !== "string" ||
+    !sessionId ||
+    !Array.isArray(remainingSessionIds) ||
+    !remainingSessionIds.every((id) => typeof id === "string")
+  ) {
+    return;
+  }
+
+  // Update this viewport atomically with the close notification, then end the
+  // PTY only when no pane in any window still mirrors it.
+  if (!tabs.closePaneSession(window, sessionId, remainingSessionIds)) return;
+  void backend?.automation
+    .terminate(sessionId, "user")
+    .catch((error) => console.warn(`[terminal-runtime] failed to terminate closed pane ${sessionId}`, error));
+});
+
 ipcMain.on("terminal-tab-sessions", (event, sessionIds: unknown) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window || !Array.isArray(sessionIds) || !sessionIds.every((id) => typeof id === "string")) return;

@@ -16,6 +16,8 @@ export interface TerminalSupervisorOptions {
   runtimeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
   startupTimeoutMs?: number;
+  /** Grace after SIGTERM before SIGKILL. Must exceed the daemon's drain budget. */
+  shutdownTimeoutMs?: number;
   onStderr?: (line: string) => void;
 }
 
@@ -126,12 +128,12 @@ export class TerminalSupervisor extends EventEmitter {
     if (child) {
       this.#expectedExits.add(child);
       child.kill("SIGTERM");
-      // A daemon wedged past SIGTERM would linger holding PTYs and sockets.
-      // The timer is unref'd so a quitting app never waits on it; if the app
-      // exits first the daemon dies with its pipes as before.
+      // ghosttead spends up to ten seconds draining PTYs after SIGTERM. Leave
+      // headroom around that contract; an earlier supervisor timeout would
+      // turn every orderly shutdown into an avoidable hard kill.
       const escalation = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, 3_000);
+      }, this.#options.shutdownTimeoutMs ?? 12_000);
       escalation.unref?.();
       child.once("exit", () => clearTimeout(escalation));
       if (this.#child === child) this.#child = undefined;

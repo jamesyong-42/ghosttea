@@ -1,5 +1,6 @@
 export {
   GhostteaWorkspace,
+  type GhostteaPaneClose,
   type GhostteaPaneRehydration,
   type GhostteaWorkspaceContext,
   type GhostteaWorkspacePane,

@@ -38,6 +38,17 @@ export class DesktopTabRegistry<Window extends object> {
     if (record) record.sessionIds = new Set(sessionIds);
   }
 
+  /**
+   * Apply a pane removal and report whether its session has no remaining pane
+   * attachment in any registered window. Unknown/stale requests fail closed.
+   */
+  closePaneSession(window: Window, sessionId: string, remainingSessionIds: readonly string[]): boolean {
+    const record = this.#byWindow.get(window);
+    if (!record?.sessionIds.has(sessionId)) return false;
+    record.sessionIds = new Set(remainingSessionIds);
+    return !this.records().some((candidate) => candidate.sessionIds.has(sessionId));
+  }
+
   updateActiveCwd(window: Window, cwd: string | undefined): void {
     const record = this.#byWindow.get(window);
     if (record) record.activeCwd = cwd;

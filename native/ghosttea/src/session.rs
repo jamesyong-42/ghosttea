@@ -12,6 +12,9 @@ use std::{
 };
 
 #[cfg(unix)]
+use std::collections::HashSet;
+
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 #[cfg(windows)]
@@ -905,6 +908,218 @@ fn signal_pgid(pgid: Option<i32>, signal: libc::c_int) -> Result<()> {
         Ok(())
     } else {
         Err(error.into())
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessIdentity {
+    pid: i32,
+    parent_pid: i32,
+    started_at: u64,
+}
+
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn linux_process_identity(pid: i32, stat: &str) -> Option<ProcessIdentity> {
+    // `comm` may contain spaces and parentheses. Everything after its final
+    // ')' starts at field 3 (state); ppid is field 4 and process start ticks
+    // are field 22.
+    let fields = stat
+        .get(stat.rfind(')')? + 1..)?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    Some(ProcessIdentity {
+        pid,
+        parent_pid: fields.get(1)?.parse().ok()?,
+        started_at: fields.get(19)?.parse().ok()?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn unix_process_identity(pid: i32) -> Option<ProcessIdentity> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    linux_process_identity(pid, &stat)
+}
+
+#[cfg(target_os = "linux")]
+fn unix_process_snapshot() -> Vec<ProcessIdentity> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            linux_process_identity(pid, &stat)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn unix_process_identity(pid: i32) -> Option<ProcessIdentity> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let expected = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            expected,
+        )
+    };
+    if read != expected {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    Some(ProcessIdentity {
+        pid,
+        parent_pid: i32::try_from(info.pbi_ppid).ok()?,
+        started_at: info
+            .pbi_start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.pbi_start_tvusec),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn unix_process_snapshot() -> Vec<ProcessIdentity> {
+    let requested = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if requested <= 0 {
+        return Vec::new();
+    }
+    let mut pids = vec![0_i32; requested as usize + 64];
+    let bytes = pids
+        .len()
+        .saturating_mul(std::mem::size_of::<i32>())
+        .min(i32::MAX as usize) as i32;
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    pids.truncate((count as usize).min(pids.len()));
+    pids.into_iter()
+        .filter(|pid| *pid > 1)
+        .filter_map(unix_process_identity)
+        .collect()
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn unix_process_identity(_pid: i32) -> Option<ProcessIdentity> {
+    None
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn unix_process_snapshot() -> Vec<ProcessIdentity> {
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn process_descendants(root_pid: i32, snapshot: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+    let mut ancestors = HashSet::from([root_pid]);
+    let mut descendants = Vec::new();
+    loop {
+        let mut changed = false;
+        for process in snapshot {
+            if ancestors.contains(&process.pid) || !ancestors.contains(&process.parent_pid) {
+                continue;
+            }
+            ancestors.insert(process.pid);
+            descendants.push(*process);
+            changed = true;
+        }
+        if !changed {
+            return descendants;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_process(left: &ProcessIdentity, right: &ProcessIdentity) -> bool {
+    // Reparenting is expected when the PTY root exits. PID plus process start
+    // time is the stable identity; parent_pid is topology observed at one
+    // instant and must not make a live orphan disappear from the later rung.
+    left.pid == right.pid && left.started_at == right.started_at
+}
+
+/// Signal every process known to descend from the PTY root, even when job
+/// control moved it outside both the root and foreground process groups.
+///
+/// Identities include process start time: a PID that exits during the grace
+/// period cannot make the later SIGKILL hit an unrelated process that reused
+/// its number.
+#[cfg(unix)]
+fn signal_process_tree(
+    root_pid: Option<i32>,
+    process_groups: [Option<i32>; 2],
+    known: &mut HashMap<i32, ProcessIdentity>,
+    signal: libc::c_int,
+    step: &str,
+    session_id: &str,
+) {
+    let snapshot = unix_process_snapshot();
+    if let Some(root_pid) = root_pid {
+        if let Some(root) = snapshot.iter().find(|process| process.pid == root_pid) {
+            known.insert(root.pid, *root);
+        }
+        for descendant in process_descendants(root_pid, &snapshot) {
+            known.insert(descendant.pid, descendant);
+        }
+    }
+
+    for pgid in process_groups.into_iter().flatten().collect::<HashSet<_>>() {
+        if let Err(error) = signal_pgid(Some(pgid), signal) {
+            eprintln!(
+                "[ghosttea] failed to {step} process group {pgid} for {session_id}: {error:#}"
+            );
+        }
+    }
+
+    for process in known.values() {
+        if !unix_process_identity(process.pid)
+            .as_ref()
+            .is_some_and(|current| same_process(current, process))
+        {
+            continue;
+        }
+        let result = unsafe { libc::kill(process.pid, signal) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                eprintln!(
+                    "[ghosttea] failed to {step} descendant {} for {session_id}: {error}",
+                    process.pid
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn known_processes_alive(known: &HashMap<i32, ProcessIdentity>) -> bool {
+    known.values().any(|process| {
+        unix_process_identity(process.pid)
+            .as_ref()
+            .is_some_and(|current| same_process(current, process))
+    })
+}
+
+#[cfg(unix)]
+fn wait_for_known_processes(known: &HashMap<i32, ProcessIdentity>, deadline: Instant) -> bool {
+    loop {
+        if !known_processes_alive(known) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        thread::sleep(
+            deadline
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(50)),
+        );
     }
 }
 
@@ -2464,6 +2679,29 @@ impl Session {
         }
         *self.requested_termination.lock().unwrap() = Some(source);
         self.summary.lock().unwrap().requested_termination = Some(source);
+        #[cfg(unix)]
+        let termination_tree = {
+            let root_pid = self.process.pid.and_then(|pid| i32::try_from(pid).ok());
+            let root_pgid = root_pid.and_then(|pid| {
+                let pgid = unsafe { libc::getpgid(pid) };
+                (pgid > 1).then_some(pgid)
+            });
+            let foreground = self
+                .process
+                .foreground_pgid()
+                .filter(|foreground| Some(*foreground) != root_pgid);
+            let snapshot = unix_process_snapshot();
+            let mut known_processes = HashMap::new();
+            if let Some(root_pid) = root_pid {
+                if let Some(root) = snapshot.iter().find(|process| process.pid == root_pid) {
+                    known_processes.insert(root.pid, *root);
+                }
+                for descendant in process_descendants(root_pid, &snapshot) {
+                    known_processes.insert(descendant.pid, descendant);
+                }
+            }
+            (root_pid, [root_pgid, foreground], known_processes)
+        };
         {
             let mut order = self.input_order.lock().unwrap();
             if self.input_tx.try_send(InputOperation::Interrupt).is_ok() {
@@ -2488,7 +2726,14 @@ impl Session {
                 #[cfg(not(unix))]
                 let interrupt_grace = INTERRUPT_GRACE;
                 match session.exit_latch.wait_phase(interrupt_grace) {
-                    PhaseWait::Exited => return,
+                    PhaseWait::Exited => {
+                        #[cfg(unix)]
+                        if !known_processes_alive(&termination_tree.2) {
+                            return;
+                        }
+                        #[cfg(not(unix))]
+                        return;
+                    }
                     PhaseWait::GraceElapsed => {}
                     // Nothing gentler is affordable; fall through to the sweep.
                     PhaseWait::DeadlineReached => {}
@@ -2497,41 +2742,51 @@ impl Session {
                 {
                     // Signal the foreground group alongside the root group:
                     // a full-screen program that swallowed the interrupt sits
-                    // in its own group, which signalling the root would miss.
-                    let root = session.process.pid.and_then(|pid| i32::try_from(pid).ok());
-                    let sweep = |signal: libc::c_int, step: &str| {
-                        let foreground = session
-                            .process
-                            .foreground_pgid()
-                            .filter(|foreground| Some(*foreground) != root);
-                        for pgid in [root, foreground].into_iter().flatten() {
-                            if let Err(error) = signal_pgid(Some(pgid), signal) {
-                                eprintln!(
-                                    "[ghosttea] failed to {step} process group {pgid} for {}: {error:#}",
-                                    session.id()
-                                );
-                            }
-                        }
-                    };
+                    // in its own group, while background jobs may sit in a
+                    // third. Keep verified descendant identities for both
+                    // rungs so every branch of the PTY process tree is swept.
+                    let (root_pid, process_groups, mut known_processes) = termination_tree;
                     // A deadline at any rung skips straight to the end: the
                     // remaining graces are courtesies the budget cannot afford.
                     let mut jump = false;
-                    sweep(libc::SIGTERM, "terminate");
+                    signal_process_tree(
+                        root_pid,
+                        process_groups,
+                        &mut known_processes,
+                        libc::SIGTERM,
+                        "terminate",
+                        &session.id(),
+                    );
+                    let mut terminate_deadline = Instant::now() + terminate_grace;
+                    if let Some(overall_deadline) = session.exit_latch.deadline() {
+                        terminate_deadline = terminate_deadline.min(overall_deadline);
+                    }
                     match session.exit_latch.wait_phase(terminate_grace) {
-                        PhaseWait::Exited => return,
+                        PhaseWait::Exited => {
+                            if !wait_for_known_processes(&known_processes, terminate_deadline) {
+                                return;
+                            }
+                        }
                         PhaseWait::GraceElapsed => {}
                         PhaseWait::DeadlineReached => jump = true,
                     }
-                    sweep(libc::SIGKILL, "sweep");
+                    signal_process_tree(
+                        root_pid,
+                        process_groups,
+                        &mut known_processes,
+                        libc::SIGKILL,
+                        "sweep",
+                        &session.id(),
+                    );
                     if !jump {
                         match session.exit_latch.wait_phase(force_eof_grace) {
                             PhaseWait::Exited => return,
                             PhaseWait::GraceElapsed | PhaseWait::DeadlineReached => {}
                         }
                     }
-                    // Something outside both signalled groups still holds the
-                    // slave. It survives — exactly as it would survive its
-                    // terminal closing — but the session must still conclude.
+                    // A process that escaped both the verified descendant
+                    // snapshot and signalled groups can still hold the slave;
+                    // the session itself must nevertheless conclude.
                     session.process.force_reader_shutdown();
                 }
                 #[cfg(windows)]
@@ -3124,6 +3379,43 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn process_identity_survives_reparenting_but_rejects_pid_reuse() {
+        let observed = ProcessIdentity {
+            pid: 42,
+            parent_pid: 10,
+            started_at: 1_000,
+        };
+        assert!(same_process(
+            &observed,
+            &ProcessIdentity {
+                parent_pid: 1,
+                ..observed
+            }
+        ));
+        assert!(!same_process(
+            &observed,
+            &ProcessIdentity {
+                started_at: 1_001,
+                ..observed
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_linux_process_identity_after_a_parenthesized_command_name() {
+        let identity = linux_process_identity(
+            123,
+            "123 (worker (nested)) S 42 1 1 0 -1 4194304 10 0 0 0 1 2 0 0 20 0 1 0 987654 4096",
+        )
+        .unwrap();
+        assert_eq!(identity.pid, 123);
+        assert_eq!(identity.parent_pid, 42);
+        assert_eq!(identity.started_at, 987654);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn classifies_process_groups_only_when_program_identity_supports_the_inference() {
         assert_eq!(
             classify_process_group_activity(
@@ -3156,13 +3448,11 @@ mod tests {
     }
 
     /// An interactive bash ignores SIGTERM, and a `sleep 30 &` it starts sits
-    /// in its own process group — outside both groups the sweep signals — while
-    /// keeping the slave side of the PTY open. Without the forced reader
-    /// shutdown the reader never reaches end of file and this session never
-    /// concludes; the test then times out instead of observing an exit.
+    /// in its own process group — outside both the root and foreground groups.
+    /// Termination must both conclude the session and kill that descendant.
     #[cfg(unix)]
     #[test]
-    fn terminate_concludes_even_when_background_children_hold_the_pty() {
+    fn terminate_sweeps_background_descendants_outside_the_terminal_groups() {
         if !Path::new("/bin/bash").exists() {
             eprintln!("skipping: /bin/bash unavailable");
             return;
@@ -3194,21 +3484,46 @@ mod tests {
         let view_id = "background-holder-view";
         let client_id = "background-holder-client";
         let attachment_epoch = session.attach_view(view_id, client_id).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pid_path = directory.path().join("background.pid");
         session
             .send_text(
                 view_id,
                 client_id,
                 attachment_epoch,
                 1,
-                "sleep 30 &\n".into(),
+                format!("sleep 30 & echo $! > '{}'\n", pid_path.display()),
             )
             .unwrap();
-        // Give the shell time to fork the job into its own process group.
-        thread::sleep(Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let background_pid = loop {
+            if let Ok(contents) = std::fs::read_to_string(&pid_path)
+                && let Ok(pid) = contents.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell did not report its background pid"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
         session.terminate(TerminationSource::User).unwrap();
         exited_rx
             .recv_timeout(Duration::from_secs(15))
             .expect("session did not conclude while a background child held the pty");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let alive = unsafe { libc::kill(background_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = unsafe { libc::kill(background_pid, libc::SIGKILL) };
+                panic!("background descendant {background_pid} survived terminal termination");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     /// The class a session was created with is visible from the outside and

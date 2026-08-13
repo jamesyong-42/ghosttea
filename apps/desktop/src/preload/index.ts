@@ -66,6 +66,8 @@ contextBridge.exposeInMainWorld("desktop", {
   newTab: (cwd?: string) => ipcRenderer.send("terminal-new-tab", cwd),
   selectTab: (target: "previous" | "next" | "last" | number) => ipcRenderer.send("terminal-select-tab", target),
   closeTab: () => ipcRenderer.send("terminal-close-tab"),
+  closePaneSession: (sessionId: string, remainingSessionIds: readonly string[]) =>
+    ipcRenderer.send("terminal-close-pane-session", sessionId, remainingSessionIds),
   updateTabSessions: (sessionIds: readonly string[]) => ipcRenderer.send("terminal-tab-sessions", sessionIds),
   updateActiveCwd: (cwd?: string) => ipcRenderer.send("terminal-tab-active-cwd", cwd),
   onMenuAction: (listener: (action: string) => void) => {

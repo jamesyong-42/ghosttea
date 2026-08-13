@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawn = vi.fn();
 
@@ -22,6 +22,7 @@ class FakeChild extends EventEmitter {
 
 describe("TerminalSupervisor", () => {
   beforeEach(() => spawn.mockReset());
+  afterEach(() => vi.useRealTimers());
 
   it("shares startup readiness across concurrent callers", async () => {
     const child = new FakeChild();
@@ -110,5 +111,23 @@ describe("TerminalSupervisor", () => {
     expect(supervisor.running).toBe(true);
     expect(unexpectedExit).not.toHaveBeenCalled();
     supervisor.stop();
+  });
+
+  it("does not hard-kill the daemon before its ten-second drain budget", async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const { TerminalSupervisor } = await import("./supervisor");
+    const supervisor = new TerminalSupervisor({ binary: { kind: "executable", path: "/opt/ghosttead" } });
+    const started = supervisor.start();
+    child.stdout.write("ghosttead ready\n");
+    await started;
+
+    supervisor.stop();
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(child.kill).toHaveBeenLastCalledWith("SIGKILL");
   });
 });
