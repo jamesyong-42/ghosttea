@@ -65,7 +65,7 @@ describe("GhostteaElectronBackend external mode", () => {
     ]);
     expect(postMessage).toHaveBeenCalledWith("terminal-ports", null, [{ side: 2 }, { side: 2 }]);
 
-    backend.stop();
+    await backend.stop();
     expect(backend.running).toBe(false);
     expect(utilityChildren[0]!.kill).toHaveBeenCalledOnce();
     expect(automationClients[0]!.dispose).toHaveBeenCalledOnce();

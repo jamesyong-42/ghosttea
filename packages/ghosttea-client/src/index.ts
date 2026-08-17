@@ -13,6 +13,7 @@ import {
   type ConfigSnapshot,
   type CreateSessionOptions,
   type ServerEvent,
+  type SessionOwnerTransfer,
   type SessionSummary,
   type TerminationSource,
 } from "@vibecook/ghosttea-protocol";
@@ -49,6 +50,7 @@ export type SessionExitedEvent = Extract<ServerEvent, { type: "session-exited" }
 const MAX_CONTROL_BYTES = 1024 * 1024;
 const CONFIG_DOCUMENT_PROTOCOL_MINOR = 11;
 const REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12;
+const SESSION_OWNER_TRANSFER_PROTOCOL_MINOR = 14;
 
 export class GhostteaConfigDocumentConflictError extends Error {
   readonly document: ConfigDocument;
@@ -369,8 +371,12 @@ export class GhostteaAutomationClient extends EventEmitter {
     if (event.type !== "ok") throw new Error("ghosttead rejected session termination");
   }
 
-  async closeSessionOwner(ownerId: string): Promise<void> {
-    const event = await this.request({ type: "close-session-owner", ownerId });
+  async closeSessionOwner(ownerId: string, transfers: readonly SessionOwnerTransfer[] = []): Promise<void> {
+    const event = await this.request({
+      type: "close-session-owner",
+      ownerId,
+      ...(transfers.length > 0 ? { transfers: [...transfers] } : {}),
+    });
     if (event.type !== "ok") throw new Error("ghosttead rejected session owner closure");
   }
 
@@ -397,6 +403,9 @@ export class GhostteaAutomationClient extends EventEmitter {
       command.type === "retry-remote-view"
     ) {
       this.#requireProtocolMinor(REMOTE_LIFECYCLE_PROTOCOL_MINOR, "remote session lifecycle");
+    }
+    if (command.type === "close-session-owner") {
+      this.#requireProtocolMinor(SESSION_OWNER_TRANSFER_PROTOCOL_MINOR, "safe session owner closure");
     }
     const requestId = this.#nextRequestId++;
     const encoded = Buffer.from(JSON.stringify({ ...command, requestId } satisfies ClientCommand));

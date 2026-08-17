@@ -3,22 +3,22 @@
   "binaryTarget": "GhostteaAppleNative",
   "bundleName": "GhostteaAppleNative.xcframework",
   "repository": "https://github.com/vibecook-dev/ghosttea",
-  "tag": "ghosttea-apple-native-9ae470f032a3",
+  "tag": "ghosttea-apple-native-f223352c9558",
   "filename": "GhostteaAppleNative.xcframework.zip",
-  "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghosttea-apple-native-9ae470f032a3/GhostteaAppleNative.xcframework.zip",
-  "checksum": "c84608bafbdd30776131aa8ca751e744f3ea2044b89daa1dc8f4a7aef95fa79e",
-  "size": 45058830,
-  "contentDigest": "9ae470f032a32e96c4da74f2e345fd444c0070c607d0491ba1591f42db452acb",
-  "sourceDigest": "e3dd9bb72b23860a42231181b7121ac14f47ed02163a3b68229cdf2d32393e62",
+  "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghosttea-apple-native-f223352c9558/GhostteaAppleNative.xcframework.zip",
+  "checksum": "f278c21390f0bec0ae24650f6b26f77c0c9d71c1d21cab2119daa442cdb95a60",
+  "size": 45059463,
+  "contentDigest": "f223352c95586a58c1e82d1b4f983a2d2ba06b8664e9b90ec7e7e9df800f41c3",
+  "sourceDigest": "51f026d253c721966a83c4055771b4b33e9d833d2525e9c5edd58c7924d886ff",
   "entries": 137,
   "notes": {
-    "checksum": "The SHA-256 of the archive file, which is exactly what `swift package compute-checksum` reports and what SwiftPM enforces before unpacking a URL binary target. Verified equal on 2026-08-09.",
+    "checksum": "The SHA-256 of the archive file, which is exactly what `swift package compute-checksum` reports and what SwiftPM enforces before unpacking a URL binary target. Verified equal on 2026-08-16.",
     "contentDigest": "A digest of paths, modes, and file bytes, independent of how the tree is archived. The archive's own checksum also depends on zlib, so this is the value a rebuild can honestly re-derive on another machine.",
     "tag": "Content-addressed rather than keyed to a ghosttea release. `.binaryTarget(url:checksum:)` needs a checksum already valid at the commit SwiftPM resolves, but release assets are built after their release commit — so a per-release artifact could never carry a valid checksum at its own tag.",
     "sourceDigest": "A digest of the sources the artifact was built from: the crates compiled into it, the pins fixing its vendored inputs, and the scripts that compile and compose them. The digests above answer which bytes are published; only this answers whether those bytes contain the source being shipped, because a digest taken from a stale build agrees with a lock written from that same stale build. A mismatch means republish, not merely a field update — the Apple build is not byte-reproducible, measured rather than assumed: recomposing identical sources on one machine and toolchain moved the archive by two bytes. `scripts/ghosttea-apple-native-artifact.mjs` owns the input list and explains what it deliberately omits.",
-    "verification": "There is no hand-set `published` flag. `check:apple-native-artifact --release` fetches this URL, checks the archive's size and SHA-256 against the fields above, unpacks it, and re-derives the content digest and every slice digest from the bytes that are actually served. It replaced a boolean a human set, which stayed true across a release that changed the artifact's contents. Last confirmed 2026-08-09, together with the complete local-artifact SwiftPM suite and an external consumer linking every public product; the promotion job then re-downloaded and independently verified the served release bytes. These bytes are never replaced in place: every consumer's SwiftPM checksum is pinned to them, so a changed artifact takes a new content digest and a new tag.",
-    "supersedes": "ghosttea-apple-native-8003f9a5b9c5, the 0.9.2 artifact. The 0.9.3 workspace version bump and the ghosttea-vt-sys build-script fix both move the native source digest through Cargo.toml, Cargo.lock, and native/ghosttea/**, so the exact release sources require a new immutable publication rather than a field-only update.",
-    "provenance": "Built, qualified, attested, and published by ghosttea-apple-native-artifact.yml run https://github.com/vibecook-dev/ghosttea/actions/runs/31301214275 from clean source commit 4c00c5901f36b5413540429ef0ea7d399331356b (release/0.9.3), promoted through the protected release environment. Attestation: https://github.com/vibecook-dev/ghosttea/attestations/39650628 (subject sha256:c84608bafbdd30776131aa8ca751e744f3ea2044b89daa1dc8f4a7aef95fa79e)."
+    "verification": "There is no hand-set `published` flag. `check:apple-native-artifact --release` fetches this URL, checks the archive's size and SHA-256 against the fields above, unpacks it, and re-derives the content digest and every slice digest from the bytes that are actually served. It replaced a boolean a human set, which stayed true across a release that changed the artifact's contents. Last confirmed 2026-08-16, together with the complete local-artifact SwiftPM suite and an external consumer linking every public product; the promotion job then re-downloaded and independently verified the served release bytes. These bytes are never replaced in place: every consumer's SwiftPM checksum is pinned to them, so a changed artifact takes a new content digest and a new tag.",
+    "supersedes": "ghosttea-apple-native-9ae470f032a3, the 0.9.3 artifact. The 0.9.4 workspace version bump and terminal process lifecycle hardening move the native source digest through Cargo.toml, Cargo.lock, and native/ghosttea/**, so the exact release sources require a new immutable publication rather than a field-only update.",
+    "provenance": "Built, qualified, attested, and published by ghosttea-apple-native-artifact.yml run https://github.com/vibecook-dev/ghosttea/actions/runs/31983434187 from clean source commit cf04eb362693afefaeb2b18012b961835542c725 (release/0.9.4), promoted through the protected release environment. Attestation: https://github.com/vibecook-dev/ghosttea/attestations/41046461 (subject sha256:f278c21390f0bec0ae24650f6b26f77c0c9d71c1d21cab2119daa442cdb95a60)."
   },
   "producedBy": {
     "composer": "scripts/build-ghosttea-apple-native.mjs",
@@ -26,8 +26,8 @@
     "sourceLocks": ["native/ghostty.lock.json", "native/ssh.lock.json", "native/fonts.lock.json"]
   },
   "slices": {
-    "ios-arm64-simulator/libghosttea-apple-native.a": "55fc83d3a29f87550ea6a5861f25a242e64e86f4d939de787ff32a92a263449b",
-    "ios-arm64/libghosttea-apple-native.a": "175a803a6fcb4b853e135f119d29e972ecd3088428dcf29e7a6c3965f3eba934",
-    "macos-arm64/libghosttea-apple-native.a": "65e3c9a6d46d1166ea00bed983f2dd41a7671b1f43a1bba239c0e85abacd5e9d"
+    "ios-arm64-simulator/libghosttea-apple-native.a": "97d1691762f1dfed91e56409b1e1fca0c186d5c626d0b90aaae51adcb65cfc9d",
+    "ios-arm64/libghosttea-apple-native.a": "4c73e4c30b7d4159ff8074b203d0cb6a045d17fcccddb70d53ea9cce8586c514",
+    "macos-arm64/libghosttea-apple-native.a": "42e05e22346e7556eb09ef94b78c6cdfbe373643f00f429f0564b2b0c3142562"
   }
 }

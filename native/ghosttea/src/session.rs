@@ -14,6 +14,9 @@ use std::{
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
+#[cfg(unix)]
+mod unix_process_tree;
+
 #[cfg(windows)]
 mod process_tree;
 
@@ -722,6 +725,10 @@ struct PtyProcess {
     /// ever seeing end of file, and the session from ever concluding.
     #[cfg(unix)]
     reader_shutdown: Option<OwnedFd>,
+    /// Stable birth identities and dynamically discovered membership for the
+    /// Unix PTY session. Captured before the root can be reaped and reused.
+    #[cfg(unix)]
+    tree: Option<unix_process_tree::ProcessTree>,
     /// Owns the session's whole process tree. `None` when the job could not be
     /// created, which leaves termination on the direct child alone.
     #[cfg(windows)]
@@ -838,17 +845,6 @@ impl PtyProcess {
         SessionActivity::unsupported(observed_at_ms)
     }
 
-    /// The process group currently reading the terminal, when it differs from
-    /// the root group termination already signals.
-    #[cfg(unix)]
-    fn foreground_pgid(&self) -> Option<i32> {
-        self.master
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|master| master.process_group_leader())
-    }
-
     /// Force the poll-based reader to end as though the PTY reached end of
     /// file. A no-op when the master fd could not be duplicated at spawn and
     /// the session fell back to a blocking reader.
@@ -888,24 +884,6 @@ fn scaled_graces(deadline: Option<Instant>) -> [Duration; 3] {
         let share = remaining.mul_f64(default.as_secs_f64() / full.as_secs_f64());
         share.clamp(MINIMUM_GRACE, default)
     })
-}
-
-#[cfg(unix)]
-fn signal_pgid(pgid: Option<i32>, signal: libc::c_int) -> Result<()> {
-    // pgid 1 or below would address init or every process the user owns.
-    let Some(pgid) = pgid.filter(|pgid| *pgid > 1) else {
-        return Ok(());
-    };
-    let result = unsafe { libc::kill(-pgid, signal) };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(error.into())
-    }
 }
 
 /// Where the reader thread takes PTY output from.
@@ -1184,6 +1162,14 @@ impl Session {
         // Adopt the tree before anything else so a shell that starts a
         // background job is already inside the job object. A failure here is
         // not fatal: termination falls back to the direct child.
+        #[cfg(unix)]
+        let process_tree = pid.and_then(|pid| {
+            let tree = unix_process_tree::ProcessTree::capture(pid);
+            if tree.is_none() {
+                eprintln!("[ghosttea] could not pin process-tree identity for pid {pid}");
+            }
+            tree
+        });
         // Duplicated before the child moves behind its mutex, so the exit
         // watcher never has to take that lock to learn the child is gone.
         #[cfg(windows)]
@@ -1261,6 +1247,8 @@ impl Session {
                 pid,
                 #[cfg(unix)]
                 reader_shutdown,
+                #[cfg(unix)]
+                tree: process_tree,
                 #[cfg(windows)]
                 tree: process_tree,
             },
@@ -1545,6 +1533,14 @@ impl Session {
     }
     pub fn owner_id(&self) -> Option<String> {
         self.summary.lock().unwrap().owner_id.clone()
+    }
+    pub fn transfer_owner(&self, expected_owner_id: &str, owner_id: &str) -> bool {
+        let mut summary = self.summary.lock().unwrap();
+        if summary.owner_id.as_deref() != Some(expected_owner_id) {
+            return false;
+        }
+        summary.owner_id = Some(owner_id.to_owned());
+        true
     }
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
@@ -2464,6 +2460,19 @@ impl Session {
         }
         *self.requested_termination.lock().unwrap() = Some(source);
         self.summary.lock().unwrap().requested_termination = Some(source);
+        #[cfg(unix)]
+        let termination_tree = {
+            let root_pid = self.process.pid.and_then(|pid| i32::try_from(pid).ok());
+            let mut tree = self.process.tree.clone().or_else(|| {
+                self.process
+                    .pid
+                    .and_then(unix_process_tree::ProcessTree::capture)
+            });
+            if let Some(tree) = &mut tree {
+                tree.refresh();
+            }
+            (root_pid, tree)
+        };
         {
             let mut order = self.input_order.lock().unwrap();
             if self.input_tx.try_send(InputOperation::Interrupt).is_ok() {
@@ -2485,53 +2494,71 @@ impl Session {
                 let graces = scaled_graces(session.exit_latch.deadline());
                 #[cfg(unix)]
                 let [interrupt_grace, terminate_grace, force_eof_grace] = graces;
+                #[cfg(unix)]
+                let (root_pid, mut process_tree) = termination_tree;
                 #[cfg(not(unix))]
                 let interrupt_grace = INTERRUPT_GRACE;
                 match session.exit_latch.wait_phase(interrupt_grace) {
-                    PhaseWait::Exited => return,
+                    PhaseWait::Exited => {
+                        #[cfg(unix)]
+                        if !process_tree
+                            .as_mut()
+                            .is_some_and(|tree| tree.has_live_members())
+                        {
+                            return;
+                        }
+                        #[cfg(not(unix))]
+                        return;
+                    }
                     PhaseWait::GraceElapsed => {}
                     // Nothing gentler is affordable; fall through to the sweep.
                     PhaseWait::DeadlineReached => {}
                 }
                 #[cfg(unix)]
                 {
-                    // Signal the foreground group alongside the root group:
-                    // a full-screen program that swallowed the interrupt sits
-                    // in its own group, which signalling the root would miss.
-                    let root = session.process.pid.and_then(|pid| i32::try_from(pid).ok());
-                    let sweep = |signal: libc::c_int, step: &str| {
-                        let foreground = session
-                            .process
-                            .foreground_pgid()
-                            .filter(|foreground| Some(*foreground) != root);
-                        for pgid in [root, foreground].into_iter().flatten() {
-                            if let Err(error) = signal_pgid(Some(pgid), signal) {
-                                eprintln!(
-                                    "[ghosttea] failed to {step} process group {pgid} for {}: {error:#}",
-                                    session.id()
-                                );
-                            }
-                        }
-                    };
+                    // Every group is discovered from a currently verified
+                    // process identity. No cached PID or PGID crosses a grace
+                    // period and becomes authority for a later signal.
                     // A deadline at any rung skips straight to the end: the
                     // remaining graces are courtesies the budget cannot afford.
                     let mut jump = false;
-                    sweep(libc::SIGTERM, "terminate");
+                    if let Some(tree) = &mut process_tree {
+                        tree.signal(libc::SIGTERM, "terminate", &session.id());
+                    } else if let Some(root_pid) = root_pid {
+                        // Without a birth identity, only address the root while
+                        // the reader proves it has not yet been reaped.
+                        let _ = unsafe { libc::kill(root_pid, libc::SIGTERM) };
+                    }
+                    let mut terminate_deadline = Instant::now() + terminate_grace;
+                    if let Some(overall_deadline) = session.exit_latch.deadline() {
+                        terminate_deadline = terminate_deadline.min(overall_deadline);
+                    }
                     match session.exit_latch.wait_phase(terminate_grace) {
-                        PhaseWait::Exited => return,
+                        PhaseWait::Exited => {
+                            if !process_tree
+                                .as_mut()
+                                .is_some_and(|tree| tree.wait_for_exit(terminate_deadline))
+                            {
+                                return;
+                            }
+                        }
                         PhaseWait::GraceElapsed => {}
                         PhaseWait::DeadlineReached => jump = true,
                     }
-                    sweep(libc::SIGKILL, "sweep");
+                    if let Some(tree) = &mut process_tree {
+                        tree.signal(libc::SIGKILL, "sweep", &session.id());
+                    } else {
+                        let _ = session.process.child.lock().unwrap().kill();
+                    }
                     if !jump {
                         match session.exit_latch.wait_phase(force_eof_grace) {
                             PhaseWait::Exited => return,
                             PhaseWait::GraceElapsed | PhaseWait::DeadlineReached => {}
                         }
                     }
-                    // Something outside both signalled groups still holds the
-                    // slave. It survives — exactly as it would survive its
-                    // terminal closing — but the session must still conclude.
+                    // A process that escaped both the verified descendant
+                    // snapshot and signalled groups can still hold the slave;
+                    // the session itself must nevertheless conclude.
                     session.process.force_reader_shutdown();
                 }
                 #[cfg(windows)]
@@ -3156,13 +3183,11 @@ mod tests {
     }
 
     /// An interactive bash ignores SIGTERM, and a `sleep 30 &` it starts sits
-    /// in its own process group — outside both groups the sweep signals — while
-    /// keeping the slave side of the PTY open. Without the forced reader
-    /// shutdown the reader never reaches end of file and this session never
-    /// concludes; the test then times out instead of observing an exit.
+    /// in its own process group — outside both the root and foreground groups.
+    /// Termination must both conclude the session and kill that descendant.
     #[cfg(unix)]
     #[test]
-    fn terminate_concludes_even_when_background_children_hold_the_pty() {
+    fn terminate_sweeps_background_descendants_outside_the_terminal_groups() {
         if !Path::new("/bin/bash").exists() {
             eprintln!("skipping: /bin/bash unavailable");
             return;
@@ -3194,21 +3219,46 @@ mod tests {
         let view_id = "background-holder-view";
         let client_id = "background-holder-client";
         let attachment_epoch = session.attach_view(view_id, client_id).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let pid_path = directory.path().join("background.pid");
         session
             .send_text(
                 view_id,
                 client_id,
                 attachment_epoch,
                 1,
-                "sleep 30 &\n".into(),
+                format!("sleep 30 & echo $! > '{}'\n", pid_path.display()),
             )
             .unwrap();
-        // Give the shell time to fork the job into its own process group.
-        thread::sleep(Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let background_pid = loop {
+            if let Ok(contents) = std::fs::read_to_string(&pid_path)
+                && let Ok(pid) = contents.trim().parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell did not report its background pid"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
         session.terminate(TerminationSource::User).unwrap();
         exited_rx
             .recv_timeout(Duration::from_secs(15))
             .expect("session did not conclude while a background child held the pty");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let alive = unsafe { libc::kill(background_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = unsafe { libc::kill(background_pid, libc::SIGKILL) };
+                panic!("background descendant {background_pid} survived terminal termination");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     /// The class a session was created with is visible from the outside and

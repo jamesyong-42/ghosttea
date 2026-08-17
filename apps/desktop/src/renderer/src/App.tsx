@@ -53,6 +53,9 @@ export function App() {
       claimExistingSessions={window.desktop.claimExistingSessions}
       active={active}
       showTitlebar={window.desktop.platform === "darwin"}
+      onPaneClose={({ session, remainingSessionIds }) =>
+        window.desktop.closePaneSession(session.id, remainingSessionIds)
+      }
       onSessionsChange={window.desktop.updateTabSessions}
       onActiveSessionChange={(session) => window.desktop.updateActiveCwd(session?.cwd ?? undefined)}
       {...(window.desktop.initialCwd ? { initialCwd: window.desktop.initialCwd } : {})}

@@ -169,6 +169,45 @@ describe("initializeWorkspace pane rehydration", () => {
     expect(runtime.registerSession).toHaveBeenCalledWith(revived);
   });
 
+  it("rehydrates mirrored panes once and binds both panes to the same replacement", async () => {
+    const revived = session("fresh");
+    stubStorage({
+      version: 1,
+      root: {
+        kind: "split",
+        id: "split",
+        axis: "horizontal",
+        ratio: 0.5,
+        first: { kind: "pane", id: "mirror-a", sessionId: "gone", meta: { cwd: "/repo" } },
+        second: { kind: "pane", id: "mirror-b", sessionId: "gone", meta: { cwd: "/repo" } },
+      },
+      activePaneId: "mirror-b",
+      zoomedPaneId: null,
+    });
+    const runtime = fakeRuntime([]);
+    const rehydrate = vi.fn(() => Promise.resolve<SessionSummary | null>(revived));
+
+    const workspace = await initializeWorkspace(
+      runtime as never,
+      "ghosttea:test",
+      "/bin/zsh",
+      true,
+      undefined,
+      rehydrate,
+    );
+
+    expect(rehydrate).toHaveBeenCalledOnce();
+    expect(workspace.layout).toEqual({
+      kind: "split",
+      id: "split",
+      axis: "horizontal",
+      ratio: 0.5,
+      first: pane("mirror-a", revived),
+      second: pane("mirror-b", revived),
+    });
+    expect(runtime.registerSession).toHaveBeenCalledTimes(1);
+  });
+
   it("collapses to today's behavior when rehydration declines or fails", async () => {
     const live = session("live");
     for (const rehydrate of [

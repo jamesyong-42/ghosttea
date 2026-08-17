@@ -120,6 +120,13 @@ export interface GhostteaPaneRehydration {
   paneId: string;
 }
 
+export interface GhostteaPaneClose {
+  paneId: string;
+  session: SessionSummary;
+  /** Unique sessions still attached in this workspace after the pane closes. */
+  remainingSessionIds: readonly string[];
+}
+
 export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
@@ -145,6 +152,11 @@ export interface GhostteaWorkspaceProps {
    */
   onRehydratePane?:
     ((context: GhostteaPaneRehydration) => Promise<SessionSummary | null> | SessionSummary | null) | undefined;
+  /**
+   * Notifies the embedder after a non-final pane is removed. Session lifetime
+   * is host policy because the same PTY may be mirrored in another pane/window.
+   */
+  onPaneClose?: ((context: GhostteaPaneClose) => void) | undefined;
   onActiveSessionChange?: (session: SessionSummary | undefined) => void;
   createSplitSession?: (activeSession: SessionSummary, axis: SplitAxis) => Promise<SessionSummary>;
   enableRemoteSessions?: boolean;
@@ -217,17 +229,29 @@ export async function initializeWorkspace(
   const decodedSaved = decodeWorkspaceDocument(saved);
   const savedRoot = decodedSaved?.root ?? (saved?.version === undefined ? saved?.layout : undefined);
   const revivals = new Map<string, SessionSummary>();
+  const rehydrations = new Map<string, Promise<SessionSummary | null>>();
   await Promise.all(
     collectDeadPanes(savedRoot, byId).map(async (dead) => {
       try {
-        const session = await rehydratePane({ meta: dead.meta, sessionId: dead.sessionId, paneId: dead.paneId });
+        let rehydration = rehydrations.get(dead.sessionId);
+        if (!rehydration) {
+          // A session may be mirrored into several panes. Recreate its PTY once
+          // and bind every saved pane to the same replacement session.
+          rehydration = Promise.resolve().then(() =>
+            rehydratePane({ meta: dead.meta, sessionId: dead.sessionId, paneId: dead.paneId }),
+          );
+          rehydrations.set(dead.sessionId, rehydration);
+        }
+        const session = await rehydration;
         if (session) revivals.set(dead.paneId, session);
       } catch (cause) {
         console.warn("[terminal-runtime] pane rehydration failed; dropping pane", cause);
       }
     }),
   );
-  for (const session of revivals.values()) terminalRuntime.registerSession(session);
+  for (const session of new Map([...revivals.values()].map((value) => [value.id, value])).values()) {
+    terminalRuntime.registerSession(session);
+  }
   let layout = restoreNode(savedRoot, byId, revivals);
   const attached = new Set(leaves(layout ?? undefined).map((leaf) => leaf.session.id));
   for (const session of sessionsToClaim(sessions, attached, claimExistingSessions && !hasSavedWorkspace)) {
@@ -503,6 +527,7 @@ export function GhostteaWorkspace({
   decoratePane,
   paneMeta,
   onRehydratePane,
+  onPaneClose,
   onActiveSessionChange,
   createSplitSession,
   enableRemoteSessions = true,
@@ -832,11 +857,18 @@ export function GhostteaWorkspace({
       }
       const index = panes.findIndex((candidate) => candidate.id === target.id);
       const next = panes[index === panes.length - 1 ? index - 1 : index + 1]!;
-      setLayout(removePane(current, target.id) ?? undefined);
+      const remaining = removePane(current, target.id);
+      if (!remaining) return;
+      setLayout(remaining);
       setZoomedPaneId(null);
       activatePane(next.id);
+      onPaneClose?.({
+        paneId: target.id,
+        session: target.session,
+        remainingSessionIds: [...new Set(leaves(remaining).map((pane) => pane.session.id))],
+      });
     },
-    [activatePane, platform],
+    [activatePane, onPaneClose, platform],
   );
 
   const closeActivePane = useCallback((): void => {

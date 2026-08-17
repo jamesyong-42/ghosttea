@@ -3,6 +3,35 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.9.4 - 2026-08-16
+
+### Changed
+
+- Local control protocol minor 14 makes application-owner closure a transfer
+  transaction. Surviving layout references and owner-aware live view
+  attachments are reconciled under the daemon's creation/closure lock before
+  the old owner is tombstoned; mirrored sessions move to a live window, while
+  only genuinely unreferenced sessions terminate. New Electron clients refuse
+  the unsafe owner-close operation against older daemons and limit their
+  compatibility cleanup to sessions no surviving window references.
+- Managed Electron shutdown is now awaitable. The app keeps control endpoints
+  intact until `ghosttead` exits, and a bounded hard kill remains after the
+  daemon's ten-second drain allowance. A supervised daemon also watches a
+  parent-owned stdin pipe, so an Electron crash or force termination triggers
+  the same drain even when no signal or application cleanup runs.
+
+### Fixed
+
+- Unix PTY termination pins the root process's birth identity at spawn and
+  revalidates every process and process group at each escalation rung. PID and
+  PGID reuse can no longer redirect a late signal into an unrelated process,
+  reparented survivors remain discovery roots for later descendants, and
+  groups are addressed only inside a proven detached terminal session.
+- Closing a pane or native window no longer terminates a session that is still
+  mirrored in another surviving pane. The final pane remains the lifecycle
+  boundary, including sessions whose original creation window no longer lists
+  them in its own current layout.
+
 ## 0.9.3 - 2026-08-09
 
 ### Fixed

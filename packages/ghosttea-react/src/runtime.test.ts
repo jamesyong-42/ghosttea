@@ -660,6 +660,47 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.dispose();
   });
 
+  it("attributes live views to their application owner only after protocol 1.14", async () => {
+    vi.stubGlobal("window", globalThis);
+    const platform = {
+      writeClipboard: () => undefined,
+      forceCanvasFallback: () => false,
+      setForceCanvasFallback: () => undefined,
+      reload: () => undefined,
+    };
+
+    const currentControl = new FakePort();
+    const current = new GhostteaTerminalRuntime({
+      ports: { control: currentControl as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      sessionOwnerId: "tab-a",
+      platform,
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await current.connect();
+    current.registerSession(session);
+    current.mount(session.id, session.handle, "current-view", canvas());
+    await flushMicrotasks();
+    expect(currentControl.messages).toContainEqual(
+      expect.objectContaining({ type: "attach-session", viewId: "current-view", ownerId: "tab-a" }),
+    );
+    current.dispose();
+
+    const legacyControl = new FakePort();
+    legacyControl.helloProtocolMinor = 13;
+    const legacy = new GhostteaTerminalRuntime({
+      ports: { control: legacyControl as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      sessionOwnerId: "tab-a",
+      platform,
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await legacy.connect();
+    legacy.registerSession(session);
+    legacy.mount(session.id, session.handle, "legacy-owner-view", canvas());
+    await flushMicrotasks();
+    expect(legacyControl.messages.find((message) => message.type === "attach-session")).not.toHaveProperty("ownerId");
+    legacy.dispose();
+  });
+
   it("accepts daemon acknowledgements forwarded as bytes by an older bridge", async () => {
     vi.stubGlobal("window", globalThis);
     const frames = new FakePort();

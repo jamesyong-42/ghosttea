@@ -38,11 +38,12 @@ const MAX_FRAME_SUBSCRIPTIONS: usize = 4096;
 const MAX_AUTH_TOKEN_BYTES: usize = 1024;
 const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
+const MAX_SESSION_OWNER_TRANSFERS: usize = 4_096;
 const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 13;
+const CONTROL_PROTOCOL_MINOR: u16 = 14;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
@@ -69,6 +70,9 @@ const REMOTE_LIFECYCLE_PROTOCOL_MINOR: u16 = 12;
 /// the rule usually prevents, because nothing observes it. The negotiated
 /// minor is what lets a client know the daemon can fence at all.
 const CONTROL_REVISION_CAS_PROTOCOL_MINOR: u16 = 13;
+/// Owner-aware view attachment and transactional session reassignment during
+/// `close-session-owner`.
+const SESSION_OWNER_TRANSFER_PROTOCOL_MINOR: u16 = 14;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
@@ -78,6 +82,7 @@ const _: () = assert!(EVENTS_LOST_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(REMOTE_LIFECYCLE_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(CONTROL_REVISION_CAS_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(SESSION_OWNER_TRANSFER_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// How long an accepted connection may take to present its token before the
@@ -292,6 +297,13 @@ struct Envelope {
     command: Command,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SessionOwnerTransfer {
+    session_id: String,
+    owner_id: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameSubscription {
@@ -345,6 +357,77 @@ impl OwnerTombstones {
                 archived[index / u64::BITS as usize] & (1_u64 << (index % u64::BITS as usize)) != 0
             })
         })
+    }
+}
+
+#[derive(Clone)]
+struct AttachedViewOwner {
+    client_id: String,
+    owner_id: String,
+}
+
+/// Application ownership evidence attached to live renderer views.
+///
+/// This is deliberately service-wide rather than connection-local: an owner
+/// is closed from the main-process automation connection, while the surviving
+/// pane that proves a transfer belongs to a renderer connection.
+#[derive(Default)]
+struct ViewOwners {
+    by_view: HashMap<(String, String), AttachedViewOwner>,
+}
+
+impl ViewOwners {
+    fn register(&mut self, session_id: &str, view_id: &str, client_id: &str, owner_id: &str) {
+        self.by_view.insert(
+            (session_id.to_owned(), view_id.to_owned()),
+            AttachedViewOwner {
+                client_id: client_id.to_owned(),
+                owner_id: owner_id.to_owned(),
+            },
+        );
+    }
+
+    fn unregister(&mut self, session_id: &str, view_id: &str, client_id: &str) {
+        let key = (session_id.to_owned(), view_id.to_owned());
+        if self
+            .by_view
+            .get(&key)
+            .is_some_and(|owner| owner.client_id == client_id)
+        {
+            self.by_view.remove(&key);
+        }
+    }
+
+    fn remove_session(&mut self, session_id: &str) {
+        self.by_view
+            .retain(|(candidate_session_id, _), _| candidate_session_id != session_id);
+    }
+
+    fn remove_owner(&mut self, owner_id: &str) {
+        self.by_view
+            .retain(|_, candidate| candidate.owner_id != owner_id);
+    }
+
+    fn transfer_candidates(
+        &self,
+        closing_owner_id: &str,
+        closed_owners: &OwnerTombstones,
+    ) -> HashMap<String, String> {
+        let mut candidates = HashMap::<String, String>::new();
+        for ((session_id, _), view) in &self.by_view {
+            if view.owner_id == closing_owner_id || closed_owners.contains(&view.owner_id) {
+                continue;
+            }
+            candidates
+                .entry(session_id.clone())
+                .and_modify(|current| {
+                    if view.owner_id.as_str() < current.as_str() {
+                        current.clone_from(&view.owner_id);
+                    }
+                })
+                .or_insert_with(|| view.owner_id.clone());
+        }
+        candidates
     }
 }
 
@@ -421,6 +504,7 @@ enum Command {
     AttachSession {
         session_id: String,
         view_id: String,
+        owner_id: Option<String>,
     },
     DetachSession {
         session_id: String,
@@ -542,6 +626,8 @@ enum Command {
     },
     CloseSessionOwner {
         owner_id: String,
+        #[serde(default)]
+        transfers: Vec<SessionOwnerTransfer>,
     },
     #[serde(other)]
     Unknown,
@@ -838,6 +924,7 @@ struct ControlContext {
     shutdown_announcer: mesh::HostShutdownAnnouncer,
     reconnects: Arc<Mutex<HashSet<String>>>,
     closed_owners: Arc<tokio::sync::Mutex<OwnerTombstones>>,
+    view_owners: Arc<Mutex<ViewOwners>>,
     private_env_prefixes: Arc<[String]>,
     config: ConfigManager,
     config_update_lock: Arc<Mutex<()>>,
@@ -1284,6 +1371,7 @@ impl TerminalService {
             shutdown_announcer,
             reconnects: Arc::default(),
             closed_owners: Arc::default(),
+            view_owners: Arc::default(),
             private_env_prefixes: self.private_env_prefixes.into(),
             config,
             config_update_lock: Arc::new(Mutex::new(())),
@@ -1665,6 +1753,7 @@ async fn serve_control(
                 }
             }
             for (session_id, view_id) in attached {
+                unregister_view_owner(&context, &session_id, &view_id, &client_id);
                 if let Some(session) = context.registry.read().unwrap().get(&session_id).cloned() {
                     session.detach_view(&view_id, &client_id);
                 } else {
@@ -2349,46 +2438,95 @@ async fn handle_command(
             Command::AttachSession {
                 session_id,
                 view_id,
+                owner_id,
             } => {
                 let key = (session_id.clone(), view_id.clone());
-                let local = registry.read().unwrap().get(&session_id).cloned();
-                let (attachment_epoch, read_write, view_state_seq) = if let Some(session) = local {
-                    // Idempotent for the client that already holds the view, so
-                    // a re-attach reads the epoch back from the authority
-                    // rather than from this connection's memory of it.
-                    let attachment_epoch = session.attach_view(&view_id, client_id)?;
-                    (attachment_epoch, true, None)
-                } else {
-                    // A view this connection owns may still have died with its
-                    // connection. Ask the authority; if it has no attachment to
-                    // report, re-dial instead of answering with the epoch we
-                    // were handed the first time — that epoch is exactly what
-                    // the host will now reject.
-                    let current = match attached.contains(&key) {
-                        true => {
-                            context
-                                .mesh_runtime
-                                .current_attachment(&session_id, &view_id)
-                                .await
-                        }
-                        false => None,
-                    };
-                    let (attachment_epoch, read_write) = match current {
-                        Some(current) => current,
-                        None => {
-                            let attachment = context
-                                .mesh_runtime
-                                .attach_view(&session_id, &view_id)
-                                .await?;
-                            (attachment.attachment_epoch, attachment.read_write)
-                        }
-                    };
-                    (
-                        attachment_epoch,
-                        read_write,
-                        remote_view_state_seq(context, &session_id, &view_id).await,
+                // Publish the pane's ownership intent before the potentially
+                // slow attach. Otherwise close-session-owner can acquire the
+                // lifecycle lock after the terminal attachment succeeds but
+                // before its evidence is indexed, and kill a pane that was
+                // already in flight. Existing attachments already published
+                // this evidence on their first pass.
+                let reserved_owner = owner_id.is_some() && !attached.contains(&key);
+                if reserved_owner {
+                    register_view_owner(
+                        context,
+                        &session_id,
+                        &view_id,
+                        client_id,
+                        owner_id.as_deref(),
                     )
+                    .await?;
+                }
+                let local = registry.read().unwrap().get(&session_id).cloned();
+                let attachment: Result<(u64, bool, Option<u64>)> = async {
+                    if let Some(session) = &local {
+                        // Idempotent for the client that already holds the view,
+                        // so a re-attach reads the epoch back from the authority
+                        // rather than from this connection's memory of it.
+                        let attachment_epoch = session.attach_view(&view_id, client_id)?;
+                        Ok((attachment_epoch, true, None))
+                    } else {
+                        // A view this connection owns may still have died with
+                        // its connection. Ask the authority; if it has no
+                        // attachment to report, re-dial instead of answering
+                        // with the epoch we were handed the first time.
+                        let current = match attached.contains(&key) {
+                            true => {
+                                context
+                                    .mesh_runtime
+                                    .current_attachment(&session_id, &view_id)
+                                    .await
+                            }
+                            false => None,
+                        };
+                        let (attachment_epoch, read_write) = match current {
+                            Some(current) => current,
+                            None => {
+                                let attachment = context
+                                    .mesh_runtime
+                                    .attach_view(&session_id, &view_id)
+                                    .await?;
+                                (attachment.attachment_epoch, attachment.read_write)
+                            }
+                        };
+                        Ok((
+                            attachment_epoch,
+                            read_write,
+                            remote_view_state_seq(context, &session_id, &view_id).await,
+                        ))
+                    }
+                }
+                .await;
+                let (attachment_epoch, read_write, view_state_seq) = match attachment {
+                    Ok(attachment) => attachment,
+                    Err(error) => {
+                        if reserved_owner {
+                            unregister_view_owner(context, &session_id, &view_id, client_id);
+                        }
+                        return Err(error);
+                    }
                 };
+                // Re-check after the attach: a target window could have closed
+                // while a remote peer was dialing. In that case roll back the
+                // terminal attachment rather than return a live view owned by
+                // a tombstoned application window.
+                if let Err(error) = register_view_owner(
+                    context,
+                    &session_id,
+                    &view_id,
+                    client_id,
+                    owner_id.as_deref(),
+                )
+                .await
+                {
+                    if let Some(session) = local {
+                        session.detach_view(&view_id, client_id);
+                    } else {
+                        detach_remote_view(context, &session_id, &view_id).await;
+                    }
+                    return Err(error);
+                }
                 attached.insert(key);
                 Ok(ResponseBody::ViewAttached {
                     session_id,
@@ -2403,6 +2541,7 @@ async fn handle_command(
                 view_id,
             } => {
                 if attached.remove(&(session_id.clone(), view_id.clone())) {
+                    unregister_view_owner(context, &session_id, &view_id, client_id);
                     if let Some(session) = registry.read().unwrap().get(&session_id).cloned() {
                         session.detach_view(&view_id, client_id);
                     } else {
@@ -2900,28 +3039,89 @@ async fn handle_command(
                     // Tracked, because the removal below outruns the ladder:
                     // the entry disappears while the child is still dying.
                     context.shutdown.terminate_tracked(&session, source, None)?;
+                    remove_session_view_owners(context, &session_id);
                     context.tombstones.remove_with_cause(registry, &session_id);
                 } else {
                     if !context.mesh_runtime.close_session(&session_id).await {
                         bail!("unknown session");
                     }
                     remove_session_attachments(attached, &session_id);
+                    remove_session_view_owners(context, &session_id);
                 }
                 Ok(ResponseBody::Ok)
             }
-            Command::CloseSessionOwner { owner_id } => {
+            Command::CloseSessionOwner {
+                owner_id,
+                transfers,
+            } => {
                 validate_owner(Some(&owner_id))?;
-                // The tombstone alone closes the owner; the sweeps below run
-                // without the lock so a slow mesh peer can never stall
-                // unrelated session creation behind an owner closure.
-                context.closed_owners.lock().await.insert(owner_id.clone());
-                let local_sessions = registry
-                    .read()
-                    .unwrap()
-                    .values()
-                    .filter(|session| session.owner_id().as_deref() == Some(owner_id.as_str()))
-                    .cloned()
-                    .collect::<Vec<_>>();
+                let mut transfer_by_session = validate_owner_transfers(&owner_id, transfers)?;
+
+                // The owner lifecycle lock is the transaction boundary shared
+                // with create and owner-aware attach. Explicit layout claims
+                // cover restored/inactive panes; currently attached views are
+                // an independent authority that closes the IPC timing gap.
+                let (local_sessions, remote_session_ids) = {
+                    let mut closed_owners = context.closed_owners.lock().await;
+                    for target_owner_id in transfer_by_session.values() {
+                        if closed_owners.contains(target_owner_id) {
+                            bail!("transfer target owner is already closed");
+                        }
+                    }
+                    {
+                        let mut view_owners = context.view_owners.lock().unwrap();
+                        for (session_id, target_owner_id) in
+                            view_owners.transfer_candidates(&owner_id, &closed_owners)
+                        {
+                            transfer_by_session
+                                .entry(session_id)
+                                .or_insert(target_owner_id);
+                        }
+                        // A still-connected closing renderer must not remain
+                        // evidence for a later owner transaction.
+                        view_owners.remove_owner(&owner_id);
+                    }
+                    closed_owners.insert(owner_id.clone());
+
+                    let mut local_sessions = Vec::new();
+                    for session in registry.read().unwrap().values() {
+                        if session.owner_id().as_deref() != Some(owner_id.as_str()) {
+                            continue;
+                        }
+                        let transferred = transfer_by_session.get(&session.id()).is_some_and(
+                            |target_owner_id| {
+                                session.transfer_owner(&owner_id, target_owner_id)
+                            },
+                        );
+                        if !transferred {
+                            local_sessions.push(Arc::clone(session));
+                        }
+                    }
+
+                    let mut remote_session_ids = Vec::new();
+                    for session in context.mesh_runtime.summaries().await {
+                        if session.owner_id.as_deref() != Some(owner_id.as_str()) {
+                            continue;
+                        }
+                        let transferred = match transfer_by_session.get(&session.id) {
+                            Some(target_owner_id) => {
+                                context
+                                    .mesh_runtime
+                                    .transfer_owner(&session.id, &owner_id, target_owner_id)
+                                    .await
+                            }
+                            None => false,
+                        };
+                        if !transferred {
+                            remote_session_ids.push(session.id);
+                        }
+                    }
+                    (local_sessions, remote_session_ids)
+                };
+
+                // Mutation above is complete before the potentially slower
+                // process ladders and remote detach work. A target owner that
+                // closes now observes every transferred session.
                 for session in local_sessions {
                     for view_id in remove_session_attachments(attached, &session.id()) {
                         session.detach_view(&view_id, client_id);
@@ -2942,14 +3142,13 @@ async fn handle_command(
                             session.id()
                         );
                     }
+                    remove_session_view_owners(context, &session.id());
                     context.tombstones.remove_with_cause(registry, &session.id());
                 }
-                let remote_sessions = context.mesh_runtime.summaries().await;
-                for session in remote_sessions {
-                    if session.owner_id.as_deref() == Some(owner_id.as_str()) {
-                        context.mesh_runtime.close_session(&session.id).await;
-                        remove_session_attachments(attached, &session.id);
-                    }
+                for session_id in remote_session_ids {
+                    context.mesh_runtime.close_session(&session_id).await;
+                    remove_session_attachments(attached, &session_id);
+                    remove_session_view_owners(context, &session_id);
                 }
                 Ok(ResponseBody::Ok)
             }
@@ -3032,6 +3231,82 @@ fn validate_owner(owner_id: Option<&str>) -> Result<()> {
         bail!("ownerId must contain between 1 and 256 bytes");
     }
     Ok(())
+}
+
+fn validate_owner_transfers(
+    closing_owner_id: &str,
+    transfers: Vec<SessionOwnerTransfer>,
+) -> Result<HashMap<String, String>> {
+    if transfers.len() > MAX_SESSION_OWNER_TRANSFERS {
+        bail!("too many session owner transfers");
+    }
+    let mut validated = HashMap::with_capacity(transfers.len());
+    for transfer in transfers {
+        if transfer.session_id.is_empty() || transfer.session_id.len() > 256 {
+            bail!("sessionId must contain between 1 and 256 bytes");
+        }
+        validate_owner(Some(&transfer.owner_id))?;
+        if transfer.owner_id == closing_owner_id {
+            bail!("a session cannot transfer to its closing owner");
+        }
+        if validated
+            .insert(transfer.session_id.clone(), transfer.owner_id)
+            .is_some()
+        {
+            bail!(
+                "duplicate session owner transfer for {}",
+                transfer.session_id
+            );
+        }
+    }
+    Ok(validated)
+}
+
+async fn register_view_owner(
+    context: &ControlContext,
+    session_id: &str,
+    view_id: &str,
+    client_id: &str,
+    owner_id: Option<&str>,
+) -> Result<()> {
+    let Some(owner_id) = owner_id else {
+        return Ok(());
+    };
+    validate_owner(Some(owner_id))?;
+    // Same order as owner closure: lifecycle first, then the view index. An
+    // attach either becomes evidence before the closure snapshot or observes
+    // the tombstone and rolls its terminal attachment back.
+    let closed_owners = context.closed_owners.lock().await;
+    if closed_owners.contains(owner_id) {
+        bail!("session owner is already closed");
+    }
+    context
+        .view_owners
+        .lock()
+        .unwrap()
+        .register(session_id, view_id, client_id, owner_id);
+    Ok(())
+}
+
+fn unregister_view_owner(
+    context: &ControlContext,
+    session_id: &str,
+    view_id: &str,
+    client_id: &str,
+) {
+    context
+        .view_owners
+        .lock()
+        .unwrap()
+        .unregister(session_id, view_id, client_id);
+}
+
+fn remove_session_view_owners(context: &ControlContext, session_id: &str) {
+    context
+        .view_owners
+        .lock()
+        .unwrap()
+        .remove_session(session_id);
 }
 
 fn checked_dimension(value: u64, name: &str, minimum: u16, maximum: u16) -> Result<u16> {
@@ -3576,6 +3851,108 @@ mod protocol_tests {
                 "programKind": "application",
             },
         })
+    }
+
+    fn owned_long_running_session(request_id: u64, owner_id: &str) -> Value {
+        #[cfg(unix)]
+        let (executable, args) = ("/bin/sh".to_owned(), json!(["-c", "sleep 30"]));
+        #[cfg(windows)]
+        let (executable, args) = (
+            windows_shell(),
+            json!(["/d", "/c", "ping", "-n", "60", "127.0.0.1"]),
+        );
+        json!({
+            "requestId": request_id,
+            "type": "create-session",
+            "options": {
+                "executable": executable,
+                "args": args,
+                "env": {},
+                "cols": 40,
+                "rows": 10,
+                "persistence": "terminate-with-app",
+                "programKind": "application",
+                "ownerId": owner_id,
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn owner_closure_transfers_layout_and_live_view_survivors_atomically() {
+        let service = start_test_service("owner-transfer");
+        let mut client = connect_control(&service).await;
+        let live_view = request(&mut client, owned_long_running_session(1, "tab-a")).await;
+        let layout_only = request(&mut client, owned_long_running_session(2, "tab-a")).await;
+        let live_view_id = live_view["session"]["id"].as_str().unwrap().to_owned();
+        let layout_only_id = layout_only["session"]["id"].as_str().unwrap().to_owned();
+
+        let attached = request(
+            &mut client,
+            json!({
+                "requestId": 3,
+                "type": "attach-session",
+                "sessionId": live_view_id.clone(),
+                "viewId": "pane-b",
+                "ownerId": "tab-b",
+            }),
+        )
+        .await;
+        assert_eq!(attached["type"], "view-attached");
+
+        let closed = request(
+            &mut client,
+            json!({
+                "requestId": 4,
+                "type": "close-session-owner",
+                "ownerId": "tab-a",
+                "transfers": [{ "sessionId": layout_only_id.clone(), "ownerId": "tab-b" }],
+            }),
+        )
+        .await;
+        assert_eq!(closed["type"], "ok");
+
+        for (request_id, session_id) in [(5, &live_view_id), (6, &layout_only_id)] {
+            let session = request(
+                &mut client,
+                json!({
+                    "requestId": request_id,
+                    "type": "get-session",
+                    "sessionId": session_id,
+                }),
+            )
+            .await;
+            assert_eq!(session["type"], "session");
+            assert_eq!(session["session"]["ownerId"], "tab-b");
+            assert_eq!(session["session"]["exited"], false);
+        }
+
+        let ended = request(
+            &mut client,
+            json!({
+                "requestId": 7,
+                "type": "close-session-owner",
+                "ownerId": "tab-b",
+            }),
+        )
+        .await;
+        assert_eq!(ended["type"], "ok");
+        let missing = request(
+            &mut client,
+            json!({
+                "requestId": 8,
+                "type": "get-session",
+                "sessionId": live_view_id.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(missing["type"], "error");
+
+        service
+            .handle
+            .shutdown(Duration::from_secs(8))
+            .await
+            .unwrap();
+        service.serving.await.unwrap().unwrap();
     }
 
     /// The drain ends every live session and says so, and the service refuses
@@ -4331,10 +4708,23 @@ mod protocol_tests {
             "requestId": 22,
             "type": "close-session-owner",
             "ownerId": "tab-a",
+            "transfers": [{ "sessionId": "session-1", "ownerId": "tab-b" }],
         }))
         .unwrap();
         match envelope.command {
-            Command::CloseSessionOwner { owner_id } => assert_eq!(owner_id, "tab-a"),
+            Command::CloseSessionOwner {
+                owner_id,
+                transfers,
+            } => {
+                assert_eq!(owner_id, "tab-a");
+                assert_eq!(
+                    transfers,
+                    vec![SessionOwnerTransfer {
+                        session_id: "session-1".to_owned(),
+                        owner_id: "tab-b".to_owned(),
+                    }]
+                );
+            }
             _ => panic!("expected close-session-owner command"),
         }
     }
@@ -5374,6 +5764,7 @@ mod protocol_tests {
             Command::AttachSession {
                 session_id: "session-1".to_owned(),
                 view_id: "view-1".to_owned(),
+                owner_id: None,
             },
             Command::DetachSession {
                 session_id: "session-1".to_owned(),

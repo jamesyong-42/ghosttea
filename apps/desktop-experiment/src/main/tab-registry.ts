@@ -6,6 +6,11 @@ export interface DesktopTabRecord<Window extends object> {
   activeCwd: string | undefined;
 }
 
+export interface SessionOwnerTransfer {
+  sessionId: string;
+  ownerId: string;
+}
+
 export class DesktopTabRegistry<Window extends object> {
   readonly #byWindow = new Map<Window, DesktopTabRecord<Window>>();
 
@@ -27,6 +32,22 @@ export class DesktopTabRegistry<Window extends object> {
 
   records(): DesktopTabRecord<Window>[] {
     return [...this.#byWindow.values()];
+  }
+
+  /** One deterministic surviving application owner for every referenced session. */
+  sessionOwnerTransfers(): SessionOwnerTransfer[] {
+    const ownerBySession = new Map<string, string>();
+    for (const record of this.#byWindow.values()) {
+      for (const sessionId of record.sessionIds) {
+        if (!ownerBySession.has(sessionId)) ownerBySession.set(sessionId, record.id);
+      }
+    }
+    return [...ownerBySession].map(([sessionId, ownerId]) => ({ sessionId, ownerId }));
+  }
+
+  unreferencedSessionIds(sessionIds: ReadonlySet<string>): Set<string> {
+    const referenced = new Set(this.records().flatMap((record) => [...record.sessionIds]));
+    return new Set([...sessionIds].filter((sessionId) => !referenced.has(sessionId)));
   }
 
   group(groupId: string): DesktopTabRecord<Window>[] {

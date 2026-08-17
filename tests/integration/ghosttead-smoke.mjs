@@ -34,10 +34,13 @@ const child = spawn("cargo", ["run", "--quiet", "--manifest-path", "native/ghost
     GHOSTTEA_AUTH_TOKEN: token,
     GHOSTTEA_CONFIG_PATH: configPath,
     GHOSTTEA_TRUFFLE_ENABLED: "0",
+    GHOSTTEA_PARENT_WATCH: "1",
   },
-  stdio: ["ignore", "pipe", "inherit"],
+  stdio: ["pipe", "pipe", "inherit"],
 });
 let automationClient;
+let testPassed = false;
+let parentShutdownError;
 
 function packet(bytes) {
   const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
@@ -1288,9 +1291,23 @@ try {
   if ((await nextControlResponse(control, requestId - 1)).type !== "ok")
     throw new Error("promoted session close failed");
 
+  testPassed = true;
   console.log("ghosttead smoke test passed");
 } finally {
   automationClient?.dispose();
-  child.kill("SIGTERM");
-  rmSync(runtimeDir, { recursive: true, force: true });
+  const exited =
+    child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolveExit) => child.once("exit", resolveExit));
+  child.stdin.end();
+  try {
+    await withTimeout(exited, "ghosttead parent-channel shutdown", 15_000);
+  } catch (error) {
+    child.kill("SIGKILL");
+    if (testPassed) parentShutdownError = error;
+  } finally {
+    rmSync(runtimeDir, { recursive: true, force: true });
+  }
 }
+
+if (parentShutdownError) throw parentShutdownError;

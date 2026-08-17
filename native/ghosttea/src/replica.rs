@@ -68,6 +68,15 @@ impl RemoteReplica {
         self.summary.lock().unwrap().clone()
     }
 
+    pub fn transfer_owner(&self, expected_owner_id: &str, owner_id: &str) -> bool {
+        let mut summary = self.summary.lock().unwrap();
+        if summary.owner_id.as_deref() != Some(expected_owner_id) {
+            return false;
+        }
+        summary.owner_id = Some(owner_id.to_owned());
+        true
+    }
+
     pub fn set_read_write(&self, read_write: bool) {
         self.summary.lock().unwrap().read_write = read_write;
     }
@@ -259,6 +268,23 @@ mod tests {
         assert_eq!(u64::from_le_bytes(frame[24..32].try_into().unwrap()), 7);
         assert_eq!(replica.summary().title.as_deref(), Some("remote title"));
         assert_eq!(replica.summary().cwd.as_deref(), Some("/remote"));
+    }
+
+    #[test]
+    fn replica_owner_transfer_is_compare_and_swap() {
+        let replica = RemoteReplica::new(
+            "remote".into(),
+            None,
+            20,
+            1,
+            Some("tab-a".into()),
+            FrameHub::new(2),
+            Arc::new(Mutex::new(TextEngine::discover().unwrap())),
+        );
+        assert!(!replica.transfer_owner("stale", "tab-b"));
+        assert_eq!(replica.summary().owner_id.as_deref(), Some("tab-a"));
+        assert!(replica.transfer_owner("tab-a", "tab-b"));
+        assert_eq!(replica.summary().owner_id.as_deref(), Some("tab-b"));
     }
 
     fn frozen_replica(offset: u64) -> Arc<RemoteReplica> {

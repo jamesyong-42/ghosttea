@@ -147,6 +147,7 @@ const FRAME_BRIDGE_CAPABILITY_VERSION = 1;
 const CONFIG_PROTOCOL_MINOR = 10;
 const REMOTE_LIFECYCLE_PROTOCOL_MINOR = 12;
 const CONTROL_REVISION_CAS_PROTOCOL_MINOR = 13;
+const SESSION_OWNER_TRANSFER_PROTOCOL_MINOR = 14;
 const DEFAULT_FRAME_SUBSCRIPTION_GRACE_MS = 1_000;
 /** A one-shot resume covers a 20 s dial plus the attach handshake. */
 const RECONNECT_REQUEST_TIMEOUT_MS = 60_000;
@@ -207,6 +208,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   readonly #recoveredSessions = new Set<string>();
   #remoteLifecycleSupported = false;
   #controlRevisionCasSupported = false;
+  #ownerAwareAttachmentSupported = false;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
   #configProtocolSupported = false;
@@ -471,6 +473,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     this.#configProtocolSupported = hello.protocolMinor >= CONFIG_PROTOCOL_MINOR;
     this.#remoteLifecycleSupported = hello.protocolMinor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR;
     this.#controlRevisionCasSupported = hello.protocolMinor >= CONTROL_REVISION_CAS_PROTOCOL_MINOR;
+    this.#ownerAwareAttachmentSupported = hello.protocolMinor >= SESSION_OWNER_TRANSFER_PROTOCOL_MINOR;
     if (this.#configProtocolSupported && hello.configRevision !== undefined) {
       await this.#refreshConfig();
     }
@@ -983,7 +986,15 @@ export class GhostteaTerminalRuntime extends EventTarget {
         const current = this.#views.get(viewId);
         if (current !== view || !entry.active) return undefined;
         if (subscription.added) this.#expectFullSnapshot(sessionHandle);
-        return this.#control?.request({ type: "attach-session", sessionId, viewId }, 60_000);
+        return this.#control?.request(
+          {
+            type: "attach-session",
+            sessionId,
+            viewId,
+            ...(this.#ownerAwareAttachmentSupported && this.#sessionOwnerId ? { ownerId: this.#sessionOwnerId } : {}),
+          },
+          60_000,
+        );
       })
       .then((response) => {
         if (!response) return;

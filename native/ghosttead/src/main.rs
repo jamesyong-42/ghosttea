@@ -6,6 +6,7 @@ use ghosttea::{
     TerminalServiceConfig, TextEngine, TextMetrics,
 };
 use ghosttea_truffle::{TruffleTerminalConfig, TruffleTerminalMesh};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use truffle_core::{Node, network::tailscale::TailscaleProvider};
 
 const DEFAULT_APP_ID: &str = "ghosttea-terminal";
@@ -131,8 +132,39 @@ async fn serve_until_signal(service: TerminalService) -> Result<()> {
 ///
 /// SIGINT as well as SIGTERM: a daemon run in a terminal during development is
 /// stopped with ctrl-c, and that path deserves the same drain as production.
-#[cfg(unix)]
 async fn shutdown_signal() -> &'static str {
+    tokio::select! {
+        signal = platform_shutdown_signal() => signal,
+        signal = managed_parent_shutdown() => signal,
+    }
+}
+
+/// The managed Electron host owns the write end of stdin. EOF therefore means
+/// the host is gone even when it crashed or was force-killed and never sent a
+/// signal. Unmanaged invocations do not opt in, so an interactive terminal's
+/// ordinary stdin remains irrelevant to daemon lifetime.
+async fn managed_parent_shutdown() -> &'static str {
+    if env::var("GHOSTTEA_PARENT_WATCH").ok().as_deref() != Some("1") {
+        return std::future::pending().await;
+    }
+    let mut stdin = tokio::io::stdin();
+    if let Err(error) = wait_for_eof(&mut stdin).await {
+        eprintln!("[ghosttead] parent channel failed: {error}");
+    }
+    "parent channel closed"
+}
+
+async fn wait_for_eof(reader: &mut (impl AsyncRead + Unpin)) -> std::io::Result<()> {
+    let mut buffer = [0_u8; 256];
+    loop {
+        if reader.read(&mut buffer).await? == 0 {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn platform_shutdown_signal() -> &'static str {
     use tokio::signal::unix::{SignalKind, signal};
 
     // A process that cannot install a handler still has to serve; it simply
@@ -159,7 +191,7 @@ async fn shutdown_signal() -> &'static str {
 }
 
 #[cfg(windows)]
-async fn shutdown_signal() -> &'static str {
+async fn platform_shutdown_signal() -> &'static str {
     if let Err(error) = tokio::signal::ctrl_c().await {
         eprintln!("[ghosttead] cannot listen for ctrl-c, shutdown will not drain: {error}");
         return std::future::pending().await;
@@ -299,5 +331,19 @@ fn env_bool(name: &str, legacy_name: &str) -> Result<Option<bool>> {
         "1" | "true" | "yes" | "on" => Ok(Some(true)),
         "0" | "false" | "no" | "off" => Ok(Some(false)),
         _ => bail!("{name} must be a boolean"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn parent_channel_waits_through_data_and_resolves_only_at_eof() {
+        let (mut writer, mut reader) = tokio::io::duplex(32);
+        writer.write_all(b"ignored").await.unwrap();
+        drop(writer);
+        wait_for_eof(&mut reader).await.unwrap();
     }
 }

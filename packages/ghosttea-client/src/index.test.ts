@@ -329,9 +329,22 @@ describe("GhostteaAutomationClient", () => {
   });
 
   it("closes an application session owner atomically", async () => {
+    serverProtocolMinor = 14;
     const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
-    await client.closeSessionOwner("tab-a");
-    expect(commands.at(-1)).toMatchObject({ type: "close-session-owner", ownerId: "tab-a" });
+    await client.closeSessionOwner("tab-a", [{ sessionId: "session", ownerId: "tab-b" }]);
+    expect(commands.at(-1)).toMatchObject({
+      type: "close-session-owner",
+      ownerId: "tab-a",
+      transfers: [{ sessionId: "session", ownerId: "tab-b" }],
+    });
+    client.dispose();
+  });
+
+  it("refuses unsafe owner closure against a pre-transfer daemon", async () => {
+    serverProtocolMinor = 13;
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.closeSessionOwner("tab-a")).rejects.toThrow("requires protocol 1.14");
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
     client.dispose();
   });
 

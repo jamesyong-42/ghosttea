@@ -339,6 +339,18 @@ pub trait RemoteTerminalRuntime: Send + Sync {
     async fn detach_view(&self, session_id: &str, view_id: &str, attachment_epoch: u64);
     async fn close_session(&self, session_id: &str) -> bool;
 
+    /// Compare-and-swap the application lifetime owner of a retained replica.
+    /// Implementations must not dial the remote host: ownership is local to
+    /// this viewer daemon.
+    async fn transfer_owner(
+        &self,
+        _session_id: &str,
+        _expected_owner_id: &str,
+        _owner_id: &str,
+    ) -> bool {
+        false
+    }
+
     fn subscribe_lifecycle(&self) -> broadcast::Receiver<RemoteLifecycleChanged> {
         closed_channel()
     }

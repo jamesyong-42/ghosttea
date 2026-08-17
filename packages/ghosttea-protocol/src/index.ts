@@ -1,5 +1,5 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 13;
+export const PROTOCOL_MINOR = 14;
 export const CONFIG_SCHEMA_VERSION = 1;
 export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
@@ -239,6 +239,12 @@ export interface CreateSessionOptions {
   ownerId?: string;
 }
 
+/** Re-home a session before its current application owner is closed. */
+export interface SessionOwnerTransfer {
+  sessionId: string;
+  ownerId: string;
+}
+
 export type ClientCommand =
   | { requestId: number; type: "hello"; protocolMajor: number; protocolMinor: number; clientBuild: string }
   | { requestId: number; type: "get-config" }
@@ -270,7 +276,7 @@ export type ClientCommand =
   | { requestId: number; type: "retry-remote-view"; sessionId: string; viewId: string }
   | { requestId: number; type: "get-session"; sessionId: string }
   | { requestId: number; type: "refresh-session"; sessionId: string }
-  | { requestId: number; type: "attach-session"; sessionId: string; viewId: string }
+  | { requestId: number; type: "attach-session"; sessionId: string; viewId: string; ownerId?: string }
   | { requestId: number; type: "detach-session"; sessionId: string; viewId: string }
   | (ViewInputIdentity & { requestId: number; type: "send-text"; sessionId: string; text: string })
   | (ViewInputIdentity & { requestId: number; type: "paste"; sessionId: string; text: string })
@@ -341,7 +347,13 @@ export type ClientCommand =
   | { requestId: number; type: "terminate"; sessionId: string; source?: TerminationSource }
   /** Re-class a live, locally governed session; answered with the updated summary. */
   | { requestId: number; type: "set-persistence"; sessionId: string; persistence: SessionPersistence }
-  | { requestId: number; type: "close-session-owner"; ownerId: string };
+  | {
+      requestId: number;
+      type: "close-session-owner";
+      ownerId: string;
+      /** Layout-known survivors; live attached views provide a second authority. */
+      transfers?: SessionOwnerTransfer[];
+    };
 
 export type PrivilegedConfigDocumentCommand = Extract<
   ClientCommand,

@@ -26,6 +26,7 @@ declare global {
       newTab: (cwd?: string) => void;
       selectTab: (target: "previous" | "next" | "last" | number) => void;
       closeTab: () => void;
+      closePaneSession: (sessionId: string, remainingSessionIds: readonly string[]) => void;
       updateTabSessions: (sessionIds: readonly string[]) => void;
       updateActiveCwd: (cwd?: string) => void;
       onMenuAction: (listener: (action: "copy" | "paste" | "select-all" | "clear-screen") => void) => () => void;
