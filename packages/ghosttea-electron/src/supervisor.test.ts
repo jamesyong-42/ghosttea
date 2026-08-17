@@ -165,12 +165,21 @@ describe("TerminalSupervisor", () => {
       stopped = true;
     });
     expect(child.stdin.writableEnded).toBe(true);
-    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    // Unix executables get a compatibility SIGTERM. Windows and `cargo run`
+    // wrappers drain only through the inherited stdin pipe until the grace
+    // expires — Node cannot address a Windows child with SIGTERM.
+    const unixCompatibilitySignal = process.platform !== "win32";
+    if (unixCompatibilitySignal) {
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    } else {
+      expect(child.kill).not.toHaveBeenCalled();
+    }
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.kill).toHaveBeenCalledTimes(unixCompatibilitySignal ? 1 : 0);
     expect(stopped).toBe(false);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(child.kill).toHaveBeenLastCalledWith("SIGKILL");
+    expect(child.kill).toHaveBeenCalledTimes(unixCompatibilitySignal ? 2 : 1);
     emitExit(child, 0, "SIGKILL");
     await stopping;
     expect(stopped).toBe(true);
