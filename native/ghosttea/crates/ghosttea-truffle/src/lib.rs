@@ -3462,6 +3462,16 @@ impl MeshRuntime {
         self.replicas.write().await.remove(session_id).is_some()
     }
 
+    pub async fn transfer_owner(
+        &self,
+        session_id: &str,
+        expected_owner_id: &str,
+        owner_id: &str,
+    ) -> bool {
+        let remote = self.replicas.read().await.get(session_id).cloned();
+        remote.is_some_and(|remote| remote.replica.transfer_owner(expected_owner_id, owner_id))
+    }
+
     pub async fn session_lifecycle(&self, session_id: &str) -> Option<RemoteSessionLifecycle> {
         self.replicas
             .read()
@@ -6808,6 +6818,15 @@ impl RemoteTerminalRuntime for MeshRuntime {
 
     async fn close_session(&self, session_id: &str) -> bool {
         MeshRuntime::close_session(self, session_id).await
+    }
+
+    async fn transfer_owner(
+        &self,
+        session_id: &str,
+        expected_owner_id: &str,
+        owner_id: &str,
+    ) -> bool {
+        MeshRuntime::transfer_owner(self, session_id, expected_owner_id, owner_id).await
     }
 
     fn subscribe_lifecycle(&self) -> broadcast::Receiver<RemoteLifecycleChanged> {

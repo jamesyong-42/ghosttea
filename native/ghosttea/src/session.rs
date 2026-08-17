@@ -12,10 +12,10 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::collections::HashSet;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+mod unix_process_tree;
 
 #[cfg(windows)]
 mod process_tree;
@@ -725,6 +725,10 @@ struct PtyProcess {
     /// ever seeing end of file, and the session from ever concluding.
     #[cfg(unix)]
     reader_shutdown: Option<OwnedFd>,
+    /// Stable birth identities and dynamically discovered membership for the
+    /// Unix PTY session. Captured before the root can be reaped and reused.
+    #[cfg(unix)]
+    tree: Option<unix_process_tree::ProcessTree>,
     /// Owns the session's whole process tree. `None` when the job could not be
     /// created, which leaves termination on the direct child alone.
     #[cfg(windows)]
@@ -841,17 +845,6 @@ impl PtyProcess {
         SessionActivity::unsupported(observed_at_ms)
     }
 
-    /// The process group currently reading the terminal, when it differs from
-    /// the root group termination already signals.
-    #[cfg(unix)]
-    fn foreground_pgid(&self) -> Option<i32> {
-        self.master
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|master| master.process_group_leader())
-    }
-
     /// Force the poll-based reader to end as though the PTY reached end of
     /// file. A no-op when the master fd could not be duplicated at spawn and
     /// the session fell back to a blocking reader.
@@ -891,236 +884,6 @@ fn scaled_graces(deadline: Option<Instant>) -> [Duration; 3] {
         let share = remaining.mul_f64(default.as_secs_f64() / full.as_secs_f64());
         share.clamp(MINIMUM_GRACE, default)
     })
-}
-
-#[cfg(unix)]
-fn signal_pgid(pgid: Option<i32>, signal: libc::c_int) -> Result<()> {
-    // pgid 1 or below would address init or every process the user owns.
-    let Some(pgid) = pgid.filter(|pgid| *pgid > 1) else {
-        return Ok(());
-    };
-    let result = unsafe { libc::kill(-pgid, signal) };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(error.into())
-    }
-}
-
-#[cfg(unix)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ProcessIdentity {
-    pid: i32,
-    parent_pid: i32,
-    started_at: u64,
-}
-
-#[cfg(any(target_os = "linux", all(test, unix)))]
-fn linux_process_identity(pid: i32, stat: &str) -> Option<ProcessIdentity> {
-    // `comm` may contain spaces and parentheses. Everything after its final
-    // ')' starts at field 3 (state); ppid is field 4 and process start ticks
-    // are field 22.
-    let fields = stat
-        .get(stat.rfind(')')? + 1..)?
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    Some(ProcessIdentity {
-        pid,
-        parent_pid: fields.get(1)?.parse().ok()?,
-        started_at: fields.get(19)?.parse().ok()?,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn unix_process_identity(pid: i32) -> Option<ProcessIdentity> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    linux_process_identity(pid, &stat)
-}
-
-#[cfg(target_os = "linux")]
-fn unix_process_snapshot() -> Vec<ProcessIdentity> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
-            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
-            linux_process_identity(pid, &stat)
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-fn unix_process_identity(pid: i32) -> Option<ProcessIdentity> {
-    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
-    let expected = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-    let read = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            info.as_mut_ptr().cast(),
-            expected,
-        )
-    };
-    if read != expected {
-        return None;
-    }
-    let info = unsafe { info.assume_init() };
-    Some(ProcessIdentity {
-        pid,
-        parent_pid: i32::try_from(info.pbi_ppid).ok()?,
-        started_at: info
-            .pbi_start_tvsec
-            .saturating_mul(1_000_000)
-            .saturating_add(info.pbi_start_tvusec),
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn unix_process_snapshot() -> Vec<ProcessIdentity> {
-    let requested = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    if requested <= 0 {
-        return Vec::new();
-    }
-    let mut pids = vec![0_i32; requested as usize + 64];
-    let bytes = pids
-        .len()
-        .saturating_mul(std::mem::size_of::<i32>())
-        .min(i32::MAX as usize) as i32;
-    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    if count <= 0 {
-        return Vec::new();
-    }
-    pids.truncate((count as usize).min(pids.len()));
-    pids.into_iter()
-        .filter(|pid| *pid > 1)
-        .filter_map(unix_process_identity)
-        .collect()
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn unix_process_identity(_pid: i32) -> Option<ProcessIdentity> {
-    None
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn unix_process_snapshot() -> Vec<ProcessIdentity> {
-    Vec::new()
-}
-
-#[cfg(unix)]
-fn process_descendants(root_pid: i32, snapshot: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
-    let mut ancestors = HashSet::from([root_pid]);
-    let mut descendants = Vec::new();
-    loop {
-        let mut changed = false;
-        for process in snapshot {
-            if ancestors.contains(&process.pid) || !ancestors.contains(&process.parent_pid) {
-                continue;
-            }
-            ancestors.insert(process.pid);
-            descendants.push(*process);
-            changed = true;
-        }
-        if !changed {
-            return descendants;
-        }
-    }
-}
-
-#[cfg(unix)]
-fn same_process(left: &ProcessIdentity, right: &ProcessIdentity) -> bool {
-    // Reparenting is expected when the PTY root exits. PID plus process start
-    // time is the stable identity; parent_pid is topology observed at one
-    // instant and must not make a live orphan disappear from the later rung.
-    left.pid == right.pid && left.started_at == right.started_at
-}
-
-/// Signal every process known to descend from the PTY root, even when job
-/// control moved it outside both the root and foreground process groups.
-///
-/// Identities include process start time: a PID that exits during the grace
-/// period cannot make the later SIGKILL hit an unrelated process that reused
-/// its number.
-#[cfg(unix)]
-fn signal_process_tree(
-    root_pid: Option<i32>,
-    process_groups: [Option<i32>; 2],
-    known: &mut HashMap<i32, ProcessIdentity>,
-    signal: libc::c_int,
-    step: &str,
-    session_id: &str,
-) {
-    let snapshot = unix_process_snapshot();
-    if let Some(root_pid) = root_pid {
-        if let Some(root) = snapshot.iter().find(|process| process.pid == root_pid) {
-            known.insert(root.pid, *root);
-        }
-        for descendant in process_descendants(root_pid, &snapshot) {
-            known.insert(descendant.pid, descendant);
-        }
-    }
-
-    for pgid in process_groups.into_iter().flatten().collect::<HashSet<_>>() {
-        if let Err(error) = signal_pgid(Some(pgid), signal) {
-            eprintln!(
-                "[ghosttea] failed to {step} process group {pgid} for {session_id}: {error:#}"
-            );
-        }
-    }
-
-    for process in known.values() {
-        if !unix_process_identity(process.pid)
-            .as_ref()
-            .is_some_and(|current| same_process(current, process))
-        {
-            continue;
-        }
-        let result = unsafe { libc::kill(process.pid, signal) };
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                eprintln!(
-                    "[ghosttea] failed to {step} descendant {} for {session_id}: {error}",
-                    process.pid
-                );
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn known_processes_alive(known: &HashMap<i32, ProcessIdentity>) -> bool {
-    known.values().any(|process| {
-        unix_process_identity(process.pid)
-            .as_ref()
-            .is_some_and(|current| same_process(current, process))
-    })
-}
-
-#[cfg(unix)]
-fn wait_for_known_processes(known: &HashMap<i32, ProcessIdentity>, deadline: Instant) -> bool {
-    loop {
-        if !known_processes_alive(known) {
-            return false;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return true;
-        }
-        thread::sleep(
-            deadline
-                .saturating_duration_since(now)
-                .min(Duration::from_millis(50)),
-        );
-    }
 }
 
 /// Where the reader thread takes PTY output from.
@@ -1399,6 +1162,14 @@ impl Session {
         // Adopt the tree before anything else so a shell that starts a
         // background job is already inside the job object. A failure here is
         // not fatal: termination falls back to the direct child.
+        #[cfg(unix)]
+        let process_tree = pid.and_then(|pid| {
+            let tree = unix_process_tree::ProcessTree::capture(pid);
+            if tree.is_none() {
+                eprintln!("[ghosttea] could not pin process-tree identity for pid {pid}");
+            }
+            tree
+        });
         // Duplicated before the child moves behind its mutex, so the exit
         // watcher never has to take that lock to learn the child is gone.
         #[cfg(windows)]
@@ -1476,6 +1247,8 @@ impl Session {
                 pid,
                 #[cfg(unix)]
                 reader_shutdown,
+                #[cfg(unix)]
+                tree: process_tree,
                 #[cfg(windows)]
                 tree: process_tree,
             },
@@ -1760,6 +1533,14 @@ impl Session {
     }
     pub fn owner_id(&self) -> Option<String> {
         self.summary.lock().unwrap().owner_id.clone()
+    }
+    pub fn transfer_owner(&self, expected_owner_id: &str, owner_id: &str) -> bool {
+        let mut summary = self.summary.lock().unwrap();
+        if summary.owner_id.as_deref() != Some(expected_owner_id) {
+            return false;
+        }
+        summary.owner_id = Some(owner_id.to_owned());
+        true
     }
     pub fn summary(&self) -> SessionSummary {
         self.summary.lock().unwrap().clone()
@@ -2682,25 +2463,15 @@ impl Session {
         #[cfg(unix)]
         let termination_tree = {
             let root_pid = self.process.pid.and_then(|pid| i32::try_from(pid).ok());
-            let root_pgid = root_pid.and_then(|pid| {
-                let pgid = unsafe { libc::getpgid(pid) };
-                (pgid > 1).then_some(pgid)
+            let mut tree = self.process.tree.clone().or_else(|| {
+                self.process
+                    .pid
+                    .and_then(unix_process_tree::ProcessTree::capture)
             });
-            let foreground = self
-                .process
-                .foreground_pgid()
-                .filter(|foreground| Some(*foreground) != root_pgid);
-            let snapshot = unix_process_snapshot();
-            let mut known_processes = HashMap::new();
-            if let Some(root_pid) = root_pid {
-                if let Some(root) = snapshot.iter().find(|process| process.pid == root_pid) {
-                    known_processes.insert(root.pid, *root);
-                }
-                for descendant in process_descendants(root_pid, &snapshot) {
-                    known_processes.insert(descendant.pid, descendant);
-                }
+            if let Some(tree) = &mut tree {
+                tree.refresh();
             }
-            (root_pid, [root_pgid, foreground], known_processes)
+            (root_pid, tree)
         };
         {
             let mut order = self.input_order.lock().unwrap();
@@ -2723,12 +2494,17 @@ impl Session {
                 let graces = scaled_graces(session.exit_latch.deadline());
                 #[cfg(unix)]
                 let [interrupt_grace, terminate_grace, force_eof_grace] = graces;
+                #[cfg(unix)]
+                let (root_pid, mut process_tree) = termination_tree;
                 #[cfg(not(unix))]
                 let interrupt_grace = INTERRUPT_GRACE;
                 match session.exit_latch.wait_phase(interrupt_grace) {
                     PhaseWait::Exited => {
                         #[cfg(unix)]
-                        if !known_processes_alive(&termination_tree.2) {
+                        if !process_tree
+                            .as_mut()
+                            .is_some_and(|tree| tree.has_live_members())
+                        {
                             return;
                         }
                         #[cfg(not(unix))]
@@ -2740,44 +2516,40 @@ impl Session {
                 }
                 #[cfg(unix)]
                 {
-                    // Signal the foreground group alongside the root group:
-                    // a full-screen program that swallowed the interrupt sits
-                    // in its own group, while background jobs may sit in a
-                    // third. Keep verified descendant identities for both
-                    // rungs so every branch of the PTY process tree is swept.
-                    let (root_pid, process_groups, mut known_processes) = termination_tree;
+                    // Every group is discovered from a currently verified
+                    // process identity. No cached PID or PGID crosses a grace
+                    // period and becomes authority for a later signal.
                     // A deadline at any rung skips straight to the end: the
                     // remaining graces are courtesies the budget cannot afford.
                     let mut jump = false;
-                    signal_process_tree(
-                        root_pid,
-                        process_groups,
-                        &mut known_processes,
-                        libc::SIGTERM,
-                        "terminate",
-                        &session.id(),
-                    );
+                    if let Some(tree) = &mut process_tree {
+                        tree.signal(libc::SIGTERM, "terminate", &session.id());
+                    } else if let Some(root_pid) = root_pid {
+                        // Without a birth identity, only address the root while
+                        // the reader proves it has not yet been reaped.
+                        let _ = unsafe { libc::kill(root_pid, libc::SIGTERM) };
+                    }
                     let mut terminate_deadline = Instant::now() + terminate_grace;
                     if let Some(overall_deadline) = session.exit_latch.deadline() {
                         terminate_deadline = terminate_deadline.min(overall_deadline);
                     }
                     match session.exit_latch.wait_phase(terminate_grace) {
                         PhaseWait::Exited => {
-                            if !wait_for_known_processes(&known_processes, terminate_deadline) {
+                            if !process_tree
+                                .as_mut()
+                                .is_some_and(|tree| tree.wait_for_exit(terminate_deadline))
+                            {
                                 return;
                             }
                         }
                         PhaseWait::GraceElapsed => {}
                         PhaseWait::DeadlineReached => jump = true,
                     }
-                    signal_process_tree(
-                        root_pid,
-                        process_groups,
-                        &mut known_processes,
-                        libc::SIGKILL,
-                        "sweep",
-                        &session.id(),
-                    );
+                    if let Some(tree) = &mut process_tree {
+                        tree.signal(libc::SIGKILL, "sweep", &session.id());
+                    } else {
+                        let _ = session.process.child.lock().unwrap().kill();
+                    }
                     if !jump {
                         match session.exit_latch.wait_phase(force_eof_grace) {
                             PhaseWait::Exited => return,
@@ -3375,43 +3147,6 @@ mod tests {
             resolve_program_kind(SessionProgramKind::Auto, "/usr/bin/vim", &[]),
             ResolvedProgramKind::Unknown
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_identity_survives_reparenting_but_rejects_pid_reuse() {
-        let observed = ProcessIdentity {
-            pid: 42,
-            parent_pid: 10,
-            started_at: 1_000,
-        };
-        assert!(same_process(
-            &observed,
-            &ProcessIdentity {
-                parent_pid: 1,
-                ..observed
-            }
-        ));
-        assert!(!same_process(
-            &observed,
-            &ProcessIdentity {
-                started_at: 1_001,
-                ..observed
-            }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn parses_linux_process_identity_after_a_parenthesized_command_name() {
-        let identity = linux_process_identity(
-            123,
-            "123 (worker (nested)) S 42 1 1 0 -1 4194304 10 0 0 0 1 2 0 0 20 0 1 0 987654 4096",
-        )
-        .unwrap();
-        assert_eq!(identity.pid, 123);
-        assert_eq!(identity.parent_pid, 42);
-        assert_eq!(identity.started_at, 987654);
     }
 
     #[cfg(unix)]

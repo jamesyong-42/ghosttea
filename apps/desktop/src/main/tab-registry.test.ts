@@ -28,6 +28,22 @@ describe("DesktopTabRegistry", () => {
     expect(registry.group("group").map((record) => record.id)).toEqual(["second"]);
   });
 
+  it("reassigns every surviving session and isolates compatibility cleanup", () => {
+    const registry = new DesktopTabRegistry<object>();
+    const first = {};
+    const second = {};
+    registry.add(first, "first", "group");
+    registry.add(second, "second", "group");
+    registry.updateSessions(first, ["first-only"]);
+    // `shared` may still be owned by `first` in the daemon even after its pane
+    // moved entirely into the second window.
+    registry.updateSessions(second, ["shared"]);
+
+    const closed = registry.delete(first)!;
+    expect(registry.sessionOwnerTransfers()).toEqual([{ sessionId: "shared", ownerId: "second" }]);
+    expect(registry.unreferencedSessionIds(closed.sessionIds)).toEqual(new Set(["first-only"]));
+  });
+
   it("ends a closed pane session only after its final mirrored attachment is gone", () => {
     const registry = new DesktopTabRegistry<object>();
     const first = {};

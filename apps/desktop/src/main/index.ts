@@ -14,7 +14,7 @@ import {
 } from "@vibecook/ghosttea-electron/main";
 import { LEGACY_PROFILE_ENV, PROFILE_ENV, desktopProfile } from "./profile";
 import { orderNativeTabs } from "./native-tab-order";
-import { DesktopTabRegistry } from "./tab-registry";
+import { DesktopTabRegistry, type SessionOwnerTransfer } from "./tab-registry";
 import {
   appearanceUpdateMismatches,
   appearanceBlock,
@@ -598,16 +598,21 @@ function focusRelativeTab(window: BrowserWindow, offset: -1 | 1): void {
   focusTab(group[(index + offset + group.length) % group.length]?.window);
 }
 
-async function closeSessionOwner(ownerId: string, sessionIds: ReadonlySet<string>): Promise<void> {
+async function closeSessionOwner(
+  ownerId: string,
+  fallbackSessionIds: ReadonlySet<string>,
+  transfers: readonly SessionOwnerTransfer[] = [],
+): Promise<void> {
   const client = backend?.automation;
   if (!client) return;
   try {
-    await client.closeSessionOwner(ownerId);
+    await client.closeSessionOwner(ownerId, transfers);
   } catch (ownerError) {
     console.warn(`[terminal-runtime] failed to close tab session owner ${ownerId}`, ownerError);
-    // Compatibility fallback for an externally managed older daemon. This is
-    // observational only; current daemons close the owner transactionally.
-    const orderedSessionIds = [...sessionIds];
+    // An older external daemon cannot transfer ownership safely. End only the
+    // sessions no surviving window references; preserving a mirror is more
+    // important than eagerly reclaiming an old-daemon session.
+    const orderedSessionIds = [...fallbackSessionIds];
     const results = await Promise.allSettled(
       orderedSessionIds.map(async (sessionId) => {
         await client.terminate(sessionId, "user");
@@ -622,9 +627,13 @@ async function closeSessionOwner(ownerId: string, sessionIds: ReadonlySet<string
   }
 }
 
-function terminateClosedTabSessions(ownerId: string, sessionIds: ReadonlySet<string>): void {
+function terminateClosedTabSessions(
+  ownerId: string,
+  fallbackSessionIds: ReadonlySet<string>,
+  transfers: readonly SessionOwnerTransfer[],
+): void {
   if (quitting || !backend) return;
-  const task = closeSessionOwner(ownerId, sessionIds);
+  const task = closeSessionOwner(ownerId, fallbackSessionIds, transfers);
   closingSessionOwners.add(task);
   void task.finally(() => closingSessionOwners.delete(task));
 }
@@ -711,7 +720,7 @@ async function createWindow(options: CreateWindowOptions = {}): Promise<BrowserW
     const closed = tabs.delete(window);
     if (lastFocusedWindow === window) lastFocusedWindow = undefined;
     if (!closed) return;
-    terminateClosedTabSessions(closed.id, closed.sessionIds);
+    terminateClosedTabSessions(closed.id, tabs.unreferencedSessionIds(closed.sessionIds), tabs.sessionOwnerTransfers());
   });
   window.on("close", (event) => guardDirtyConfigEditorClose(window, event));
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
@@ -813,7 +822,6 @@ app.on("before-quit", (event) => {
   }
   if (quitCleanupComplete) {
     quitting = true;
-    backend?.stop();
     return;
   }
   event.preventDefault();
@@ -821,10 +829,10 @@ app.on("before-quit", (event) => {
   quitting = true;
   const ownerClosures = tabs.records().map((record) => closeSessionOwner(record.id, record.sessionIds));
   quitCleanup = allSettledWithin([...closingSessionOwners, ...ownerClosures], QUIT_CLEANUP_TIMEOUT_MS).then(
-    (settled) => {
+    async (settled) => {
       if (!settled) console.warn("terminal session cleanup timed out during quit");
       try {
-        backend?.stop();
+        await backend?.stop();
       } catch (error) {
         console.error("terminal backend shutdown failed", error);
       }

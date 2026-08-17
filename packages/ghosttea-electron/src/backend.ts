@@ -80,8 +80,8 @@ export class GhostteaElectronBackend extends EventEmitter {
     this.#bridge?.attachRenderer(webContents);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.#resetClients();
-    this.#supervisor?.stop();
+    await this.#supervisor?.stop();
   }
 }

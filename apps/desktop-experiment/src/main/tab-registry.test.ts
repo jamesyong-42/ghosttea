@@ -27,4 +27,18 @@ describe("DesktopTabRegistry", () => {
     expect(registry.delete(first)?.id).toBe("first");
     expect(registry.group("group").map((record) => record.id)).toEqual(["second"]);
   });
+
+  it("reassigns every surviving session and isolates compatibility cleanup", () => {
+    const registry = new DesktopTabRegistry<object>();
+    const first = {};
+    const second = {};
+    registry.add(first, "first", "group");
+    registry.add(second, "second", "group");
+    registry.updateSessions(first, ["first-only"]);
+    registry.updateSessions(second, ["shared"]);
+
+    const closed = registry.delete(first)!;
+    expect(registry.sessionOwnerTransfers()).toEqual([{ sessionId: "shared", ownerId: "second" }]);
+    expect(registry.unreferencedSessionIds(closed.sessionIds)).toEqual(new Set(["first-only"]));
+  });
 });
