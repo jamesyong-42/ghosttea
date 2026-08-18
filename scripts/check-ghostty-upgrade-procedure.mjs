@@ -119,7 +119,10 @@ for (const [target, config] of Object.entries(targets)) {
   );
   requireEqual(artifact?.libraryPath, config.libraryPath, `${target} native artifact library path`);
   requireEqual(config.zigCpu, "baseline", `${target} portable Zig CPU target`);
-  requireEqual(artifact?.reproducible, config.build === "container", `${target} reproducibility classification`);
+  if (typeof config.reproducible !== "boolean") {
+    throw new Error(`${target} must declare a boolean reproducibility classification.`);
+  }
+  requireEqual(artifact?.reproducible, config.reproducible, `${target} reproducibility classification`);
   for (const field of ["sha256", "librarySha256", "headersSha256"]) {
     if (!/^[0-9a-f]{64}$/.test(artifact?.[field] ?? "")) {
       throw new Error(`${target} native artifact ${field} is not a SHA-256 digest.`);
@@ -128,9 +131,15 @@ for (const [target, config] of Object.entries(targets)) {
   if (!Number.isSafeInteger(artifact?.size) || artifact.size <= 0) {
     throw new Error(`${target} native artifact size must be a positive integer.`);
   }
-  if (config.build === "native" && (!Number.isSafeInteger(artifact?.candidateRunId) || artifact.candidateRunId <= 0)) {
+  if (!config.reproducible && (!Number.isSafeInteger(artifact?.candidateRunId) || artifact.candidateRunId <= 0)) {
     throw new Error(`${target} must record the positive candidateRunId whose immutable bytes are promoted.`);
   }
+}
+const candidateRunIds = Object.entries(targets)
+  .filter(([, config]) => !config.reproducible)
+  .map(([target]) => artifacts.targets[target].candidateRunId);
+if (new Set(candidateRunIds).size !== 1) {
+  throw new Error("Non-reproducible Ghostty VT targets must come from one atomic candidate run.");
 }
 
 for (const [description, bom] of [
@@ -220,6 +229,7 @@ for (const text of [
   "candidateRunId",
   "scripts/verify-ghostty-vt-candidate.mjs",
   "run-id: ${{ steps.windows_candidate.outputs.run_id }}",
+  "run-id: ${{ steps.macos_candidate.outputs.run_id }}",
   "needs: [package, windows]",
   "runs-on: macos-26",
   "GHOSTTEA_NORMALIZER_DEVELOPER_DIR",

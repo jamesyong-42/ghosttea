@@ -185,16 +185,15 @@ checksum-locked VT patch set, Zig distribution and targets, target CPUs,
 builder image, and archive normalizer. Push a new `ghostty-vt-*` tag only when
 one of these pinned native inputs changes.
 
-The MSVC archive is native-built and deliberately classified as
-non-reproducible. Before tagging, dispatch `ghostty-vt-artifact.yml` on the
-release branch and lock the Windows result together with its `candidateRunId`.
-The tag workflow downloads that immutable candidate by run ID, verifies the
-bundle and embedded source identity, and creates the release only after the
-reproducible macOS archive also passes. The macOS claim depends on the locked
-single-job Zig schedule, dependency seed, `baseline` CPU, and exact Xcode
-`strip` build in `native/ghostty.lock.json`; fixed container paths by themselves
-are not reproducible across ARM hosts or macOS runner generations. A tag must
-never rebuild and substitute new Windows bytes for the checksum in the reviewed
+Both desktop/server archives are deliberately classified as non-reproducible.
+Before tagging, dispatch `ghostty-vt-artifact.yml` on the release branch and
+lock both results together with their shared `candidateRunId`. The tag workflow
+downloads those immutable candidates by run ID, verifies each bundle and
+embedded source identity, and promotes the exact reviewed bytes. The macOS
+recipe still pins a single-job Zig schedule, dependency seed, `baseline` CPU,
+and exact Xcode `strip` build; a controlled cross-host check nevertheless
+produced a different instruction sequence in the root Zig object. A tag must
+never rebuild and substitute either archive for the checksums in the reviewed
 manifest.
 
 The GhostteaKit native artifact is separate, and shipping it correctly means

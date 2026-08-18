@@ -26,7 +26,7 @@ build recipe. The commit alone is not a complete artifact identity.
 
 | Target | Built by | Static archive | Reproducible |
 | --- | --- | --- | --- |
-| `aarch64-apple-darwin` | Zig in the pinned Linux builder image | `lib/libghostty-vt.a` | yes |
+| `aarch64-apple-darwin` | Zig in the pinned Linux builder image | `lib/libghostty-vt.a` | no |
 | `x86_64-pc-windows-msvc` | Zig on a Windows host | `lib/ghostty-vt-static.lib` | no |
 
 Ghostty installs the Windows static archive under a distinct name because
@@ -38,10 +38,13 @@ and Windows SDK and therefore builds on a matching host. The container build
 pins its job count, dependency seed, target CPU to `baseline`, and in-container
 paths. Its Mach-O archive is then stripped by the exact Xcode build recorded in
 `native/ghostty.lock.json`, and archive metadata is canonicalized. All three
-classes of constraint are required: scheduling and CPU drift can change code
+classes of constraint reduce variance: scheduling and CPU drift can change code
 generation across ARM hosts, while an unpinned Apple `strip` changes
-otherwise-identical objects across macOS runner generations. A native Windows
-build embeds host-toolchain state that no postprocessing step can canonicalize.
+otherwise-identical objects across macOS runner generations. Even with every
+pin applied, Zig 0.15.2 emitted a different instruction sequence in the root
+object across the local and CI ARM hosts, so the archive is not classified as
+reproducible. A native Windows build likewise embeds host-toolchain state that
+no postprocessing step can canonicalize.
 
 `reproducible` in `artifacts.json` records that difference and decides how a
 bundle is trusted:
@@ -52,10 +55,9 @@ bundle is trusted:
   already comes from the pinned Ghostty commit, so its checksum is a
   reproducibility check rather than a trust boundary.
 
-Because a Windows release cannot be reproduced from the manifest, one CI
-workflow-dispatch run produces the authoritative candidate bytes. Its result
-and `candidateRunId` are reviewed and locked in `artifacts.json`. The tag run
-downloads that immutable workflow artifact by run ID, verifies its bundle
-checksum, result metadata, embedded source identity, and SBOM, and promotes the
-same bytes. It must never rebuild a fresh Windows archive for an existing
+One CI workflow-dispatch run produces both authoritative candidates. Their
+results and shared `candidateRunId` are reviewed and locked in `artifacts.json`.
+The tag run downloads both immutable workflow artifacts by run ID, verifies
+their bundle checksums, result metadata, embedded source identities, and SBOMs,
+and promotes the same bytes. It must never rebuild an archive for an existing
 locked checksum.

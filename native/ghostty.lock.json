@@ -40,7 +40,8 @@
       "zigCpu": "baseline",
       "build": "container",
       "zigDistribution": "linuxAarch64",
-      "libraryPath": "lib/libghostty-vt.a"
+      "libraryPath": "lib/libghostty-vt.a",
+      "reproducible": false
     },
     "x86_64-pc-windows-msvc": {
       "zigTarget": "x86_64-windows-msvc",
@@ -48,7 +49,8 @@
       "build": "native",
       "zigDistribution": "windowsX8664",
       "hostPlatform": "win32",
-      "libraryPath": "lib/ghostty-vt-static.lib"
+      "libraryPath": "lib/ghostty-vt-static.lib",
+      "reproducible": false
     }
   },
   "appleBuilder": {

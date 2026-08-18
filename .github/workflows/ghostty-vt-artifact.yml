@@ -16,18 +16,28 @@ jobs:
   build:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - name: Use the locked macOS candidate on tags
+        if: github.ref_type == 'tag'
+        run: echo "The package job promotes the reviewed workflow artifact."
 
-      - uses: actions/setup-node@v6
+      - if: github.ref_type != 'tag'
+        uses: actions/checkout@v7
+
+      - if: github.ref_type != 'tag'
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
 
-      - run: npm ci --ignore-scripts
-      - run: npm run bootstrap:ghostty-vt -- --target=aarch64-apple-darwin
-      - run: npm run build:ghostty-vt -- --target=aarch64-apple-darwin
+      - if: github.ref_type != 'tag'
+        run: npm ci --ignore-scripts
+      - if: github.ref_type != 'tag'
+        run: npm run bootstrap:ghostty-vt -- --target=aarch64-apple-darwin
+      - if: github.ref_type != 'tag'
+        run: npm run build:ghostty-vt -- --target=aarch64-apple-darwin
 
       - name: Upload unstripped build
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v7
         with:
           name: ghostty-vt-unstripped
@@ -51,19 +61,39 @@ jobs:
       - run: npm ci --ignore-scripts
 
       - name: Download unstripped build
+        if: github.ref_type != 'tag'
         uses: actions/download-artifact@v8
         with:
           name: ghostty-vt-unstripped
           path: native/build/ghostty/aarch64-apple-darwin/install/
 
-      - run: npm run normalize:ghostty-vt -- --target=aarch64-apple-darwin
-      - name: Package locked release artifact
-        if: github.ref_type == 'tag'
-        run: npm run package:ghostty-vt -- --target=aarch64-apple-darwin
+      - if: github.ref_type != 'tag'
+        run: npm run normalize:ghostty-vt -- --target=aarch64-apple-darwin
 
       - name: Package diagnostic candidate
         if: github.ref_type != 'tag'
         run: npm run package:ghostty-vt -- --target=aarch64-apple-darwin --allow-mismatch
+
+      - name: Resolve locked macOS candidate run
+        if: github.ref_type == 'tag'
+        id: macos_candidate
+        run: |
+          run_id="$(node -p "const value = require('./native/ghosttea/crates/ghosttea-vt-sys/artifacts.json').targets['aarch64-apple-darwin'].candidateRunId; if (!Number.isSafeInteger(value) || value <= 0) throw new Error('candidateRunId must be a positive integer'); value")"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download locked macOS candidate
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-vt-aarch64-apple-darwin
+          path: artifacts/ghostty-vt/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.macos_candidate.outputs.run_id }}
+
+      - name: Verify locked macOS candidate
+        if: github.ref_type == 'tag'
+        run: node scripts/verify-ghostty-vt-candidate.mjs --target=aarch64-apple-darwin --directory=artifacts/ghostty-vt
 
       - name: Require the release tag to match the locked artifact
         if: github.ref_type == 'tag'
@@ -79,6 +109,22 @@ jobs:
           filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=aarch64-apple-darwin)"
           echo "path=artifacts/ghostty-vt/$filename" >> "$GITHUB_OUTPUT"
           echo "sbom=artifacts/ghostty-vt/$filename.spdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Report the macOS manifest entry to lock
+        if: github.ref_type != 'tag'
+        env:
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
+        run: |
+          filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=aarch64-apple-darwin)"
+          {
+            echo '### macOS artifact produced by this run'
+            echo
+            # shellcheck disable=SC2016
+            echo 'Copy into `targets["aarch64-apple-darwin"]` of artifacts.json:'
+            echo '```json'
+            node -e "const fs = require('node:fs'); const value = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); value.candidateRunId = Number(process.env.CANDIDATE_RUN_ID); console.log(JSON.stringify(value, null, 2));" "artifacts/ghostty-vt/$filename.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attest bundle provenance
         uses: actions/attest@v4
@@ -162,6 +208,7 @@ jobs:
           {
             echo '### Windows artifact produced by this run'
             echo
+            # shellcheck disable=SC2016
             echo 'Copy into `targets["x86_64-pc-windows-msvc"]` of artifacts.json:'
             echo '```json'
             node -e "const fs = require('node:fs'); const value = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); value.candidateRunId = Number(process.env.CANDIDATE_RUN_ID); console.log(JSON.stringify(value, null, 2));" "artifacts/ghostty-vt/$filename.json"

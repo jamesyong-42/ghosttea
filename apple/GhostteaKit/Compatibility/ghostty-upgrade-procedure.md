@@ -119,19 +119,17 @@ GHOSTTEA_NORMALIZER_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 npm run package:ghostty-vt
 ```
 
-Treat a cross-host mismatch as a release blocker. Fixed container paths alone
-are insufficient: the build schedule, seed, target CPU, and Apple postprocessor
-must remain pinned to prevent host scheduling, code-generation, and strip-tool
-drift.
-
-The Windows archive is intentionally host-built and not reproducible. Dispatch
-`.github/workflows/ghostty-vt-artifact.yml` from the reviewed release branch,
-copy its complete `x86_64-pc-windows-msvc` result plus `candidateRunId` into the
-manifest, and review the run before tagging. The tag workflow must use
-`scripts/verify-ghostty-vt-candidate.mjs` to download that exact immutable
-workflow artifact by run ID; it must never rebuild different Windows bytes and
-publish them under the locked checksum. The final release job waits for the
-locked macOS package and promoted Windows package before creating the release.
+The pins reduce variance but do not justify a reproducibility claim. With Zig
+0.15.2, a controlled cross-host check still produced a different instruction
+sequence in the root Zig object. The Windows archive is also host-built against
+MSVC and the Windows SDK. Both targets are therefore immutable CI candidates:
+dispatch `.github/workflows/ghostty-vt-artifact.yml` from the reviewed release
+branch and copy each complete result plus their shared `candidateRunId` into the
+manifest. Review the Windows toolchain record. The tag workflow must use
+`scripts/verify-ghostty-vt-candidate.mjs` to download and verify both exact
+workflow artifacts by run ID; it must not rebuild different bytes behind either
+locked checksum. The final release job waits for both promoted packages before
+creating the release.
 
 Build and validate every Apple slice, then recompose the local combined binary
 used by SwiftPM:

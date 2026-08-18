@@ -20,10 +20,13 @@ const allowMismatch = process.argv.includes("--allow-mismatch");
 const target = resolveTarget();
 const config = targetConfig(target);
 const library = libraryPath(target);
-// Container cross-builds are byte-reproducible, so their locked checksums also
-// gate repository builds. Native builds depend on the host toolchain, so their
-// checksums only gate downloaded bundles.
-const reproducible = config.build === "container";
+// Reproducibility is measured rather than inferred from the build mechanism.
+// A pinned container still sees host CPU/compiler behavior unless proven
+// otherwise, so the lock carries the reviewed classification explicitly.
+const reproducible = config.reproducible;
+if (typeof reproducible !== "boolean") {
+  throw new Error(`${target} must declare a boolean reproducible classification.`);
+}
 const { release, filename } = artifactNames(target);
 const sourceDigest = ghosttySourceDigest();
 const source = { ...ghosttySourceIdentity(), digest: sourceDigest };
@@ -128,39 +131,40 @@ const artifact = {
   name: "ghostty-vt",
   target,
   source,
-  builder: reproducible
-    ? {
-        mode: "container",
-        image: lock.builder.image,
-        platform: lock.builder.platform,
-        zigBuildJobs: lock.builder.zigBuildJobs,
-        zigBuildSeed: lock.builder.zigBuildSeed,
-        zigVersion: lock.zig.version,
-        zigTarget: config.zigTarget,
-        zigCpu: config.zigCpu,
-        postprocessor: {
-          tool: "xcrun strip",
-          xcodeVersion: lock.builder.normalizer.xcodeVersion,
-          xcodeBuild: lock.builder.normalizer.xcodeBuild,
-          flags: lock.builder.normalizer.stripFlags,
-          canonicalArchiveMetadata: true,
+  builder:
+    config.build === "container"
+      ? {
+          mode: "container",
+          image: lock.builder.image,
+          platform: lock.builder.platform,
+          zigBuildJobs: lock.builder.zigBuildJobs,
+          zigBuildSeed: lock.builder.zigBuildSeed,
+          zigVersion: lock.zig.version,
+          zigTarget: config.zigTarget,
+          zigCpu: config.zigCpu,
+          postprocessor: {
+            tool: "xcrun strip",
+            xcodeVersion: lock.builder.normalizer.xcodeVersion,
+            xcodeBuild: lock.builder.normalizer.xcodeBuild,
+            flags: lock.builder.normalizer.stripFlags,
+            canonicalArchiveMetadata: true,
+          },
+        }
+      : {
+          mode: "native",
+          hostPlatform: config.hostPlatform,
+          zigBuildJobs: lock.builder.zigBuildJobs,
+          zigBuildSeed: lock.builder.zigBuildSeed,
+          zigVersion: lock.zig.version,
+          zigTarget: config.zigTarget,
+          zigCpu: config.zigCpu,
+          // A container build is pinned by its image digest. A native build is
+          // pinned by whatever the host had installed, and these are the parts
+          // Zig links against, so they belong in the record even though they
+          // cannot be enforced from it.
+          hostToolchain: hostToolchain(),
+          postprocessor: null,
         },
-      }
-    : {
-        mode: "native",
-        hostPlatform: config.hostPlatform,
-        zigBuildJobs: lock.builder.zigBuildJobs,
-        zigBuildSeed: lock.builder.zigBuildSeed,
-        zigVersion: lock.zig.version,
-        zigTarget: config.zigTarget,
-        zigCpu: config.zigCpu,
-        // A container build is pinned by its image digest. A native build is
-        // pinned by whatever the host had installed, and these are the parts
-        // Zig links against, so they belong in the record even though they
-        // cannot be enforced from it.
-        hostToolchain: hostToolchain(),
-        postprocessor: null,
-      },
   files: Object.fromEntries(
     inputs.map((file) => [file.bundlePath, { sha256: digest("sha256", file.contents), size: file.contents.length }]),
   ),
