@@ -3,6 +3,23 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.10.1 - 2026-08-18
+
+### Fixed
+
+- Windows inherited-session environment filtering now matches the operating
+  system's ASCII-case-insensitive key lookup. Case variants of Ghosttea and
+  Terminald built-ins, built-in private prefixes, and host-provided private
+  prefixes are removed before a ConPTY child starts; Unix environment names
+  remain byte-sensitive.
+
+### Validation
+
+- Windows process-tree custody tests now wait on handles to the exact process
+  objects instead of polling reusable numeric PIDs. The ordinary Windows
+  release gate therefore proves job-object teardown without PID-reuse false
+  positives; this hardening changes the witness, not runtime custody behavior.
+
 ## 0.10.0 - 2026-08-18
 
 ### Added
