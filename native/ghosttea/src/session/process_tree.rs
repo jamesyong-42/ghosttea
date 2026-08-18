@@ -268,12 +268,6 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
-    fn is_running(pid: u32) -> bool {
-        powershell(&format!(
-            "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ 'yes' }} else {{ 'no' }}"
-        )) == "yes"
-    }
-
     /// Reaps the shell however the test exits, including through a failed
     /// assertion.
     struct Spawned(StdChild);
@@ -322,15 +316,34 @@ mod tests {
         panic!("grandchild never appeared");
     }
 
-    fn assert_gone(pid: u32, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if !is_running(pid) {
-                return;
-            }
-            sleep(Duration::from_millis(300));
-        }
-        panic!("{what} ({pid}) survived");
+    /// Hold a waitable handle to this exact process object. Checking only its
+    /// numeric identifier is racy on a busy runner: Windows can reuse the PID
+    /// after the process exits, making an unrelated process look like a leak.
+    fn exit_handle(pid: u32) -> ExitHandle {
+        // SAFETY: opening a process created by this test for synchronization;
+        // `ExitHandle` owns and closes the returned handle.
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert_ne!(
+            process,
+            0,
+            "open process {pid} for waiting: {}",
+            io::Error::last_os_error()
+        );
+        ExitHandle(process)
+    }
+
+    fn assert_running(process: &ExitHandle, pid: u32, what: &str) {
+        assert!(
+            !process.exited(Duration::ZERO),
+            "{what} ({pid}) was not running to begin with"
+        );
+    }
+
+    fn assert_gone(process: &ExitHandle, pid: u32, what: &str) {
+        assert!(
+            process.exited(Duration::from_secs(10)),
+            "{what} ({pid}) survived"
+        );
     }
 
     fn own_handle_count() -> u32 {
@@ -386,15 +399,14 @@ mod tests {
     #[test]
     fn terminating_a_job_reaches_a_grandchild() {
         let (parent, grandchild) = spawn_with_grandchild();
+        let parent_exit = exit_handle(parent.id());
+        let grandchild_exit = exit_handle(grandchild);
         let tree = ProcessTree::adopt(parent.id()).expect("adopt into a job");
-        assert!(
-            is_running(grandchild),
-            "grandchild was not running to begin with"
-        );
+        assert_running(&grandchild_exit, grandchild, "grandchild");
 
         tree.terminate().expect("terminate the job");
-        assert_gone(parent.id(), "shell");
-        assert_gone(grandchild, "grandchild");
+        assert_gone(&parent_exit, parent.id(), "shell");
+        assert_gone(&grandchild_exit, grandchild, "grandchild");
     }
 
     /// Dropping the job is enough, so a daemon that dies without terminating
@@ -402,14 +414,13 @@ mod tests {
     #[test]
     fn dropping_a_job_kills_what_is_left() {
         let (parent, grandchild) = spawn_with_grandchild();
+        let parent_exit = exit_handle(parent.id());
+        let grandchild_exit = exit_handle(grandchild);
         let tree = ProcessTree::adopt(parent.id()).expect("adopt into a job");
-        assert!(
-            is_running(grandchild),
-            "grandchild was not running to begin with"
-        );
+        assert_running(&grandchild_exit, grandchild, "grandchild");
 
         drop(tree);
-        assert_gone(parent.id(), "shell");
-        assert_gone(grandchild, "grandchild");
+        assert_gone(&parent_exit, parent.id(), "shell");
+        assert_gone(&grandchild_exit, grandchild, "grandchild");
     }
 }

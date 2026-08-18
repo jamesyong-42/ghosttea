@@ -178,7 +178,18 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
       - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
-      - run: npm run ci:desktop
+      - name: Run the desktop release gate
+        run: |
+          # A retry checks out the immutable release tree, not this workflow's
+          # source commit. v0.10.0 predates the lazy Electron import and the
+          # handle-based process-exit assertions below, so keep its pure unit
+          # test offline and serialize its three job-object tests. Later tags
+          # carry the source fixes and take the ordinary path.
+          if [[ "$GITHUB_REF_NAME" == v0.10.0-retry.* ]]; then
+            export ELECTRON_OVERRIDE_DIST_PATH="$RUNNER_TEMP"
+            export RUST_TEST_THREADS=1
+          fi
+          npm run ci:desktop
 
       # Set for the same reason as the macOS build. Nothing on this runner
       # answers a pkg-config probe today, so the vendored source is already
