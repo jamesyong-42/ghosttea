@@ -78,7 +78,13 @@ const sessionInRegistry = async (harness, id) => {
   return response.sessions.some((session) => session.id === id);
 };
 
-const harness = await GhostteadHarness.start();
+const harness = await GhostteadHarness.start({
+  daemonEnvironment: {
+    Ghosttea_External_Case_Test: "must-not-reach-child",
+    Terminald_Auth_Token: "must-not-reach-child",
+    PUBLIC_CASE_CONTROL: "allowed",
+  },
+});
 // `harness.request` consumes the control stream, so exit events are observed on
 // a separate connection.
 const automation = new GhostteaAutomationClient(harness.connection);
@@ -139,6 +145,26 @@ try {
   // cmd leaves an unset variable as its own literal name.
   await harness.waitForMarker(isolated.handle, "token=[%GHOSTTEA_AUTH_TOKEN%]");
   console.log("ok  a clean session did not inherit the service auth token");
+
+  // Windows resolves environment names without regard to ASCII case. The
+  // inheritance strip must use the same rule or a case variant of a private
+  // key reaches the PTY even though the child resolves it as that key.
+  const inherited = await harness.createAttachedSession({
+    executable: shellExecutable,
+    args: [
+      "/d",
+      "/c",
+      "echo env-case ghosttea=[%Ghosttea_External_Case_Test%] terminald=[%Terminald_Auth_Token%] public=[%PUBLIC_CASE_CONTROL%]",
+    ],
+    environment: { mode: "inherit", overrides: {} },
+    persistence: "keep-until-exit",
+  });
+  await expectMarker(
+    harness,
+    inherited,
+    "env-case ghosttea=[%Ghosttea_External_Case_Test%] terminald=[%Terminald_Auth_Token%] public=[allowed]",
+  );
+  console.log("ok  inherited private environment keys are stripped case-insensitively");
 
   // ConPTY resizes a pseudoconsole rather than issuing TIOCSWINSZ, so the child
   // learns its size through a different mechanism than on Unix. Reading it back

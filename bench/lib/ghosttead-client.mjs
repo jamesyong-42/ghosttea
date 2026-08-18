@@ -250,13 +250,13 @@ export class GhostteadHarness {
     return this.#child?.pid;
   }
 
-  static async start({ timeoutMs = 120_000 } = {}) {
+  static async start({ timeoutMs = 120_000, daemonEnvironment = {} } = {}) {
     const harness = new GhostteadHarness();
-    await harness.#boot(timeoutMs);
+    await harness.#boot(timeoutMs, daemonEnvironment);
     return harness;
   }
 
-  async #boot(timeoutMs) {
+  async #boot(timeoutMs, daemonEnvironment) {
     this.#runtimeDir = mkdtempSync(join(tmpdir(), "ghosttea-bench-"));
     const endpoints = localEndpoints(this.#runtimeDir);
     this.#controlPath = endpoints.controlSocket;
@@ -266,6 +266,7 @@ export class GhostteadHarness {
     const binary = resolveGhostteadBinary();
     const env = {
       ...process.env,
+      ...daemonEnvironment,
       GHOSTTEA_CONTROL_SOCKET: this.#controlPath,
       GHOSTTEA_FRAME_SOCKET: this.#framePath,
       GHOSTTEA_AUTH_TOKEN: this.#token,
