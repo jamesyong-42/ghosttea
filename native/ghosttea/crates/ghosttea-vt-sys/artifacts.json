@@ -2,18 +2,27 @@
   "schemaVersion": 1,
   "source": {
     "repository": "https://github.com/ghostty-org/ghostty.git",
-    "commit": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69"
+    "commit": "f8041e849b36efbbb9736b6ecf0ccfcb01d94e69",
+    "patches": [
+      {
+        "path": "native/patches/ghostty-vt-g15-g21.patch",
+        "sha256": "c33a0d43191760d5a816f7b2553c45f5bae5f010dfa075c5db645a85b59c4842"
+      }
+    ],
+    "diffSha256": "84af3399accfa632cec96476edd8392abfd26380adec6feb6c298c1478548e61",
+    "digest": "9dd8f52ee166e94b70ded20201b832ce06d4596f1ee7f811c0276cab5501059c"
   },
   "targets": {
     "aarch64-apple-darwin": {
-      "release": "ghostty-vt-f8041e849b36",
-      "filename": "ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
-      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-f8041e849b36/ghostty-vt-f8041e849b36-aarch64-apple-darwin.tar",
-      "sha256": "7158859e1e97b18c341e3478972a227ea3c859e5387dc3d7b8e082d0508cde79",
-      "size": 2411520,
+      "sourceDigest": "9dd8f52ee166e94b70ded20201b832ce06d4596f1ee7f811c0276cab5501059c",
+      "release": "ghostty-vt-9dd8f52ee166",
+      "filename": "ghostty-vt-9dd8f52ee166-aarch64-apple-darwin.tar",
+      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-9dd8f52ee166/ghostty-vt-9dd8f52ee166-aarch64-apple-darwin.tar",
+      "sha256": "8a9610619cf3785a0b0215bab9b12db0e87cfc387df178de3f24056b1d7dcece",
+      "size": 2488832,
       "libraryPath": "lib/libghostty-vt.a",
-      "librarySha256": "f6ce47674ed10132b3224d02639972227e00c721f7740b75b66b5bee67c11da4",
-      "headersSha256": "7c436d79b361a1385cae4a816331c5220daac5b2439a99eb8dc23c05e9d539e0",
+      "librarySha256": "b68841249653b7a2b2c4cd9f0ca5160e2415604a8863dc39c9f4e537c585a8cf",
+      "headersSha256": "e4de5535809e4fb95b857febf9805e767932f8e99f8705c89f7998a484366342",
       "reproducible": true
     },
     "x86_64-pc-windows-msvc": {

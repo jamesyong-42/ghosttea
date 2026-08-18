@@ -32,6 +32,7 @@ on:
       - "native/ssh.lock.json"
       - "scripts/build-ghosttea-apple-native.mjs"
       - "scripts/build-ghostty-vt-apple.mjs"
+      - "scripts/ghostty-vt-target.mjs"
       - "scripts/build-ssh-candidate-apple.mjs"
       - "scripts/check-apple-native-artifact.mjs"
       - "scripts/ghosttea-apple-native-artifact.mjs"

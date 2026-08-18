@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { ghosttySourceDigest, ghosttySourceIdentity, targets } from "./ghostty-vt-target.mjs";
+
 const root = resolve(import.meta.dirname, "..");
 const runbookPath = "apple/GhostteaKit/Compatibility/ghostty-upgrade-procedure.md";
 const lock = readJSON("native/ghostty.lock.json");
@@ -24,11 +26,10 @@ const commit = lock.ghostty?.commit;
 if (!/^[0-9a-f]{40}$/.test(commit ?? "")) {
   throw new Error("native/ghostty.lock.json must pin a full lowercase 40-character commit.");
 }
-const revision = commit.slice(0, 12);
-const target = "aarch64-apple-darwin";
+const sourceDigest = ghosttySourceDigest();
+const sourceIdentity = { ...ghosttySourceIdentity(), digest: sourceDigest };
+const revision = sourceDigest.slice(0, 12);
 const expectedRelease = `ghostty-vt-${revision}`;
-const expectedFilename = `${expectedRelease}-${target}.tar`;
-const artifact = artifacts.targets?.[target];
 
 const configCommit = configLock.ghostty?.commit;
 if (!/^[0-9a-f]{40}$/.test(configCommit ?? "")) {
@@ -95,22 +96,32 @@ requireEqual(
   "Ghostty config vertical padding default",
 );
 
-requireEqual(artifacts.source, lock.ghostty, "native artifact source pin");
+requireEqual(artifacts.source, sourceIdentity, "native artifact source pin and patch set");
 requireEqual(fonts.source, lock.ghostty, "font source pin");
-requireEqual(artifact?.release, expectedRelease, "native artifact release");
-requireEqual(artifact?.filename, expectedFilename, "native artifact filename");
-requireEqual(
-  artifact?.url,
-  `https://github.com/vibecook-dev/ghosttea/releases/download/${expectedRelease}/${expectedFilename}`,
-  "native artifact URL",
-);
-for (const field of ["sha256", "librarySha256", "headersSha256"]) {
-  if (!/^[0-9a-f]{64}$/.test(artifact?.[field] ?? "")) {
-    throw new Error(`Native artifact ${field} is not a SHA-256 digest.`);
+for (const [target, config] of Object.entries(targets)) {
+  const artifact = artifacts.targets?.[target];
+  const expectedFilename = `${expectedRelease}-${target}.tar`;
+  requireEqual(artifact?.sourceDigest, sourceDigest, `${target} native artifact source digest`);
+  requireEqual(artifact?.release, expectedRelease, `${target} native artifact release`);
+  requireEqual(artifact?.filename, expectedFilename, `${target} native artifact filename`);
+  requireEqual(
+    artifact?.url,
+    `https://github.com/vibecook-dev/ghosttea/releases/download/${expectedRelease}/${expectedFilename}`,
+    `${target} native artifact URL`,
+  );
+  requireEqual(artifact?.libraryPath, config.libraryPath, `${target} native artifact library path`);
+  requireEqual(artifact?.reproducible, config.build === "container", `${target} reproducibility classification`);
+  for (const field of ["sha256", "librarySha256", "headersSha256"]) {
+    if (!/^[0-9a-f]{64}$/.test(artifact?.[field] ?? "")) {
+      throw new Error(`${target} native artifact ${field} is not a SHA-256 digest.`);
+    }
   }
-}
-if (!Number.isSafeInteger(artifact?.size) || artifact.size <= 0) {
-  throw new Error("Native artifact size must be a positive integer.");
+  if (!Number.isSafeInteger(artifact?.size) || artifact.size <= 0) {
+    throw new Error(`${target} native artifact size must be a positive integer.`);
+  }
+  if (config.build === "native" && (!Number.isSafeInteger(artifact?.candidateRunId) || artifact.candidateRunId <= 0)) {
+    throw new Error(`${target} must record the positive candidateRunId whose immutable bytes are promoted.`);
+  }
 }
 
 for (const [description, bom] of [
@@ -149,6 +160,13 @@ const requiredInputs = [
   "native/fonts.lock.json",
   "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json",
   "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.c",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.h",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_internal.h",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_saved.c",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_screen.c",
+  "native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_identity.c",
+  "scripts/ghostty-vt-target.mjs",
+  "scripts/verify-ghostty-vt-candidate.mjs",
   "native/ghosttea/crates/ghosttea-config/src/known-keys.txt",
   "native/ghosttea/crates/ghosttea-config/src/x11-rgb.txt",
   "scripts/sync-ghostty-config-schema.mjs",
@@ -157,6 +175,7 @@ const requiredInputs = [
   "apple/GhostteaKit/Sources/GhostteaTerminal/Resources/terminal-visual-golden.json",
   "apple/GhostteaKit/Compatibility/ios-release.cdx.json",
   "apple/GhostteaKit/Compatibility/ios-release-resources.lock.json",
+  ...sourceIdentity.patches.map((patch) => patch.path),
 ];
 for (const path of requiredInputs) {
   if (!existsSync(resolve(root, path))) throw new Error(`Ghostty upgrade input is missing: ${path}`);
@@ -189,6 +208,10 @@ for (const text of [
   "artifacts.json",
   "steps.ghostty_artifact.outputs.path",
   "steps.ghostty_artifact.outputs.sbom",
+  "candidateRunId",
+  "scripts/verify-ghostty-vt-candidate.mjs",
+  "run-id: ${{ steps.windows_candidate.outputs.run_id }}",
+  "needs: [package, windows]",
 ]) {
   if (!workflow.includes(text)) throw new Error(`Ghostty artifact workflow omits ${text}.`);
 }
@@ -214,9 +237,14 @@ for (const path of [
     if (!source.includes(text)) throw new Error(`${path} does not enforce ${text}.`);
   }
 }
+for (const path of ["scripts/bootstrap-ghostty-vt.mjs", "scripts/bootstrap-ghostty-vt-apple.mjs"]) {
+  if (!read(path).includes("prepareGhosttySource")) {
+    throw new Error(`${path} does not prepare the exact locked Ghostty VT patch set.`);
+  }
+}
 for (const path of ["scripts/build-ghostty-vt.mjs", "scripts/build-ghostty-vt-apple.mjs"]) {
-  if (!read(path).includes('"status", "--porcelain"')) {
-    throw new Error(`${path} does not reject a dirty Ghostty source checkout.`);
+  if (!read(path).includes("assertGhosttySource")) {
+    throw new Error(`${path} does not reject source changes outside the exact locked patch set.`);
   }
 }
 for (const [path, requiredText] of [
@@ -229,7 +257,7 @@ for (const [path, requiredText] of [
 }
 
 console.log(
-  `Verified Ghostty VT ${commit} and config ${configLock.ghostty.version} ${configCommit}: exact source/font/BOM locks, ${requiredInputs.length} inputs, and dynamic artifact attestation.`,
+  `Verified Ghostty VT ${commit} + ${sourceIdentity.patches.length} patch(es) (${sourceDigest}) and config ${configLock.ghostty.version} ${configCommit}: exact source/font/BOM locks, ${requiredInputs.length} inputs, and two-target artifact promotion.`,
 );
 
 function read(path) {

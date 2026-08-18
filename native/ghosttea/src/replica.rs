@@ -57,6 +57,7 @@ impl RemoteReplica {
                 // The owning host governs this session's retention; claiming a
                 // class here would assert a governance this host does not hold.
                 persistence: None,
+                scrollback_bytes: None,
                 activity: SessionActivity::default(),
             }),
             model: Mutex::new(LogicalReplicaModel::new(runtime, handle)),

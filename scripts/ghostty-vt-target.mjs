@@ -11,14 +11,155 @@
  *   Microsoft's CRT headers and import libraries are not redistributable, so
  *   Zig must find an installed MSVC and Windows SDK.
  */
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
 export const root = resolve(import.meta.dirname, "..");
 export const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
 export const targets = lock.targets;
 
 const TARGET_FLAG = "--target=";
+const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+function patchInputs() {
+  const patchSet = lock.vtPatchSet;
+  if (!patchSet || !Array.isArray(patchSet.patches) || patchSet.patches.length === 0) {
+    throw new Error("ghostty.lock.json must declare a non-empty vtPatchSet.patches array");
+  }
+  if (!/^[0-9a-f]{64}$/.test(patchSet.diffSha256 ?? "")) {
+    throw new Error("ghostty.lock.json vtPatchSet.diffSha256 must be a lowercase SHA-256 digest");
+  }
+  return patchSet.patches.map((specification) => {
+    if (
+      typeof specification.path !== "string" ||
+      specification.path.startsWith("/") ||
+      specification.path.split("/").includes("..") ||
+      !/^[0-9a-f]{64}$/.test(specification.sha256 ?? "")
+    ) {
+      throw new Error(`Invalid Ghostty VT patch specification: ${JSON.stringify(specification)}`);
+    }
+    const path = resolve(root, specification.path);
+    const contents = readFileSync(path);
+    const actual = sha256(contents);
+    if (actual !== specification.sha256) {
+      throw new Error(
+        `Ghostty VT patch checksum mismatch for ${specification.path}: expected ${specification.sha256}, received ${actual}`,
+      );
+    }
+    return { ...specification, absolutePath: path, contents };
+  });
+}
+
+function git(command, vendor, options = {}) {
+  const result = spawnSync("git", command, {
+    cwd: vendor,
+    encoding: options.encoding,
+    maxBuffer: MAX_GIT_OUTPUT,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const message = Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8") : result.stderr;
+    throw new Error(message || `git ${command.join(" ")} failed`);
+  }
+  return result.stdout;
+}
+
+function vendorDiff(vendor) {
+  return git(
+    ["diff", "--binary", "--full-index", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--"],
+    vendor,
+  );
+}
+
+function assertBaseRevision(vendor) {
+  const revision = git(["rev-parse", "HEAD"], vendor, { encoding: "utf8" }).trim();
+  if (revision !== lock.ghostty.commit) {
+    throw new Error(`Ghostty source is not at locked commit ${lock.ghostty.commit}`);
+  }
+}
+
+function assertNoIndexOrUntrackedChanges(vendor) {
+  const status = git(["status", "--porcelain=v1", "--untracked-files=all"], vendor, {
+    encoding: "utf8",
+  });
+  for (const line of status.split("\n").filter(Boolean)) {
+    if (line.startsWith("??") || line[0] !== " ") {
+      throw new Error(`Ghostty source contains a staged or untracked change outside the patch set: ${line}`);
+    }
+  }
+}
+
+/** The immutable source description recorded in bundles and lock manifests. */
+export function ghosttySourceIdentity() {
+  const patches = patchInputs().map(({ path, sha256: checksum }) => ({ path, sha256: checksum }));
+  return {
+    repository: lock.ghostty.repository,
+    commit: lock.ghostty.commit,
+    patches,
+    diffSha256: lock.vtPatchSet.diffSha256,
+  };
+}
+
+/** Verified patch files for provenance packaging. */
+export function ghosttyPatchFiles() {
+  return patchInputs().map(({ path, sha256: checksum, absolutePath }) => ({
+    path,
+    sha256: checksum,
+    absolutePath,
+  }));
+}
+
+/** Content address for the upstream revision plus its ordered patch set. */
+export function ghosttySourceDigest() {
+  return sha256(`${JSON.stringify(ghosttySourceIdentity())}\n`);
+}
+
+/**
+ * Prove that the ignored vendor checkout is exactly the locked patched tree.
+ * A matching Git diff is required; arbitrary dirty sources are never accepted.
+ */
+export function assertGhosttySource(vendor) {
+  patchInputs();
+  assertBaseRevision(vendor);
+  assertNoIndexOrUntrackedChanges(vendor);
+  const actual = sha256(vendorDiff(vendor));
+  if (actual !== lock.vtPatchSet.diffSha256) {
+    throw new Error(
+      `Ghostty patched diff mismatch: expected ${lock.vtPatchSet.diffSha256}, received ${actual}. ` +
+        "Run bootstrap only from the clean locked revision, or restore the declared patch set.",
+    );
+  }
+}
+
+/** Apply the ordered patch set to a clean base checkout, idempotently. */
+export function prepareGhosttySource(vendor) {
+  const patches = patchInputs();
+  assertBaseRevision(vendor);
+  const diff = vendorDiff(vendor);
+  if (sha256(diff) === lock.vtPatchSet.diffSha256) {
+    assertNoIndexOrUntrackedChanges(vendor);
+    return;
+  }
+  const status = git(["status", "--porcelain=v1", "--untracked-files=all"], vendor, {
+    encoding: "utf8",
+  });
+  if (status !== "") {
+    throw new Error("Ghostty source has local changes that do not match the locked VT patch set.");
+  }
+  for (const patch of patches) {
+    // Patch payloads use zero context so the tracked file itself contains no
+    // whitespace-only context lines. Git requires an explicit opt-in for that
+    // representation; continue to reject whitespace errors in changed lines.
+    git(["apply", "--unidiff-zero", "--whitespace=error-all", patch.absolutePath], vendor);
+  }
+  assertGhosttySource(vendor);
+}
 
 /**
  * The target this host builds when none is requested. A host with its own
@@ -84,7 +225,7 @@ export function libraryPath(target) {
  * catches up.
  */
 export function artifactNames(target) {
-  const release = `ghostty-vt-${lock.ghostty.commit.slice(0, 12)}`;
+  const release = `ghostty-vt-${ghosttySourceDigest().slice(0, 12)}`;
   return { release, filename: `${release}-${target}.tar` };
 }
 

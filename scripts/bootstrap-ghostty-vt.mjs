@@ -3,7 +3,14 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { lock, resolveTarget, root, zigDistribution, zigExecutable } from "./ghostty-vt-target.mjs";
+import {
+  lock,
+  prepareGhosttySource,
+  resolveTarget,
+  root,
+  zigDistribution,
+  zigExecutable,
+} from "./ghostty-vt-target.mjs";
 
 const target = resolveTarget();
 const vendor = join(root, "native/vendor/ghostty");
@@ -31,6 +38,7 @@ const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: vendor, encoding
 if (revision.status !== 0 || revision.stdout.trim() !== lock.ghostty.commit) {
   throw new Error(`native/vendor/ghostty must be at ${lock.ghostty.commit}`);
 }
+prepareGhosttySource(vendor);
 
 if (!existsSync(zig)) {
   const archive = join(tmpdir(), basename(new URL(distribution.url).pathname));
@@ -56,4 +64,6 @@ if (!existsSync(zig)) {
   if (!existsSync(zig)) throw new Error(`Zig ${lock.zig.version} did not extract to ${zig}`);
 }
 
-console.log(`Ghostty ${lock.ghostty.commit} and Zig ${lock.zig.version} are ready for ${target}.`);
+console.log(
+  `Ghostty ${lock.ghostty.commit} with the locked VT patch set and Zig ${lock.zig.version} are ready for ${target}.`,
+);

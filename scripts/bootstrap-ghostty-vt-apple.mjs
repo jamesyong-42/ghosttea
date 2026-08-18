@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { lock, prepareGhosttySource, root } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
 const vendor = join(root, "native/vendor/ghostty");
 const tools = join(root, ".tools");
 const zigRoot = join(tools, `zig-aarch64-macos-${lock.zig.version}`);
@@ -69,6 +68,7 @@ if (!existsSync(join(vendor, ".git"))) {
 if (capture("git", ["rev-parse", "HEAD"], vendor) !== lock.ghostty.commit) {
   throw new Error(`native/vendor/ghostty must be at ${lock.ghostty.commit}`);
 }
+prepareGhosttySource(vendor);
 
 if (!existsSync(zig)) {
   const archive = join(tmpdir(), basename(new URL(lock.zig.macosAarch64Url).pathname));
@@ -91,4 +91,6 @@ if (capture(zig, ["version"]) !== lock.zig.version) {
   throw new Error(`Expected Zig ${lock.zig.version} at ${zig}`);
 }
 
-console.log(`Ghostty ${lock.ghostty.commit}, Zig ${lock.zig.version}, and ${xcode.replaceAll("\n", " ")} are ready.`);
+console.log(
+  `Ghostty ${lock.ghostty.commit} with the locked VT patch set, Zig ${lock.zig.version}, and ${xcode.replaceAll("\n", " ")} are ready.`,
+);

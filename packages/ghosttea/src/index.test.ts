@@ -38,4 +38,28 @@ describe("ControlClient", () => {
     client.dispose();
     channel.port2.close();
   });
+
+  it("preserves structured daemon error metadata", async () => {
+    const channel = new MessageChannel();
+    const client = new ControlClient(channel.port1);
+    channel.port2.start();
+    const pending = client.request({ type: "list-sessions" });
+    channel.port2.postMessage({
+      requestId: 1,
+      type: "error",
+      message: "failed to spawn PTY command",
+      stage: "spawn",
+      code: "executable-not-found",
+      osError: 2,
+    });
+    await expect(pending).rejects.toMatchObject({
+      name: "Error",
+      message: "failed to spawn PTY command",
+      stage: "spawn",
+      code: "executable-not-found",
+      osError: 2,
+    });
+    client.dispose();
+    channel.port2.close();
+  });
 });

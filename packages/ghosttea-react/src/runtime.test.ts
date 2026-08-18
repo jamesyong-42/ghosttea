@@ -94,6 +94,26 @@ class FakePort extends EventTarget {
           data: { requestId, type: "sessions", sessions: this.sessions },
         }),
       );
+    } else if (message.type === "create-session") {
+      const options = message.options as Record<string, unknown>;
+      this.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            requestId,
+            type: "session-created",
+            session: {
+              ...session,
+              id: "created",
+              handle: "created-handle",
+              executable: options.executable,
+              cols: options.cols,
+              rows: options.rows,
+              persistence: options.persistence,
+              scrollbackBytes: options.scrollbackBytes ?? 10_000_000,
+            },
+          },
+        }),
+      );
     } else if (message.type === "subscribe") {
       if (this.bridgeCapabilities && message.bridgeCapabilities === 1) {
         this.onmessage?.(
@@ -339,6 +359,62 @@ afterEach(() => {
 });
 
 describe("GhostteaTerminalRuntime mount ownership", () => {
+  it("refuses scrollback overrides before 1.15 and validates them before send", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    control.helloProtocolMinor = 14;
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    const options = {
+      executable: "/bin/sh",
+      args: [],
+      cols: 80,
+      rows: 24,
+      persistence: "keep-until-exit" as const,
+    };
+    await expect(runtime.createSession({ ...options, scrollbackBytes: 0 })).rejects.toThrow("requires protocol 1.15");
+    expect(runtime.serverProtocolMinor).toBe(14);
+    expect(runtime.structuredErrorsSupported).toBe(false);
+    expect(control.messages.some((message) => message.type === "create-session")).toBe(false);
+    runtime.dispose();
+
+    const currentControl = new FakePort();
+    currentControl.helloProtocolMinor = 16;
+    const current = new GhostteaTerminalRuntime({
+      ports: {
+        control: currentControl as unknown as MessagePort,
+        frames: new FakePort() as unknown as MessagePort,
+      },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await expect(current.createSession({ ...options, scrollbackBytes: 0 })).resolves.toMatchObject({
+      scrollbackBytes: 0,
+    });
+    expect(current.serverProtocolMinor).toBe(16);
+    expect(current.structuredErrorsSupported).toBe(true);
+    await expect(current.createSession({ ...options, scrollbackBytes: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(
+      "safe integer",
+    );
+    expect(currentControl.messages.filter((message) => message.type === "create-session")).toHaveLength(1);
+    current.dispose();
+    expect(current.serverProtocolMinor).toBeUndefined();
+    expect(current.structuredErrorsSupported).toBe(false);
+  });
+
   it("negotiates, caches, and reloads the shared configuration snapshot", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();

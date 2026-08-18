@@ -5,6 +5,9 @@ import { release as osRelease } from "node:os";
 import { join, relative } from "node:path";
 import {
   artifactNames,
+  ghosttyPatchFiles,
+  ghosttySourceDigest,
+  ghosttySourceIdentity,
   installPrefix,
   libraryPath,
   lock,
@@ -22,6 +25,8 @@ const library = libraryPath(target);
 // checksums only gate downloaded bundles.
 const reproducible = config.build === "container";
 const { release, filename } = artifactNames(target);
+const sourceDigest = ghosttySourceDigest();
+const source = { ...ghosttySourceIdentity(), digest: sourceDigest };
 const outputDirectory = join(root, "artifacts/ghostty-vt");
 
 /**
@@ -96,6 +101,10 @@ const inputs = [
     bundlePath: "LICENSES/Ghostty.txt",
     sourcePath: join(install, "share/licenses/ghostty/LICENSE"),
   },
+  ...ghosttyPatchFiles().map((patch) => ({
+    bundlePath: `SOURCE-PATCHES/${patch.path}`,
+    sourcePath: patch.absolutePath,
+  })),
 ].map((file) => ({ ...file, contents: readFileSync(file.sourcePath) }));
 
 function digest(algorithm, contents) {
@@ -118,10 +127,7 @@ const artifact = {
   schemaVersion: 1,
   name: "ghostty-vt",
   target,
-  source: {
-    repository: lock.ghostty.repository,
-    commit: lock.ghostty.commit,
-  },
+  source,
   builder: reproducible
     ? {
         mode: "container",
@@ -184,8 +190,8 @@ const sbom = {
     {
       SPDXID: "SPDXRef-Package-Ghostty",
       name: "Ghostty VT",
-      versionInfo: lock.ghostty.commit,
-      downloadLocation: `${lock.ghostty.repository}@${lock.ghostty.commit}`,
+      versionInfo: sourceDigest,
+      downloadLocation: "NOASSERTION",
       filesAnalyzed: true,
       packageVerificationCode: { packageVerificationCodeValue: verificationCode },
       licenseConcluded: "MIT",
@@ -245,6 +251,7 @@ mkdirSync(outputDirectory, { recursive: true });
 writeFileSync(join(outputDirectory, filename), bundle);
 const result = {
   schemaVersion: 1,
+  sourceDigest,
   release,
   target,
   filename,
@@ -263,7 +270,13 @@ const lockedManifest = JSON.parse(
   readFileSync(join(root, "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"), "utf8"),
 );
 const lockedTarget = lockedManifest.targets[target];
+if (JSON.stringify(lockedManifest.source) !== JSON.stringify(source)) {
+  const message = "native artifact manifest source identity does not match the locked Ghostty VT patch set";
+  if (!allowMismatch) throw new Error(message);
+  console.warn(message);
+}
 for (const field of [
+  "sourceDigest",
   "release",
   "filename",
   "url",

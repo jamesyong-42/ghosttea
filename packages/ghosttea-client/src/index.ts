@@ -4,7 +4,10 @@ import { openEndpoint } from "./endpoints.js";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
+  SESSION_SCROLLBACK_PROTOCOL_MINOR,
+  STRUCTURED_ERROR_PROTOCOL_MINOR,
   isServerEvent,
+  isValidScrollbackBytes,
   type AutomationInputOperation,
   type ClientCommand,
   type ConfigDocument,
@@ -62,6 +65,19 @@ export class GhostteaConfigDocumentConflictError extends Error {
   }
 }
 
+export class GhostteaRequestError extends Error {
+  readonly stage: string | undefined;
+  readonly code: string | undefined;
+  readonly osError: number | undefined;
+
+  constructor(event: Extract<ServerEvent, { type: "error" }>) {
+    super(event.message);
+    this.stage = event.stage;
+    this.code = event.code;
+    this.osError = event.osError;
+  }
+}
+
 function packet(bytes: Uint8Array): Buffer {
   const output = Buffer.allocUnsafe(4 + bytes.byteLength);
   output.writeUInt32LE(bytes.byteLength, 0);
@@ -102,6 +118,16 @@ export class GhostteaAutomationClient extends EventEmitter {
 
   get connected(): boolean {
     return this.#authenticated && this.#socket !== undefined;
+  }
+
+  /** Negotiated daemon minor, or undefined before/after a connection. */
+  get serverProtocolMinor(): number | undefined {
+    return this.connected ? this.#serverProtocolMinor : undefined;
+  }
+
+  /** Whether callers may rely on structured control-error metadata. */
+  get structuredErrorsSupported(): boolean {
+    return (this.serverProtocolMinor ?? 0) >= STRUCTURED_ERROR_PROTOCOL_MINOR;
   }
 
   connect(): Promise<void> {
@@ -407,6 +433,12 @@ export class GhostteaAutomationClient extends EventEmitter {
     if (command.type === "close-session-owner") {
       this.#requireProtocolMinor(SESSION_OWNER_TRANSFER_PROTOCOL_MINOR, "safe session owner closure");
     }
+    if (command.type === "create-session" && command.options.scrollbackBytes !== undefined) {
+      if (!isValidScrollbackBytes(command.options.scrollbackBytes)) {
+        return Promise.reject(new RangeError("scrollbackBytes must be a non-negative safe integer"));
+      }
+      this.#requireProtocolMinor(SESSION_SCROLLBACK_PROTOCOL_MINOR, "per-session scrollback limits");
+    }
     const requestId = this.#nextRequestId++;
     const encoded = Buffer.from(JSON.stringify({ ...command, requestId } satisfies ClientCommand));
     if (encoded.byteLength > MAX_CONTROL_BYTES) {
@@ -481,7 +513,7 @@ export class GhostteaAutomationClient extends EventEmitter {
       if (!pending) continue;
       this.#pending.delete(decoded.requestId);
       clearTimeout(pending.timeout);
-      if (decoded.type === "error") pending.reject(new Error(decoded.message));
+      if (decoded.type === "error") pending.reject(new GhostteaRequestError(decoded));
       else pending.resolve(decoded);
     }
   }

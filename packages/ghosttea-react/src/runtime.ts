@@ -2,6 +2,9 @@ import { ControlClient } from "@vibecook/ghosttea";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
+  SESSION_SCROLLBACK_PROTOCOL_MINOR,
+  STRUCTURED_ERROR_PROTOCOL_MINOR,
+  isValidScrollbackBytes,
   type ConfigSnapshot,
   type CreateSessionOptions,
   type RemoteControllerInfo,
@@ -209,6 +212,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
   #remoteLifecycleSupported = false;
   #controlRevisionCasSupported = false;
   #ownerAwareAttachmentSupported = false;
+  #serverProtocolMinor = 0;
   #rendererBackend = "starting";
   #configSnapshot: ConfigSnapshot | undefined;
   #configProtocolSupported = false;
@@ -469,6 +473,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     });
     if (hello.type !== "hello" || hello.protocolMajor !== PROTOCOL_MAJOR)
       throw new Error("ghosttead protocol mismatch");
+    this.#serverProtocolMinor = hello.protocolMinor;
     this.#frameSubscriptionAcksSupported = hello.protocolMinor >= FRAME_SUBSCRIPTION_ACK_PROTOCOL_MINOR;
     this.#configProtocolSupported = hello.protocolMinor >= CONFIG_PROTOCOL_MINOR;
     this.#remoteLifecycleSupported = hello.protocolMinor >= REMOTE_LIFECYCLE_PROTOCOL_MINOR;
@@ -776,6 +781,16 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   async createSession(options: CreateSessionOptions): Promise<SessionSummary> {
     await this.connect();
+    if (options.scrollbackBytes !== undefined) {
+      if (!isValidScrollbackBytes(options.scrollbackBytes)) {
+        throw new RangeError("scrollbackBytes must be a non-negative safe integer");
+      }
+      if (this.#serverProtocolMinor < SESSION_SCROLLBACK_PROTOCOL_MINOR) {
+        throw new Error(
+          `ghosttead does not support per-session scrollback limits (requires protocol 1.${SESSION_SCROLLBACK_PROTOCOL_MINOR}, server is 1.${this.#serverProtocolMinor})`,
+        );
+      }
+    }
     const response = await this.#control!.request({
       type: "create-session",
       options: { ...options, ...(this.#sessionOwnerId ? { ownerId: this.#sessionOwnerId } : {}) },
@@ -1067,6 +1082,16 @@ export class GhostteaTerminalRuntime extends EventTarget {
 
   get remoteLifecycleSupported(): boolean {
     return this.#remoteLifecycleSupported;
+  }
+
+  /** Negotiated daemon minor, or undefined until the hello completes. */
+  get serverProtocolMinor(): number | undefined {
+    return this.#serverProtocolMinor === 0 ? undefined : this.#serverProtocolMinor;
+  }
+
+  /** Whether callers may rely on structured control-error metadata. */
+  get structuredErrorsSupported(): boolean {
+    return (this.serverProtocolMinor ?? 0) >= STRUCTURED_ERROR_PROTOCOL_MINOR;
   }
 
   /** Last known lifecycle of a remote session; undefined for local sessions. */
@@ -1722,6 +1747,7 @@ export class GhostteaTerminalRuntime extends EventTarget {
     }
     this.#control?.dispose();
     this.#control = undefined;
+    this.#serverProtocolMinor = 0;
     this.#worker.terminate();
     void this.#ports.then(
       (ports) => {

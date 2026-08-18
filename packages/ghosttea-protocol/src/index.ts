@@ -1,5 +1,7 @@
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 14;
+export const PROTOCOL_MINOR = 16;
+export const SESSION_SCROLLBACK_PROTOCOL_MINOR = 15;
+export const STRUCTURED_ERROR_PROTOCOL_MINOR = 16;
 export const CONFIG_SCHEMA_VERSION = 1;
 export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
@@ -237,6 +239,15 @@ export interface CreateSessionOptions {
   programKind?: "interactive-shell" | "application" | "auto";
   /** Application-defined lifecycle owner, such as an Electron tab ID. */
   ownerId?: string;
+  /**
+   * Per-session scrollback cap in bytes. Zero disables scrollback; absence
+   * delegates to the daemon's current global default. Requires protocol 1.15.
+   */
+  scrollbackBytes?: number;
+}
+
+export function isValidScrollbackBytes(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 /** Re-home a session before its current application owner is closed. */
@@ -440,6 +451,11 @@ export interface SessionSummary {
    * protocol 1.9, which did not report it.
    */
   persistence: SessionPersistence | null;
+  /**
+   * Effective local cap. Absent from pre-1.15 daemons and null for replicas
+   * whose retention is governed by another host.
+   */
+  scrollbackBytes?: number | null;
   activity: SessionActivity;
 }
 
@@ -570,7 +586,17 @@ export type ServerEvent =
       reason: "human-input-conflict" | null;
     }
   | { requestId: number; type: "ok" }
-  | { requestId: number; type: "error"; message: string }
+  | {
+      requestId: number;
+      type: "error";
+      message: string;
+      /** Stable failing operation, available from protocol 1.16 daemons. */
+      stage?: string;
+      /** Stable service classification when the failure site knows one. */
+      code?: string;
+      /** Raw platform error number while a typed OS error is still present. */
+      osError?: number;
+    }
   | { requestId: 0; type: "bridge-error"; message: string }
   | {
       requestId: 0;
@@ -725,6 +751,9 @@ export function isServerEvent(value: unknown): value is ServerEvent {
       (summary.exitOutcome === null || validExitOutcome(summary.exitOutcome)) &&
       (summary.ownerId === null || typeof summary.ownerId === "string") &&
       normalizePersistence(summary) &&
+      (summary.scrollbackBytes === undefined ||
+        summary.scrollbackBytes === null ||
+        (Number.isSafeInteger(summary.scrollbackBytes) && Number(summary.scrollbackBytes) >= 0)) &&
       normalizeActivity(summary)
     );
   };
@@ -1029,7 +1058,12 @@ export function isServerEvent(value: unknown): value is ServerEvent {
     case "ok":
       return true;
     case "error":
-      return typeof candidate.message === "string";
+      return (
+        typeof candidate.message === "string" &&
+        (candidate.stage === undefined || typeof candidate.stage === "string") &&
+        (candidate.code === undefined || typeof candidate.code === "string") &&
+        (candidate.osError === undefined || Number.isSafeInteger(candidate.osError))
+      );
     case "bridge-error":
       return candidate.requestId === 0 && typeof candidate.message === "string";
     case "session-exited":

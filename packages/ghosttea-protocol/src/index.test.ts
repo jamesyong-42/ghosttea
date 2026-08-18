@@ -144,6 +144,16 @@ describe("isServerEvent", () => {
       }),
     ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "bridge-error", message: "disconnected" })).toBe(true);
+    expect(
+      isServerEvent({
+        requestId: 9,
+        type: "error",
+        message: "failed to spawn PTY command",
+        stage: "spawn",
+        code: "executable-not-found",
+        osError: 2,
+      }),
+    ).toBe(true);
     expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle })).toBe(true);
     // A fresh remote open is reported as `opening` until its first snapshot.
     expect(isServerEvent({ requestId: 0, type: "remote-session-state-changed", ...lifecycle, state: "opening" })).toBe(
@@ -314,9 +324,42 @@ describe("isServerEvent", () => {
     expect(message.sessions[0]).toMatchObject({ activity: unknownSessionActivity() });
   });
 
+  it("accepts absent legacy, null replica, and safe local scrollback echoes", () => {
+    const base = {
+      id: "session",
+      handle: "handle",
+      executable: "/bin/zsh",
+      cols: 80,
+      rows: 24,
+      exited: false,
+      readWrite: true,
+      title: null,
+      cwd: null,
+      bellCount: 0,
+      pid: 42,
+      createdAtMs: 1,
+      exitCode: null,
+      exitSignal: null,
+      requestedTermination: null,
+      exitOutcome: null,
+      ownerId: null,
+    };
+    for (const session of [base, { ...base, scrollbackBytes: null }, { ...base, scrollbackBytes: 0 }]) {
+      expect(isServerEvent({ requestId: 1, type: "session", session })).toBe(true);
+    }
+    expect(
+      isServerEvent({
+        requestId: 1,
+        type: "session",
+        session: { ...base, scrollbackBytes: Number.MAX_SAFE_INTEGER + 1 },
+      }),
+    ).toBe(false);
+  });
+
   it("rejects unknown and structurally incomplete messages", () => {
     expect(isServerEvent({ requestId: 1, type: "surprise" })).toBe(false);
     expect(isServerEvent({ requestId: 1.5, type: "ok" })).toBe(false);
+    expect(isServerEvent({ requestId: 1, type: "error", message: "no", osError: 1.5 })).toBe(false);
     expect(isServerEvent({ requestId: 1, type: "session", session: { id: "missing-fields" } })).toBe(false);
     expect(isServerEvent({ requestId: 0, type: "session-exited", sessionId: 3, exitCode: null })).toBe(false);
     expect(isServerEvent({ requestId: 2, type: "remote-sessions", deviceId: "device-a", sessions: [{}] })).toBe(false);

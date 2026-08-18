@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fmt,
     io::{Read, Write},
     path::Path,
     sync::{
@@ -36,6 +37,92 @@ use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use crate::FrameHub;
+
+const MAX_JSON_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+fn deserialize_optional_safe_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // `default` handles an absent field. Once the field is present it must be
+    // a number; treating JSON null as absence would disagree with the public
+    // `scrollbackBytes?: number` wire type and silently weaken validation.
+    let value = u64::deserialize(deserializer)?;
+    if value > MAX_JSON_SAFE_INTEGER {
+        return Err(serde::de::Error::custom(
+            "value exceeds JavaScript's safe-integer ceiling",
+        ));
+    }
+    Ok(Some(value))
+}
+
+/// Stable control-wire metadata attached at the point where a create failure
+/// still has typed causes. Display deliberately preserves the pre-metadata top
+/// message byte-for-byte.
+#[derive(Debug)]
+pub(crate) struct ControlFailure {
+    message: String,
+    pub(crate) stage: &'static str,
+    pub(crate) code: Option<&'static str>,
+    pub(crate) os_error: Option<i32>,
+}
+
+impl fmt::Display for ControlFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+fn typed_io_error(error: &anyhow::Error) -> Option<&std::io::Error> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+}
+
+fn absolute_executable_error(executable: &str) -> Option<std::io::Error> {
+    let path = Path::new(executable);
+    if !path.is_absolute() {
+        return None;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+        let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+        if unsafe { libc::access(path.as_ptr(), libc::X_OK) } != 0 {
+            return Some(std::io::Error::last_os_error());
+        }
+        None
+    }
+
+    #[cfg(windows)]
+    {
+        std::fs::metadata(path).err()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::fs::metadata(path).err()
+    }
+}
+
+fn spawn_error_code(error: Option<&std::io::Error>) -> Option<&'static str> {
+    let error = error?;
+    #[cfg(unix)]
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE) | Some(libc::ENFILE)
+    ) {
+        return Some("file-descriptor-exhausted");
+    }
+    match error.kind() {
+        std::io::ErrorKind::NotFound => Some("executable-not-found"),
+        std::io::ErrorKind::PermissionDenied => Some("permission-denied"),
+        std::io::ErrorKind::OutOfMemory => Some("resource-exhausted"),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -242,6 +329,10 @@ pub struct SpawnOptions {
     #[serde(default)]
     pub program_kind: SessionProgramKind,
     pub owner_id: Option<String>,
+    /// Per-session scrollback cap. Absent delegates to the service's current
+    /// global default; zero intentionally disables scrollback.
+    #[serde(default, deserialize_with = "deserialize_optional_safe_u64")]
+    pub scrollback_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -320,6 +411,8 @@ pub struct SessionSummary {
     /// `None` for a replica of a session another host governs: reporting a
     /// class would assert a governance this host does not hold.
     pub persistence: Option<Persistence>,
+    /// Effective local cap, or `None` for a replica governed by another host.
+    pub scrollback_bytes: Option<u64>,
     pub activity: SessionActivity,
 }
 
@@ -1111,12 +1204,15 @@ impl Session {
         extra_private_prefixes: &[String],
         on_exit: ExitCallback,
     ) -> Result<Arc<Self>> {
+        let scrollback_bytes =
+            usize::try_from(options.scrollback_bytes.unwrap_or(DEFAULT_SCROLLBACK_BYTES))
+                .context("scrollbackBytes does not fit this platform")?;
         Self::spawn_configured(
             options,
             frames,
             text_engine,
             extra_private_prefixes,
-            DEFAULT_SCROLLBACK_BYTES as usize,
+            scrollback_bytes,
             on_exit,
         )
     }
@@ -1140,24 +1236,55 @@ impl Session {
             persistence,
             program_kind,
             owner_id,
+            scrollback_bytes: _,
         } = options;
         let program_kind = resolve_program_kind(program_kind, &executable, &args);
-        let pair = native_pty_system().openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| {
+                // portable-pty has already rendered its io::Error into this
+                // string, so stage is the only honest typed fact available.
+                let message = error.to_string();
+                error.context(ControlFailure {
+                    message,
+                    stage: "openpty",
+                    code: None,
+                    os_error: None,
+                })
+            })?;
         let mut command = CommandBuilder::new(&executable);
         command.args(args);
         if let Some(cwd) = cwd {
             command.cwd(cwd);
         }
         configure_environment(&mut command, env, environment, extra_private_prefixes);
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .context("failed to spawn PTY command")?;
+        let child = pair.slave.spawn_command(command).map_err(|error| {
+            // `Command::spawn` keeps its io::Error in the anyhow chain, but
+            // portable-pty resolves an absolute executable first and renders
+            // a failed `access(2)` into a string. Probe the caller-supplied
+            // absolute path while it is still available so that common
+            // missing-path and permission refusals retain typed metadata too.
+            // This is deliberately a filesystem probe, not error-string
+            // parsing; a real spawn error remains the authoritative source.
+            let path_error = if typed_io_error(&error).is_none() {
+                absolute_executable_error(&executable)
+            } else {
+                None
+            };
+            let io_error = typed_io_error(&error).or(path_error.as_ref());
+            let metadata = ControlFailure {
+                message: "failed to spawn PTY command".to_owned(),
+                stage: "spawn",
+                code: spawn_error_code(io_error),
+                os_error: io_error.and_then(std::io::Error::raw_os_error),
+            };
+            error.context(metadata)
+        })?;
         let pid = child.process_id();
         // Adopt the tree before anything else so a shell that starts a
         // background job is already inside the job object. A failure here is
@@ -1236,6 +1363,7 @@ impl Session {
                 exit_outcome: None,
                 owner_id,
                 persistence: Some(persistence),
+                scrollback_bytes: Some(scrollback_bytes as u64),
                 activity: SessionActivity::unsupported(created_at_ms),
             }),
             created_at_ms,
@@ -2612,6 +2740,59 @@ mod tests {
 
     use super::*;
 
+    fn spawn_options_json(scrollback_bytes: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "executable": "/bin/sh",
+            "args": [],
+            "cols": 80,
+            "rows": 24,
+            "persistence": "keep-until-exit",
+            "scrollbackBytes": scrollback_bytes,
+        })
+    }
+
+    #[test]
+    fn scrollback_override_accepts_zero_and_the_safe_integer_ceiling() {
+        let zero: SpawnOptions = serde_json::from_value(spawn_options_json(0.into())).unwrap();
+        assert_eq!(zero.scrollback_bytes, Some(0));
+        let maximum: SpawnOptions =
+            serde_json::from_value(spawn_options_json(MAX_JSON_SAFE_INTEGER.into())).unwrap();
+        assert_eq!(maximum.scrollback_bytes, Some(MAX_JSON_SAFE_INTEGER));
+    }
+
+    #[test]
+    fn scrollback_override_rejects_negative_fractional_and_unsafe_numbers() {
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::Value::Null,
+            serde_json::json!(MAX_JSON_SAFE_INTEGER + 1),
+        ] {
+            assert!(serde_json::from_value::<SpawnOptions>(spawn_options_json(value)).is_err());
+        }
+    }
+
+    #[test]
+    fn spawn_error_codes_are_typed_not_string_parsed() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            spawn_error_code(Some(&missing)),
+            Some("executable-not-found")
+        );
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(spawn_error_code(Some(&denied)), Some("permission-denied"));
+
+        #[cfg(unix)]
+        for raw in [libc::EMFILE, libc::ENFILE] {
+            let exhausted = std::io::Error::from_raw_os_error(raw);
+            assert_eq!(
+                spawn_error_code(Some(&exhausted)),
+                Some("file-descriptor-exhausted"),
+            );
+            assert_eq!(exhausted.raw_os_error(), Some(raw));
+        }
+    }
+
     /// A session whose exit evidence the test controls directly — the pty is
     /// irrelevant to the precedence rules and would only make them slow.
     struct FakeSession {
@@ -2819,6 +3000,7 @@ mod tests {
                 persistence: Persistence::KeepUntilExit,
                 program_kind: SessionProgramKind::Application,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
@@ -2891,6 +3073,7 @@ mod tests {
                 persistence: Persistence::KeepUntilExit,
                 program_kind: SessionProgramKind::Application,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
@@ -2972,6 +3155,7 @@ mod tests {
                 persistence: Persistence::KeepUntilExit,
                 program_kind: SessionProgramKind::Application,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
@@ -3208,6 +3392,7 @@ mod tests {
                 persistence: Persistence::TerminateWithApp,
                 program_kind: SessionProgramKind::InteractiveShell,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
@@ -3281,6 +3466,7 @@ mod tests {
                 persistence: Persistence::KeepUntilExit,
                 program_kind: SessionProgramKind::Application,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),
@@ -3334,6 +3520,7 @@ mod tests {
                     persistence: Persistence::KeepUntilExit,
                     program_kind: SessionProgramKind::Application,
                     owner_id: None,
+                    scrollback_bytes: None,
                 },
                 frames.clone(),
                 Arc::clone(&text_engine),
@@ -3398,6 +3585,7 @@ mod tests {
                 persistence: Persistence::TerminateWithApp,
                 program_kind: SessionProgramKind::InteractiveShell,
                 owner_id: None,
+                scrollback_bytes: None,
             },
             frames,
             Arc::new(Mutex::new(TextEngine::discover().unwrap())),

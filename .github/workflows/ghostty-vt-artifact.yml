@@ -7,6 +7,7 @@ on:
       - "ghostty-vt-*"
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   attestations: write
@@ -95,22 +96,10 @@ jobs:
           path: artifacts/ghostty-vt/
           if-no-files-found: error
 
-      - name: Create release
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/ghostty-vt/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag
-
   # Windows builds natively: Zig cannot target the MSVC ABI from the Linux
   # builder image because Microsoft's CRT headers and import libraries are not
-  # redistributable. The runner's bytes are therefore authoritative, and the
-  # locked manifest is updated from this job's output rather than compared
-  # against it. See native/ghosttea/crates/ghosttea-vt-sys/README.md.
+  # redistributable. A dispatch builds the authoritative candidate; the tag
+  # job promotes those exact immutable workflow-artifact bytes by run ID.
   windows:
     needs: package
     runs-on: windows-2022
@@ -126,9 +115,34 @@ jobs:
           cache: npm
 
       - run: npm ci --ignore-scripts
-      - run: npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
-      - run: npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
-      - run: npm run package:ghostty-vt -- --target=x86_64-pc-windows-msvc --allow-mismatch
+
+      - name: Build native Windows candidate
+        if: github.ref_type != 'tag'
+        run: |
+          npm run bootstrap:ghostty-vt -- --target=x86_64-pc-windows-msvc
+          npm run build:ghostty-vt -- --target=x86_64-pc-windows-msvc
+          npm run package:ghostty-vt -- --target=x86_64-pc-windows-msvc --allow-mismatch
+
+      - name: Resolve locked Windows candidate run
+        if: github.ref_type == 'tag'
+        id: windows_candidate
+        run: |
+          run_id="$(node -p "const value = require('./native/ghosttea/crates/ghosttea-vt-sys/artifacts.json').targets['x86_64-pc-windows-msvc'].candidateRunId; if (!Number.isSafeInteger(value) || value <= 0) throw new Error('candidateRunId must be a positive integer'); value")"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download locked Windows candidate
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-vt-x86_64-pc-windows-msvc
+          path: artifacts/ghostty-vt/
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.windows_candidate.outputs.run_id }}
+
+      - name: Verify locked Windows candidate
+        if: github.ref_type == 'tag'
+        run: node scripts/verify-ghostty-vt-candidate.mjs --target=x86_64-pc-windows-msvc --directory=artifacts/ghostty-vt
 
       - name: Resolve produced artifact paths
         id: ghostty_artifact
@@ -138,6 +152,9 @@ jobs:
           echo "sbom=artifacts/ghostty-vt/$filename.spdx.json" >> "$GITHUB_OUTPUT"
 
       - name: Report the manifest entry to lock
+        if: github.ref_type != 'tag'
+        env:
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           filename="$(node scripts/ghostty-vt-artifact-name.mjs --target=x86_64-pc-windows-msvc)"
           {
@@ -145,7 +162,7 @@ jobs:
             echo
             echo 'Copy into `targets["x86_64-pc-windows-msvc"]` of artifacts.json:'
             echo '```json'
-            cat "artifacts/ghostty-vt/$filename.json"
+            node -e "const fs = require('node:fs'); const value = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); value.candidateRunId = Number(process.env.CANDIDATE_RUN_ID); console.log(JSON.stringify(value, null, 2));" "artifacts/ghostty-vt/$filename.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -167,15 +184,32 @@ jobs:
           path: artifacts/ghostty-vt/
           if-no-files-found: error
 
-      # Deliberately no --clobber. A native build is not reproducible, so the
-      # published bytes are the ones artifacts.json is locked against; replacing
-      # them would leave every consumer's checksum check failing. A re-run for a
-      # release that already carries this asset should fail here and be resolved
-      # by cutting a new release, not by overwriting one.
-      - name: Attach to release
+  release:
+    if: github.ref_type == 'tag'
+    needs: [package, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download locked macOS bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-vt-aarch64-apple-darwin
+          path: release/aarch64-apple-darwin/
+
+      - name: Download promoted Windows bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ghostty-vt-x86_64-pc-windows-msvc
+          path: release/x86_64-pc-windows-msvc/
+
+      # Deliberately no --clobber. Both target bundles are checksum-locked, so a
+      # release is immutable and is created only after both platform jobs pass.
+      - name: Create complete release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" artifacts/ghostty-vt/* \
-            --repo "$GITHUB_REPOSITORY"
+          gh release create "$GITHUB_REF_NAME" release/aarch64-apple-darwin/* release/x86_64-pc-windows-msvc/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

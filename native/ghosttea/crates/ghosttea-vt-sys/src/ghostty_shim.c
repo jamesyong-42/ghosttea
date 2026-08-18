@@ -1,30 +1,6 @@
-#include "ghostty_shim.h"
-
-#include <ghostty/vt.h>
+#include "ghostty_shim_internal.h"
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct {
-  uint8_t* ptr;
-  size_t len;
-  size_t cap;
-} EgBuffer;
-
-struct EgTerminal {
-  GhosttyTerminal terminal;
-  GhosttyRenderState render;
-  GhosttyRenderStateRowIterator rows;
-  GhosttyRenderStateRowCells cells;
-  GhosttyKeyEncoder key_encoder;
-  GhosttyKeyEvent key_event;
-  GhosttyMouseEncoder mouse_encoder;
-  GhosttyMouseEvent mouse_event;
-  EgBuffer response;
-  EgBuffer row;
-  EgBuffer clipboard;
-  bool mouse_pressed;
-  uint32_t effects;
-};
 
 struct EgTrackedSelection {
   GhosttyTrackedGridRef start;
@@ -83,7 +59,7 @@ int eg_default_palette(uint8_t* colors, size_t len) {
 
 enum { EG_MAX_CLIPBOARD_BYTES = 4 * 1024 * 1024 };
 
-static bool eg_buffer_reserve(EgBuffer* buffer, size_t required) {
+bool eg_buffer_reserve(EgBuffer* buffer, size_t required) {
   if (required <= buffer->cap) return true;
   size_t capacity = buffer->cap == 0 ? 128 : buffer->cap;
   while (capacity < required) {
@@ -97,7 +73,7 @@ static bool eg_buffer_reserve(EgBuffer* buffer, size_t required) {
   return true;
 }
 
-static bool eg_buffer_append(EgBuffer* buffer, const uint8_t* data, size_t len) {
+bool eg_buffer_append(EgBuffer* buffer, const uint8_t* data, size_t len) {
   if (len > SIZE_MAX - buffer->len) return false;
   if (!eg_buffer_reserve(buffer, buffer->len + len)) return false;
   memcpy(buffer->ptr + buffer->len, data, len);
@@ -220,6 +196,9 @@ void eg_terminal_free(EgTerminal* state) {
   free(state->response.ptr);
   free(state->row.ptr);
   free(state->clipboard.ptr);
+  free(state->hyperlink_uri.ptr);
+  free(state->hyperlink_id.ptr);
+  free(state->grapheme.ptr);
   free(state);
 }
 
@@ -314,6 +293,22 @@ bool eg_terminal_alternate_scroll(EgTerminal* state) {
           state->terminal, GHOSTTY_MODE_ALT_SCROLL, &alternate_scroll) != GHOSTTY_SUCCESS)
     return false;
   return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && alternate_scroll;
+}
+
+int eg_terminal_mode_get_raw(EgTerminal* state,
+                             uint16_t value,
+                             bool ansi,
+                             bool* out_value) {
+  if (state == NULL || out_value == NULL || value > 0x7fff)
+    return GHOSTTY_INVALID_VALUE;
+  return ghostty_terminal_mode_get(
+      state->terminal, ghostty_mode_new(value, ansi), out_value);
+}
+
+int eg_terminal_pending_wrap(EgTerminal* state, bool* out_value) {
+  if (state == NULL || out_value == NULL) return GHOSTTY_INVALID_VALUE;
+  return ghostty_terminal_get(
+      state->terminal, GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP, out_value);
 }
 
 EgTrackedSelection* eg_terminal_track_selection(EgTerminal* state,
@@ -585,6 +580,60 @@ static void eg_compact_color(GhosttyStyleColor source,
   }
 }
 
+static EgStyleColor eg_style_color(GhosttyStyleColor source) {
+  EgStyleColor result = {0};
+  result.kind = (uint8_t)source.tag;
+  if (source.tag == GHOSTTY_STYLE_COLOR_PALETTE) {
+    result.palette = source.value.palette;
+  } else if (source.tag == GHOSTTY_STYLE_COLOR_RGB) {
+    result.r = source.value.rgb.r;
+    result.g = source.value.rgb.g;
+    result.b = source.value.rgb.b;
+  }
+  return result;
+}
+
+void eg_terminal_style(GhosttyStyle source, EgTerminalStyle* out) {
+  memset(out, 0, sizeof(*out));
+  out->flags = (source.bold ? 1u : 0u) |
+               (source.italic ? 2u : 0u) |
+               (source.faint ? 4u : 0u) |
+               (source.blink ? 8u : 0u) |
+               (source.inverse ? 16u : 0u) |
+               (source.invisible ? 32u : 0u) |
+               (source.strikethrough ? 64u : 0u) |
+               (source.overline ? 128u : 0u);
+  out->underline = source.underline;
+  out->foreground = eg_style_color(source.fg_color);
+  out->background = eg_style_color(source.bg_color);
+  out->underline_color = eg_style_color(source.underline_color);
+}
+
+int eg_emit_hyperlink_uri(EgTerminal* state,
+                          const GhosttyGridRef* ref,
+                          uint32_t row,
+                          uint16_t column,
+                          uint16_t span,
+                          EgHyperlinkUriFn hyperlink_fn,
+                          void* userdata) {
+  if (hyperlink_fn == NULL) return GHOSTTY_SUCCESS;
+
+  size_t uri_len = 0;
+  GhosttyResult result = ghostty_grid_ref_hyperlink_uri(
+      ref, NULL, 0, &uri_len);
+  if (result != GHOSTTY_SUCCESS && result != GHOSTTY_OUT_OF_SPACE)
+    return result;
+  if (uri_len == 0) return GHOSTTY_SUCCESS;
+  if (!eg_buffer_reserve(&state->hyperlink_uri, uri_len))
+    return GHOSTTY_OUT_OF_MEMORY;
+  result = ghostty_grid_ref_hyperlink_uri(
+      ref, state->hyperlink_uri.ptr, state->hyperlink_uri.cap, &uri_len);
+  if (result != GHOSTTY_SUCCESS) return result;
+
+  hyperlink_fn(userdata, row, column, span, state->hyperlink_uri.ptr, uri_len);
+  return GHOSTTY_SUCCESS;
+}
+
 static void eg_cell_style(GhosttyRenderStateRowCells cells,
                           GhosttyCell raw,
                           const EgColorState* colors,
@@ -649,6 +698,7 @@ int eg_terminal_snapshot(EgTerminal* state,
                          EgSnapshotMeta* meta,
                          EgRowFn row_fn,
                          EgCellFn cell_fn,
+                         EgHyperlinkUriFn hyperlink_fn,
                          void* userdata) {
   if (state == NULL || meta == NULL || row_fn == NULL || cell_fn == NULL) return GHOSTTY_INVALID_VALUE;
   GhosttyResult result = ghostty_render_state_update(state->render, state->terminal);
@@ -692,13 +742,31 @@ int eg_terminal_snapshot(EgTerminal* state,
   result = ghostty_render_state_get(state->render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &state->rows);
   if (result != GHOSTTY_SUCCESS) return result;
 
-  uint16_t row_index = 0;
+  uint32_t row_index = 0;
   while (ghostty_render_state_row_iterator_next(state->rows)) {
     bool row_dirty = false;
-    ghostty_render_state_row_get(state->rows, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty);
+    GhosttyRow raw_row = 0;
+    bool wrap = false;
+    bool wrap_continuation = false;
+    GhosttyRowSemanticPrompt semantic_prompt = GHOSTTY_ROW_SEMANTIC_NONE;
+    result = ghostty_render_state_row_get(
+        state->rows, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &row_dirty);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_render_state_row_get(
+        state->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &raw_row);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_WRAP, &wrap);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_row_get(
+        raw_row, GHOSTTY_ROW_DATA_WRAP_CONTINUATION, &wrap_continuation);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_row_get(
+        raw_row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &semantic_prompt);
+    if (result != GHOSTTY_SUCCESS) return result;
     if (row_dirty && meta->dirty_count != UINT16_MAX) meta->dirty_count += 1;
     if (!meta->full_dirty && !row_dirty) {
-      row_fn(userdata, row_index, NULL, 0, false);
+      row_fn(userdata, row_index, NULL, 0, false, wrap, wrap_continuation,
+             (uint8_t)semantic_prompt);
       row_index += 1;
       continue;
     }
@@ -733,6 +801,8 @@ int eg_terminal_snapshot(EgTerminal* state,
       result = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
       if (result != GHOSTTY_SUCCESS) return result;
 
+      bool emitted = false;
+      uint16_t span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1;
       if (grapheme.len == 0) {
         if (wide == GHOSTTY_CELL_WIDE_NARROW) {
           const uint8_t space = ' ';
@@ -740,20 +810,40 @@ int eg_terminal_snapshot(EgTerminal* state,
           eg_cell_style(state->cells, raw, &colors, &compact);
           cell_fn(userdata, row_index, column, 1, &space, 1, &compact);
           if (!eg_buffer_append(&state->row, &space, 1)) return GHOSTTY_OUT_OF_MEMORY;
+          emitted = true;
         }
       } else {
         EgCellStyle compact;
         eg_cell_style(state->cells, raw, &colors, &compact);
-        uint16_t span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1;
         cell_fn(userdata, row_index, column, span, grapheme.ptr, grapheme.len, &compact);
         if (!already_appended && !eg_buffer_append(&state->row, grapheme.ptr, grapheme.len))
           return GHOSTTY_OUT_OF_MEMORY;
+        emitted = true;
+      }
+      bool has_hyperlink = false;
+      if (emitted && hyperlink_fn != NULL) {
+        result = ghostty_cell_get(
+            raw, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &has_hyperlink);
+        if (result != GHOSTTY_SUCCESS) return result;
+      }
+      if (has_hyperlink) {
+        GhosttyPoint point = {
+            .tag = GHOSTTY_POINT_TAG_VIEWPORT,
+            .value.coordinate = {.x = column, .y = row_index},
+        };
+        GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+        result = ghostty_terminal_grid_ref(state->terminal, point, &ref);
+        if (result != GHOSTTY_SUCCESS) return result;
+        result = eg_emit_hyperlink_uri(
+            state, &ref, row_index, column, span, hyperlink_fn, userdata);
+        if (result != GHOSTTY_SUCCESS) return result;
       }
       column += 1;
     }
 
     while (state->row.len > 0 && state->row.ptr[state->row.len - 1] == ' ') state->row.len -= 1;
-    row_fn(userdata, row_index, state->row.ptr, state->row.len, row_dirty);
+    row_fn(userdata, row_index, state->row.ptr, state->row.len, row_dirty,
+           wrap, wrap_continuation, (uint8_t)semantic_prompt);
     bool clean = false;
     ghostty_render_state_row_set(state->rows, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
     row_index += 1;
@@ -762,6 +852,42 @@ int eg_terminal_snapshot(EgTerminal* state,
   GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
   ghostty_render_state_set(state->render, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean);
   return GHOSTTY_SUCCESS;
+}
+
+size_t eg_terminal_recovery_fragment(EgTerminal* state,
+                                     uint8_t* out,
+                                     size_t cap) {
+  if (state == NULL || (out == NULL && cap != 0)) return SIZE_MAX;
+  GhosttyFormatterTerminalOptions options =
+      GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
+  options.emit = GHOSTTY_FORMATTER_FORMAT_VT;
+  options.unwrap = false;
+  options.trim = false;
+  options.extra = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalExtra);
+  options.extra.palette = true;
+  options.extra.modes = true;
+  options.extra.scrolling_region = true;
+  options.extra.tabstops = true;
+  options.extra.pwd = true;
+  options.extra.keyboard = true;
+  options.extra.screen = GHOSTTY_INIT_SIZED(GhosttyFormatterScreenExtra);
+  options.extra.screen.cursor = true;
+  options.extra.screen.style = true;
+  options.extra.screen.hyperlink = true;
+  options.extra.screen.protection = true;
+  options.extra.screen.kitty_keyboard = true;
+  options.extra.screen.charsets = true;
+
+  GhosttyFormatter formatter = NULL;
+  GhosttyResult result = ghostty_formatter_terminal_new(
+      NULL, &formatter, state->terminal, options);
+  if (result != GHOSTTY_SUCCESS) return SIZE_MAX;
+  size_t written = 0;
+  result = ghostty_formatter_format_buf(formatter, out, cap, &written);
+  ghostty_formatter_free(formatter);
+  if (result != GHOSTTY_SUCCESS && result != GHOSTTY_OUT_OF_SPACE)
+    return SIZE_MAX;
+  return written;
 }
 
 size_t eg_terminal_take_response(EgTerminal* state, uint8_t* out, size_t cap) {

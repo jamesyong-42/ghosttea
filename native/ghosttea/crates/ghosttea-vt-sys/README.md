@@ -17,8 +17,10 @@ Supported overrides:
 - `GHOSTTEA_GHOSTTY_VT_BASE_URL` redirects downloads to a mirror.
 - `GHOSTTEA_GHOSTTY_VT_OFFLINE=1` forbids network fallback.
 
-Every bundle includes the upstream Ghostty license, build metadata, and an
-SPDX 2.3 SBOM.
+Every bundle includes the upstream Ghostty license, build metadata, the exact
+reviewed source patches under `SOURCE-PATCHES/`, and an SPDX 2.3 SBOM. Artifact
+names use a digest of the upstream commit plus the ordered patch identities;
+the commit alone is not a complete source identity.
 
 ## Release targets
 
@@ -46,7 +48,10 @@ bundle is trusted:
   already comes from the pinned Ghostty commit, so its checksum is a
   reproducibility check rather than a trust boundary.
 
-Because a Windows release cannot be reproduced from the manifest, the bytes
-that CI publishes are authoritative. The Windows workflow job packages with
-`--allow-mismatch` and prints the manifest entry to lock; update
-`artifacts.json` from that output when cutting a release.
+Because a Windows release cannot be reproduced from the manifest, one CI
+workflow-dispatch run produces the authoritative candidate bytes. Its result
+and `candidateRunId` are reviewed and locked in `artifacts.json`. The tag run
+downloads that immutable workflow artifact by run ID, verifies its bundle
+checksum, result metadata, embedded source identity, and SBOM, and promotes the
+same bytes. It must never rebuild a fresh Windows archive for an existing
+locked checksum.
