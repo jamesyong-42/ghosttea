@@ -92,12 +92,15 @@ the same diff. Never build or release an unrecorded vendored change.
 
 ## 3. Rebuild the downloadable and Apple artifacts
 
-Build the desktop/server artifact in the pinned container, normalize its Apple
-archive metadata, and first package it as a diagnostic candidate:
+Build the desktop/server artifact in the pinned container with the locked
+`baseline` CPU target, normalize it with the locked Xcode build, and first
+package it as a diagnostic candidate. On a workstation where that Xcode is the
+main application rather than side-by-side, point the normalizer at it:
 
 ```sh
 npm run build:ghostty-vt
-npm run normalize:ghostty-vt
+GHOSTTEA_NORMALIZER_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm run normalize:ghostty-vt
 npm run package:ghostty-vt -- --allow-mismatch
 ```
 
@@ -110,9 +113,14 @@ locked package result:
 
 ```sh
 npm run build:ghostty-vt
-npm run normalize:ghostty-vt
+GHOSTTEA_NORMALIZER_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm run normalize:ghostty-vt
 npm run package:ghostty-vt
 ```
+
+Treat a cross-host mismatch as a release blocker. Fixed container paths alone
+are insufficient: both the target CPU and Apple postprocessor must remain
+pinned to prevent host code-generation and strip-tool drift.
 
 The Windows archive is intentionally host-built and not reproducible. Dispatch
 `.github/workflows/ghostty-vt-artifact.yml` from the reviewed release branch,

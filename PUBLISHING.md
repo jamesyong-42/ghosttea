@@ -180,17 +180,21 @@ The Ghostty VT artifact referenced by
 `native/ghosttea/crates/ghosttea-vt-sys/artifacts.json` must already exist in
 the matching GitHub release. The crate downloads it and verifies its archive,
 static library, and public headers before linking. Its release name is derived
-from the complete source digest: upstream commit plus the ordered,
-checksum-locked VT patch set. Push a new `ghostty-vt-*` tag only when this
-pinned native input changes.
+from the complete source-and-recipe digest: upstream commit, ordered
+checksum-locked VT patch set, Zig distribution and targets, target CPUs,
+builder image, and archive normalizer. Push a new `ghostty-vt-*` tag only when
+one of these pinned native inputs changes.
 
 The MSVC archive is native-built and deliberately classified as
 non-reproducible. Before tagging, dispatch `ghostty-vt-artifact.yml` on the
 release branch and lock the Windows result together with its `candidateRunId`.
 The tag workflow downloads that immutable candidate by run ID, verifies the
 bundle and embedded source identity, and creates the release only after the
-reproducible macOS archive also passes. A tag must never rebuild and substitute
-new Windows bytes for the checksum in the reviewed manifest.
+reproducible macOS archive also passes. The macOS claim depends on the locked
+`baseline` Zig CPU and the exact Xcode `strip` build in `native/ghostty.lock.json`;
+fixed container paths by themselves are not reproducible across ARM hosts or
+macOS runner generations. A tag must never rebuild and substitute new Windows
+bytes for the checksum in the reviewed manifest.
 
 The GhostteaKit native artifact is separate, and shipping it correctly means
 verifying two properties rather than one. Its digests establish which bytes are

@@ -103,6 +103,14 @@ export function ghosttySourceIdentity() {
     commit: lock.ghostty.commit,
     patches,
     diffSha256: lock.vtPatchSet.diffSha256,
+    // These inputs can change generated machine code without changing the
+    // patched source tree. Keeping them inside the identity prevents a fixed
+    // source revision from colliding with a previously published recipe.
+    buildRecipe: {
+      zig: lock.zig,
+      builder: lock.builder,
+      targets: lock.targets,
+    },
   };
 }
 

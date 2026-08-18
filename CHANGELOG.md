@@ -31,10 +31,12 @@ share one version.
   runs. `TerminalScreenSnapshot` and the new saved-cursor/state types retain
   cursor style, protection, pending wrap, charset, keyboard, prompt, viewport,
   and hyperlink state needed for lossless replacement-terminal recovery.
-- Ghostty VT artifacts are content-addressed by the pinned upstream commit and
-  an exact checksum-locked patch set. Bundles carry those source patches, and
+- Ghostty VT artifacts are content-addressed by the pinned upstream commit,
+  exact checksum-locked patch set, and build recipe. Bundles carry those source patches, and
   release tags promote the exact reviewed native Windows candidate instead of
   rebuilding different non-reproducible bytes behind the recorded checksum.
+  Reproducible macOS builds now pin both the Zig target CPU and the exact Xcode
+  archive normalizer, closing host-CPU and runner-toolchain drift.
 
 ### Compatibility
 

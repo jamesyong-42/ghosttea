@@ -96,8 +96,14 @@ requireEqual(
   "Ghostty config vertical padding default",
 );
 
-requireEqual(artifacts.source, sourceIdentity, "native artifact source pin and patch set");
+requireEqual(artifacts.source, sourceIdentity, "native artifact source-and-recipe identity");
 requireEqual(fonts.source, lock.ghostty, "font source pin");
+requireEqual(lock.builder?.normalizer?.runner, "macos-26", "Ghostty VT normalizer runner");
+for (const field of ["developerDirectory", "xcodeVersion", "xcodeBuild"]) {
+  if (typeof lock.builder?.normalizer?.[field] !== "string" || lock.builder.normalizer[field] === "") {
+    throw new Error(`Ghostty VT normalizer ${field} must be a non-empty string.`);
+  }
+}
 for (const [target, config] of Object.entries(targets)) {
   const artifact = artifacts.targets?.[target];
   const expectedFilename = `${expectedRelease}-${target}.tar`;
@@ -110,6 +116,7 @@ for (const [target, config] of Object.entries(targets)) {
     `${target} native artifact URL`,
   );
   requireEqual(artifact?.libraryPath, config.libraryPath, `${target} native artifact library path`);
+  requireEqual(config.zigCpu, "baseline", `${target} portable Zig CPU target`);
   requireEqual(artifact?.reproducible, config.build === "container", `${target} reproducibility classification`);
   for (const field of ["sha256", "librarySha256", "headersSha256"]) {
     if (!/^[0-9a-f]{64}$/.test(artifact?.[field] ?? "")) {
@@ -212,6 +219,8 @@ for (const text of [
   "scripts/verify-ghostty-vt-candidate.mjs",
   "run-id: ${{ steps.windows_candidate.outputs.run_id }}",
   "needs: [package, windows]",
+  "runs-on: macos-26",
+  "GHOSTTEA_NORMALIZER_DEVELOPER_DIR",
 ]) {
   if (!workflow.includes(text)) throw new Error(`Ghostty artifact workflow omits ${text}.`);
 }
@@ -246,6 +255,9 @@ for (const path of ["scripts/build-ghostty-vt.mjs", "scripts/build-ghostty-vt-ap
   if (!read(path).includes("assertGhosttySource")) {
     throw new Error(`${path} does not reject source changes outside the exact locked patch set.`);
   }
+}
+if (!read("scripts/build-ghostty-vt.mjs").includes("-Dcpu=${config.zigCpu}")) {
+  throw new Error("scripts/build-ghostty-vt.mjs does not pin the portable Zig CPU target.");
 }
 for (const [path, requiredText] of [
   ["scripts/check-ios-release-ready.mjs", "scripts/check-ghostty-upgrade-procedure.mjs"],

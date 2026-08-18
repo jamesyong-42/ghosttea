@@ -59,6 +59,7 @@ function zigArguments(resolve) {
     "-Demit-lib-vt",
     "-Doptimize=ReleaseFast",
     `-Dtarget=${config.zigTarget}`,
+    `-Dcpu=${config.zigCpu}`,
   ];
 }
 

@@ -135,9 +135,12 @@ const artifact = {
         platform: lock.builder.platform,
         zigVersion: lock.zig.version,
         zigTarget: config.zigTarget,
+        zigCpu: config.zigCpu,
         postprocessor: {
-          tool: "Apple strip",
-          flags: ["-S"],
+          tool: "xcrun strip",
+          xcodeVersion: lock.builder.normalizer.xcodeVersion,
+          xcodeBuild: lock.builder.normalizer.xcodeBuild,
+          flags: lock.builder.normalizer.stripFlags,
           canonicalArchiveMetadata: true,
         },
       }
@@ -146,6 +149,7 @@ const artifact = {
         hostPlatform: config.hostPlatform,
         zigVersion: lock.zig.version,
         zigTarget: config.zigTarget,
+        zigCpu: config.zigCpu,
         // A container build is pinned by its image digest. A native build is
         // pinned by whatever the host had installed, and these are the parts
         // Zig links against, so they belong in the record even though they

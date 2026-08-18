@@ -23,17 +23,26 @@
   },
   "builder": {
     "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
-    "platform": "linux/arm64"
+    "platform": "linux/arm64",
+    "normalizer": {
+      "runner": "macos-26",
+      "developerDirectory": "/Applications/Xcode_26.6.app/Contents/Developer",
+      "xcodeVersion": "26.6",
+      "xcodeBuild": "17F113",
+      "stripFlags": ["-S"]
+    }
   },
   "targets": {
     "aarch64-apple-darwin": {
       "zigTarget": "aarch64-macos",
+      "zigCpu": "baseline",
       "build": "container",
       "zigDistribution": "linuxAarch64",
       "libraryPath": "lib/libghostty-vt.a"
     },
     "x86_64-pc-windows-msvc": {
       "zigTarget": "x86_64-windows-msvc",
+      "zigCpu": "baseline",
       "build": "native",
       "zigDistribution": "windowsX8664",
       "hostPlatform": "win32",

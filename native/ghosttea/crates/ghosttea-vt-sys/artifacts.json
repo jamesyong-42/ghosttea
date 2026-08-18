@@ -10,16 +10,55 @@
       }
     ],
     "diffSha256": "84af3399accfa632cec96476edd8392abfd26380adec6feb6c298c1478548e61",
-    "digest": "9dd8f52ee166e94b70ded20201b832ce06d4596f1ee7f811c0276cab5501059c"
+    "buildRecipe": {
+      "zig": {
+        "version": "0.15.2",
+        "linuxAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
+        "linuxAarch64Sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f",
+        "macosAarch64Url": "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz",
+        "macosAarch64Sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+        "windowsX8664Url": "https://ziglang.org/download/0.15.2/zig-x86_64-windows-0.15.2.zip",
+        "windowsX8664Sha256": "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14cb0c"
+      },
+      "builder": {
+        "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
+        "platform": "linux/arm64",
+        "normalizer": {
+          "runner": "macos-26",
+          "developerDirectory": "/Applications/Xcode_26.6.app/Contents/Developer",
+          "xcodeVersion": "26.6",
+          "xcodeBuild": "17F113",
+          "stripFlags": ["-S"]
+        }
+      },
+      "targets": {
+        "aarch64-apple-darwin": {
+          "zigTarget": "aarch64-macos",
+          "zigCpu": "baseline",
+          "build": "container",
+          "zigDistribution": "linuxAarch64",
+          "libraryPath": "lib/libghostty-vt.a"
+        },
+        "x86_64-pc-windows-msvc": {
+          "zigTarget": "x86_64-windows-msvc",
+          "zigCpu": "baseline",
+          "build": "native",
+          "zigDistribution": "windowsX8664",
+          "hostPlatform": "win32",
+          "libraryPath": "lib/ghostty-vt-static.lib"
+        }
+      }
+    },
+    "digest": "43610cb3f15d2b257a6734c3fed204d7b6fa0d52568a085eb8fa8cc01ea3e89f"
   },
   "targets": {
     "aarch64-apple-darwin": {
-      "sourceDigest": "9dd8f52ee166e94b70ded20201b832ce06d4596f1ee7f811c0276cab5501059c",
-      "release": "ghostty-vt-9dd8f52ee166",
-      "filename": "ghostty-vt-9dd8f52ee166-aarch64-apple-darwin.tar",
-      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-9dd8f52ee166/ghostty-vt-9dd8f52ee166-aarch64-apple-darwin.tar",
-      "sha256": "8a9610619cf3785a0b0215bab9b12db0e87cfc387df178de3f24056b1d7dcece",
-      "size": 2488832,
+      "sourceDigest": "43610cb3f15d2b257a6734c3fed204d7b6fa0d52568a085eb8fa8cc01ea3e89f",
+      "release": "ghostty-vt-43610cb3f15d",
+      "filename": "ghostty-vt-43610cb3f15d-aarch64-apple-darwin.tar",
+      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-43610cb3f15d/ghostty-vt-43610cb3f15d-aarch64-apple-darwin.tar",
+      "sha256": "374e5deef50d674ecad9fe995c238851c4b98c4ff0e85840d3fa8d03ce487b26",
+      "size": 2490368,
       "libraryPath": "lib/libghostty-vt.a",
       "librarySha256": "b68841249653b7a2b2c4cd9f0ca5160e2415604a8863dc39c9f4e537c585a8cf",
       "headersSha256": "e4de5535809e4fb95b857febf9805e767932f8e99f8705c89f7998a484366342",
