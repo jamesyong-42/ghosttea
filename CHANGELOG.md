@@ -35,8 +35,8 @@ share one version.
   exact checksum-locked patch set, and build recipe. Bundles carry those source patches, and
   release tags promote the exact reviewed native Windows candidate instead of
   rebuilding different non-reproducible bytes behind the recorded checksum.
-  Reproducible macOS builds now pin both the Zig target CPU and the exact Xcode
-  archive normalizer, closing host-CPU and runner-toolchain drift.
+  Reproducible macOS builds now pin Zig scheduling, target CPU, and the exact
+  Xcode archive normalizer, closing host and runner-toolchain drift.
 
 ### Compatibility
 

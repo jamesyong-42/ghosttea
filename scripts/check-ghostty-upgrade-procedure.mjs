@@ -98,6 +98,8 @@ requireEqual(
 
 requireEqual(artifacts.source, sourceIdentity, "native artifact source-and-recipe identity");
 requireEqual(fonts.source, lock.ghostty, "font source pin");
+requireEqual(lock.builder?.zigBuildJobs, 1, "Ghostty VT Zig build concurrency");
+requireEqual(lock.builder?.zigBuildSeed, 0, "Ghostty VT Zig build seed");
 requireEqual(lock.builder?.normalizer?.runner, "macos-26", "Ghostty VT normalizer runner");
 for (const field of ["developerDirectory", "xcodeVersion", "xcodeBuild"]) {
   if (typeof lock.builder?.normalizer?.[field] !== "string" || lock.builder.normalizer[field] === "") {
@@ -256,8 +258,11 @@ for (const path of ["scripts/build-ghostty-vt.mjs", "scripts/build-ghostty-vt-ap
     throw new Error(`${path} does not reject source changes outside the exact locked patch set.`);
   }
 }
-if (!read("scripts/build-ghostty-vt.mjs").includes("-Dcpu=${config.zigCpu}")) {
-  throw new Error("scripts/build-ghostty-vt.mjs does not pin the portable Zig CPU target.");
+const desktopBuild = read("scripts/build-ghostty-vt.mjs");
+for (const text of ["-Dcpu=${config.zigCpu}", "-j${lock.builder.zigBuildJobs}", "lock.builder.zigBuildSeed"]) {
+  if (!desktopBuild.includes(text)) {
+    throw new Error(`scripts/build-ghostty-vt.mjs does not pin ${JSON.stringify(text)}.`);
+  }
 }
 for (const [path, requiredText] of [
   ["scripts/check-ios-release-ready.mjs", "scripts/check-ghostty-upgrade-procedure.mjs"],

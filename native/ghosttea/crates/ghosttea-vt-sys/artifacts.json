@@ -23,6 +23,8 @@
       "builder": {
         "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
         "platform": "linux/arm64",
+        "zigBuildJobs": 1,
+        "zigBuildSeed": 0,
         "normalizer": {
           "runner": "macos-26",
           "developerDirectory": "/Applications/Xcode_26.6.app/Contents/Developer",
@@ -49,15 +51,15 @@
         }
       }
     },
-    "digest": "43610cb3f15d2b257a6734c3fed204d7b6fa0d52568a085eb8fa8cc01ea3e89f"
+    "digest": "222a4b1b224b1e4f8fe288b1685aff491d2938f1ebd7a69232251a7103ae8087"
   },
   "targets": {
     "aarch64-apple-darwin": {
-      "sourceDigest": "43610cb3f15d2b257a6734c3fed204d7b6fa0d52568a085eb8fa8cc01ea3e89f",
-      "release": "ghostty-vt-43610cb3f15d",
-      "filename": "ghostty-vt-43610cb3f15d-aarch64-apple-darwin.tar",
-      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-43610cb3f15d/ghostty-vt-43610cb3f15d-aarch64-apple-darwin.tar",
-      "sha256": "374e5deef50d674ecad9fe995c238851c4b98c4ff0e85840d3fa8d03ce487b26",
+      "sourceDigest": "222a4b1b224b1e4f8fe288b1685aff491d2938f1ebd7a69232251a7103ae8087",
+      "release": "ghostty-vt-222a4b1b224b",
+      "filename": "ghostty-vt-222a4b1b224b-aarch64-apple-darwin.tar",
+      "url": "https://github.com/vibecook-dev/ghosttea/releases/download/ghostty-vt-222a4b1b224b/ghostty-vt-222a4b1b224b-aarch64-apple-darwin.tar",
+      "sha256": "a0c398f9625ebd827b83aac22b33226ed37dc388a0e69e4888bc6e56064c8755",
       "size": 2490368,
       "libraryPath": "lib/libghostty-vt.a",
       "librarySha256": "b68841249653b7a2b2c4cd9f0ca5160e2415604a8863dc39c9f4e537c585a8cf",

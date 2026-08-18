@@ -35,13 +35,13 @@ Ghostty installs the Windows static archive under a distinct name because
 Windows cannot use the container cross-build: Microsoft's CRT headers and
 import libraries are not redistributable, so Zig must find an installed MSVC
 and Windows SDK and therefore builds on a matching host. The container build
-pins both its target CPU to `baseline` and its in-container paths. Its Mach-O
-archive is then stripped by the exact Xcode build recorded in
+pins its job count, dependency seed, target CPU to `baseline`, and in-container
+paths. Its Mach-O archive is then stripped by the exact Xcode build recorded in
 `native/ghostty.lock.json`, and archive metadata is canonicalized. All three
-constraints are required: an unpinned CPU changes code generation across ARM
-hosts, while an unpinned Apple `strip` changes otherwise-identical objects
-across macOS runner generations. A native Windows build embeds host-toolchain
-state that no postprocessing step can canonicalize.
+classes of constraint are required: scheduling and CPU drift can change code
+generation across ARM hosts, while an unpinned Apple `strip` changes
+otherwise-identical objects across macOS runner generations. A native Windows
+build embeds host-toolchain state that no postprocessing step can canonicalize.
 
 `reproducible` in `artifacts.json` records that difference and decides how a
 bundle is trusted:

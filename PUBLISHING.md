@@ -191,10 +191,11 @@ release branch and lock the Windows result together with its `candidateRunId`.
 The tag workflow downloads that immutable candidate by run ID, verifies the
 bundle and embedded source identity, and creates the release only after the
 reproducible macOS archive also passes. The macOS claim depends on the locked
-`baseline` Zig CPU and the exact Xcode `strip` build in `native/ghostty.lock.json`;
-fixed container paths by themselves are not reproducible across ARM hosts or
-macOS runner generations. A tag must never rebuild and substitute new Windows
-bytes for the checksum in the reviewed manifest.
+single-job Zig schedule, dependency seed, `baseline` CPU, and exact Xcode
+`strip` build in `native/ghostty.lock.json`; fixed container paths by themselves
+are not reproducible across ARM hosts or macOS runner generations. A tag must
+never rebuild and substitute new Windows bytes for the checksum in the reviewed
+manifest.
 
 The GhostteaKit native artifact is separate, and shipping it correctly means
 verifying two properties rather than one. Its digests establish which bytes are

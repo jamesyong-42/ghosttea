@@ -50,6 +50,9 @@ mkdirSync(output, { recursive: true });
 function zigArguments(resolve) {
   return [
     "build",
+    `-j${lock.builder.zigBuildJobs}`,
+    "--seed",
+    String(lock.builder.zigBuildSeed),
     "--cache-dir",
     resolve("cache"),
     "--global-cache-dir",

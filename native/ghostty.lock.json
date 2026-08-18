@@ -24,6 +24,8 @@
   "builder": {
     "image": "debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
     "platform": "linux/arm64",
+    "zigBuildJobs": 1,
+    "zigBuildSeed": 0,
     "normalizer": {
       "runner": "macos-26",
       "developerDirectory": "/Applications/Xcode_26.6.app/Contents/Developer",

@@ -133,6 +133,8 @@ const artifact = {
         mode: "container",
         image: lock.builder.image,
         platform: lock.builder.platform,
+        zigBuildJobs: lock.builder.zigBuildJobs,
+        zigBuildSeed: lock.builder.zigBuildSeed,
         zigVersion: lock.zig.version,
         zigTarget: config.zigTarget,
         zigCpu: config.zigCpu,
@@ -147,6 +149,8 @@ const artifact = {
     : {
         mode: "native",
         hostPlatform: config.hostPlatform,
+        zigBuildJobs: lock.builder.zigBuildJobs,
+        zigBuildSeed: lock.builder.zigBuildSeed,
         zigVersion: lock.zig.version,
         zigTarget: config.zigTarget,
         zigCpu: config.zigCpu,
