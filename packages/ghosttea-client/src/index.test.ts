@@ -137,6 +137,46 @@ class FakeSocket extends EventEmitter {
           }),
         ),
       );
+    } else if (command.type === "create-session") {
+      const options = command.options as Record<string, unknown>;
+      queueMicrotask(() =>
+        this.emit(
+          "data",
+          packet({
+            requestId,
+            type: "session-created",
+            session: {
+              id: "created",
+              handle: "2",
+              executable: options.executable,
+              cols: options.cols,
+              rows: options.rows,
+              exited: false,
+              readWrite: true,
+              title: null,
+              cwd: null,
+              bellCount: 0,
+              pid: 11,
+              createdAtMs: 1,
+              exitCode: null,
+              exitSignal: null,
+              requestedTermination: null,
+              exitOutcome: null,
+              ownerId: null,
+              persistence: options.persistence,
+              scrollbackBytes: options.scrollbackBytes ?? 10_000_000,
+              activity: {
+                kind: "unknown",
+                source: "unsupported",
+                confidence: "heuristic",
+                rootProcessGroupId: null,
+                foregroundProcessGroupId: null,
+                observedAtMs: 0,
+              },
+            },
+          }),
+        ),
+      );
     } else if (command.type === "get-session") {
       queueMicrotask(() =>
         this.emit(
@@ -195,8 +235,18 @@ class FakeSocket extends EventEmitter {
       queueMicrotask(() => this.emit("data", packet({ requestId, type: "ok" })));
     } else if (command.type === "terminate") {
       queueMicrotask(() => {
-        if (command.sessionId === "missing") {
-          this.emit("data", packet({ requestId, type: "error", message: "unknown session" }));
+        if (command.sessionId === "missing" || command.sessionId === "classified") {
+          this.emit(
+            "data",
+            packet({
+              requestId,
+              type: "error",
+              message: "unknown session",
+              ...(command.sessionId === "classified"
+                ? { stage: "spawn", code: "executable-not-found", osError: 2 }
+                : {}),
+            }),
+          );
           return;
         }
         this.emit("data", packet({ requestId, type: "ok" }));
@@ -346,6 +396,54 @@ describe("GhostteaAutomationClient", () => {
     await expect(client.closeSessionOwner("tab-a")).rejects.toThrow("requires protocol 1.14");
     expect(commands.map((command) => command.type)).toEqual(["hello"]);
     client.dispose();
+  });
+
+  it("gates and validates per-session scrollback before sending create", async () => {
+    const options = {
+      executable: "/bin/sh",
+      args: [],
+      cols: 80,
+      rows: 24,
+      persistence: "keep-until-exit" as const,
+    };
+    serverProtocolMinor = 14;
+    const legacy = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(legacy.createSession({ ...options, scrollbackBytes: 0 })).rejects.toThrow("requires protocol 1.15");
+    expect(legacy.serverProtocolMinor).toBe(14);
+    expect(legacy.structuredErrorsSupported).toBe(false);
+    expect(commands.map((command) => command.type)).toEqual(["hello"]);
+    legacy.dispose();
+
+    commands.splice(0);
+    serverProtocolMinor = 16;
+    const current = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(current.createSession({ ...options, scrollbackBytes: 0 })).resolves.toMatchObject({
+      scrollbackBytes: 0,
+    });
+    expect(current.serverProtocolMinor).toBe(16);
+    expect(current.structuredErrorsSupported).toBe(true);
+    await expect(current.createSession({ ...options, scrollbackBytes: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(
+      "safe integer",
+    );
+    expect(commands.filter((command) => command.type === "create-session")).toHaveLength(1);
+    current.dispose();
+  });
+
+  it("surfaces structured daemon error metadata", async () => {
+    serverProtocolMinor = 16;
+    const client = new GhostteaAutomationClient({ controlSocket: "control.sock", authToken: "secret" });
+    await expect(client.terminate("classified")).rejects.toMatchObject({
+      name: "Error",
+      message: "unknown session",
+      stage: "spawn",
+      code: "executable-not-found",
+      osError: 2,
+    });
+    expect(client.serverProtocolMinor).toBe(16);
+    expect(client.structuredErrorsSupported).toBe(true);
+    client.dispose();
+    expect(client.serverProtocolMinor).toBeUndefined();
+    expect(client.structuredErrorsSupported).toBe(false);
   });
 
   it("sends epoch-gated automation without claiming view authority", async () => {

@@ -43,7 +43,7 @@ const MAX_CLOSED_OWNER_TOMBSTONES: usize = 16_384;
 const CLOSED_OWNER_BLOOM_BITS: usize = 1 << 23;
 const CLOSED_OWNER_BLOOM_HASHES: u64 = 4;
 const CONTROL_PROTOCOL_MAJOR: u16 = 1;
-const CONTROL_PROTOCOL_MINOR: u16 = 14;
+const CONTROL_PROTOCOL_MINOR: u16 = 16;
 const ACTIVITY_EVENT_PROTOCOL_MINOR: u16 = 6;
 const EVENTS_LOST_PROTOCOL_MINOR: u16 = 8;
 const SESSION_CREATED_PROTOCOL_MINOR: u16 = 9;
@@ -73,6 +73,10 @@ const CONTROL_REVISION_CAS_PROTOCOL_MINOR: u16 = 13;
 /// Owner-aware view attachment and transactional session reassignment during
 /// `close-session-owner`.
 const SESSION_OWNER_TRANSFER_PROTOCOL_MINOR: u16 = 14;
+/// Per-session scrollback overrides and their effective-cap summary echo.
+const SESSION_SCROLLBACK_PROTOCOL_MINOR: u16 = 15;
+/// Structured control-error metadata. Reserved independently of landing order.
+const STRUCTURED_ERROR_PROTOCOL_MINOR: u16 = 16;
 // A gate above the advertised minor would be unreachable: no client could ever
 // negotiate high enough to receive the event it guards.
 const _: () = assert!(SESSION_CREATED_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
@@ -83,6 +87,8 @@ const _: () = assert!(ACTIVITY_EVENT_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(REMOTE_LIFECYCLE_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(CONTROL_REVISION_CAS_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const _: () = assert!(SESSION_OWNER_TRANSFER_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(SESSION_SCROLLBACK_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
+const _: () = assert!(STRUCTURED_ERROR_PROTOCOL_MINOR <= CONTROL_PROTOCOL_MINOR);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// How long an accepted connection may take to present its token before the
@@ -784,6 +790,12 @@ enum ResponseBody {
     Ok,
     Error {
         message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        os_error: Option<i32>,
     },
 }
 
@@ -2078,8 +2090,11 @@ async fn handle_command(
                     let text_engine = Arc::clone(&context.text_engine);
                     let private_env_prefixes = Arc::clone(&context.private_env_prefixes);
                     let terminal_config = context.config.snapshot().terminal.clone();
-                    let scrollback_bytes = usize::try_from(terminal_config.scrollback_bytes)
-                        .context("configured scrollback-limit does not fit this platform")?;
+                    let effective_scrollback_bytes = options
+                        .scrollback_bytes
+                        .unwrap_or(terminal_config.scrollback_bytes);
+                    let scrollback_bytes = usize::try_from(effective_scrollback_bytes)
+                        .context("scrollbackBytes does not fit this platform")?;
                     tokio::task::spawn_blocking(move || {
                         let session = Session::spawn_configured(
                             options,
@@ -3158,8 +3173,14 @@ async fn handle_command(
     .await;
     ResponseEnvelope {
         request_id,
-        body: result.unwrap_or_else(|error| ResponseBody::Error {
-            message: error.to_string(),
+        body: result.unwrap_or_else(|error| {
+            let metadata = error.downcast_ref::<session::ControlFailure>();
+            ResponseBody::Error {
+                message: error.to_string(),
+                stage: metadata.map(|metadata| metadata.stage),
+                code: metadata.and_then(|metadata| metadata.code),
+                os_error: metadata.and_then(|metadata| metadata.os_error),
+            }
         }),
     }
 }
@@ -3875,6 +3896,56 @@ mod protocol_tests {
                 "ownerId": owner_id,
             },
         })
+    }
+
+    #[tokio::test]
+    async fn spawn_refusals_preserve_message_and_add_typed_metadata() {
+        let service = start_test_service("structured-spawn-error");
+        let mut client = connect_control(&service).await;
+        #[cfg(unix)]
+        let missing_executable = "/definitely/not/a/ghosttea/executable";
+        #[cfg(windows)]
+        let missing_executable = r"C:\definitely\not\a\ghosttea\executable.exe";
+        let response = request(
+            &mut client,
+            json!({
+                "requestId": 1,
+                "type": "create-session",
+                "options": {
+                    "executable": missing_executable,
+                    "args": [],
+                    "cols": 40,
+                    "rows": 10,
+                    "persistence": "terminate-with-app",
+                    "programKind": "application",
+                },
+            }),
+        )
+        .await;
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["message"], "failed to spawn PTY command");
+        assert_eq!(response["stage"], "spawn");
+        assert_eq!(response["code"], "executable-not-found");
+        assert!(response["osError"].is_number());
+    }
+
+    #[tokio::test]
+    async fn session_summary_echoes_effective_scrollback_cap() {
+        let service = start_test_service("scrollback-summary");
+        let mut client = connect_control(&service).await;
+
+        let mut disabled = short_lived_session(1);
+        disabled["options"]["scrollbackBytes"] = json!(0);
+        let disabled = request(&mut client, disabled).await;
+        assert_eq!(disabled["type"], "session-created");
+        assert_eq!(disabled["session"]["scrollbackBytes"], 0);
+
+        let inherited = request(&mut client, short_lived_session(2)).await;
+        assert_eq!(inherited["type"], "session-created");
+        assert_eq!(
+            inherited["session"]["scrollbackBytes"],
+            ghosttea_config::DEFAULT_SCROLLBACK_BYTES,
+        );
     }
 
     #[tokio::test]
@@ -4644,6 +4715,7 @@ mod protocol_tests {
             exit_outcome: None,
             owner_id: None,
             persistence: Some(session::Persistence::KeepUntilExit),
+            scrollback_bytes: Some(10_000_000),
             activity: session::SessionActivity::default(),
         };
 
@@ -5175,6 +5247,7 @@ mod protocol_tests {
             exit_outcome: None,
             owner_id: None,
             persistence: None,
+            scrollback_bytes: None,
             activity: session::SessionActivity::default(),
         }
     }

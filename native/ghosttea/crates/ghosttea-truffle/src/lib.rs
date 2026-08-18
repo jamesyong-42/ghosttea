@@ -7816,6 +7816,7 @@ mod tests {
                 persistence: ghosttea::session::Persistence::TerminateWithApp,
                 program_kind: ghosttea::SessionProgramKind::default(),
                 owner_id: None,
+                scrollback_bytes: None,
             },
             ghosttea::FrameHub::new(8),
             Arc::new(std::sync::Mutex::new(

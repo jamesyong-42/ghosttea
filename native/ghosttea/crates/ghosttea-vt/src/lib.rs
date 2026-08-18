@@ -32,7 +32,7 @@ struct RawSnapshotMeta {
     effects: u32,
 }
 
-type RowCallback = unsafe extern "C" fn(*mut c_void, u16, *const u8, usize, bool);
+type RowCallback = unsafe extern "C" fn(*mut c_void, u32, *const u8, usize, bool, bool, bool, u8);
 
 #[repr(C)]
 struct RawCellStyle {
@@ -67,7 +67,95 @@ struct RawSelection {
 }
 
 type CellCallback =
-    unsafe extern "C" fn(*mut c_void, u16, u16, u16, *const u8, usize, *const RawCellStyle);
+    unsafe extern "C" fn(*mut c_void, u32, u16, u16, *const u8, usize, *const RawCellStyle);
+
+type HyperlinkUriCallback = unsafe extern "C" fn(*mut c_void, u32, u16, u16, *const u8, usize);
+type HyperlinkIdentityCallback =
+    unsafe extern "C" fn(*mut c_void, u32, u16, u16, u8, *const u8, usize, u64);
+type CursorHyperlinkCallback =
+    unsafe extern "C" fn(*mut c_void, *const u8, usize, u8, *const u8, usize, u64);
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawStyleColor {
+    kind: u8,
+    palette: u8,
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawTerminalStyle {
+    flags: u16,
+    underline: i32,
+    foreground: RawStyleColor,
+    background: RawStyleColor,
+    underline_color: RawStyleColor,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawCharsetState {
+    g0: u8,
+    g1: u8,
+    g2: u8,
+    g3: u8,
+    gl: u8,
+    gr: u8,
+    single_shift: u8,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawSavedCursor {
+    x: u16,
+    y: u16,
+    style: RawTerminalStyle,
+    protected_cell: bool,
+    pending_wrap: bool,
+    origin: bool,
+    charset: RawCharsetState,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawScreenMeta {
+    cols: u16,
+    rows: u16,
+    total_rows: u64,
+    scrollback_rows: u64,
+    cursor_x: u16,
+    cursor_y: u16,
+    cursor_visual_style: u8,
+    cursor_style: RawTerminalStyle,
+    cursor_protected: bool,
+    cursor_pending_wrap: bool,
+    charset: RawCharsetState,
+    kitty_keyboard_flags: u8,
+    viewport_offset: u64,
+    cursor_semantic_content: u8,
+    cursor_semantic_content_clear_eol: bool,
+    hyperlink_implicit_id: u64,
+    protected_mode: u8,
+    kitty_keyboard_stack: [u8; 8],
+    kitty_keyboard_index: u8,
+    semantic_prompt_seen: bool,
+    semantic_prompt_click: u8,
+}
+
+type ScreenCellCallback = unsafe extern "C" fn(
+    *mut c_void,
+    u32,
+    u16,
+    u16,
+    *const u8,
+    usize,
+    *const RawTerminalStyle,
+    bool,
+    u8,
+);
 
 unsafe extern "C" {
     fn eg_terminal_new(cols: u16, rows: u16, max_scrollback: usize) -> *mut RawTerminal;
@@ -99,6 +187,13 @@ unsafe extern "C" {
     fn eg_terminal_scrollbar(terminal: *mut RawTerminal, scrollbar: *mut RawScrollbar) -> bool;
     fn eg_terminal_mouse_tracking(terminal: *mut RawTerminal) -> bool;
     fn eg_terminal_alternate_scroll(terminal: *mut RawTerminal) -> bool;
+    fn eg_terminal_mode_get_raw(
+        terminal: *mut RawTerminal,
+        value: u16,
+        ansi: bool,
+        out_value: *mut bool,
+    ) -> i32;
+    fn eg_terminal_pending_wrap(terminal: *mut RawTerminal, out_value: *mut bool) -> i32;
     fn eg_terminal_track_selection(
         terminal: *mut RawTerminal,
         start_column: u16,
@@ -124,6 +219,36 @@ unsafe extern "C" {
         meta: *mut RawSnapshotMeta,
         row_fn: RowCallback,
         cell_fn: CellCallback,
+        hyperlink_fn: HyperlinkUriCallback,
+        userdata: *mut c_void,
+    ) -> i32;
+    fn eg_terminal_recovery_fragment(terminal: *mut RawTerminal, out: *mut u8, cap: usize)
+    -> usize;
+    fn eg_terminal_recovery_state(terminal: *mut RawTerminal, out: *mut u8, cap: usize) -> usize;
+    fn eg_terminal_saved_cursor(
+        terminal: *mut RawTerminal,
+        screen: u8,
+        out_cursor: *mut RawSavedCursor,
+    ) -> i32;
+    fn eg_terminal_screen_snapshot(
+        terminal: *mut RawTerminal,
+        screen: u8,
+        meta: *mut RawScreenMeta,
+        row_fn: RowCallback,
+        cell_fn: ScreenCellCallback,
+        hyperlink_fn: HyperlinkUriCallback,
+        userdata: *mut c_void,
+    ) -> i32;
+    fn eg_terminal_screen_hyperlink_identities(
+        terminal: *mut RawTerminal,
+        screen: u8,
+        identity_fn: HyperlinkIdentityCallback,
+        userdata: *mut c_void,
+    ) -> i32;
+    fn eg_terminal_screen_cursor_hyperlink(
+        terminal: *mut RawTerminal,
+        screen: u8,
+        hyperlink_fn: CursorHyperlinkCallback,
         userdata: *mut c_void,
     ) -> i32;
     fn eg_terminal_take_response(terminal: *mut RawTerminal, out: *mut u8, cap: usize) -> usize;
@@ -223,6 +348,202 @@ pub struct CellStyle {
     pub background: Option<[u8; 3]>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TerminalStyleColor {
+    #[default]
+    Default,
+    Palette(u8),
+    Rgb([u8; 3]),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct TerminalStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub faint: bool,
+    pub blink: bool,
+    pub inverse: bool,
+    pub invisible: bool,
+    pub strikethrough: bool,
+    pub overline: bool,
+    /// Ghostty's SGR underline value (none, single, double, curly, dotted,
+    /// dashed). Kept numeric so new upstream variants remain representable.
+    pub underline: i32,
+    pub foreground: TerminalStyleColor,
+    pub background: TerminalStyleColor,
+    pub underline_color: TerminalStyleColor,
+}
+
+impl From<RawTerminalStyle> for TerminalStyle {
+    fn from(raw: RawTerminalStyle) -> Self {
+        fn color(raw: RawStyleColor) -> TerminalStyleColor {
+            match raw.kind {
+                1 => TerminalStyleColor::Palette(raw.palette),
+                2 => TerminalStyleColor::Rgb([raw.r, raw.g, raw.b]),
+                _ => TerminalStyleColor::Default,
+            }
+        }
+        Self {
+            bold: raw.flags & 1 != 0,
+            italic: raw.flags & 2 != 0,
+            faint: raw.flags & 4 != 0,
+            blink: raw.flags & 8 != 0,
+            inverse: raw.flags & 16 != 0,
+            invisible: raw.flags & 32 != 0,
+            strikethrough: raw.flags & 64 != 0,
+            overline: raw.flags & 128 != 0,
+            underline: raw.underline,
+            foreground: color(raw.foreground),
+            background: color(raw.background),
+            underline_color: color(raw.underline_color),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalCharset {
+    Utf8,
+    Ascii,
+    British,
+    DecSpecial,
+}
+
+impl TerminalCharset {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Ascii,
+            2 => Self::British,
+            3 => Self::DecSpecial,
+            _ => Self::Utf8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalCharsetSlot {
+    G0,
+    G1,
+    G2,
+    G3,
+}
+
+impl TerminalCharsetSlot {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::G1,
+            2 => Self::G2,
+            3 => Self::G3,
+            _ => Self::G0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TerminalCharsetState {
+    pub g0: TerminalCharset,
+    pub g1: TerminalCharset,
+    pub g2: TerminalCharset,
+    pub g3: TerminalCharset,
+    pub gl: TerminalCharsetSlot,
+    pub gr: TerminalCharsetSlot,
+    pub single_shift: Option<TerminalCharsetSlot>,
+}
+
+impl From<RawCharsetState> for TerminalCharsetState {
+    fn from(raw: RawCharsetState) -> Self {
+        Self {
+            g0: TerminalCharset::from_raw(raw.g0),
+            g1: TerminalCharset::from_raw(raw.g1),
+            g2: TerminalCharset::from_raw(raw.g2),
+            g3: TerminalCharset::from_raw(raw.g3),
+            gl: TerminalCharsetSlot::from_raw(raw.gl),
+            gr: TerminalCharsetSlot::from_raw(raw.gr),
+            single_shift: (raw.single_shift != u8::MAX)
+                .then(|| TerminalCharsetSlot::from_raw(raw.single_shift)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminalScreen {
+    Primary,
+    Alternate,
+}
+
+impl TerminalScreen {
+    const fn raw(self) -> u8 {
+        match self {
+            Self::Primary => 0,
+            Self::Alternate => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedCursor {
+    pub x: u16,
+    pub y: u16,
+    pub style: TerminalStyle,
+    pub protected: bool,
+    pub pending_wrap: bool,
+    pub origin: bool,
+    pub charset: TerminalCharsetState,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TerminalRowSemanticPrompt {
+    #[default]
+    None,
+    Prompt,
+    PromptContinuation,
+    Unknown(u8),
+}
+
+impl TerminalRowSemanticPrompt {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::Prompt,
+            2 => Self::PromptContinuation,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TerminalRowMetadata {
+    pub wrap: bool,
+    pub wrap_continuation: bool,
+    pub semantic_prompt: TerminalRowSemanticPrompt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TerminalHyperlinkIdentity {
+    Explicit(Vec<u8>),
+    Implicit(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TerminalHyperlinkRun {
+    pub row: u32,
+    pub start_column: u16,
+    /// Exclusive end column.
+    pub end_column: u16,
+    /// `None` on the URI-only G18/G20 surface. Call
+    /// `screen_hyperlink_identities` to compose in G21 identity data.
+    pub identity: Option<TerminalHyperlinkIdentity>,
+    pub uri: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TerminalHyperlinkIdentityRun {
+    pub row: u32,
+    pub start_column: u16,
+    /// Exclusive end column.
+    pub end_column: u16,
+    pub identity: TerminalHyperlinkIdentity,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TerminalCell {
     pub column: u16,
@@ -262,6 +583,8 @@ pub struct TerminalSnapshot {
     pub cols: u16,
     pub rows: Vec<String>,
     pub cells: Vec<Vec<TerminalCell>>,
+    pub row_metadata: Vec<TerminalRowMetadata>,
+    pub hyperlinks: Vec<TerminalHyperlinkRun>,
     pub cursor: CursorState,
     pub damage: TerminalDamage,
     pub title: Option<String>,
@@ -272,6 +595,137 @@ pub struct TerminalSnapshot {
     pub selection: Option<TerminalSelection>,
     pub clipboard: Option<Vec<u8>>,
     pub pty_response: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSemanticContent {
+    Output,
+    Input,
+    Prompt,
+    Unknown(u8),
+}
+
+impl TerminalSemanticContent {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Output,
+            1 => Self::Input,
+            2 => Self::Prompt,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalScreenCell {
+    pub column: u16,
+    pub span: u16,
+    pub text: String,
+    pub style: TerminalStyle,
+    pub protected: bool,
+    pub semantic_content: TerminalSemanticContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalScreenRow {
+    pub text: String,
+    pub cells: Vec<TerminalScreenCell>,
+    pub metadata: TerminalRowMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalScreenState {
+    pub cols: u16,
+    pub rows: u16,
+    pub total_rows: u64,
+    pub scrollback_rows: u64,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub cursor_visual_style: u8,
+    pub cursor_style: TerminalStyle,
+    pub cursor_protected: bool,
+    pub cursor_pending_wrap: bool,
+    pub charset: TerminalCharsetState,
+    /// Convenience copy of `kitty_keyboard.stack[kitty_keyboard.index]`.
+    pub kitty_keyboard_flags: u8,
+    pub viewport_offset: u64,
+    pub cursor_semantic_content: TerminalSemanticContent,
+    pub cursor_semantic_content_clear_eol: bool,
+    pub hyperlink_implicit_id: u64,
+    pub protected_mode: TerminalProtectedMode,
+    pub kitty_keyboard: TerminalKittyKeyboardState,
+    pub semantic_prompt: TerminalSemanticPromptState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalProtectedMode {
+    Off,
+    Iso,
+    Dec,
+    Unknown(u8),
+}
+
+impl TerminalProtectedMode {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::Off,
+            1 => Self::Iso,
+            2 => Self::Dec,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalKittyKeyboardState {
+    pub stack: [u8; 8],
+    pub index: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSemanticPromptClick {
+    None,
+    ClickEventsAbsolute,
+    ClickEventsRelative,
+    Line,
+    Multiple,
+    ConservativeVertical,
+    SmartVertical,
+    Unknown(u8),
+}
+
+impl TerminalSemanticPromptClick {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::ClickEventsAbsolute,
+            2 => Self::ClickEventsRelative,
+            3 => Self::Line,
+            4 => Self::Multiple,
+            5 => Self::ConservativeVertical,
+            6 => Self::SmartVertical,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalSemanticPromptState {
+    pub seen: bool,
+    pub click: TerminalSemanticPromptClick,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalCursorHyperlink {
+    pub uri: Vec<u8>,
+    pub identity: TerminalHyperlinkIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalScreenSnapshot {
+    pub state: TerminalScreenState,
+    pub rows: Vec<TerminalScreenRow>,
+    pub hyperlinks: Vec<TerminalHyperlinkRun>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +770,8 @@ pub struct GhosttyTerminalCore {
     default_selection: Option<TrackedTerminalSelection>,
     cached_rows: Vec<String>,
     cached_cells: Vec<Vec<TerminalCell>>,
+    cached_row_metadata: Vec<TerminalRowMetadata>,
+    cached_hyperlinks: Vec<Vec<TerminalHyperlinkRun>>,
 }
 
 // libghostty-vt access is serialized by the owning session actor. The opaque
@@ -331,11 +787,373 @@ impl GhosttyTerminalCore {
             default_selection: None,
             cached_rows: Vec::new(),
             cached_cells: Vec::new(),
+            cached_row_metadata: Vec::new(),
+            cached_hyperlinks: Vec::new(),
         })
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
         unsafe { eg_terminal_write(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) };
+    }
+
+    /// Read a packed ANSI/DEC terminal mode. `None` means the mode is not
+    /// recognized (and is also returned for values above Ghostty's 15-bit
+    /// packed-mode range, which are rejected rather than masked).
+    pub fn mode_get(&self, value: u16, ansi: bool) -> Option<bool> {
+        if value > 0x7fff {
+            return None;
+        }
+        let mut enabled = false;
+        (unsafe { eg_terminal_mode_get_raw(self.raw.as_ptr(), value, ansi, &mut enabled) } == 0)
+            .then_some(enabled)
+    }
+
+    pub fn pending_wrap(&self) -> Result<bool, GhosttyError> {
+        let mut pending = false;
+        check(unsafe { eg_terminal_pending_wrap(self.raw.as_ptr(), &mut pending) })?;
+        Ok(pending)
+    }
+
+    /// Opaque whole-screen VT fragment: content plus every state class the
+    /// public Ghostty formatter can emit.
+    pub fn recovery_fragment(&self) -> Result<Vec<u8>, GhosttyError> {
+        self.recovery_bytes(eg_terminal_recovery_fragment)
+    }
+
+    /// VT state emission with formatter content disabled. Pending-wrap is not
+    /// representable by a control sequence and must be restored separately.
+    pub fn recovery_state(&self) -> Result<Vec<u8>, GhosttyError> {
+        self.recovery_bytes(eg_terminal_recovery_state)
+    }
+
+    fn recovery_bytes(
+        &self,
+        formatter: unsafe extern "C" fn(*mut RawTerminal, *mut u8, usize) -> usize,
+    ) -> Result<Vec<u8>, GhosttyError> {
+        let required = unsafe { formatter(self.raw.as_ptr(), std::ptr::null_mut(), 0) };
+        if required == usize::MAX {
+            return Err(GhosttyError(-1));
+        }
+        let mut bytes = vec![0_u8; required];
+        let written = unsafe { formatter(self.raw.as_ptr(), bytes.as_mut_ptr(), bytes.len()) };
+        if written == usize::MAX || written > bytes.len() {
+            return Err(GhosttyError(-1));
+        }
+        bytes.truncate(written);
+        Ok(bytes)
+    }
+
+    pub fn saved_cursor(
+        &self,
+        screen: TerminalScreen,
+    ) -> Result<Option<SavedCursor>, GhosttyError> {
+        let mut raw = RawSavedCursor::default();
+        match unsafe { eg_terminal_saved_cursor(self.raw.as_ptr(), screen.raw(), &mut raw) } {
+            0 => Ok(None),
+            1 => Ok(Some(SavedCursor {
+                x: raw.x,
+                y: raw.y,
+                style: raw.style.into(),
+                protected: raw.protected_cell,
+                pending_wrap: raw.pending_wrap,
+                origin: raw.origin,
+                charset: raw.charset.into(),
+            })),
+            status => Err(GhosttyError(status)),
+        }
+    }
+
+    /// Snapshot either screen without activating it. This intentionally reads
+    /// a stable semantic surface; it never switches screens or writes VT.
+    pub fn screen_snapshot(
+        &self,
+        screen: TerminalScreen,
+    ) -> Result<Option<TerminalScreenSnapshot>, GhosttyError> {
+        struct Rows {
+            rows: Vec<TerminalScreenRow>,
+            hyperlinks: Vec<Vec<TerminalHyperlinkRun>>,
+        }
+
+        fn empty_row() -> TerminalScreenRow {
+            TerminalScreenRow {
+                text: String::new(),
+                cells: Vec::new(),
+                metadata: TerminalRowMetadata::default(),
+            }
+        }
+
+        unsafe extern "C" fn collect_row(
+            userdata: *mut c_void,
+            row: u32,
+            text: *const u8,
+            len: usize,
+            _dirty: bool,
+            wrap: bool,
+            wrap_continuation: bool,
+            semantic_prompt: u8,
+        ) {
+            let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
+            rows.rows.resize_with(row as usize + 1, empty_row);
+            rows.hyperlinks.resize_with(row as usize + 1, Vec::new);
+            let bytes = if len == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(text, len) }
+            };
+            rows.rows[row as usize].text = String::from_utf8_lossy(bytes).into_owned();
+            rows.rows[row as usize].metadata = TerminalRowMetadata {
+                wrap,
+                wrap_continuation,
+                semantic_prompt: TerminalRowSemanticPrompt::from_raw(semantic_prompt),
+            };
+        }
+
+        unsafe extern "C" fn collect_cell(
+            userdata: *mut c_void,
+            row: u32,
+            column: u16,
+            span: u16,
+            text: *const u8,
+            len: usize,
+            style: *const RawTerminalStyle,
+            protected: bool,
+            semantic_content: u8,
+        ) {
+            let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
+            rows.rows.resize_with(row as usize + 1, empty_row);
+            let bytes = if len == 0 {
+                &[]
+            } else {
+                unsafe { std::slice::from_raw_parts(text, len) }
+            };
+            rows.rows[row as usize].cells.push(TerminalScreenCell {
+                column,
+                span,
+                text: String::from_utf8_lossy(bytes).into_owned(),
+                style: unsafe { *style }.into(),
+                protected,
+                semantic_content: TerminalSemanticContent::from_raw(semantic_content),
+            });
+        }
+
+        unsafe extern "C" fn collect_hyperlink(
+            userdata: *mut c_void,
+            row: u32,
+            column: u16,
+            span: u16,
+            uri: *const u8,
+            uri_len: usize,
+        ) {
+            let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
+            rows.hyperlinks.resize_with(row as usize + 1, Vec::new);
+            let uri = if uri_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(uri, uri_len) }.to_vec()
+            };
+            rows.hyperlinks[row as usize].push(TerminalHyperlinkRun {
+                row,
+                start_column: column,
+                end_column: column.saturating_add(span),
+                identity: None,
+                uri,
+            });
+        }
+
+        let mut meta = RawScreenMeta::default();
+        let mut rows = Rows {
+            rows: Vec::new(),
+            hyperlinks: Vec::new(),
+        };
+        match unsafe {
+            eg_terminal_screen_snapshot(
+                self.raw.as_ptr(),
+                screen.raw(),
+                &mut meta,
+                collect_row,
+                collect_cell,
+                collect_hyperlink,
+                (&mut rows as *mut Rows).cast(),
+            )
+        } {
+            0 => Ok(None),
+            1 => {
+                let row_count = usize::try_from(meta.total_rows).map_err(|_| GhosttyError(-1))?;
+                rows.rows.resize_with(row_count, empty_row);
+                rows.hyperlinks.resize_with(row_count, Vec::new);
+                Ok(Some(TerminalScreenSnapshot {
+                    state: TerminalScreenState {
+                        cols: meta.cols,
+                        rows: meta.rows,
+                        total_rows: meta.total_rows,
+                        scrollback_rows: meta.scrollback_rows,
+                        cursor_x: meta.cursor_x,
+                        cursor_y: meta.cursor_y,
+                        cursor_visual_style: meta.cursor_visual_style,
+                        cursor_style: meta.cursor_style.into(),
+                        cursor_protected: meta.cursor_protected,
+                        cursor_pending_wrap: meta.cursor_pending_wrap,
+                        charset: meta.charset.into(),
+                        kitty_keyboard_flags: meta.kitty_keyboard_flags,
+                        viewport_offset: meta.viewport_offset,
+                        cursor_semantic_content: TerminalSemanticContent::from_raw(
+                            meta.cursor_semantic_content,
+                        ),
+                        cursor_semantic_content_clear_eol: meta.cursor_semantic_content_clear_eol,
+                        hyperlink_implicit_id: meta.hyperlink_implicit_id,
+                        protected_mode: TerminalProtectedMode::from_raw(meta.protected_mode),
+                        kitty_keyboard: TerminalKittyKeyboardState {
+                            stack: meta.kitty_keyboard_stack,
+                            index: meta.kitty_keyboard_index,
+                        },
+                        semantic_prompt: TerminalSemanticPromptState {
+                            seen: meta.semantic_prompt_seen,
+                            click: TerminalSemanticPromptClick::from_raw(
+                                meta.semantic_prompt_click,
+                            ),
+                        },
+                    },
+                    rows: rows.rows,
+                    hyperlinks: rows.hyperlinks.into_iter().flatten().collect(),
+                }))
+            }
+            status => Err(GhosttyError(status)),
+        }
+    }
+
+    /// Read G21 semantic identity separately from the G18/G20 URI surface.
+    /// Runs are emitted in the same row/column order as `screen_snapshot`.
+    pub fn screen_hyperlink_identities(
+        &self,
+        screen: TerminalScreen,
+    ) -> Result<Option<Vec<TerminalHyperlinkIdentityRun>>, GhosttyError> {
+        unsafe extern "C" fn collect(
+            userdata: *mut c_void,
+            row: u32,
+            column: u16,
+            span: u16,
+            identity_kind: u8,
+            explicit_id: *const u8,
+            explicit_id_len: usize,
+            implicit_token: u64,
+        ) {
+            let output = unsafe { &mut *userdata.cast::<Vec<TerminalHyperlinkIdentityRun>>() };
+            let identity = if identity_kind == 1 {
+                TerminalHyperlinkIdentity::Explicit(if explicit_id_len == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(explicit_id, explicit_id_len) }.to_vec()
+                })
+            } else {
+                TerminalHyperlinkIdentity::Implicit(implicit_token)
+            };
+            output.push(TerminalHyperlinkIdentityRun {
+                row,
+                start_column: column,
+                end_column: column.saturating_add(span),
+                identity,
+            });
+        }
+
+        let mut output = Vec::new();
+        match unsafe {
+            eg_terminal_screen_hyperlink_identities(
+                self.raw.as_ptr(),
+                screen.raw(),
+                collect,
+                (&mut output as *mut Vec<TerminalHyperlinkIdentityRun>).cast(),
+            )
+        } {
+            0 => Ok(None),
+            1 => Ok(Some(output)),
+            status => Err(GhosttyError(status)),
+        }
+    }
+
+    /// Compose G20 rows/URIs with G21 identity and compact adjacent cells only
+    /// after the full semantic (identity, URI) equality pair is known.
+    pub fn screen_snapshot_with_hyperlink_identities(
+        &self,
+        screen: TerminalScreen,
+    ) -> Result<Option<TerminalScreenSnapshot>, GhosttyError> {
+        let Some(mut snapshot) = self.screen_snapshot(screen)? else {
+            return Ok(None);
+        };
+        let identities = self
+            .screen_hyperlink_identities(screen)?
+            .ok_or(GhosttyError(-1))?;
+        if snapshot.hyperlinks.len() != identities.len() {
+            return Err(GhosttyError(-1));
+        }
+        for (link, identity) in snapshot.hyperlinks.iter_mut().zip(identities) {
+            if (link.row, link.start_column, link.end_column)
+                != (identity.row, identity.start_column, identity.end_column)
+            {
+                return Err(GhosttyError(-1));
+            }
+            link.identity = Some(identity.identity);
+        }
+        let mut compact: Vec<TerminalHyperlinkRun> = Vec::with_capacity(snapshot.hyperlinks.len());
+        for link in snapshot.hyperlinks.drain(..) {
+            if let Some(previous) = compact.last_mut()
+                && previous.row == link.row
+                && previous.end_column == link.start_column
+                && previous.identity == link.identity
+                && previous.uri == link.uri
+            {
+                previous.end_column = link.end_column;
+            } else {
+                compact.push(link);
+            }
+        }
+        snapshot.hyperlinks = compact;
+        Ok(Some(snapshot))
+    }
+
+    pub fn screen_cursor_hyperlink(
+        &self,
+        screen: TerminalScreen,
+    ) -> Result<Option<TerminalCursorHyperlink>, GhosttyError> {
+        unsafe extern "C" fn collect(
+            userdata: *mut c_void,
+            uri: *const u8,
+            uri_len: usize,
+            identity_kind: u8,
+            explicit_id: *const u8,
+            explicit_id_len: usize,
+            implicit_token: u64,
+        ) {
+            let output = unsafe { &mut *userdata.cast::<Option<TerminalCursorHyperlink>>() };
+            let uri = if uri_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(uri, uri_len) }.to_vec()
+            };
+            let identity = if identity_kind == 1 {
+                TerminalHyperlinkIdentity::Explicit(if explicit_id_len == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(explicit_id, explicit_id_len) }.to_vec()
+                })
+            } else {
+                TerminalHyperlinkIdentity::Implicit(implicit_token)
+            };
+            *output = Some(TerminalCursorHyperlink { uri, identity });
+        }
+
+        let mut output = None;
+        match unsafe {
+            eg_terminal_screen_cursor_hyperlink(
+                self.raw.as_ptr(),
+                screen.raw(),
+                collect,
+                (&mut output as *mut Option<TerminalCursorHyperlink>).cast(),
+            )
+        } {
+            0 => Ok(None),
+            1 => output.map(Some).ok_or(GhosttyError(-1)),
+            status => Err(GhosttyError(status)),
+        }
     }
 
     pub fn selection_text(
@@ -660,15 +1478,20 @@ impl GhosttyTerminalCore {
         struct Rows {
             text: Vec<String>,
             cells: Vec<Vec<TerminalCell>>,
+            metadata: Vec<TerminalRowMetadata>,
+            hyperlinks: Vec<Vec<TerminalHyperlinkRun>>,
             present: Vec<bool>,
             dirty: Vec<u16>,
         }
         unsafe extern "C" fn collect_row(
             userdata: *mut c_void,
-            row: u16,
+            row: u32,
             text: *const u8,
             len: usize,
             dirty: bool,
+            wrap: bool,
+            wrap_continuation: bool,
+            semantic_prompt: u8,
         ) {
             let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
             let bytes = if len == 0 {
@@ -677,16 +1500,24 @@ impl GhosttyTerminalCore {
                 unsafe { std::slice::from_raw_parts(text, len) }
             };
             rows.text.resize_with(row as usize + 1, String::new);
+            rows.metadata
+                .resize_with(row as usize + 1, TerminalRowMetadata::default);
+            rows.hyperlinks.resize_with(row as usize + 1, Vec::new);
             rows.present.resize(row as usize + 1, false);
             rows.text[row as usize] = String::from_utf8_lossy(bytes).into_owned();
+            rows.metadata[row as usize] = TerminalRowMetadata {
+                wrap,
+                wrap_continuation,
+                semantic_prompt: TerminalRowSemanticPrompt::from_raw(semantic_prompt),
+            };
             rows.present[row as usize] = dirty;
             if dirty {
-                rows.dirty.push(row);
+                rows.dirty.push(row as u16);
             }
         }
         unsafe extern "C" fn collect_cell(
             userdata: *mut c_void,
-            row: u16,
+            row: u32,
             column: u16,
             span: u16,
             text: *const u8,
@@ -722,11 +1553,36 @@ impl GhosttyTerminalCore {
                 background_palette: (raw.bg_kind == 2).then_some(raw.bg_palette),
             });
         }
+        unsafe extern "C" fn collect_hyperlink(
+            userdata: *mut c_void,
+            row: u32,
+            column: u16,
+            span: u16,
+            uri: *const u8,
+            uri_len: usize,
+        ) {
+            let rows = unsafe { &mut *(userdata.cast::<Rows>()) };
+            rows.hyperlinks.resize_with(row as usize + 1, Vec::new);
+            let uri = if uri_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(uri, uri_len) }.to_vec()
+            };
+            rows.hyperlinks[row as usize].push(TerminalHyperlinkRun {
+                row,
+                start_column: column,
+                end_column: column.saturating_add(span),
+                identity: None,
+                uri,
+            });
+        }
 
         let mut meta = RawSnapshotMeta::default();
         let mut rows = Rows {
             text: Vec::new(),
             cells: Vec::new(),
+            metadata: Vec::new(),
+            hyperlinks: Vec::new(),
             present: Vec::new(),
             dirty: Vec::new(),
         };
@@ -736,11 +1592,15 @@ impl GhosttyTerminalCore {
                 &mut meta,
                 collect_row,
                 collect_cell,
+                collect_hyperlink,
                 (&mut rows as *mut Rows).cast(),
             )
         })?;
         rows.text.resize_with(meta.rows as usize, String::new);
         rows.cells.resize_with(meta.rows as usize, Vec::new);
+        rows.metadata
+            .resize_with(meta.rows as usize, TerminalRowMetadata::default);
+        rows.hyperlinks.resize_with(meta.rows as usize, Vec::new);
         rows.present.resize(meta.rows as usize, false);
         for (row_index, (text, cells)) in rows.text.iter().zip(&mut rows.cells).enumerate() {
             if meta.full_dirty == 0 && !rows.present[row_index] {
@@ -756,10 +1616,16 @@ impl GhosttyTerminalCore {
         self.cached_rows
             .resize_with(meta.rows as usize, String::new);
         self.cached_cells.resize_with(meta.rows as usize, Vec::new);
+        self.cached_row_metadata
+            .resize_with(meta.rows as usize, TerminalRowMetadata::default);
+        self.cached_hyperlinks
+            .resize_with(meta.rows as usize, Vec::new);
         for row_index in 0..meta.rows as usize {
+            self.cached_row_metadata[row_index] = rows.metadata[row_index].clone();
             if meta.full_dirty != 0 || rows.present[row_index] {
                 self.cached_rows[row_index] = std::mem::take(&mut rows.text[row_index]);
                 self.cached_cells[row_index] = std::mem::take(&mut rows.cells[row_index]);
+                self.cached_hyperlinks[row_index] = std::mem::take(&mut rows.hyperlinks[row_index]);
             }
         }
         let mut scrollbar = RawScrollbar::default();
@@ -768,6 +1634,8 @@ impl GhosttyTerminalCore {
             cols: meta.cols,
             rows: self.cached_rows.clone(),
             cells: self.cached_cells.clone(),
+            row_metadata: self.cached_row_metadata.clone(),
+            hyperlinks: self.cached_hyperlinks.iter().flatten().cloned().collect(),
             cursor: CursorState {
                 x: meta.cursor_x,
                 y: meta.cursor_y,
@@ -857,6 +1725,409 @@ fn check(result: i32) -> Result<(), GhosttyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_sweep_round_trips_through_real_csi_handling() {
+        fn capture(terminal: &GhosttyTerminalCore) -> Vec<(u16, bool, bool)> {
+            let mut result = Vec::new();
+            for ansi in [true, false] {
+                for value in 0_u16..=0x7fff {
+                    if let Some(enabled) = terminal.mode_get(value, ansi) {
+                        result.push((value, ansi, enabled));
+                    }
+                }
+            }
+            result
+        }
+
+        let mut source = GhosttyTerminalCore::new(80, 4, 100).unwrap();
+        source.feed(b"\x1b[?40h\x1b[?3h\x1b[?1h\x1b[?7l\x1b[?25l\x1b[?2004h\x1b[4h");
+        let captured = capture(&source);
+        assert!(!captured.is_empty());
+        assert!(captured.contains(&(3, false, true)));
+        assert!(captured.contains(&(40, false, true)));
+
+        let mut replacement = GhosttyTerminalCore::new(80, 4, 100).unwrap();
+        // Real CSI semantics make mode 40 a prerequisite for mode 3. Restore
+        // prerequisites first, then the rest of the discovered mode space.
+        for &(value, ansi, enabled) in captured
+            .iter()
+            .filter(|&&(value, ansi, _)| value == 40 && !ansi)
+            .chain(
+                captured
+                    .iter()
+                    .filter(|&&(value, ansi, _)| value != 40 || ansi),
+            )
+        {
+            let prefix = if ansi { "" } else { "?" };
+            let suffix = if enabled { 'h' } else { 'l' };
+            replacement.feed(format!("\x1b[{prefix}{value}{suffix}").as_bytes());
+        }
+        let restored = capture(&replacement);
+        assert_eq!(restored, captured);
+        assert_eq!(source.mode_get(0x8000, false), None);
+        assert_eq!(source.mode_get(u16::MAX, true), None);
+    }
+
+    #[test]
+    fn exposes_pending_wrap_and_row_wrap_flags() {
+        let mut terminal = GhosttyTerminalCore::new(4, 3, 100).unwrap();
+        terminal.feed(b"abcd");
+        assert!(terminal.pending_wrap().unwrap());
+        terminal.feed(b"e");
+        assert!(!terminal.pending_wrap().unwrap());
+        let snapshot = terminal.snapshot().unwrap();
+        assert!(snapshot.row_metadata[0].wrap);
+        assert!(snapshot.row_metadata[1].wrap_continuation);
+    }
+
+    #[test]
+    fn scrollback_caps_produce_different_retention_depths() {
+        let mut disabled = GhosttyTerminalCore::new(8, 2, 0).unwrap();
+        let mut retained = GhosttyTerminalCore::new(8, 2, 1_000_000).unwrap();
+        for line in 0..100 {
+            let bytes = format!("{line:07}\r\n");
+            disabled.feed(bytes.as_bytes());
+            retained.feed(bytes.as_bytes());
+        }
+
+        let disabled = disabled.snapshot().unwrap().scrollbar;
+        let retained = retained.snapshot().unwrap().scrollbar;
+        assert_eq!(disabled.total, disabled.len);
+        assert!(retained.total > retained.len);
+        assert!(retained.total > disabled.total);
+    }
+
+    #[test]
+    fn formatter_exposes_whole_screen_and_content_free_recovery() {
+        let mut source = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        source.feed(b"hello \x1b[31mred\x1b[?2004h\x1b[1\"q\x1b(0\x1b[2;5H\x1b*0\x1bN");
+        let source_state = source
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap()
+            .state;
+
+        let fragment = source.recovery_fragment().unwrap();
+        let mut whole = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        whole.feed(&fragment);
+        assert_eq!(
+            whole.snapshot().unwrap().rows,
+            source.snapshot().unwrap().rows
+        );
+        assert_eq!(whole.mode_get(2004, false), Some(true));
+        let whole_state = whole
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap()
+            .state;
+        assert_eq!(whole_state.cursor_x, source_state.cursor_x);
+        assert_eq!(whole_state.cursor_y, source_state.cursor_y);
+        assert_eq!(whole_state.cursor_style, source_state.cursor_style);
+        assert_eq!(whole_state.cursor_protected, source_state.cursor_protected);
+        assert_eq!(whole_state.charset, source_state.charset);
+
+        let state = source.recovery_state().unwrap();
+        let mut state_only = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        state_only.feed(&state);
+        assert!(
+            state_only
+                .snapshot()
+                .unwrap()
+                .rows
+                .iter()
+                .all(String::is_empty)
+        );
+        assert_eq!(state_only.mode_get(2004, false), Some(true));
+        let state_only_state = state_only
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap()
+            .state;
+        assert_eq!(state_only_state.cursor_x, source_state.cursor_x);
+        assert_eq!(state_only_state.cursor_y, source_state.cursor_y);
+        assert_eq!(state_only_state.cursor_style, source_state.cursor_style);
+        assert_eq!(
+            state_only_state.cursor_protected,
+            source_state.cursor_protected
+        );
+        assert_eq!(state_only_state.charset, source_state.charset);
+    }
+
+    #[test]
+    fn recovery_state_orders_deccolm_after_mode_40() {
+        let mut source = GhosttyTerminalCore::new(80, 3, 100).unwrap();
+        source.feed(b"\x1b[?40h\x1b[?3h");
+        assert_eq!(source.mode_get(40, false), Some(true));
+        assert_eq!(source.mode_get(3, false), Some(true));
+
+        let state = source.recovery_state().unwrap();
+        let mut replacement = GhosttyTerminalCore::new(80, 3, 100).unwrap();
+        replacement.feed(&state);
+        assert_eq!(replacement.mode_get(40, false), Some(true));
+        assert_eq!(replacement.mode_get(3, false), Some(true));
+        assert_eq!(
+            replacement
+                .screen_snapshot(TerminalScreen::Primary)
+                .unwrap()
+                .unwrap()
+                .state
+                .cols,
+            132,
+        );
+    }
+
+    #[test]
+    fn saved_cursor_is_complete_and_kept_per_screen() {
+        let mut terminal = GhosttyTerminalCore::new(4, 3, 100).unwrap();
+        terminal.feed(b"\x1b[?6h\x1b[31m\x1b[1\"q\x1b(0abcd\x1b*0\x1bN\x1b7");
+        let primary = terminal
+            .saved_cursor(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert_eq!((primary.x, primary.y), (3, 0));
+        assert!(primary.protected);
+        assert!(primary.pending_wrap);
+        assert!(primary.origin);
+        assert_eq!(primary.style.foreground, TerminalStyleColor::Palette(1));
+        assert_eq!(primary.charset.g0, TerminalCharset::DecSpecial);
+        assert_eq!(primary.charset.g2, TerminalCharset::DecSpecial);
+        assert_eq!(primary.charset.single_shift, Some(TerminalCharsetSlot::G2));
+
+        terminal.feed(b"\x1b[?1047h\x1b[?6l\x1b[32m\x1b[1\"q\x1b[2;4HX\x1b+0\x1bO\x1b7");
+        let alternate = terminal
+            .saved_cursor(TerminalScreen::Alternate)
+            .unwrap()
+            .unwrap();
+        assert_eq!((alternate.x, alternate.y), (3, 1));
+        assert_eq!(alternate.style.foreground, TerminalStyleColor::Palette(2));
+        assert!(alternate.protected);
+        assert!(alternate.pending_wrap);
+        assert!(!alternate.origin);
+        assert_eq!(alternate.charset.g3, TerminalCharset::DecSpecial);
+        assert_eq!(
+            alternate.charset.single_shift,
+            Some(TerminalCharsetSlot::G3)
+        );
+        assert_eq!(
+            terminal
+                .saved_cursor(TerminalScreen::Primary)
+                .unwrap()
+                .unwrap(),
+            primary
+        );
+    }
+
+    #[test]
+    fn screen_selector_reads_primary_while_alternate_is_active() {
+        let mut terminal = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        terminal.feed(b"primary\r\nretained\x1b[?1049h\x1b[Halt");
+        assert_eq!(terminal.mode_get(1049, false), Some(true));
+        let primary = terminal
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        let alternate = terminal
+            .screen_snapshot(TerminalScreen::Alternate)
+            .unwrap()
+            .unwrap();
+        let saved_primary = terminal
+            .saved_cursor(TerminalScreen::Primary)
+            .unwrap()
+            .expect("mode 1049 must save the primary cursor");
+        assert!(
+            primary
+                .rows
+                .iter()
+                .any(|row| row.text.starts_with("primary"))
+        );
+        assert!(
+            primary
+                .rows
+                .iter()
+                .any(|row| row.text.starts_with("retained"))
+        );
+        assert!(
+            alternate.rows.iter().any(|row| row.text.starts_with("alt")),
+            "alternate rows: {:?}",
+            alternate.rows,
+        );
+        assert_eq!(terminal.mode_get(1049, false), Some(true));
+
+        // Rebuild a distinct terminal from G20's selected rows/state plus
+        // G19's primary saved slot. This is the real recovery oracle: exiting
+        // 1049 on the source itself would only retest Ghostty's existing path.
+        let mut replacement = GhosttyTerminalCore::new(12, 3, 100).unwrap();
+        for (row, value) in primary.rows.iter().enumerate() {
+            if !value.text.is_empty() {
+                replacement.feed(format!("\x1b[{};1H{}", row + 1, value.text).as_bytes());
+            }
+        }
+        replacement.feed(
+            format!(
+                "\x1b[{};{}H\x1b[?1049h",
+                saved_primary.y + 1,
+                saved_primary.x + 1
+            )
+            .as_bytes(),
+        );
+        for (row, value) in alternate.rows.iter().enumerate() {
+            if !value.text.is_empty() {
+                replacement.feed(format!("\x1b[{};1H{}", row + 1, value.text).as_bytes());
+            }
+        }
+        assert_eq!(replacement.mode_get(1049, false), Some(true));
+
+        terminal.feed(b"\x1b[?1049l");
+        replacement.feed(b"\x1b[?1049l");
+        let source_restored = terminal
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        let replacement_restored = replacement
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.mode_get(1049, false), Some(false));
+        assert_eq!(replacement.mode_get(1049, false), Some(false));
+        assert_eq!(
+            (
+                replacement_restored.state.cursor_x,
+                replacement_restored.state.cursor_y,
+            ),
+            (saved_primary.x, saved_primary.y)
+        );
+        assert_eq!(
+            replacement_restored.rows, source_restored.rows,
+            "replacement primary plane diverged after 1049 exit",
+        );
+    }
+
+    #[test]
+    fn screen_selector_preserves_inactive_attributes_and_wrap_metadata() {
+        let mut terminal = GhosttyTerminalCore::new(4, 3, 100).unwrap();
+        terminal.feed(b"\x1b[31m\x1b[1\"qabcde\x1b[?1047h");
+
+        let primary = terminal
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert!(primary.rows[0].metadata.wrap);
+        assert!(primary.rows[1].metadata.wrap_continuation);
+        assert_eq!(
+            primary.rows[0].cells[0].style.foreground,
+            TerminalStyleColor::Palette(1)
+        );
+        assert!(primary.rows[0].cells[0].protected);
+        assert_eq!(primary.rows[0].cells[0].text, "a");
+        assert_eq!((primary.state.cursor_x, primary.state.cursor_y), (1, 1));
+        assert!(!primary.state.cursor_pending_wrap);
+        assert_eq!(terminal.mode_get(1047, false), Some(true));
+    }
+
+    #[test]
+    fn screen_state_carries_behavioral_stacks_semantics_and_viewport() {
+        let mut terminal = GhosttyTerminalCore::new(20, 3, 1_000_000).unwrap();
+        for line in 0..10 {
+            terminal.feed(format!("line-{line}\r\n").as_bytes());
+        }
+        terminal.feed(
+            b"\x1b[>1u\x1b[>2u\x1b[1\"q\x1b]133;A;click_events=1\x07\x1b]8;;https://example.test/open\x1b\\",
+        );
+        terminal.scroll(-2);
+
+        let snapshot = terminal
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.state.kitty_keyboard.index, 2);
+        assert_eq!(snapshot.state.kitty_keyboard.stack[1], 1);
+        assert_eq!(snapshot.state.kitty_keyboard.stack[2], 2);
+        assert_eq!(snapshot.state.kitty_keyboard_flags, 2);
+        assert_eq!(snapshot.state.protected_mode, TerminalProtectedMode::Dec);
+        assert_eq!(
+            snapshot.state.cursor_semantic_content,
+            TerminalSemanticContent::Prompt
+        );
+        assert!(snapshot.state.semantic_prompt.seen);
+        assert_eq!(
+            snapshot.state.semantic_prompt.click,
+            TerminalSemanticPromptClick::ClickEventsAbsolute
+        );
+        assert!(
+            snapshot.state.viewport_offset + u64::from(snapshot.state.rows)
+                < snapshot.state.total_rows
+        );
+
+        let cursor_link = terminal
+            .screen_cursor_hyperlink(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor_link.uri, b"https://example.test/open");
+        assert!(matches!(
+            cursor_link.identity,
+            TerminalHyperlinkIdentity::Implicit(_)
+        ));
+    }
+
+    #[test]
+    fn screen_snapshot_represents_default_blank_scrollback_sparsely() {
+        let mut terminal = GhosttyTerminalCore::new(80, 4, 4_000_000).unwrap();
+        for _ in 0..2_000 {
+            terminal.feed(b"\r\n");
+        }
+        let snapshot = terminal
+            .screen_snapshot(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.rows.len() > 1_000);
+        assert!(snapshot.rows.iter().all(|row| row.text.is_empty()));
+        assert_eq!(
+            snapshot
+                .rows
+                .iter()
+                .map(|row| row.cells.len())
+                .sum::<usize>(),
+            0,
+            "default cells must remain implicit rather than allocating one String per column",
+        );
+    }
+
+    #[test]
+    fn hyperlink_runs_preserve_explicit_and_implicit_semantic_identity() {
+        let mut terminal = GhosttyTerminalCore::new(8, 4, 100).unwrap();
+        terminal.feed(
+            b"\x1b]8;id=group-1;https://example.test/a\x1b\\explicit\x1b]8;;\x1b\\\r\n\x1b]8;;https://example.test/b\x1b\\implicit-link\x1b]8;;\x1b\\",
+        );
+        let snapshot = terminal
+            .screen_snapshot_with_hyperlink_identities(TerminalScreen::Primary)
+            .unwrap()
+            .unwrap();
+        let explicit = snapshot
+            .hyperlinks
+            .iter()
+            .find(|link| link.uri == b"https://example.test/a")
+            .unwrap();
+        assert_eq!(
+            explicit.identity,
+            Some(TerminalHyperlinkIdentity::Explicit(b"group-1".to_vec()))
+        );
+        let implicit = snapshot
+            .hyperlinks
+            .iter()
+            .filter(|link| link.uri == b"https://example.test/b")
+            .collect::<Vec<_>>();
+        assert!(implicit.len() >= 2);
+        assert!(
+            implicit
+                .windows(2)
+                .all(|pair| pair[0].identity == pair[1].identity)
+        );
+        assert!(matches!(
+            implicit[0].identity,
+            Some(TerminalHyperlinkIdentity::Implicit(_))
+        ));
+    }
 
     #[test]
     fn parses_unicode_styles_and_effects() {

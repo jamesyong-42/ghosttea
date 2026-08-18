@@ -179,8 +179,22 @@ unset npm_config_cache
 The Ghostty VT artifact referenced by
 `native/ghosttea/crates/ghosttea-vt-sys/artifacts.json` must already exist in
 the matching GitHub release. The crate downloads it and verifies its archive,
-static library, and public headers before linking. Push a new `ghostty-vt-*`
-tag only when this pinned native input changes.
+static library, and public headers before linking. Its release name is derived
+from the complete source-and-recipe digest: upstream commit, ordered
+checksum-locked VT patch set, Zig distribution and targets, target CPUs,
+builder image, and archive normalizer. Push a new `ghostty-vt-*` tag only when
+one of these pinned native inputs changes.
+
+Both desktop/server archives are deliberately classified as non-reproducible.
+Before tagging, dispatch `ghostty-vt-artifact.yml` on the release branch and
+lock both results together with their shared `candidateRunId`. The tag workflow
+downloads those immutable candidates by run ID, verifies each bundle and
+embedded source identity, and promotes the exact reviewed bytes. The macOS
+recipe still pins a single-job Zig schedule, dependency seed, `baseline` CPU,
+and exact Xcode `strip` build; a controlled cross-host check nevertheless
+produced a different instruction sequence in the root Zig object. A tag must
+never rebuild and substitute either archive for the checksums in the reviewed
+manifest.
 
 The GhostteaKit native artifact is separate, and shipping it correctly means
 verifying two properties rather than one. Its digests establish which bytes are

@@ -102,6 +102,7 @@ fn layout() -> Layout {
 }
 
 fn main() {
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
     for variable in [
         "GHOSTTY_VT_PREFIX",
         "GHOSTTEA_GHOSTTY_VT_BUNDLE",
@@ -111,12 +112,19 @@ fn main() {
         println!("cargo:rerun-if-env-changed={variable}");
     }
     println!("cargo:rerun-if-changed=artifacts.json");
-    println!("cargo:rerun-if-changed=src/ghostty_shim.c");
-    println!("cargo:rerun-if-changed=src/ghostty_shim.h");
+    for path in [
+        "src/ghostty_shim.c",
+        "src/ghostty_shim.h",
+        "src/ghostty_shim_internal.h",
+        "src/ghostty_shim_saved.c",
+        "src/ghostty_shim_screen.c",
+        "src/ghostty_shim_identity.c",
+    ] {
+        rerun_if_changed(Path::new(path), &out);
+    }
 
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
-    let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
     let target = env::var("TARGET").expect("Cargo target triple");
     let layout = layout();
     if let Some(prefix) = env::var_os("GHOSTTY_VT_PREFIX") {
@@ -382,6 +390,9 @@ fn link(prefix: &Path, out: &Path, layout: &Layout) {
 
     cc::Build::new()
         .file("src/ghostty_shim.c")
+        .file("src/ghostty_shim_saved.c")
+        .file("src/ghostty_shim_screen.c")
+        .file("src/ghostty_shim_identity.c")
         .include(include)
         .define("GHOSTTY_STATIC", None)
         .flag_if_supported("-std=c11")

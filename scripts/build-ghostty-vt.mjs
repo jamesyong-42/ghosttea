@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   assertBuildableHost,
+  assertGhosttySource,
   installPrefix,
   libraryPath,
   lock,
@@ -36,9 +37,7 @@ if (!existsSync(join(vendor, ".git")) || !existsSync(zig)) {
 if (capture("git", ["rev-parse", "HEAD"], vendor) !== lock.ghostty.commit) {
   throw new Error(`Ghostty source is not at locked commit ${lock.ghostty.commit}`);
 }
-if (capture("git", ["status", "--porcelain"], vendor) !== "") {
-  throw new Error("Ghostty source has local changes; refusing a non-reproducible build.");
-}
+assertGhosttySource(vendor);
 
 mkdirSync(output, { recursive: true });
 
@@ -51,6 +50,9 @@ mkdirSync(output, { recursive: true });
 function zigArguments(resolve) {
   return [
     "build",
+    `-j${lock.builder.zigBuildJobs}`,
+    "--seed",
+    String(lock.builder.zigBuildSeed),
     "--cache-dir",
     resolve("cache"),
     "--global-cache-dir",
@@ -60,6 +62,7 @@ function zigArguments(resolve) {
     "-Demit-lib-vt",
     "-Doptimize=ReleaseFast",
     `-Dtarget=${config.zigTarget}`,
+    `-Dcpu=${config.zigCpu}`,
   ];
 }
 

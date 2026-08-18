@@ -5,6 +5,9 @@ import { release as osRelease } from "node:os";
 import { join, relative } from "node:path";
 import {
   artifactNames,
+  ghosttyPatchFiles,
+  ghosttySourceDigest,
+  ghosttySourceIdentity,
   installPrefix,
   libraryPath,
   lock,
@@ -17,11 +20,16 @@ const allowMismatch = process.argv.includes("--allow-mismatch");
 const target = resolveTarget();
 const config = targetConfig(target);
 const library = libraryPath(target);
-// Container cross-builds are byte-reproducible, so their locked checksums also
-// gate repository builds. Native builds depend on the host toolchain, so their
-// checksums only gate downloaded bundles.
-const reproducible = config.build === "container";
+// Reproducibility is measured rather than inferred from the build mechanism.
+// A pinned container still sees host CPU/compiler behavior unless proven
+// otherwise, so the lock carries the reviewed classification explicitly.
+const reproducible = config.reproducible;
+if (typeof reproducible !== "boolean") {
+  throw new Error(`${target} must declare a boolean reproducible classification.`);
+}
 const { release, filename } = artifactNames(target);
+const sourceDigest = ghosttySourceDigest();
+const source = { ...ghosttySourceIdentity(), digest: sourceDigest };
 const outputDirectory = join(root, "artifacts/ghostty-vt");
 
 /**
@@ -96,6 +104,10 @@ const inputs = [
     bundlePath: "LICENSES/Ghostty.txt",
     sourcePath: join(install, "share/licenses/ghostty/LICENSE"),
   },
+  ...ghosttyPatchFiles().map((patch) => ({
+    bundlePath: `SOURCE-PATCHES/${patch.path}`,
+    sourcePath: patch.absolutePath,
+  })),
 ].map((file) => ({ ...file, contents: readFileSync(file.sourcePath) }));
 
 function digest(algorithm, contents) {
@@ -118,35 +130,41 @@ const artifact = {
   schemaVersion: 1,
   name: "ghostty-vt",
   target,
-  source: {
-    repository: lock.ghostty.repository,
-    commit: lock.ghostty.commit,
-  },
-  builder: reproducible
-    ? {
-        mode: "container",
-        image: lock.builder.image,
-        platform: lock.builder.platform,
-        zigVersion: lock.zig.version,
-        zigTarget: config.zigTarget,
-        postprocessor: {
-          tool: "Apple strip",
-          flags: ["-S"],
-          canonicalArchiveMetadata: true,
+  source,
+  builder:
+    config.build === "container"
+      ? {
+          mode: "container",
+          image: lock.builder.image,
+          platform: lock.builder.platform,
+          zigBuildJobs: lock.builder.zigBuildJobs,
+          zigBuildSeed: lock.builder.zigBuildSeed,
+          zigVersion: lock.zig.version,
+          zigTarget: config.zigTarget,
+          zigCpu: config.zigCpu,
+          postprocessor: {
+            tool: "xcrun strip",
+            xcodeVersion: lock.builder.normalizer.xcodeVersion,
+            xcodeBuild: lock.builder.normalizer.xcodeBuild,
+            flags: lock.builder.normalizer.stripFlags,
+            canonicalArchiveMetadata: true,
+          },
+        }
+      : {
+          mode: "native",
+          hostPlatform: config.hostPlatform,
+          zigBuildJobs: lock.builder.zigBuildJobs,
+          zigBuildSeed: lock.builder.zigBuildSeed,
+          zigVersion: lock.zig.version,
+          zigTarget: config.zigTarget,
+          zigCpu: config.zigCpu,
+          // A container build is pinned by its image digest. A native build is
+          // pinned by whatever the host had installed, and these are the parts
+          // Zig links against, so they belong in the record even though they
+          // cannot be enforced from it.
+          hostToolchain: hostToolchain(),
+          postprocessor: null,
         },
-      }
-    : {
-        mode: "native",
-        hostPlatform: config.hostPlatform,
-        zigVersion: lock.zig.version,
-        zigTarget: config.zigTarget,
-        // A container build is pinned by its image digest. A native build is
-        // pinned by whatever the host had installed, and these are the parts
-        // Zig links against, so they belong in the record even though they
-        // cannot be enforced from it.
-        hostToolchain: hostToolchain(),
-        postprocessor: null,
-      },
   files: Object.fromEntries(
     inputs.map((file) => [file.bundlePath, { sha256: digest("sha256", file.contents), size: file.contents.length }]),
   ),
@@ -184,8 +202,8 @@ const sbom = {
     {
       SPDXID: "SPDXRef-Package-Ghostty",
       name: "Ghostty VT",
-      versionInfo: lock.ghostty.commit,
-      downloadLocation: `${lock.ghostty.repository}@${lock.ghostty.commit}`,
+      versionInfo: sourceDigest,
+      downloadLocation: "NOASSERTION",
       filesAnalyzed: true,
       packageVerificationCode: { packageVerificationCodeValue: verificationCode },
       licenseConcluded: "MIT",
@@ -245,6 +263,7 @@ mkdirSync(outputDirectory, { recursive: true });
 writeFileSync(join(outputDirectory, filename), bundle);
 const result = {
   schemaVersion: 1,
+  sourceDigest,
   release,
   target,
   filename,
@@ -263,7 +282,13 @@ const lockedManifest = JSON.parse(
   readFileSync(join(root, "native/ghosttea/crates/ghosttea-vt-sys/artifacts.json"), "utf8"),
 );
 const lockedTarget = lockedManifest.targets[target];
+if (JSON.stringify(lockedManifest.source) !== JSON.stringify(source)) {
+  const message = "native artifact manifest source identity does not match the locked Ghostty VT patch set";
+  if (!allowMismatch) throw new Error(message);
+  console.warn(message);
+}
 for (const field of [
+  "sourceDigest",
   "release",
   "filename",
   "url",

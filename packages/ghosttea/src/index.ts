@@ -13,6 +13,19 @@ type PendingRequest = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+export class GhostteaRequestError extends Error {
+  readonly stage: string | undefined;
+  readonly code: string | undefined;
+  readonly osError: number | undefined;
+
+  constructor(event: Extract<ServerEvent, { type: "error" }>) {
+    super(event.message);
+    this.stage = event.stage;
+    this.code = event.code;
+    this.osError = event.osError;
+  }
+}
+
 export class ControlClient extends EventTarget {
   readonly #port: MessagePort;
   readonly #pending = new Map<number, PendingRequest>();
@@ -70,7 +83,7 @@ export class ControlClient extends EventTarget {
     if (!pending) return;
     this.#pending.delete(event.requestId);
     clearTimeout(pending.timeout);
-    if (event.type === "error") pending.reject(new Error(event.message));
+    if (event.type === "error") pending.reject(new GhostteaRequestError(event));
     else pending.resolve(event);
   };
 }

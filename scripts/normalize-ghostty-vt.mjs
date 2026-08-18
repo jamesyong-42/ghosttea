@@ -2,12 +2,15 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { installPrefix, libraryPath, resolveTarget, targetConfig } from "./ghostty-vt-target.mjs";
+import { installPrefix, libraryPath, lock, resolveTarget, targetConfig } from "./ghostty-vt-target.mjs";
 
 const target = resolveTarget();
 const config = targetConfig(target);
+const normalizer = lock.builder.normalizer;
 const positional = process.argv.slice(2).find((value) => !value.startsWith("--"));
 const library = resolve(positional ?? join(installPrefix(target), "install", libraryPath(target)));
+const developerDirectory = process.env.GHOSTTEA_NORMALIZER_DEVELOPER_DIR ?? normalizer?.developerDirectory;
+const commandEnvironment = { ...process.env, DEVELOPER_DIR: developerDirectory };
 
 if (config.build !== "container") {
   // Normalization exists to make the container cross-build byte-identical
@@ -18,9 +21,40 @@ if (config.build !== "container") {
 if (process.platform !== "darwin") {
   throw new Error("Ghostty VT release archives must be normalized on macOS with Apple strip.");
 }
+if (
+  !normalizer ||
+  typeof developerDirectory !== "string" ||
+  !Array.isArray(normalizer.stripFlags) ||
+  normalizer.stripFlags.length === 0
+) {
+  throw new Error("native/ghostty.lock.json must declare the pinned Apple archive normalizer.");
+}
+if (!existsSync(developerDirectory)) {
+  throw new Error(
+    `Pinned normalizer developer directory does not exist: ${developerDirectory}. ` +
+      "Set GHOSTTEA_NORMALIZER_DEVELOPER_DIR to the reviewed Xcode installation.",
+  );
+}
 if (!existsSync(library)) throw new Error(`Ghostty VT archive does not exist: ${library}`);
 
-const strip = spawnSync("/usr/bin/strip", ["-S", library], { stdio: "inherit" });
+const xcode = spawnSync("xcodebuild", ["-version"], {
+  env: commandEnvironment,
+  encoding: "utf8",
+});
+if (xcode.error) throw xcode.error;
+if (xcode.status !== 0) throw new Error(xcode.stderr || "xcodebuild -version failed");
+for (const expected of [`Xcode ${normalizer.xcodeVersion}`, `Build version ${normalizer.xcodeBuild}`]) {
+  if (!xcode.stdout.includes(expected)) {
+    throw new Error(
+      `Ghostty VT normalizer drifted; expected ${JSON.stringify(expected)} in ${JSON.stringify(xcode.stdout)}.`,
+    );
+  }
+}
+
+const strip = spawnSync("xcrun", ["strip", ...normalizer.stripFlags, library], {
+  env: commandEnvironment,
+  stdio: "inherit",
+});
 if (strip.error) throw strip.error;
 if (strip.status !== 0) process.exit(strip.status ?? 1);
 

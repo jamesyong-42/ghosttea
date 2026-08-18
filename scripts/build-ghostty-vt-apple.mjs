@@ -1,9 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { assertGhosttySource, ghosttySourceDigest, ghosttySourceIdentity, lock, root } from "./ghostty-vt-target.mjs";
 
-const root = resolve(import.meta.dirname, "..");
-const lock = JSON.parse(readFileSync(join(root, "native/ghostty.lock.json"), "utf8"));
 const vendor = join(root, "native/vendor/ghostty");
 const zig = join(root, `.tools/zig-aarch64-macos-${lock.zig.version}/zig`);
 const output = join(root, "native/build/ghostty-apple");
@@ -43,9 +42,7 @@ if (!existsSync(join(vendor, ".git")) || !existsSync(zig)) {
 if (capture("git", ["rev-parse", "HEAD"], vendor) !== lock.ghostty.commit) {
   throw new Error(`Ghostty source is not at locked commit ${lock.ghostty.commit}`);
 }
-if (capture("git", ["status", "--porcelain"], vendor) !== "") {
-  throw new Error("Ghostty source has local changes; refusing a non-reproducible Apple build.");
-}
+assertGhosttySource(vendor);
 if (capture(zig, ["version"]) !== lock.zig.version) {
   throw new Error(`Expected Zig ${lock.zig.version} at ${zig}`);
 }
@@ -96,7 +93,7 @@ cpSync(xcframework, packageArtifact, { recursive: true, force: true });
 
 const metadata = {
   schemaVersion: 1,
-  source: { repository: lock.ghostty.repository, commit: lock.ghostty.commit },
+  source: { ...ghosttySourceIdentity(), digest: ghosttySourceDigest() },
   zigVersion: lock.zig.version,
   xcodeVersion,
   macosSdk,

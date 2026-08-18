@@ -2,7 +2,7 @@
 
 This is the mandatory procedure for changing the Ghostty VT revision used by
 the desktop runtime, GhostteaKit, and the production iOS app. A VT upgrade is
-one atomic compatibility change: source pin, native artifacts, fonts, terminal
+one atomic compatibility change: source pin and reviewed patch set, native artifacts, fonts, terminal
 fixtures, release metadata, and device evidence move together. Never merge a
 new VT source pin with an old binary or regenerate a golden merely to make a
 test green.
@@ -42,10 +42,13 @@ between them, with particular attention to `src/terminal`, `src/apprt`,
 `src/font`, `include/ghostty`, `build.zig`, `build.zig.zon`, licenses, minimum
 Apple versions, allocator ownership, and thread-safety assumptions.
 
-Update only `native/ghostty.lock.json` first. Keep the Zig version and builder
-image unchanged unless the new source requires a separately reviewed toolchain
-change. Move the disposable ignored source checkout to the new pin, then let
-both bootstrap commands verify it:
+Update only `native/ghostty.lock.json` and the reviewed files under
+`native/patches/` first. Keep the Zig version and builder image unchanged unless
+the new source requires a separately reviewed toolchain change. Every patch
+must be generated from the locked clean base with Git's binary/full-index diff,
+listed in `vtPatchSet.patches` with its SHA-256, and covered by the patch set's
+exact `diffSha256`. Move the disposable ignored source checkout to the new pin,
+then let both bootstrap commands reproduce the patched tree:
 
 ```sh
 git -C native/vendor/ghostty fetch --depth=1 origin NEW_FULL_COMMIT
@@ -55,11 +58,12 @@ GHOSTTY_DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
   npm run bootstrap:ghostty-vt:apple
 ```
 
-`native/vendor/ghostty` must have the expected `HEAD`, the expected origin, and
-an empty status. Stop at **[STOP-SOURCE]** if the commit is not immutable and
-reviewed, a dependency cannot be checksum-verified, a license changes, the
-source needs an unrecorded patch, or either bootstrap selects a different
-revision/toolchain.
+`native/vendor/ghostty` must have the expected `HEAD`, the expected origin, no
+staged or untracked changes, and a working-tree diff byte-identical to the
+declared patch set. `scripts/ghostty-vt-target.mjs` owns that proof. Stop at
+**[STOP-SOURCE]** if the commit is not immutable and reviewed, a dependency
+cannot be checksum-verified, a license changes, the source needs an unrecorded
+patch, or either bootstrap selects a different revision, diff, or toolchain.
 
 ## 2. Review the C ABI and wrapper boundary
 
@@ -67,6 +71,11 @@ Diff the new installed headers against the old artifact before adapting code.
 Review all changes against:
 
 - `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.c`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim.h`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_internal.h`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_saved.c`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_screen.c`;
+- `native/ghosttea/crates/ghosttea-vt-sys/src/ghostty_shim_identity.c`;
 - `native/ghosttea/crates/ghosttea-vt-sys/build.rs`;
 - the Rust ownership and panic boundary in `ghosttea-core` and `ghosttea-ffi`;
 - the Swift ownership wrappers in GhostteaKit; and
@@ -76,31 +85,51 @@ Review all changes against:
 Every allocation/free pair and borrowed lifetime must still be explicit. Stop
 at **[STOP-ABI]** for an unexplained header diff, changed enum layout, ownership
 ambiguity, possible unwind across FFI, post-panic reuse, or a new callback that
-can enter the model concurrently. Adapt and test the wrapper; do not patch the
-vendored checkout.
+can enter the model concurrently. Make any necessary Ghostty-side adaptation in
+the disposable checkout, review it there, regenerate
+`native/patches/ghostty-vt-g15-g21.patch`, and prove that bootstrap recreates
+the same diff. Never build or release an unrecorded vendored change.
 
 ## 3. Rebuild the downloadable and Apple artifacts
 
-Build the desktop/server artifact in the pinned container, normalize its Apple
-archive metadata, and first package it as a diagnostic candidate:
+Build the desktop/server artifact in the pinned container with the locked
+single-job schedule, dependency seed, and `baseline` CPU target; normalize it
+with the locked Xcode build; and first package it as a diagnostic candidate. On
+a workstation where that Xcode is the main application rather than side-by-side,
+point the normalizer at it:
 
 ```sh
 npm run build:ghostty-vt
-npm run normalize:ghostty-vt
+GHOSTTEA_NORMALIZER_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm run normalize:ghostty-vt
 npm run package:ghostty-vt -- --allow-mismatch
 ```
 
-Review the candidate's `artifact.json`, SPDX document, headers, library hash,
-size, and ABI diff. Update
+Review the candidate's `artifact.json`, SPDX document, source digest and patch
+payload, headers, library hash, size, and ABI diff. Update
 `native/ghosttea/crates/ghosttea-vt-sys/artifacts.json` with the reviewed
-release, filename, URL, SHA-256, size, library SHA-256, and header-tree SHA-256.
-Then require a byte-identical rebuild and locked package result:
+source identity, source digest, release, filename, URL, SHA-256, size, library
+SHA-256, and header-tree SHA-256. Then require a byte-identical rebuild and
+locked package result:
 
 ```sh
 npm run build:ghostty-vt
-npm run normalize:ghostty-vt
+GHOSTTEA_NORMALIZER_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  npm run normalize:ghostty-vt
 npm run package:ghostty-vt
 ```
+
+The pins reduce variance but do not justify a reproducibility claim. With Zig
+0.15.2, a controlled cross-host check still produced a different instruction
+sequence in the root Zig object. The Windows archive is also host-built against
+MSVC and the Windows SDK. Both targets are therefore immutable CI candidates:
+dispatch `.github/workflows/ghostty-vt-artifact.yml` from the reviewed release
+branch and copy each complete result plus their shared `candidateRunId` into the
+manifest. Review the Windows toolchain record. The tag workflow must use
+`scripts/verify-ghostty-vt-candidate.mjs` to download and verify both exact
+workflow artifacts by run ID; it must not rebuild different bytes behind either
+locked checksum. The final release job waits for both promoted packages before
+creating the release.
 
 Build and validate every Apple slice, then recompose the local combined binary
 used by SwiftPM:
@@ -176,7 +205,7 @@ reply, ordering, cursor, selection, accessibility, glyph, pixel, or TRF1 delta.
 
 ## 6. Rebuild release metadata
 
-The exact source revision and any reviewed font/license changes must propagate
+The exact source revision, tracked VT patch set, and any reviewed font/license changes must propagate
 through `apple/GhostteaKit/Compatibility/ios-release.cdx.json`, the app-bundled
 BOM, notices, and
 `apple/GhostteaKit/Compatibility/ios-release-resources.lock.json`:
@@ -236,10 +265,13 @@ npm run validate:ios:release-artifact -- --archive native/build/ios-app/archive/
 The upgrade review must attach old/new commits, upstream review notes, ABI
 diff, artifact manifest and hashes, fixture diffs, performance comparison,
 physical-device model/OS, desktop/iOS shared-session evidence, BOM/notices
-diff, archive evidence hash, and every gate result. Merge the lock, wrappers,
-manifests, intentional fixtures, metadata, and documentation in one commit (or
-one inseparable reviewed series). Publish the `ghostty-vt-<revision>` release
-only from that reviewed commit and verify its attestations.
+diff, archive evidence hash, and every gate result. Merge the lock,
+`scripts/ghostty-vt-target.mjs`,
+`scripts/verify-ghostty-vt-candidate.mjs`, wrappers, manifests, intentional
+fixtures, metadata, and documentation in one commit (or one inseparable
+reviewed series). Publish the `ghostty-vt-<revision>` release only from that
+reviewed commit, where `<revision>` is the first 12 characters of the locked
+source digest rather than the upstream commit, and verify its attestations.
 
 ## Rollback
 

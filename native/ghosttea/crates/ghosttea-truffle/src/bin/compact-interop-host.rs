@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
             persistence: Persistence::TerminateWithApp,
             program_kind: SessionProgramKind::default(),
             owner_id: None,
+            scrollback_bytes: None,
         },
         FrameHub::new(8),
         Arc::new(Mutex::new(

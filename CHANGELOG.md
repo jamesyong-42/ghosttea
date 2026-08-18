@@ -3,6 +3,52 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.10.0 - 2026-08-18
+
+### Added
+
+- Control protocol 1.15 adds an optional per-session `scrollbackBytes` cap.
+  Zero disables scrollback, omission retains the daemon default, values must be
+  non-negative JavaScript safe integers, and the effective local cap is echoed
+  in session summaries. Clients requesting an override reject daemons older
+  than 1.15 instead of pretending an unknown field was enforced.
+- Control protocol 1.16 adds stable structured request failures. Both browser
+  and Node clients now reject with `GhostteaRequestError`, preserving the
+  byte-identical legacy message while exposing `stage`, `code`, and `osError`
+  when the daemon can classify them. PTY spawn failures carry typed operating
+  system errors; portable-pty open failures honestly identify only the
+  `openpty` stage because that dependency has already stringified its errno.
+- `ghosttea-vt` now exposes read-only packed-mode lookup, pending-wrap state,
+  whole-screen and state-only recovery fragments, complete saved cursors per
+  primary/alternate screen, sparse screen-selected row/state snapshots, and
+  URI plus explicit/implicit hyperlink identity. These APIs recover inactive
+  screens without activating them and preserve hyperlink groups across Ghostty
+  page migrations.
+
+### Changed
+
+- `TerminalSnapshot` now carries row wrap/semantic metadata and URI hyperlink
+  runs. `TerminalScreenSnapshot` and the new saved-cursor/state types retain
+  cursor style, protection, pending wrap, charset, keyboard, prompt, viewport,
+  and hyperlink state needed for lossless replacement-terminal recovery.
+- Ghostty VT artifacts are content-addressed by the pinned upstream commit,
+  exact checksum-locked patch set, and build recipe. Bundles carry those source
+  patches, and release tags promote the exact reviewed macOS and Windows
+  candidates instead of rebuilding different non-reproducible bytes behind
+  recorded checksums. macOS builds still pin Zig scheduling, target CPU, and
+  the exact Xcode archive normalizer to minimize host and runner-toolchain drift.
+
+### Compatibility
+
+- This is a 0.x minor release because adding public fields to Rust snapshot
+  structs is source-breaking for downstream exhaustive struct literals. Update
+  such literals to initialize `TerminalSnapshot.row_metadata` and
+  `TerminalSnapshot.hyperlinks`, or use defaults/construction helpers.
+- Older daemons remain usable when no per-session scrollback override is
+  requested. Their missing session-summary field is accepted; remote replicas
+  report `scrollbackBytes: null`. Existing error message and `Error.name`
+  behavior is unchanged, while callers may opt into the structured metadata.
+
 ## 0.9.4 - 2026-08-16
 
 ### Changed
