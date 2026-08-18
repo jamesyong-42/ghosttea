@@ -1080,23 +1080,60 @@ fn polled_read_loop(master: &OwnedFd, shutdown: &OwnedFd, output_tx: &mpsc::Sync
     }
 }
 
+const PRIVATE_SERVICE_ENVIRONMENT_KEYS: &[&str] = &[
+    "GHOSTTEA_AUTH_TOKEN",
+    "TERMINALD_AUTH_TOKEN",
+    "GHOSTTEA_CONTROL_SOCKET",
+    "TERMINALD_CONTROL_SOCKET",
+    "GHOSTTEA_FRAME_SOCKET",
+    "TERMINALD_FRAME_SOCKET",
+    "GHOSTTEA_FONT_DIR",
+    "TERMINALD_FONT_DIR",
+    "TRUFFLE_TEST_AUTHKEY",
+    "TRUFFLE_SIDECAR_PATH",
+];
+
+const PRIVATE_SERVICE_ENVIRONMENT_PREFIXES: &[&str] = &[
+    "GHOSTTEA_TRUFFLE_",
+    "TERMINALD_TRUFFLE_",
+    "GHOSTTEA_EXTERNAL_",
+];
+
+// Windows preserves environment-key spelling but resolves names without
+// regard to ASCII case. Secret removal must make its keep/drop decision in
+// that same case regime; Unix environment names remain byte-sensitive.
+#[cfg(windows)]
+fn environment_key_equals(key: &str, private_key: &str) -> bool {
+    key.eq_ignore_ascii_case(private_key)
+}
+
+#[cfg(not(windows))]
+fn environment_key_equals(key: &str, private_key: &str) -> bool {
+    key == private_key
+}
+
+#[cfg(windows)]
+fn environment_key_has_prefix(key: &str, private_prefix: &str) -> bool {
+    key.as_bytes()
+        .get(..private_prefix.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(private_prefix.as_bytes()))
+}
+
+#[cfg(not(windows))]
+fn environment_key_has_prefix(key: &str, private_prefix: &str) -> bool {
+    key.starts_with(private_prefix)
+}
+
 fn is_private_service_environment(key: &str, extra_prefixes: &[String]) -> bool {
-    matches!(
-        key,
-        "GHOSTTEA_AUTH_TOKEN"
-            | "TERMINALD_AUTH_TOKEN"
-            | "GHOSTTEA_CONTROL_SOCKET"
-            | "TERMINALD_CONTROL_SOCKET"
-            | "GHOSTTEA_FRAME_SOCKET"
-            | "TERMINALD_FRAME_SOCKET"
-            | "GHOSTTEA_FONT_DIR"
-            | "TERMINALD_FONT_DIR"
-            | "TRUFFLE_TEST_AUTHKEY"
-            | "TRUFFLE_SIDECAR_PATH"
-    ) || key.starts_with("GHOSTTEA_TRUFFLE_")
-        || key.starts_with("TERMINALD_TRUFFLE_")
-        || key.starts_with("GHOSTTEA_EXTERNAL_")
-        || extra_prefixes.iter().any(|prefix| key.starts_with(prefix))
+    PRIVATE_SERVICE_ENVIRONMENT_KEYS
+        .iter()
+        .any(|private_key| environment_key_equals(key, private_key))
+        || PRIVATE_SERVICE_ENVIRONMENT_PREFIXES
+            .iter()
+            .any(|prefix| environment_key_has_prefix(key, prefix))
+        || extra_prefixes
+            .iter()
+            .any(|prefix| environment_key_has_prefix(key, prefix))
 }
 
 fn remove_private_service_environment(
@@ -3273,22 +3310,47 @@ mod tests {
             "CLAUDE_CODE_OAUTH_TOKEN",
             &["FIELD_".to_owned()],
         ));
+
+        let case_variants = [
+            ("Ghosttea_Auth_Token", Vec::new()),
+            ("Ghosttea_Truffle_Capability", Vec::new()),
+            ("Terminald_Auth_Token", Vec::new()),
+            ("Terminald_Truffle_Capability", Vec::new()),
+            ("Field_Control_Token", vec!["FIELD_".to_owned()]),
+        ];
+        for (key, extra_prefixes) in case_variants {
+            assert_eq!(
+                is_private_service_environment(key, &extra_prefixes),
+                cfg!(windows),
+                "case-variant environment key {key} must follow the host platform's rules"
+            );
+        }
     }
 
     #[test]
     fn strips_host_private_prefixes_from_an_inherited_command() {
         let mut command = CommandBuilder::new("test");
         command.env("FIELD_CONTROL_TOKEN", "private");
+        command.env("Field_Native_Terminal_Mirror_Write", "private-variant");
         command.env("CLAUDE_CODE_OAUTH_TOKEN", "agent-owned");
         remove_private_service_environment(
             &mut command,
             [
                 "FIELD_CONTROL_TOKEN".to_owned(),
+                "Field_Native_Terminal_Mirror_Write".to_owned(),
                 "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
             ],
             &["FIELD_".to_owned()],
         );
         assert_eq!(command.get_env("FIELD_CONTROL_TOKEN"), None);
+        assert_eq!(
+            command.get_env("Field_Native_Terminal_Mirror_Write"),
+            if cfg!(windows) {
+                None
+            } else {
+                Some(std::ffi::OsStr::new("private-variant"))
+            }
+        );
         assert_eq!(
             command.get_env("CLAUDE_CODE_OAUTH_TOKEN"),
             Some(std::ffi::OsStr::new("agent-owned"))

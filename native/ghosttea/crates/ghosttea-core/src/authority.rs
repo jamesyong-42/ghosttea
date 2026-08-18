@@ -597,10 +597,10 @@ impl ViewAuthority {
 
     /// Drop the controller if it names this view, reporting whether it did.
     fn clear_controller_for_view(&mut self, view_id: &str) -> bool {
-        if !self
+        if self
             .controller
             .as_ref()
-            .is_some_and(|controller| controller.view_id == view_id)
+            .is_none_or(|controller| controller.view_id != view_id)
         {
             return false;
         }
