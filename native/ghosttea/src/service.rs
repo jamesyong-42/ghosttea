@@ -4212,10 +4212,13 @@ mod protocol_tests {
         let mut saw_exited = false;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !(saw_removed && saw_exited) && Instant::now() < deadline {
-            let event = tokio::time::timeout(Duration::from_secs(2), lifecycle.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let Ok(event) =
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), lifecycle.recv())
+                    .await
+            else {
+                break;
+            };
+            let event = event.unwrap();
             match event {
                 SessionLifecycleEvent::Removed { session_id } if session_id == spawned_id => {
                     saw_removed = true;
@@ -4226,7 +4229,10 @@ mod protocol_tests {
                 _ => {}
             }
         }
-        assert!(saw_removed && saw_exited);
+        assert!(
+            saw_removed && saw_exited,
+            "missing lifecycle event(s): removed={saw_removed}, exited={saw_exited}"
+        );
 
         let _ = request(
             &mut client,
