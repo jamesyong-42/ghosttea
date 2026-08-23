@@ -1234,7 +1234,15 @@ impl Session {
         Self::spawn_with_private_env_prefixes(options, frames, text_engine, &[], on_exit)
     }
 
-    pub(crate) fn spawn_with_private_env_prefixes(
+    /// Spawn a standalone session while stripping additional host-private
+    /// environment prefixes from inherited child state.
+    ///
+    /// Embedders that also run [`crate::TerminalService`] should normally use
+    /// [`crate::ServiceSessions::spawn`], which additionally applies the live
+    /// service configuration, registry, shutdown, tombstone, ownership, and
+    /// lifecycle policy. This lower-level constructor exists for hosts that
+    /// deliberately own those policies themselves.
+    pub fn spawn_with_private_env_prefixes(
         options: SpawnOptions,
         frames: FrameHub,
         text_engine: Arc<Mutex<TextEngine>>,

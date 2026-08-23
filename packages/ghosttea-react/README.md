@@ -9,6 +9,56 @@ paths. Create one runtime per renderer window, provide it through
 
 Import `@vibecook/ghosttea-react/styles.css` once in the renderer entrypoint.
 
+## Routed terminal transport
+
+The additive `transport: "routed"` mode connects one control WebSocket and one
+frames WebSocket per `cellBootId`, then multiplexes session activations over
+each connection set. Main owns activation IDs, leases, replacement and
+recovery. The render worker owns the frames socket, presentation-envelope
+validation, byte credits, bounded transfer staging, TRF1 identity checks, and
+scene apply. Presentation bytes are never relayed through main.
+
+```ts
+const runtime = createGhostteaTerminalRuntime({
+  transport: "routed",
+  platform,
+  host: {
+    openTicket: (sessionId, options) => fieldd.openTicket(sessionId, options),
+    renewAttach: (request) => fieldd.renewAttach(request),
+    listSessions: () => fieldd.listSessions(),
+    createSession: (options) => fieldd.createSession(options),
+    terminate: (sessionId, source) => fieldd.terminate(sessionId, source),
+  },
+});
+```
+
+The ticket guard accepts only loopback `ws://`/`wss://` endpoints without a
+query or fragment, and checks route/grant/session binding before dialing. A
+frames-leg recovery asks `openTicket` for a fresh transport grant before using
+the negotiated `resume` capability; consumed grant nonces are never replayed.
+The worker uses its own global `WebSocket`. The optional `websocketFactory`
+customizes the main-thread control leg for tests or host instrumentation.
+
+Read `runtime.routedActivation(sessionId)` or listen for
+`routed-activation-state` and `routed-view-readiness`. `PresentationReady` and
+`InputAllowed` are deliberately separate: the local scene must cover the
+cell's accepted content, both local status leases must be live, and input also
+requires the cell's input dimension, a current input right, and a writable
+client view. `TerminalSurface` accepts `inputPolicy="read-only"` (or
+`readWrite={false}`) to remove input locally without affecting presentation.
+
+The published VibeField T1 contract currently has no terminal-input wire tag.
+Accordingly, routed input stays closed unless the host supplies `encodeInput`
+for an extension it has negotiated with its cell; Ghosttea does not invent an
+incompatible message. When supplied, the encoded keystroke is sent directly
+on the main-thread control socket with no worker `postMessage` hop.
+
+Focus changes only rendering priority and demand urgency. Geometry changes
+require an explicit `controlsResize`/`claimResizeControl` path, so a focused
+mirror cannot resize the PTY. Production counters are available through
+`readPerformanceCounters()` without opening a measurement window or draining
+the GPU. The existing port-pair transport remains the default rollback path.
+
 For applications that want the complete Ghostty-style desktop experience, use
 `GhostteaWorkspace` from `@vibecook/ghosttea-react/workspace` and import
 `@vibecook/ghosttea-react/workspace.css`. It owns the titlebar, persisted pane

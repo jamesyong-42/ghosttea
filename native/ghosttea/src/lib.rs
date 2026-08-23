@@ -36,12 +36,13 @@ pub use mesh::{
 pub use replica::RemoteReplica;
 pub use service::Registry as SessionRegistry;
 pub use service::{
-    DrainReport, ReadyInfo, ServiceHandle, TerminalService, TerminalServiceConfig,
-    TerminalServiceListeners,
+    DrainReport, ReadyInfo, ServiceHandle, ServiceSessions, SessionLifecycleEvent, TerminalService,
+    TerminalServiceConfig, TerminalServiceListeners,
 };
 pub use session::{
-    AutomationInputOperation, AutomationInputResult, ExitOutcome, Session, SessionActivity,
-    SessionActivityConfidence, SessionActivityKind, SessionActivitySource, SessionEndCause,
-    SessionEndEvidence, SessionEnvironment, SessionExit, SessionProgramKind, SessionStatus,
-    SessionSummary, SessionTombstone, SessionTombstones, TerminationSource, TombstoneClock,
+    AutomationInputOperation, AutomationInputResult, ExitCallback, ExitOutcome, Persistence,
+    Session, SessionActivity, SessionActivityConfidence, SessionActivityKind,
+    SessionActivitySource, SessionEndCause, SessionEndEvidence, SessionEnvironment, SessionExit,
+    SessionProgramKind, SessionStatus, SessionSummary, SessionTombstone, SessionTombstones,
+    SpawnOptions, TerminationSource, TombstoneClock,
 };

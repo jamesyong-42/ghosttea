@@ -905,6 +905,27 @@ impl From<&mesh::RemoteViewRecord> for ViewStateRecord {
 
 pub type Registry = Arc<RwLock<HashMap<String, Arc<Session>>>>;
 
+/// A local session's lifecycle as observed by an embedding host.
+///
+/// Registry membership and process lifetime are deliberately separate: an
+/// explicitly closed session can be removed while its process ladder is still
+/// running, while a `keep-until-explicit-close` session remains registered
+/// after it exits. Consumers must therefore handle `Removed` and `Exited` as
+/// independent facts rather than assuming one fixed ordering between them.
+#[derive(Clone)]
+pub enum SessionLifecycleEvent {
+    Created {
+        session: Arc<Session>,
+    },
+    Exited {
+        session_id: String,
+        exit: session::SessionExit,
+    },
+    Removed {
+        session_id: String,
+    },
+}
+
 /// What the host answers when a resuming viewer asks after a session id.
 ///
 /// Only the verdict crosses the seam — live, ended with a cause, or unknown.
@@ -927,6 +948,7 @@ struct ControlContext {
     registry: Registry,
     frames: FrameHub,
     event_tx: broadcast::Sender<Value>,
+    lifecycle_tx: broadcast::Sender<SessionLifecycleEvent>,
     text_engine: Arc<Mutex<TextEngine>>,
     mesh_runtime: Arc<dyn mesh::RemoteTerminalRuntime>,
     /// Why each session left, for the viewers that were not watching when it
@@ -942,6 +964,138 @@ struct ControlContext {
     config_update_lock: Arc<Mutex<()>>,
     host_config_tx: tokio::sync::watch::Sender<Arc<TerminalPresentationConfig>>,
     shutdown: Arc<ShutdownState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServiceSessionsStatus {
+    Starting,
+    Ready,
+    Stopped,
+}
+
+struct ServiceSessionsShared {
+    status: watch::Sender<ServiceSessionsStatus>,
+    context: Mutex<Option<Arc<ControlContext>>>,
+}
+
+impl ServiceSessionsShared {
+    fn new() -> Arc<Self> {
+        let (status, _) = watch::channel(ServiceSessionsStatus::Starting);
+        Arc::new(Self {
+            status,
+            context: Mutex::new(None),
+        })
+    }
+
+    fn install(&self, context: Arc<ControlContext>) {
+        *self.context.lock().unwrap() = Some(context);
+        self.status.send_replace(ServiceSessionsStatus::Ready);
+    }
+
+    fn stop(&self) {
+        self.status.send_replace(ServiceSessionsStatus::Stopped);
+    }
+
+    fn is_ready(&self) -> bool {
+        *self.status.borrow() == ServiceSessionsStatus::Ready
+    }
+}
+
+struct ServiceSessionsRunGuard(Arc<ServiceSessionsShared>);
+
+impl Drop for ServiceSessionsRunGuard {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Ready, cloneable in-process access to the exact local session set served by
+/// [`TerminalService`].
+///
+/// This is intentionally narrower than [`Registry`]: callers can inspect
+/// sessions but cannot insert or remove entries behind the service's shutdown,
+/// tombstone, ownership, configuration, and lifecycle policy.
+#[derive(Clone)]
+pub struct ServiceSessions {
+    context: Arc<ControlContext>,
+    shared: Arc<ServiceSessionsShared>,
+}
+
+impl ServiceSessions {
+    /// Look up a currently registered local session by its stable session id.
+    pub fn session(&self, id: &str) -> Option<Arc<Session>> {
+        self.context.registry.read().unwrap().get(id).cloned()
+    }
+
+    /// Snapshot the currently registered local sessions in stable id order.
+    ///
+    /// An `Arc<Session>` is a capability, not proof of continuing registry
+    /// membership; a returned session can be removed immediately afterward.
+    pub fn sessions(&self) -> Vec<Arc<Session>> {
+        let mut sessions = self
+            .context
+            .registry
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| session.id());
+        sessions
+    }
+
+    /// The service-wide frame hub used by every local session and by the frame
+    /// socket. Packets carry `session_handle`; consumers select the sessions
+    /// they need while retaining the same global ordinal stream as the socket.
+    pub fn frames(&self) -> FrameHub {
+        self.context.frames.clone()
+    }
+
+    /// Return the service-wide hub only when `id` is currently registered.
+    /// This convenience shape lets per-session source traits preserve their
+    /// `Option` contract without pretending the service owns one hub per
+    /// session.
+    pub fn frames_for(&self, id: &str) -> Option<FrameHub> {
+        self.context
+            .registry
+            .read()
+            .unwrap()
+            .contains_key(id)
+            .then(|| self.context.frames.clone())
+    }
+
+    /// Spawn through the service's complete policy path.
+    ///
+    /// Private-environment stripping, live configuration, admission/shutdown
+    /// fencing, tombstones, registry insertion, and lifecycle announcements are
+    /// identical to a `create-session` received over the control socket.
+    pub async fn spawn(&self, options: SpawnOptions) -> Result<Arc<Session>> {
+        if !self.shared.is_ready() {
+            bail!("terminal service is no longer serving");
+        }
+        create_local_session(&self.context, options).await
+    }
+
+    /// Subscribe to typed local lifecycle events.
+    ///
+    /// The channel is bounded and may report `Lagged`; callers should then
+    /// reconcile with [`ServiceSessions::sessions`].
+    pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<SessionLifecycleEvent> {
+        self.context.lifecycle_tx.subscribe()
+    }
+
+    /// Subscribe first, then snapshot the registry, so no birth or removal can
+    /// fall between the two operations. An event may also describe a session in
+    /// the snapshot; consumers should reconcile idempotently by session id.
+    pub fn snapshot_and_subscribe(
+        &self,
+    ) -> (
+        Vec<Arc<Session>>,
+        broadcast::Receiver<SessionLifecycleEvent>,
+    ) {
+        let events = self.subscribe_lifecycle();
+        (self.sessions(), events)
+    }
 }
 
 /// Sessions that have been told to end but are no longer registry-resident.
@@ -1216,12 +1370,24 @@ impl TerminalService {
     ) -> (ServiceHandle, impl Future<Output = Result<()>>) {
         let (requests, shutdown_rx) = tokio::sync::mpsc::channel(1);
         let shutdown: Arc<ShutdownState> = Arc::default();
+        let sessions = ServiceSessionsShared::new();
+        let serving_sessions = Arc::clone(&sessions);
+        let serving_shutdown = Arc::clone(&shutdown);
+        // Constructed outside the async body so dropping an unpolled serving
+        // future still wakes `ServiceHandle::sessions` with `Stopped`.
+        let run_guard = ServiceSessionsRunGuard(Arc::clone(&serving_sessions));
+        let serving = async move {
+            let _run_guard = run_guard;
+            self.serve_until_shutdown(listeners, shutdown_rx, serving_shutdown, serving_sessions)
+                .await
+        };
         (
             ServiceHandle {
                 requests,
                 shutdown: Arc::clone(&shutdown),
+                sessions,
             },
-            self.serve_until_shutdown(listeners, shutdown_rx, shutdown),
+            serving,
         )
     }
 
@@ -1230,6 +1396,7 @@ impl TerminalService {
         listeners: TerminalServiceListeners,
         mut shutdown_rx: tokio::sync::mpsc::Receiver<ShutdownRequest>,
         shutdown: Arc<ShutdownState>,
+        service_sessions: Arc<ServiceSessionsShared>,
     ) -> Result<()> {
         let configured_text_engine = self.text_engine;
         let config = ConfigManager::load(self.config_load_options);
@@ -1240,6 +1407,7 @@ impl TerminalService {
         let TerminalServiceListeners { control, frames } = listeners;
         let frame_hub = FrameHub::new(32);
         let (event_tx, _) = broadcast::channel::<Value>(EVENT_CHANNEL_CAPACITY);
+        let (lifecycle_tx, _) = broadcast::channel::<SessionLifecycleEvent>(EVENT_CHANNEL_CAPACITY);
         let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
         let activity_registry = Arc::clone(&registry);
         let _activity_sampler_task = TaskGuard(tokio::spawn(async move {
@@ -1373,10 +1541,11 @@ impl TerminalService {
                 }
             }))
         });
-        let context = ControlContext {
+        let context = Arc::new(ControlContext {
             registry: Arc::clone(&registry),
             frames: frame_hub.clone(),
             event_tx,
+            lifecycle_tx,
             text_engine,
             mesh_runtime,
             tombstones,
@@ -1389,13 +1558,19 @@ impl TerminalService {
             config_update_lock: Arc::new(Mutex::new(())),
             host_config_tx,
             shutdown: Arc::clone(&shutdown),
-        };
+        });
+        // Publish in-process access before either listener begins accepting, so
+        // a host that awaited `ServiceHandle::sessions` cannot miss a birth.
+        service_sessions.install(Arc::clone(&context));
         // Spawned rather than joined in place: the drain has to run *while*
         // both keep serving, so observers can watch `terminate`, `list-sessions`
         // and events for the whole of it. A select!-cancel shape would silence
         // exactly the connections that need to see the drain happen.
-        let mut control_task =
-            tokio::spawn(serve_control(control, auth_token.clone(), context.clone()));
+        let mut control_task = tokio::spawn(serve_control(
+            control,
+            auth_token.clone(),
+            context.as_ref().clone(),
+        ));
         let mut frame_task = tokio::spawn(serve_frames(frames, auth_token, frame_hub));
         let finish = |result: std::result::Result<Result<()>, tokio::task::JoinError>| match result
         {
@@ -1460,9 +1635,44 @@ struct ShutdownRequest {
 pub struct ServiceHandle {
     requests: tokio::sync::mpsc::Sender<ShutdownRequest>,
     shutdown: Arc<ShutdownState>,
+    sessions: Arc<ServiceSessionsShared>,
 }
 
 impl ServiceHandle {
+    /// Wait until the managed service has initialized its session registry,
+    /// frame hub, text engine, configuration, and lifecycle bus.
+    ///
+    /// `serve_managed` returns an inert future; the caller must poll or spawn
+    /// that future before awaiting this method. If serving stops before it
+    /// becomes ready, this returns an error instead of hanging indefinitely.
+    pub async fn sessions(&self) -> Result<ServiceSessions> {
+        let mut status = self.sessions.status.subscribe();
+        loop {
+            let current = *status.borrow_and_update();
+            match current {
+                ServiceSessionsStatus::Starting => {
+                    status
+                        .changed()
+                        .await
+                        .context("terminal service stopped before session access became ready")?;
+                }
+                ServiceSessionsStatus::Ready => {
+                    let context =
+                        self.sessions.context.lock().unwrap().clone().context(
+                            "terminal service published readiness without session access",
+                        )?;
+                    return Ok(ServiceSessions {
+                        context,
+                        shared: Arc::clone(&self.sessions),
+                    });
+                }
+                ServiceSessionsStatus::Stopped => {
+                    bail!("terminal service stopped before session access became ready");
+                }
+            }
+        }
+    }
+
     /// How many terminated-but-unregistered sessions are currently tracked.
     ///
     /// How many tracked sessions are still *alive* — the number that would
@@ -1951,6 +2161,248 @@ fn live_sessions(context: &ControlContext) -> Vec<Arc<Session>> {
     live.into_values().collect()
 }
 
+/// The one local-session creation path for both the control socket and an
+/// in-process [`ServiceSessions`] caller.
+async fn create_local_session(
+    context: &ControlContext,
+    options: SpawnOptions,
+) -> Result<Arc<Session>> {
+    validate_grid(options.cols, options.rows)?;
+    validate_owner(options.owner_id.as_deref())?;
+    // Count first, then check — the order is the guarantee. A create that
+    // reads the flag as open before being descheduled has already made itself
+    // visible, so a shutdown that observes zero in-flight creates knows none
+    // can still appear.
+    let _in_flight = CreateInFlight::enter(&context.shutdown);
+    if context.shutdown.admissions_closed() {
+        bail!("service is shutting down");
+    }
+    if let Some(owner) = options.owner_id.as_deref()
+        && context.closed_owners.lock().await.contains(owner)
+    {
+        bail!("session owner is already closed");
+    }
+
+    let registry_on_exit = Arc::clone(&context.registry);
+    let tombstones_on_exit = Arc::clone(&context.tombstones);
+    let events_on_exit = context.event_tx.clone();
+    let lifecycle_on_exit = context.lifecycle_tx.clone();
+    let (session_exit_tx, mut control_exit) = watch::channel(false);
+    let mut activity_exit = session_exit_tx.subscribe();
+    let on_exit: ExitCallback = Arc::new(move |session_id, exit| {
+        session_exit_tx.send_replace(true);
+        let removed = {
+            // Read the class under the same lock the removal takes, and the
+            // same one `set-persistence` writes under: a set that returned
+            // success before this point is the value that decides retention.
+            let mut registry = registry_on_exit.write().unwrap();
+            let retain = registry
+                .get(&session_id)
+                .and_then(|session| session.persistence())
+                .is_some_and(|persistence| persistence == Persistence::KeepUntilExplicitClose);
+            !retain
+                && tombstones_on_exit
+                    .remove_with_cause_locked(&mut registry, &session_id)
+                    .is_some()
+        };
+        let _ = events_on_exit.send(json!({
+            "requestId": 0,
+            "type": "session-exited",
+            "sessionId": session_id,
+            "exitCode": exit.exit_code,
+            "exitSignal": exit.exit_signal,
+            "requestedTermination": exit.requested_termination,
+            "exitOutcome": exit.exit_outcome,
+        }));
+        let _ = lifecycle_on_exit.send(SessionLifecycleEvent::Exited {
+            session_id: session_id.clone(),
+            exit,
+        });
+        if removed {
+            let _ = lifecycle_on_exit.send(SessionLifecycleEvent::Removed { session_id });
+        }
+    });
+
+    // openpty plus fork/exec is blocking work; keep it off the async workers so
+    // concurrent creates do not stall the runtime.
+    let session = {
+        let frames = context.frames.clone();
+        let text_engine = Arc::clone(&context.text_engine);
+        let private_env_prefixes = Arc::clone(&context.private_env_prefixes);
+        let terminal_config = context.config.snapshot().terminal.clone();
+        let effective_scrollback_bytes = options
+            .scrollback_bytes
+            .unwrap_or(terminal_config.scrollback_bytes);
+        let scrollback_bytes = usize::try_from(effective_scrollback_bytes)
+            .context("scrollbackBytes does not fit this platform")?;
+        tokio::task::spawn_blocking(move || {
+            let session = Session::spawn_configured(
+                options,
+                frames,
+                text_engine,
+                &private_env_prefixes,
+                scrollback_bytes,
+                on_exit,
+            )?;
+            let palette = terminal_config
+                .palette
+                .iter()
+                .map(|entry| (entry.index, entry.color))
+                .collect::<Vec<_>>();
+            session.set_appearance(
+                terminal_config.foreground,
+                terminal_config.background,
+                terminal_config.cursor,
+                &palette,
+            )?;
+            Ok::<_, anyhow::Error>(session)
+        })
+        .await
+        .context("session spawn task stopped")??
+    };
+
+    let summary = session.summary();
+    let mut controls = session.subscribe_control();
+    let mut activities = session.subscribe_activity();
+    let control_session_id = summary.id.clone();
+    let activity_session_id = summary.id.clone();
+    let control_events = context.event_tx.clone();
+    let activity_events = context.event_tx.clone();
+    let control_session = Arc::downgrade(&session);
+    let activity_session = Arc::downgrade(&session);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                changed = control_exit.changed() => {
+                    if changed.is_err() || *control_exit.borrow() {
+                        break;
+                    }
+                }
+                changed = controls.recv() => match changed {
+                    Ok(changed) => {
+                        let _ = control_events.send(json!({
+                            "requestId": 0,
+                            "type": "control-changed",
+                            "sessionId": control_session_id,
+                            "controllerViewId": changed.controller.view_id,
+                            "controlEpoch": changed.controller.control_epoch,
+                            "cols": changed.cols,
+                            "rows": changed.rows,
+                            "layoutEpoch": changed.layout_epoch,
+                        }));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let Some(session) = control_session.upgrade() else {
+                            break;
+                        };
+                        let (controller, cols, rows, layout_epoch) = session.control_state();
+                        let Some(controller) = controller else {
+                            continue;
+                        };
+                        let _ = control_events.send(json!({
+                            "requestId": 0,
+                            "type": "control-changed",
+                            "sessionId": control_session_id,
+                            "controllerViewId": controller.view_id,
+                            "controlEpoch": controller.control_epoch,
+                            "cols": cols,
+                            "rows": rows,
+                            "layoutEpoch": layout_epoch,
+                        }));
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+            }
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            let activity = tokio::select! {
+                changed = activity_exit.changed() => {
+                    if changed.is_err() || *activity_exit.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+                activity = activities.recv() => match activity {
+                    Ok(activity) => activity,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let Some(session) = activity_session.upgrade() else {
+                            break;
+                        };
+                        session.summary().activity
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+            };
+            let _ = activity_events.send(json!({
+                "requestId": 0,
+                "type": "session-activity-changed",
+                "sessionId": activity_session_id,
+                "activity": activity,
+            }));
+        }
+    });
+
+    // Re-check owner closure while holding the transaction lock across insert.
+    {
+        let owner_lifecycle = context.closed_owners.lock().await;
+        if summary
+            .owner_id
+            .as_deref()
+            .is_some_and(|owner| owner_lifecycle.contains(owner))
+        {
+            drop(owner_lifecycle);
+            let _ = context
+                .shutdown
+                .terminate_tracked(&session, TerminationSource::User, None);
+            bail!("session owner is already closed");
+        }
+        if context.shutdown.admissions_closed() {
+            let deadline = *context.shutdown.deadline.lock().unwrap();
+            drop(owner_lifecycle);
+            let _ = context.shutdown.terminate_tracked(
+                &session,
+                TerminationSource::ServiceShutdown,
+                deadline,
+            );
+            bail!("service is shutting down");
+        }
+        context
+            .registry
+            .write()
+            .unwrap()
+            .insert(summary.id.clone(), Arc::clone(&session));
+    }
+
+    // A child that died during spawn leaves nothing to keep unless its class
+    // says otherwise. Read that class under the same lock as the removal.
+    let retained = {
+        let mut registry = context.registry.write().unwrap();
+        let retain = !session.has_exited()
+            || session.persistence() == Some(Persistence::KeepUntilExplicitClose);
+        if !retain {
+            let removed = context
+                .tombstones
+                .remove_with_cause_locked(&mut registry, &summary.id)
+                .is_some();
+            if removed {
+                let _ = context.lifecycle_tx.send(SessionLifecycleEvent::Removed {
+                    session_id: summary.id.clone(),
+                });
+            }
+        }
+        retain
+    };
+    if retained {
+        announce_session_created(&context.event_tx, &summary);
+        let _ = context.lifecycle_tx.send(SessionLifecycleEvent::Created {
+            session: Arc::clone(&session),
+        });
+    }
+    Ok(session)
+}
+
 async fn handle_command(
     command: Envelope,
     client_id: &str,
@@ -1959,7 +2411,6 @@ async fn handle_command(
 ) -> ResponseEnvelope {
     let request_id = command.request_id;
     let registry = &context.registry;
-    let event_tx = &context.event_tx;
     let result: Result<ResponseBody> = async {
         match command.command {
             Command::Hello {
@@ -2029,244 +2480,8 @@ async fn handle_command(
                 }
             }
             Command::CreateSession { options } => {
-                validate_grid(options.cols, options.rows)?;
-                validate_owner(options.owner_id.as_deref())?;
-                // Count first, then check — the order is the guarantee. A
-                // create that reads the flag as open before being descheduled
-                // has already made itself visible, so a shutdown that observes
-                // zero in-flight creates knows none can still appear. Checking
-                // first would let a create slip between the read and the count
-                // and fork a child after the drain had already resolved.
-                let _in_flight = CreateInFlight::enter(&context.shutdown);
-                if context.shutdown.admissions_closed() {
-                    bail!("service is shutting down");
-                }
-                if let Some(owner) = options.owner_id.as_deref()
-                    && context.closed_owners.lock().await.contains(owner)
-                {
-                    bail!("session owner is already closed");
-                }
-                let registry_on_exit = Arc::clone(registry);
-                let tombstones_on_exit = Arc::clone(&context.tombstones);
-                let events_on_exit = event_tx.clone();
-                let (session_exit_tx, mut control_exit) = watch::channel(false);
-                let mut activity_exit = session_exit_tx.subscribe();
-                let on_exit: ExitCallback = Arc::new(move |session_id, exit| {
-                    session_exit_tx.send_replace(true);
-                    {
-                        // Read the class under the same lock the removal takes,
-                        // and the same one `set-persistence` writes under: a set
-                        // that returned success before this point is the value
-                        // that decides retention, never one sampled earlier.
-                        let mut registry = registry_on_exit.write().unwrap();
-                        let retain = registry
-                            .get(&session_id)
-                            .and_then(|session| session.persistence())
-                            .is_some_and(|persistence| {
-                                persistence == Persistence::KeepUntilExplicitClose
-                            });
-                        if !retain {
-                            // Through the choke point, holding the guard we
-                            // already have: the unlocked variant would take it
-                            // again and deadlock here.
-                            tombstones_on_exit
-                                .remove_with_cause_locked(&mut registry, &session_id);
-                        }
-                    }
-                    let _ = events_on_exit.send(json!({
-                        "requestId": 0,
-                        "type": "session-exited",
-                        "sessionId": session_id,
-                        "exitCode": exit.exit_code,
-                        "exitSignal": exit.exit_signal,
-                        "requestedTermination": exit.requested_termination,
-                        "exitOutcome": exit.exit_outcome,
-                    }));
-                });
-                // openpty plus fork/exec is blocking work; keep it off the
-                // async workers so concurrent creates don't stall the runtime.
-                let session = {
-                    let frames = context.frames.clone();
-                    let text_engine = Arc::clone(&context.text_engine);
-                    let private_env_prefixes = Arc::clone(&context.private_env_prefixes);
-                    let terminal_config = context.config.snapshot().terminal.clone();
-                    let effective_scrollback_bytes = options
-                        .scrollback_bytes
-                        .unwrap_or(terminal_config.scrollback_bytes);
-                    let scrollback_bytes = usize::try_from(effective_scrollback_bytes)
-                        .context("scrollbackBytes does not fit this platform")?;
-                    tokio::task::spawn_blocking(move || {
-                        let session = Session::spawn_configured(
-                            options,
-                            frames,
-                            text_engine,
-                            &private_env_prefixes,
-                            scrollback_bytes,
-                            on_exit,
-                        )?;
-                        let palette = terminal_config
-                            .palette
-                            .iter()
-                            .map(|entry| (entry.index, entry.color))
-                            .collect::<Vec<_>>();
-                        session.set_appearance(
-                            terminal_config.foreground,
-                            terminal_config.background,
-                            terminal_config.cursor,
-                            &palette,
-                        )?;
-                        Ok::<_, anyhow::Error>(session)
-                    })
-                    .await
-                    .context("session spawn task stopped")??
-                };
+                let session = create_local_session(context, options).await?;
                 let summary = session.summary();
-                let mut controls = session.subscribe_control();
-                let mut activities = session.subscribe_activity();
-                let control_session_id = summary.id.clone();
-                let activity_session_id = summary.id.clone();
-                let control_events = event_tx.clone();
-                let activity_events = event_tx.clone();
-                let control_session = Arc::downgrade(&session);
-                let activity_session = Arc::downgrade(&session);
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            changed = control_exit.changed() => {
-                                if changed.is_err() || *control_exit.borrow() {
-                                    break;
-                                }
-                            }
-                            changed = controls.recv() => match changed {
-                                Ok(changed) => {
-                                    let _ = control_events.send(json!({
-                                        "requestId": 0,
-                                        "type": "control-changed",
-                                        "sessionId": control_session_id,
-                                        "controllerViewId": changed.controller.view_id,
-                                        "controlEpoch": changed.controller.control_epoch,
-                                        "cols": changed.cols,
-                                        "rows": changed.rows,
-                                        "layoutEpoch": changed.layout_epoch,
-                                    }));
-                                }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    // Skipped intermediates don't matter as
-                                    // long as the client ends on the current
-                                    // controller and size.
-                                    let Some(session) = control_session.upgrade() else {
-                                        break;
-                                    };
-                                    let (controller, cols, rows, layout_epoch) =
-                                        session.control_state();
-                                    let Some(controller) = controller else {
-                                        continue;
-                                    };
-                                    let _ = control_events.send(json!({
-                                        "requestId": 0,
-                                        "type": "control-changed",
-                                        "sessionId": control_session_id,
-                                        "controllerViewId": controller.view_id,
-                                        "controlEpoch": controller.control_epoch,
-                                        "cols": cols,
-                                        "rows": rows,
-                                        "layoutEpoch": layout_epoch,
-                                    }));
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                            },
-                        }
-                    }
-                });
-                tokio::spawn(async move {
-                    loop {
-                        let activity = tokio::select! {
-                            changed = activity_exit.changed() => {
-                                if changed.is_err() || *activity_exit.borrow() {
-                                    break;
-                                }
-                                continue;
-                            }
-                            activity = activities.recv() => match activity {
-                                Ok(activity) => activity,
-                                Err(broadcast::error::RecvError::Lagged(_)) => {
-                                    let Some(session) = activity_session.upgrade() else {
-                                        break;
-                                    };
-                                    session.summary().activity
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                            },
-                        };
-                        let _ = activity_events.send(json!({
-                            "requestId": 0,
-                            "type": "session-activity-changed",
-                            "sessionId": activity_session_id,
-                            "activity": activity,
-                        }));
-                    }
-                });
-                // Re-check the tombstone while holding the lock across the
-                // insert: a concurrent close-session-owner either finds this
-                // session in the registry and sweeps it, or its tombstone is
-                // already visible here and the create fails.
-                {
-                    let owner_lifecycle = context.closed_owners.lock().await;
-                    if summary
-                        .owner_id
-                        .as_deref()
-                        .is_some_and(|owner| owner_lifecycle.contains(owner))
-                    {
-                        drop(owner_lifecycle);
-                        // Never in the registry, but its ladder is running, so
-                        // the invariant applies: track it or lose it.
-                        let _ = context.shutdown.terminate_tracked(
-                            &session,
-                            TerminationSource::User,
-                            None,
-                        );
-                        bail!("session owner is already closed");
-                    }
-                    // The shutdown re-check that matters: the entry check ran
-                    // before `spawn_blocking`, and a shutdown could have begun
-                    // during the fork. The barrier takes this same lock, so a
-                    // create either inserts before the drain's snapshot or is
-                    // refused here — the registry cannot grow behind the drain.
-                    if context.shutdown.admissions_closed() {
-                        let deadline = *context.shutdown.deadline.lock().unwrap();
-                        drop(owner_lifecycle);
-                        // Already forked: refusing the request does not unmake
-                        // the child, so hand it to the drain rather than
-                        // dropping it and leaking a PTY the snapshot never saw.
-                        let _ = context.shutdown.terminate_tracked(
-                            &session,
-                            TerminationSource::ServiceShutdown,
-                            deadline,
-                        );
-                        bail!("service is shutting down");
-                    }
-                    registry
-                        .write()
-                        .unwrap()
-                        .insert(summary.id.clone(), Arc::clone(&session));
-                }
-                // A child that died during spawn leaves nothing to keep unless
-                // its class says otherwise. Read that class under the same lock
-                // as the removal, exactly as the exit path does.
-                let retained = {
-                    let mut registry = registry.write().unwrap();
-                    let retain = !session.has_exited()
-                        || session.persistence() == Some(Persistence::KeepUntilExplicitClose);
-                    if !retain {
-                        context
-                            .tombstones
-                            .remove_with_cause_locked(&mut registry, &summary.id);
-                    }
-                    retain
-                };
-                if retained {
-                    announce_session_created(event_tx, &summary);
-                }
                 Ok(ResponseBody::SessionCreated { session: summary })
             }
             Command::ListSessions => {
@@ -3055,7 +3270,15 @@ async fn handle_command(
                     // the entry disappears while the child is still dying.
                     context.shutdown.terminate_tracked(&session, source, None)?;
                     remove_session_view_owners(context, &session_id);
-                    context.tombstones.remove_with_cause(registry, &session_id);
+                    if context
+                        .tombstones
+                        .remove_with_cause(registry, &session_id)
+                        .is_some()
+                    {
+                        let _ = context
+                            .lifecycle_tx
+                            .send(SessionLifecycleEvent::Removed { session_id });
+                    }
                 } else {
                     if !context.mesh_runtime.close_session(&session_id).await {
                         bail!("unknown session");
@@ -3158,7 +3381,16 @@ async fn handle_command(
                         );
                     }
                     remove_session_view_owners(context, &session.id());
-                    context.tombstones.remove_with_cause(registry, &session.id());
+                    let session_id = session.id();
+                    if context
+                        .tombstones
+                        .remove_with_cause(registry, &session_id)
+                        .is_some()
+                    {
+                        let _ = context
+                            .lifecycle_tx
+                            .send(SessionLifecycleEvent::Removed { session_id });
+                    }
                 }
                 for session_id in remote_session_ids {
                     context.mesh_runtime.close_session(&session_id).await;
@@ -3711,6 +3943,7 @@ mod protocol_tests {
         handle: ServiceHandle,
         serving: tokio::task::JoinHandle<Result<()>>,
         control: String,
+        frame: String,
         token: String,
         _control_endpoint: Endpoint,
         _frame_endpoint: Endpoint,
@@ -3739,6 +3972,7 @@ mod protocol_tests {
             handle,
             serving: tokio::spawn(serving),
             control: control_endpoint.name.clone(),
+            frame: frame_endpoint.name.clone(),
             token,
             _control_endpoint: control_endpoint,
             _frame_endpoint: frame_endpoint,
@@ -3787,6 +4021,285 @@ mod protocol_tests {
         let acknowledgement = read_packet(&mut stream, 64).await.unwrap();
         assert_eq!(acknowledgement, b"ok");
         stream
+    }
+
+    async fn connect_frames(service: &TestService) -> ControlStream {
+        let mut stream = dial_control(&service.frame).await;
+        write_packet(&mut stream, service.token.as_bytes())
+            .await
+            .unwrap();
+        let acknowledgement = read_packet(&mut stream, 64).await.unwrap();
+        assert_eq!(acknowledgement, b"ok");
+        stream
+    }
+
+    fn long_running_spawn_options() -> SpawnOptions {
+        #[cfg(unix)]
+        let (executable, args) = (
+            "/bin/sh".to_owned(),
+            vec!["-c".to_owned(), "sleep 30".to_owned()],
+        );
+        #[cfg(windows)]
+        let (executable, args) = (
+            windows_shell(),
+            vec![
+                "/d".to_owned(),
+                "/c".to_owned(),
+                "ping".to_owned(),
+                "-n".to_owned(),
+                "60".to_owned(),
+                "127.0.0.1".to_owned(),
+            ],
+        );
+        SpawnOptions {
+            executable,
+            args,
+            cwd: None,
+            env: HashMap::new(),
+            environment: None,
+            cols: 40,
+            rows: 10,
+            persistence: Persistence::TerminateWithApp,
+            program_kind: session::SessionProgramKind::Application,
+            owner_id: None,
+            scrollback_bytes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unpolled_managed_service_refuses_session_access() {
+        let control = unique_endpoint("unpolled-access-control");
+        let frames = unique_endpoint("unpolled-access-frames");
+        let service = TerminalService::new(TerminalServiceConfig {
+            control_socket: control.name.clone(),
+            frame_socket: frames.name.clone(),
+            auth_token: "secret".to_owned(),
+        })
+        .with_text_engine(TextEngine::discover().unwrap());
+        let listeners = service.bind().unwrap();
+        let (handle, serving) = service.serve_managed(listeners);
+
+        drop(serving);
+
+        let access = tokio::time::timeout(Duration::from_secs(1), handle.sessions())
+            .await
+            .expect("session readiness hung after the serving future was dropped");
+        assert!(access.is_err());
+    }
+
+    #[tokio::test]
+    async fn in_process_access_shares_registry_frames_spawn_and_lifecycle() {
+        let service = start_test_service("in-process-session-access");
+        let access = tokio::time::timeout(Duration::from_secs(10), service.handle.sessions())
+            .await
+            .expect("session access did not become ready")
+            .unwrap();
+        let mut lifecycle = access.subscribe_lifecycle();
+
+        // Handle-born sessions take the exact service path and immediately
+        // appear to a legacy control client.
+        let spawned = access.spawn(long_running_spawn_options()).await.unwrap();
+        let spawned_id = spawned.id();
+        let spawned_summary = spawned.summary();
+        assert_eq!(
+            spawned_summary.persistence,
+            Some(Persistence::TerminateWithApp)
+        );
+        assert!(
+            spawned_summary
+                .scrollback_bytes
+                .is_some_and(|bytes| bytes > 0)
+        );
+        let created = tokio::time::timeout(Duration::from_secs(5), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match created {
+            SessionLifecycleEvent::Created { session } => {
+                assert!(Arc::ptr_eq(&session, &spawned));
+            }
+            _ => panic!("expected a created lifecycle event"),
+        }
+        assert!(Arc::ptr_eq(&access.session(&spawned_id).unwrap(), &spawned));
+
+        let mut client = connect_control(&service).await;
+        let listed = request(
+            &mut client,
+            json!({ "requestId": 1, "type": "list-sessions" }),
+        )
+        .await;
+        assert!(
+            listed["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|session| session["id"] == spawned_id)
+        );
+
+        // A UDS-born session is the same Arc the in-process host observes.
+        let created_over_uds =
+            request(&mut client, owned_long_running_session(2, "uds-owner")).await;
+        let uds_id = created_over_uds["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let uds_session = access
+            .session(&uds_id)
+            .expect("UDS session missing from handle");
+        let uds_created = tokio::time::timeout(Duration::from_secs(5), lifecycle.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match uds_created {
+            SessionLifecycleEvent::Created { session } => {
+                assert!(Arc::ptr_eq(&session, &uds_session));
+            }
+            _ => panic!("expected the UDS session's created lifecycle event"),
+        }
+
+        // Both the direct subscriber and the legacy frame socket consume the
+        // same hub publication; the socket strips only the hub metadata.
+        let mut frame_client = connect_frames(&service).await;
+        write_packet(
+            &mut frame_client,
+            &serde_json::to_vec(&json!({
+                "type": "subscribe",
+                "requestId": 3,
+                "sessionHandles": [uds_session.summary().handle],
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let acknowledgement = read_packet(&mut frame_client, MAX_FRAME_SUBSCRIPTION_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&acknowledgement).unwrap()["type"],
+            "subscription-ack"
+        );
+        let (mut frames, baseline) = access.frames().subscribe();
+        uds_session.attach_view("host-view", "host-client").unwrap();
+        let packet = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(packet.ordinal > baseline);
+        assert_eq!(
+            packet.session_handle.to_string(),
+            uds_session.summary().handle
+        );
+        let socket_packet = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_packet(&mut frame_client, MAX_FRAME_BYTES),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&socket_packet[..], &packet[..]);
+
+        request(
+            &mut client,
+            json!({
+                "requestId": 4,
+                "type": "terminate",
+                "sessionId": spawned_id,
+                "source": "user",
+            }),
+        )
+        .await;
+        let mut saw_removed = false;
+        let mut saw_exited = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !(saw_removed && saw_exited) && Instant::now() < deadline {
+            let Ok(event) =
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), lifecycle.recv())
+                    .await
+            else {
+                break;
+            };
+            let event = event.unwrap();
+            match event {
+                SessionLifecycleEvent::Removed { session_id } if session_id == spawned_id => {
+                    saw_removed = true;
+                }
+                SessionLifecycleEvent::Exited { session_id, .. } if session_id == spawned_id => {
+                    saw_exited = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_removed && saw_exited,
+            "missing lifecycle event(s): removed={saw_removed}, exited={saw_exited}"
+        );
+
+        let _ = request(
+            &mut client,
+            json!({
+                "requestId": 5,
+                "type": "terminate",
+                "sessionId": uds_id,
+                "source": "user",
+            }),
+        )
+        .await;
+        service
+            .handle
+            .shutdown(Duration::from_secs(5))
+            .await
+            .unwrap();
+        service.serving.await.unwrap().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn in_process_spawn_applies_the_services_private_environment_strip() {
+        let control_endpoint = unique_endpoint("in-process-private-env-control");
+        let frame_endpoint = unique_endpoint("in-process-private-env-frames");
+        let token = "private-env-test-token".to_owned();
+        let service = TerminalService::new(TerminalServiceConfig {
+            control_socket: control_endpoint.name.clone(),
+            frame_socket: frame_endpoint.name.clone(),
+            auth_token: token.clone(),
+        })
+        .with_text_engine(TextEngine::discover().unwrap())
+        // PATH is a harmless inherited variable whose absence the child can
+        // report without mutating this test process's global environment.
+        .with_private_env_prefixes(["PATH"])
+        .unwrap();
+        let listeners = service.bind().unwrap();
+        let (handle, serving) = service.serve_managed(listeners);
+        let serving = tokio::spawn(serving);
+        let access = handle.sessions().await.unwrap();
+        let mut lifecycle = access.subscribe_lifecycle();
+
+        let mut options = long_running_spawn_options();
+        assert!(std::path::Path::new("/usr/bin/printenv").exists());
+        options.executable = "/usr/bin/printenv".to_owned();
+        options.args = vec!["PATH".to_owned()];
+        options.persistence = Persistence::KeepUntilExplicitClose;
+        let spawned = access.spawn(options).await.unwrap();
+
+        let exit = loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), lifecycle.recv())
+                .await
+                .expect("child environment probe did not exit")
+                .unwrap();
+            if let SessionLifecycleEvent::Exited { session_id, exit } = event
+                && session_id == spawned.id()
+            {
+                break exit;
+            }
+        };
+        assert_eq!(
+            exit.exit_code,
+            Some(1),
+            "printenv found PATH even though the service configured it as private"
+        );
+
+        handle.shutdown(Duration::from_secs(5)).await.unwrap();
+        serving.await.unwrap().unwrap();
     }
 
     /// Send a command and return its response, skipping pushed events.

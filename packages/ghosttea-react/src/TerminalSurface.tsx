@@ -20,6 +20,7 @@ import { accumulateWheelRows, wheelDeltaPixels } from "./scroll-input.js";
 import { adjustSelectionFocus, usesLocalSelection } from "./selection-input.js";
 
 export type TerminalMenuAction = "copy" | "paste" | "select-all" | "clear-screen";
+export type TerminalInputPolicy = "inherit" | "read-only";
 
 export interface TerminalSurfaceProps {
   session: SessionSummary;
@@ -32,6 +33,10 @@ export interface TerminalSurfaceProps {
   /** Whether the surface is currently visible enough to spend GPU work painting it. */
   visible?: boolean;
   controlsResize?: boolean;
+  /** Viewer-local input fence. It can make a writable session read-only but never grants server rights. */
+  inputPolicy?: TerminalInputPolicy;
+  /** Convenience alias for `inputPolicy="read-only"` when false. */
+  readWrite?: boolean;
   onActivate?: () => void;
   readClipboard?: () => string | Promise<string>;
   onCopyAvailabilityChange?: (canCopy: boolean) => void;
@@ -81,6 +86,8 @@ function TerminalSurfaceSession({
   platform,
   visible = true,
   controlsResize = active,
+  inputPolicy = "inherit",
+  readWrite = true,
   onActivate,
   readClipboard,
   onCopyAvailabilityChange,
@@ -91,10 +98,13 @@ function TerminalSurfaceSession({
   // Fullscreen is owned by Workspace platform routing (toggle_fullscreen).
   void _onToggleFullscreen;
   const terminalRuntime = useGhostteaRuntime();
-  const interactive = session.readWrite;
+  const clientReadWrite = readWrite && inputPolicy !== "read-only";
+  const interactive = session.readWrite && clientReadWrite;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const gridRef = useRef({ cols: session.cols, rows: session.rows });
+  const controlsResizeRef = useRef(controlsResize);
+  const clientReadWriteRef = useRef(clientReadWrite);
   const [viewId] = useState(() => crypto.randomUUID());
   const [inputFocused, setInputFocused] = useState(false);
   const selectionAnchorRef = useRef<CellPoint | null>(null);
@@ -128,6 +138,11 @@ function TerminalSurfaceSession({
   );
   const scrollbarRef = useRef(scrollbar);
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
+
+  useEffect(() => {
+    controlsResizeRef.current = controlsResize;
+    clientReadWriteRef.current = clientReadWrite;
+  }, [clientReadWrite, controlsResize]);
 
   const setLocalSelection = useCallback(
     (selection: { anchor: CellPoint; focus: CellPoint } | null, selectAll = false): void => {
@@ -308,6 +323,7 @@ function TerminalSurfaceSession({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const handle = terminalRuntime.mount(session.id, session.handle, viewId, canvas);
+    terminalRuntime.setViewInputPolicy(viewId, clientReadWriteRef.current);
     let { cols, rows } = gridRef.current;
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
@@ -318,7 +334,7 @@ function TerminalSurfaceSession({
         cols = nextCols;
         rows = nextRows;
         gridRef.current = { cols, rows };
-        terminalRuntime.resize(session.id, viewId, cols, rows);
+        if (controlsResizeRef.current) terminalRuntime.resize(session.id, viewId, cols, rows);
       }
     });
     observer.observe(canvas);
@@ -327,6 +343,10 @@ function TerminalSurfaceSession({
       handle.dispose();
     };
   }, [session.handle, session.id, terminalRuntime, viewId]);
+
+  useEffect(() => {
+    terminalRuntime.setViewInputPolicy(viewId, clientReadWrite);
+  }, [clientReadWrite, terminalRuntime, viewId]);
 
   useEffect(() => {
     terminalRuntime.setVisible(session.handle, visible, viewId);
@@ -371,9 +391,13 @@ function TerminalSurfaceSession({
   );
 
   useEffect(() => {
-    if (!controlsResize || !interactive) return;
+    if (!controlsResize || !interactive) {
+      terminalRuntime.releaseResizeControl(viewId);
+      return;
+    }
     const { cols, rows } = gridRef.current;
     terminalRuntime.claimResizeControl(session.handle, viewId, cols, rows);
+    return () => terminalRuntime.releaseResizeControl(viewId);
   }, [controlsResize, interactive, session.handle, terminalRuntime, viewId]);
 
   useEffect(() => {

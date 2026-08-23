@@ -1,0 +1,469 @@
+import {
+  ROUTED_CLOSE_CODES,
+  ROUTED_DOOR_LIMITS,
+  ROUTED_LEG_OUTBOUND,
+  ROUTED_PROTOCOL_VERSION,
+  decodeRoutedMessage,
+  encodeRoutedMessage,
+  type RoutedCellActivationStatus,
+  type RoutedCellTransportGrant,
+  type RoutedClaimGeometry,
+  type RoutedConnectionAccepted,
+  type RoutedConnectionRefused,
+  type RoutedControlLegAttached,
+  type RoutedDeclareDemand,
+  type RoutedGeometryCommitted,
+  type RoutedGeometryRefused,
+  type RoutedReleaseGeometry,
+  type RoutedSessionAttachGrant,
+  type RoutedSourceDemand,
+  type RoutedTransferGeometry,
+} from "@vibecook/ghosttea-protocol";
+
+export interface RoutedControlAttachRequest {
+  cellBootId: string;
+  controlUrl: string;
+  transportGrant: RoutedCellTransportGrant;
+  attachGrant: RoutedSessionAttachGrant;
+  activationId: string;
+  replacesActivationId?: string;
+  initialDemand: RoutedSourceDemand;
+  capabilities?: string[];
+}
+
+export type RoutedControlTransportEvent =
+  | { type: "transport-ready"; cellBootId: string; accepted: RoutedConnectionAccepted }
+  | { type: "control-attached"; attached: RoutedControlLegAttached }
+  | { type: "attach-refused"; activationId?: string; code: string; retryable: boolean }
+  | { type: "cell-status"; status: RoutedCellActivationStatus }
+  | { type: "demand-accepted"; activationId?: string; demandSequence: number }
+  | { type: "geometry-committed"; activationId?: string; committed: RoutedGeometryCommitted }
+  | { type: "geometry-refused"; activationId?: string; refused: RoutedGeometryRefused }
+  | {
+      type: "transport-closed";
+      cellBootId: string;
+      code: number;
+      reason: string;
+      activationIds: string[];
+      preAuth: boolean;
+      refusal?: RoutedConnectionRefused;
+    };
+
+interface ControlActivation {
+  request: RoutedControlAttachRequest;
+  demandSequence: number;
+  lastDemand: RoutedSourceDemand;
+}
+
+interface ControlConnection {
+  cellBootId: string;
+  controlUrl: string;
+  transportGrant: RoutedCellTransportGrant;
+  capabilities: string[];
+  socket: WebSocket;
+  accepted?: RoutedConnectionAccepted;
+  activationIds: Set<string>;
+  pendingGeometry: string[];
+  heartbeatSequence: number;
+  heartbeatAckSequence: number;
+  heartbeatTimer?: number;
+  heartbeatDeadlineTimer?: number;
+  refusal?: RoutedConnectionRefused;
+}
+
+const socketOpen = 1;
+const socketClosing = 2;
+
+/** Main/input-thread T1 control connection pool. */
+export class RoutedControlTransport {
+  readonly #socketFactory: (url: string) => WebSocket;
+  readonly #emit: (event: RoutedControlTransportEvent) => void;
+  readonly #connections = new Map<string, ControlConnection>();
+  readonly #activations = new Map<string, ControlActivation>();
+  #disposed = false;
+
+  constructor(options: {
+    socketFactory?: (url: string) => WebSocket;
+    emit: (event: RoutedControlTransportEvent) => void;
+  }) {
+    this.#socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
+    this.#emit = options.emit;
+  }
+
+  attach(request: RoutedControlAttachRequest): void {
+    if (this.#disposed) return;
+    const claims = request.attachGrant.claims;
+    if (
+      claims.sessionId.length === 0 ||
+      request.activationId.length === 0 ||
+      claims.audienceCellBootId !== request.cellBootId ||
+      request.transportGrant.claims.audienceCellBootId !== request.cellBootId
+    ) {
+      throw new Error("Routed control attach grant does not match the requested cell");
+    }
+    const existing = this.#activations.get(request.activationId);
+    if (existing) this.detach(request.activationId);
+    const activation: ControlActivation = { request, demandSequence: 0, lastDemand: request.initialDemand };
+    this.#activations.set(request.activationId, activation);
+    const connection = this.#connection(request);
+    connection.activationIds.add(request.activationId);
+    if (connection.accepted) this.#sendAttach(connection, activation);
+  }
+
+  renew(activationId: string, attachGrant: RoutedSessionAttachGrant): void {
+    const activation = this.#activations.get(activationId);
+    if (!activation) return;
+    const request = { ...activation.request };
+    delete request.replacesActivationId;
+    activation.request = { ...request, attachGrant };
+    const connection = this.#connections.get(activation.request.cellBootId);
+    if (connection?.accepted) this.#sendAttach(connection, activation);
+  }
+
+  declareDemand(activationId: string, demand: RoutedSourceDemand): number | undefined {
+    const activation = this.#activations.get(activationId);
+    if (!activation) return undefined;
+    const connection = this.#connections.get(activation.request.cellBootId);
+    if (!connection?.accepted) return undefined;
+    activation.demandSequence += 1;
+    activation.lastDemand = demand;
+    const body: RoutedDeclareDemand = {
+      sessionId: activation.request.attachGrant.claims.sessionId,
+      activationId,
+      leaseEpoch: activation.request.attachGrant.claims.leaseEpoch ?? 0,
+      demandSequence: activation.demandSequence,
+      demand,
+    };
+    this.#send(connection, encodeRoutedMessage("DeclareDemand", body));
+    return activation.demandSequence;
+  }
+
+  claimGeometry(activationId: string, claim: RoutedClaimGeometry): boolean {
+    if (claim.activationId !== activationId) return false;
+    return this.#sendGeometry(activationId, encodeRoutedMessage("ClaimGeometry", claim));
+  }
+
+  releaseGeometry(activationId: string, release: RoutedReleaseGeometry): boolean {
+    if (release.activationId !== activationId) return false;
+    // A successful release is intentionally fire-and-forget on T1; only a
+    // refusal produces a response. Do not leave an unanswerable FIFO entry
+    // that would steal the next claim/transfer acknowledgement.
+    return this.#sendActivation(activationId, encodeRoutedMessage("ReleaseGeometry", release));
+  }
+
+  transferGeometry(activationId: string, transfer: RoutedTransferGeometry): boolean {
+    if (transfer.activationId !== activationId) return false;
+    return this.#sendGeometry(activationId, encodeRoutedMessage("TransferGeometry", transfer));
+  }
+
+  /**
+   * Extension seam for a future terminal-input wire verb. The current T1
+   * contract publishes no such tag, so Ghosttea never invents one itself.
+   */
+  sendExtension(activationId: string, message: Readonly<Record<string, unknown>>): boolean {
+    if (typeof message.type !== "string" || message.type.length === 0) return false;
+    return this.#sendActivation(activationId, JSON.stringify(message));
+  }
+
+  detach(activationId: string): void {
+    const activation = this.#activations.get(activationId);
+    if (!activation) return;
+    this.declareDemand(activationId, { mode: "none" });
+    this.#activations.delete(activationId);
+    this.#connections.get(activation.request.cellBootId)?.activationIds.delete(activationId);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const activationId of [...this.#activations.keys()]) this.detach(activationId);
+    for (const connection of this.#connections.values()) {
+      if (connection.heartbeatTimer !== undefined) clearTimeout(connection.heartbeatTimer);
+      if (connection.heartbeatDeadlineTimer !== undefined) clearTimeout(connection.heartbeatDeadlineTimer);
+      if (connection.socket.readyState < socketClosing) connection.socket.close(1000, "runtime-destroyed");
+    }
+    this.#connections.clear();
+  }
+
+  #connection(request: RoutedControlAttachRequest): ControlConnection {
+    const existing = this.#connections.get(request.cellBootId);
+    if (
+      existing &&
+      existing.controlUrl === request.controlUrl &&
+      existing.transportGrant.claims.connectionSetId === request.transportGrant.claims.connectionSetId &&
+      existing.socket.readyState < socketClosing
+    ) {
+      return existing;
+    }
+    if (existing) this.#closeConnection(existing, 1000, "connection-replaced", true);
+    const socket = this.#socketFactory(request.controlUrl);
+    const connection: ControlConnection = {
+      cellBootId: request.cellBootId,
+      controlUrl: request.controlUrl,
+      transportGrant: request.transportGrant,
+      capabilities: request.capabilities ?? ["resume"],
+      socket,
+      activationIds: new Set(),
+      pendingGeometry: [],
+      heartbeatSequence: 0,
+      heartbeatAckSequence: 0,
+    };
+    this.#connections.set(request.cellBootId, connection);
+    socket.addEventListener("open", () => this.#hello(connection));
+    socket.addEventListener("message", (event) => this.#message(connection, event));
+    socket.addEventListener("close", (event) => this.#closed(connection, event.code, event.reason));
+    socket.addEventListener("error", () => undefined);
+    return connection;
+  }
+
+  #hello(connection: ControlConnection): void {
+    this.#send(
+      connection,
+      encodeRoutedMessage("ConnectionHello", {
+        protocolMajor: ROUTED_PROTOCOL_VERSION.major,
+        protocolMinor: ROUTED_PROTOCOL_VERSION.minor,
+        channel: "control",
+        transportGrant: connection.transportGrant,
+        capabilities: connection.capabilities,
+      }),
+    );
+  }
+
+  #message(connection: ControlConnection, event: MessageEvent): void {
+    if (this.#connections.get(connection.cellBootId) !== connection) return;
+    if (typeof event.data !== "string") {
+      this.#closeConnection(connection, 4003, "binary on control leg", true);
+      return;
+    }
+    const maxBytes = connection.accepted?.protocolLimits.maxControlMessageBytes ?? 262_144;
+    if (new TextEncoder().encode(event.data).byteLength > maxBytes) {
+      this.#closeConnection(connection, 4003, "control message too large", true);
+      return;
+    }
+    const decoded = decodeRoutedMessage(event.data, ROUTED_LEG_OUTBOUND.control);
+    if (!decoded.ok) {
+      this.#closeConnection(connection, 4003, `invalid control message: ${decoded.error}`, true);
+      return;
+    }
+    const message = decoded.message;
+    if (message.type === "ConnectionAccepted") {
+      if (
+        connection.accepted ||
+        message.channel !== "control" ||
+        message.connectionSetId !== connection.transportGrant.claims.connectionSetId ||
+        message.selectedProtocolVersion.major !== ROUTED_PROTOCOL_VERSION.major ||
+        message.selectedProtocolVersion.minor > ROUTED_PROTOCOL_VERSION.minor ||
+        message.capabilities.some((capability) => !connection.capabilities.includes(capability))
+      ) {
+        this.#closeConnection(connection, 4003, "invalid control acceptance", true);
+        return;
+      }
+      connection.accepted = message;
+      this.#emit({ type: "transport-ready", cellBootId: connection.cellBootId, accepted: message });
+      this.#armHeartbeatDeadline(connection);
+      this.#scheduleHeartbeat(connection);
+      for (const activationId of connection.activationIds) {
+        const activation = this.#activations.get(activationId);
+        if (activation) this.#sendAttach(connection, activation);
+      }
+      return;
+    }
+    if (message.type === "ConnectionRefused") {
+      connection.refusal = message;
+      this.#closeConnection(connection, 1000, message.code, true);
+      return;
+    }
+    if (!connection.accepted) {
+      this.#closeConnection(connection, 4003, "message before ConnectionAccepted", true);
+      return;
+    }
+    if (message.type === "LegHeartbeatAck") {
+      if (message.sequence > connection.heartbeatSequence) {
+        this.#closeConnection(connection, ROUTED_CLOSE_CODES.PROTOCOL, "heartbeat ack is ahead", true);
+        return;
+      }
+      if (message.sequence > connection.heartbeatAckSequence) {
+        connection.heartbeatAckSequence = message.sequence;
+        this.#armHeartbeatDeadline(connection);
+      }
+      return;
+    }
+    if (message.type === "ControlLegAttached") {
+      const activation = this.#activations.get(message.activationId);
+      if (!connection.activationIds.has(message.activationId) && !activation) return;
+      if (
+        !activation ||
+        !connection.activationIds.has(message.activationId) ||
+        message.sessionId !== activation.request.attachGrant.claims.sessionId ||
+        message.grantGenerationAccepted !== activation.request.attachGrant.claims.grantGeneration ||
+        message.rights.some((right) => !activation.request.attachGrant.claims.rights.includes(right))
+      ) {
+        this.#closeConnection(connection, ROUTED_CLOSE_CODES.PROTOCOL, "control attach binding mismatch", true);
+        return;
+      }
+      this.#emit({ type: "control-attached", attached: message });
+      return;
+    }
+    if (message.type === "AttachRefused") {
+      if (message.activationId !== undefined && !connection.activationIds.has(message.activationId)) {
+        if (!this.#activations.has(message.activationId)) return;
+        this.#closeConnection(connection, ROUTED_CLOSE_CODES.PROTOCOL, "attach refusal binding mismatch", true);
+        return;
+      }
+      this.#emit({
+        type: "attach-refused",
+        ...(message.activationId === undefined ? {} : { activationId: message.activationId }),
+        code: message.code,
+        retryable: message.retryable,
+      });
+      return;
+    }
+    if (message.type === "CellActivationStatus") {
+      const activation = this.#activations.get(message.activationId);
+      if (!connection.activationIds.has(message.activationId) && !activation) return;
+      if (
+        !activation ||
+        !connection.activationIds.has(message.activationId) ||
+        message.sessionId !== activation.request.attachGrant.claims.sessionId
+      ) {
+        this.#closeConnection(connection, ROUTED_CLOSE_CODES.PROTOCOL, "cell status binding mismatch", true);
+        return;
+      }
+      this.#emit({ type: "cell-status", status: message });
+      return;
+    }
+    if (message.type === "DemandAccepted") {
+      const activationId = this.#activationForDemand(connection, message.demandSequence);
+      this.#emit({
+        type: "demand-accepted",
+        ...(activationId === undefined ? {} : { activationId }),
+        demandSequence: message.demandSequence,
+      });
+      return;
+    }
+    if (message.type === "GeometryCommitted") {
+      const activationId = connection.pendingGeometry.shift();
+      this.#emit({
+        type: "geometry-committed",
+        ...(activationId === undefined ? {} : { activationId }),
+        committed: message,
+      });
+      return;
+    }
+    if (message.type === "GeometryRefused") {
+      const activationId = connection.pendingGeometry.shift();
+      this.#emit({
+        type: "geometry-refused",
+        ...(activationId === undefined ? {} : { activationId }),
+        refused: message,
+      });
+      return;
+    }
+    this.#closeConnection(connection, 4003, `unexpected control message ${message.type}`, true);
+  }
+
+  #activationForDemand(connection: ControlConnection, sequence: number): string | undefined {
+    for (const activationId of connection.activationIds) {
+      if (this.#activations.get(activationId)?.demandSequence === sequence) return activationId;
+    }
+    return undefined;
+  }
+
+  #sendAttach(connection: ControlConnection, activation: ControlActivation): void {
+    this.#send(
+      connection,
+      encodeRoutedMessage("AttachControlLeg", {
+        activationId: activation.request.activationId,
+        attachGrant: activation.request.attachGrant,
+        ...(activation.request.replacesActivationId === undefined
+          ? {}
+          : { replacesActivationId: activation.request.replacesActivationId }),
+        initialDemand: activation.lastDemand,
+      }),
+    );
+  }
+
+  #sendActivation(activationId: string, text: string): boolean {
+    const activation = this.#activations.get(activationId);
+    if (!activation) return false;
+    const connection = this.#connections.get(activation.request.cellBootId);
+    if (!connection?.accepted) return false;
+    const bytes = new TextEncoder().encode(text).byteLength;
+    if (bytes > connection.accepted.protocolLimits.maxControlMessageBytes) return false;
+    this.#send(connection, text);
+    return true;
+  }
+
+  #sendGeometry(activationId: string, text: string): boolean {
+    const activation = this.#activations.get(activationId);
+    if (!activation) return false;
+    const connection = this.#connections.get(activation.request.cellBootId);
+    if (!connection || !this.#sendActivation(activationId, text)) return false;
+    connection.pendingGeometry.push(activationId);
+    return true;
+  }
+
+  #scheduleHeartbeat(connection: ControlConnection): void {
+    if (connection.heartbeatTimer !== undefined) clearTimeout(connection.heartbeatTimer);
+    connection.heartbeatTimer = setTimeout(
+      () => {
+        if (!connection.accepted || connection.socket.readyState !== socketOpen) return;
+        connection.heartbeatSequence += 1;
+        this.#send(
+          connection,
+          encodeRoutedMessage("LegHeartbeat", {
+            connectionSetId: connection.accepted.connectionSetId,
+            channel: "control",
+            legGeneration: connection.accepted.legGeneration,
+            sequence: connection.heartbeatSequence,
+          }),
+        );
+        this.#scheduleHeartbeat(connection);
+      },
+      Math.max(
+        100,
+        Math.min(
+          ROUTED_DOOR_LIMITS.heartbeatIntervalMs,
+          Math.floor((connection.accepted?.heartbeatTtlMs ?? ROUTED_DOOR_LIMITS.heartbeatTtlMs) / 3),
+        ),
+      ),
+    );
+  }
+
+  #armHeartbeatDeadline(connection: ControlConnection): void {
+    if (connection.heartbeatDeadlineTimer !== undefined) clearTimeout(connection.heartbeatDeadlineTimer);
+    const ttl = connection.accepted?.heartbeatTtlMs ?? ROUTED_DOOR_LIMITS.heartbeatTtlMs;
+    connection.heartbeatDeadlineTimer = setTimeout(() => {
+      if (this.#connections.get(connection.cellBootId) !== connection) return;
+      this.#closeConnection(connection, ROUTED_CLOSE_CODES.LEG_TIMEOUT, "heartbeat timeout", true);
+    }, ttl);
+  }
+
+  #send(connection: ControlConnection, text: string): void {
+    if (connection.socket.readyState === socketOpen) connection.socket.send(text);
+  }
+
+  #closeConnection(connection: ControlConnection, code: number, reason: string, closeSocket: boolean): void {
+    if (connection.heartbeatTimer !== undefined) clearTimeout(connection.heartbeatTimer);
+    if (connection.heartbeatDeadlineTimer !== undefined) clearTimeout(connection.heartbeatDeadlineTimer);
+    if (closeSocket && connection.socket.readyState < socketClosing)
+      connection.socket.close(code, reason.slice(0, 123));
+    this.#closed(connection, code, reason);
+  }
+
+  #closed(connection: ControlConnection, code: number, reason: string): void {
+    if (this.#connections.get(connection.cellBootId) !== connection) return;
+    this.#connections.delete(connection.cellBootId);
+    if (connection.heartbeatTimer !== undefined) clearTimeout(connection.heartbeatTimer);
+    if (connection.heartbeatDeadlineTimer !== undefined) clearTimeout(connection.heartbeatDeadlineTimer);
+    this.#emit({
+      type: "transport-closed",
+      cellBootId: connection.cellBootId,
+      code,
+      reason,
+      activationIds: [...connection.activationIds],
+      preAuth: connection.refusal === undefined && connection.accepted === undefined && code === 1008,
+      ...(connection.refusal === undefined ? {} : { refusal: connection.refusal }),
+    });
+  }
+}

@@ -17,7 +17,7 @@ import {
   type StyleRun,
   SectionKind,
 } from "@vibecook/ghosttea-frame";
-import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
+import type { RoutedTrfIdentity, TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
 import { CanvasTerminalRenderer } from "./renderers/canvas-renderer.js";
 import {
   DEFAULT_EFFECTS,
@@ -34,9 +34,14 @@ import {
 import { WebGpuTerminalRenderer } from "./renderers/webgpu-renderer.js";
 import { classifyFrame } from "./frame-sequence.js";
 import { cursorActivityChangesPixels } from "./cursor-invalidation.js";
-import { emptyRenderMetrics, type TerminalRenderPerformanceSnapshot } from "./performance.js";
+import {
+  emptyRenderMetrics,
+  type TerminalRenderCounterSnapshot,
+  type TerminalRenderPerformanceSnapshot,
+} from "./performance.js";
 import type { RendererToWorkerMessage, WorkerToRendererMessage } from "./worker-messages.js";
 import { catalogAdmission, definitionCatalogFits, glyphCatalogFits } from "./catalog-budget.js";
+import { RoutedFramesTransport, type RoutedAppliedFrame, type RoutedExpectedLayout } from "./routed-frames.js";
 
 interface SessionSnapshot {
   rows: string[];
@@ -140,6 +145,41 @@ interface ActivePerformanceMeasurement {
 
 let performanceMeasurement: ActivePerformanceMeasurement | undefined;
 
+type SessionCounters = TerminalRenderCounterSnapshot["sessions"][string];
+const lifetimeStartedAt = performance.now();
+const lifetimeFrames: SessionCounters = {
+  received: 0,
+  bytes: 0,
+  full: 0,
+  incremental: 0,
+  stale: 0,
+  decodes: 0,
+  applies: 0,
+};
+const lifetimeSessions = new Map<string, SessionCounters>();
+const lifetimeRenderer = { queueSubmits: 0, presents: 0 };
+const lifetimeFlow = { creditBytesReturned: 0, creditBatchesReturned: 0 };
+
+function sessionCounters(sessionHandle: string): SessionCounters {
+  let counters = lifetimeSessions.get(sessionHandle);
+  if (!counters) {
+    counters = { received: 0, bytes: 0, full: 0, incremental: 0, stale: 0, decodes: 0, applies: 0 };
+    lifetimeSessions.set(sessionHandle, counters);
+  }
+  return counters;
+}
+
+function counterSnapshot(): TerminalRenderCounterSnapshot {
+  return {
+    backend: renderer?.kind ?? "starting",
+    durationMs: performance.now() - lifetimeStartedAt,
+    frames: { ...lifetimeFrames },
+    renderer: { ...lifetimeRenderer },
+    flow: { ...lifetimeFlow },
+    sessions: Object.fromEntries([...lifetimeSessions].map(([id, counters]) => [id, { ...counters }])),
+  };
+}
+
 function appendPerformanceSample(samples: number[], value: number): void {
   if (samples.length < MAX_PERFORMANCE_SAMPLES) samples.push(value);
 }
@@ -150,6 +190,8 @@ function flushFrameCredit(): void {
   if (pendingFrameCreditBytes === 0) return;
   const bytes = pendingFrameCreditBytes;
   pendingFrameCreditBytes = 0;
+  lifetimeFlow.creditBytesReturned += bytes;
+  lifetimeFlow.creditBatchesReturned += 1;
   postToRenderer({ type: "frame-credit", bytes });
 }
 
@@ -228,6 +270,11 @@ function recordRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): vo
   target.atlasUploadCalls += metrics.atlasUploadCalls;
 }
 
+function recordLifetimeRenderMetrics(metrics: ReturnType<typeof emptyRenderMetrics>): void {
+  lifetimeRenderer.queueSubmits += metrics.queueSubmits;
+  lifetimeRenderer.presents += metrics.fullRenders + metrics.partialRenders;
+}
+
 async function finishPerformanceMeasurement(requestId: number, quietMs: number, timeoutMs: number): Promise<void> {
   const active = performanceMeasurement;
   if (!active) throw new Error("No terminal render performance measurement is active");
@@ -278,25 +325,29 @@ function postToRenderer(message: WorkerToRendererMessage): void {
   self.postMessage(message);
 }
 
+function emptySessionSnapshot(): SessionSnapshot {
+  return {
+    rows: [],
+    nativeRows: [],
+    nativeStyleRows: [],
+    glyphDefinitions: new Map(),
+    glyphPixelBytes: 0,
+    styleDefinitions: new Map(),
+    rowRevisions: [],
+    cursor: hiddenCursor,
+    layoutEpoch: 0n,
+    sessionEpoch: 0n,
+    sequence: 0n,
+    awaitingResync: false,
+    catalogFallback: false,
+    scrollbar: null,
+  };
+}
+
 function snapshot(sessionHandle: string): SessionSnapshot {
   let value = snapshots.get(sessionHandle);
   if (!value) {
-    value = {
-      rows: [],
-      nativeRows: [],
-      nativeStyleRows: [],
-      glyphDefinitions: new Map(),
-      glyphPixelBytes: 0,
-      styleDefinitions: new Map(),
-      rowRevisions: [],
-      cursor: hiddenCursor,
-      layoutEpoch: 0n,
-      sessionEpoch: 0n,
-      sequence: 0n,
-      awaitingResync: false,
-      catalogFallback: false,
-      scrollbar: null,
-    };
+    value = emptySessionSnapshot();
     snapshots.set(sessionHandle, value);
   }
   return value;
@@ -577,6 +628,7 @@ async function flush(): Promise<void> {
       const metrics = backend.renderBatch
         ? backend.renderBatch(entries)
         : entries.map(({ id, view }) => backend.render(id, view));
+      for (const metric of metrics) recordLifetimeRenderMetrics(metric ?? emptyRenderMetrics());
       const renderedAt = active ? performance.now() : 0;
       for (const { id } of entries) {
         const damage = surfaces.get(id)?.damage;
@@ -667,9 +719,15 @@ async function mount(surfaceId: string, sessionHandle: string, canvas: Offscreen
   scheduleShaderAnimation();
 }
 
-function applyFrame(packet: ArrayBuffer): void {
+function applyFrame(
+  packet: ArrayBuffer,
+  expectedIdentity?: RoutedTrfIdentity,
+  expectedLayout?: RoutedExpectedLayout,
+): RoutedAppliedFrame | undefined {
   const active = performanceMeasurement;
   const applyStarted = active ? performance.now() : 0;
+  lifetimeFrames.received += 1;
+  lifetimeFrames.bytes += packet.byteLength;
   if (active) {
     active.frames.received += 1;
     active.frames.bytes += packet.byteLength;
@@ -677,15 +735,42 @@ function applyFrame(packet: ArrayBuffer): void {
   }
   const frame = decodeFrame(packet);
   const id = frame.sessionHandle.toString();
+  if (
+    expectedIdentity &&
+    (id !== expectedIdentity.sessionHandle || frame.viewHandle.toString() !== expectedIdentity.viewHandle)
+  ) {
+    throw new Error("TRF1 identity does not match the routed activation binding");
+  }
+  if (expectedLayout && (frame.cols !== expectedLayout.cols || frame.rows !== expectedLayout.rows)) {
+    throw new Error("transfer layout does not match TRF1");
+  }
+  if (expectedLayout && (frame.flags & FrameFlag.FullSnapshot) === 0) {
+    throw new Error("routed transfer is not a full TRF1 snapshot");
+  }
+  const counters = sessionCounters(id);
+  lifetimeFrames.decodes += 1;
+  counters.received += 1;
+  counters.bytes += packet.byteLength;
+  counters.decodes += 1;
+  if ((frame.flags & FrameFlag.FullSnapshot) !== 0) {
+    lifetimeFrames.full += 1;
+    counters.full += 1;
+  } else {
+    lifetimeFrames.incremental += 1;
+    counters.incremental += 1;
+  }
   if (active) {
     active.lastFrameAt.set(id, applyStarted);
     if ((frame.flags & FrameFlag.FullSnapshot) !== 0) active.frames.full += 1;
     else active.frames.incremental += 1;
   }
-  const previous = snapshot(id);
+  const replacingScene = expectedLayout !== undefined;
+  const installedScene = replacingScene ? snapshots.get(id) : undefined;
+  const previous = replacingScene ? emptySessionSnapshot() : snapshot(id);
   const fullFrame = (frame.flags & FrameFlag.FullSnapshot) !== 0;
   const catalogReset = (frame.flags & FrameFlag.CatalogReset) !== 0;
   if (catalogReset && !fullFrame) {
+    if (expectedIdentity) throw new Error("catalog reset without a full routed frame");
     if (active) {
       active.frames.resyncRequested += 1;
       appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
@@ -701,21 +786,25 @@ function applyFrame(packet: ArrayBuffer): void {
     full: fullFrame,
   });
   if (classification === "stale") {
+    lifetimeFrames.stale += 1;
+    counters.stale += 1;
     if (active) {
       active.frames.stale += 1;
       appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
     }
-    return;
+    if (expectedIdentity) throw new Error("stale routed TRF1 frame");
+    return undefined;
   }
   const changedSession = previous.sessionEpoch !== 0n && frame.sessionEpoch !== previous.sessionEpoch;
   if (classification === "resync") {
+    if (expectedIdentity) throw new Error("routed TRF1 continuity requires a transfer");
     if (active) {
       active.frames.resyncRequested += 1;
       appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
     }
     previous.awaitingResync = true;
     postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
-    return;
+    return undefined;
   }
   const completingResync = previous.awaitingResync;
   const rowSection = frame.sections.find((candidate) => candidate.kind === SectionKind.RowReplacements);
@@ -725,14 +814,49 @@ function applyFrame(packet: ArrayBuffer): void {
   const clipboardSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ClipboardWrite);
   const scrollbarSection = frame.sections.find((candidate) => candidate.kind === SectionKind.ScrollbarState);
   if (!rowSection || !cursorSection) {
+    if (expectedIdentity) throw new Error("routed TRF1 frame is missing required sections");
     if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
-    return;
+    return undefined;
+  }
+  const fullRows = (rowSection.flags & 1) !== 0;
+  if (replacingScene && !fullRows) {
+    throw new Error("routed transfer row section is not a full snapshot");
   }
 
   const glyphDefinitions = glyphSection ? decodeGlyphDefinitions(glyphSection) : NO_GLYPH_DEFINITIONS;
   const styleDefinitions = styleSection ? decodeStyleDefinitions(styleSection) : NO_STYLE_DEFINITIONS;
+  const replacements = decodeRowReplacements(rowSection);
+  for (const replacement of replacements) {
+    if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
+  }
+  const nextCursor = decodeCursorState(cursorSection);
+  const clipboardText = clipboardSection ? decodeClipboardWrite(clipboardSection) : undefined;
+  let scrollbar: TerminalScrollbarState | undefined;
+  if (scrollbarSection) {
+    const decoded = decodeScrollbarState(scrollbarSection);
+    scrollbar = {
+      total: Number(decoded.total),
+      offset: Number(decoded.offset),
+      length: Number(decoded.length),
+    };
+    if (
+      !Number.isSafeInteger(scrollbar.total) ||
+      !Number.isSafeInteger(scrollbar.offset) ||
+      !Number.isSafeInteger(scrollbar.length)
+    ) {
+      throw new RangeError("Scrollbar state exceeds JavaScript's safe integer range");
+    }
+  }
+  if (
+    expectedLayout &&
+    (scrollbar === undefined ||
+      scrollbar.length !== expectedLayout.rows ||
+      scrollbar.total - scrollbar.length !== expectedLayout.scrollbackRows)
+  ) {
+    throw new Error("transfer scrollback layout does not match TRF1");
+  }
   if (active) active.frames.glyphDefinitions += glyphDefinitions.length;
-  const resetsCatalog = changedSession || completingResync || catalogReset;
+  const resetsCatalog = replacingScene || changedSession || completingResync || catalogReset;
   const wasCatalogFallback = previous.catalogFallback;
   if (resetsCatalog) {
     previous.rows = [];
@@ -787,13 +911,14 @@ function applyFrame(packet: ArrayBuffer): void {
       );
     const admission = catalogAdmission(false, false, catalogFits);
     if (admission === "request-full") {
+      if (expectedIdentity) throw new Error("routed catalog pressure requires a fresh transfer");
       if (active) {
         active.frames.resyncRequested += 1;
         appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
       }
       previous.awaitingResync = true;
       postToRenderer({ type: "frame-resync-needed", sessionHandle: id });
-      return;
+      return undefined;
     }
     if (admission === "install") {
       installGlyphDefinitions(previous, glyphDefinitions);
@@ -804,22 +929,8 @@ function applyFrame(packet: ArrayBuffer): void {
     nativeTextAnnounced = true;
     postToRenderer({ type: "renderer-status", backend: renderer?.kind ?? "starting", textEngine: "native" });
   }
-  if (clipboardSection) {
-    postToRenderer({ type: "clipboard-write", text: decodeClipboardWrite(clipboardSection) });
-  }
-  if (scrollbarSection) {
-    const decoded = decodeScrollbarState(scrollbarSection);
-    const scrollbar = {
-      total: Number(decoded.total),
-      offset: Number(decoded.offset),
-      length: Number(decoded.length),
-    };
-    if (
-      !Number.isSafeInteger(scrollbar.total) ||
-      !Number.isSafeInteger(scrollbar.offset) ||
-      !Number.isSafeInteger(scrollbar.length)
-    )
-      throw new RangeError("Scrollbar state exceeds JavaScript's safe integer range");
+  let scrollbarChanged = false;
+  if (scrollbar) {
     if (
       !previous.scrollbar ||
       previous.scrollbar.total !== scrollbar.total ||
@@ -827,25 +938,22 @@ function applyFrame(packet: ArrayBuffer): void {
       previous.scrollbar.length !== scrollbar.length
     ) {
       previous.scrollbar = scrollbar;
-      postToRenderer({ type: "scrollbar-state", sessionHandle: id, scrollbar });
+      scrollbarChanged = true;
     }
   }
 
-  const full = (rowSection.flags & 1) !== 0;
   const useNativeCatalog = !previous.catalogFallback;
-  const rows = full ? Array<string>(frame.rows).fill("") : previous.rows.slice();
-  const nativeRows = full
+  const rows = fullRows ? Array<string>(frame.rows).fill("") : previous.rows.slice();
+  const nativeRows = fullRows
     ? Array.from({ length: frame.rows }, () => [] as GlyphInstance[])
     : previous.nativeRows.slice();
-  const nativeStyleRows = full
+  const nativeStyleRows = fullRows
     ? Array.from({ length: frame.rows }, () => [] as StyleRun[])
     : previous.nativeStyleRows.slice();
-  const rowRevisions = full ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
-  const replacements = decodeRowReplacements(rowSection);
+  const rowRevisions = fullRows ? Array<bigint>(frame.rows).fill(0n) : previous.rowRevisions.slice();
   const damagedRows: number[] = [];
   if (active) active.frames.rowsDecoded += replacements.length;
   for (const replacement of replacements) {
-    if (replacement.row >= frame.rows) throw new RangeError("Row replacement exceeds viewport");
     if (replacement.revision < (rowRevisions[replacement.row] ?? 0n)) continue;
     rows[replacement.row] = replacement.text;
     nativeRows[replacement.row] = useNativeCatalog ? replacement.glyphs : [];
@@ -859,7 +967,6 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.rowRevisions = rowRevisions;
   const geometryChanged = damagedRows.length > 0;
   const previousCursor = previous.cursor;
-  const nextCursor = decodeCursorState(cursorSection);
   const cursorChanged =
     nextCursor.x !== previousCursor.x ||
     nextCursor.y !== previousCursor.y ||
@@ -871,8 +978,14 @@ function applyFrame(packet: ArrayBuffer): void {
   previous.sessionEpoch = frame.sessionEpoch;
   previous.sequence = frame.frameSequence;
   previous.awaitingResync = false;
+  if (replacingScene) {
+    snapshots.set(id, previous);
+    if (installedScene) clearSessionCatalog(installedScene);
+  }
+  if (clipboardText !== undefined) postToRenderer({ type: "clipboard-write", text: clipboardText });
+  if (scrollbarChanged && scrollbar) postToRenderer({ type: "scrollbar-state", sessionHandle: id, scrollbar });
   if (completingResync) postToRenderer({ type: "frame-resync-complete", sessionHandle: id });
-  const requiresFullRedraw = full || changedSession || completingResync;
+  const requiresFullRedraw = fullRows || changedSession || completingResync;
   if (!requiresFullRedraw && cursorChanged) damagedRows.push(previousCursor.y, nextCursor.y);
   const hasRowDamage = damagedRows.length > 0;
   for (const surfaceId of surfaceIdsForSession(id)) {
@@ -892,8 +1005,29 @@ function applyFrame(packet: ArrayBuffer): void {
     // recovered screen apart from a partial update of the stale one.
     fullSnapshot: fullFrame,
   });
+  lifetimeFrames.applies += 1;
+  counters.applies += 1;
   if (active) appendPerformanceSample(active.samples.frameApplyMs, performance.now() - applyStarted);
+  return {
+    sessionHandle: id,
+    viewHandle: frame.viewHandle.toString(),
+    cols: frame.cols,
+    rows: frame.rows,
+  };
 }
+
+const routedFrames = new RoutedFramesTransport({
+  applyFrame: (packet, identity, expectedLayout) => {
+    const applied = applyFrame(packet, identity, expectedLayout);
+    if (!applied) throw new Error("routed TRF1 frame was not applied");
+    return applied;
+  },
+  emit: (event) => postToRenderer({ type: "routed-frames-event", event }),
+  creditReturned: (bytes) => {
+    lifetimeFlow.creditBytesReturned += bytes;
+    lifetimeFlow.creditBatchesReturned += 1;
+  },
+});
 
 self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
   const message = event.data;
@@ -1057,6 +1191,12 @@ self.onmessage = (event: MessageEvent<RendererToWorkerMessage>) => {
       void finishPerformanceMeasurement(message.requestId, message.quietMs, message.timeoutMs).catch((error) => {
         console.error("[terminal-renderer] failed to finish performance measurement", error);
       });
+    } else if (message.type === "performance-counters") {
+      postToRenderer({ type: "performance-counters", requestId: message.requestId, snapshot: counterSnapshot() });
+    } else if (message.type === "routed-frames-attach") {
+      routedFrames.attach(message.request);
+    } else if (message.type === "routed-frames-detach") {
+      routedFrames.detach(message.activationId);
     }
   } catch (error) {
     console.error("[terminal-renderer] rejected worker message", error);

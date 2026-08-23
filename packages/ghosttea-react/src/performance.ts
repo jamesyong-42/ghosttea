@@ -64,6 +64,41 @@ export interface TerminalRenderPerformanceSnapshot {
   };
 }
 
+/** Cheap, monotonic production counters. Reading them never waits for GPU idle. */
+export interface TerminalRenderCounterSnapshot {
+  backend: string;
+  durationMs: number;
+  frames: {
+    received: number;
+    bytes: number;
+    full: number;
+    incremental: number;
+    stale: number;
+    decodes: number;
+    applies: number;
+  };
+  renderer: {
+    queueSubmits: number;
+    presents: number;
+  };
+  flow: {
+    creditBytesReturned: number;
+    creditBatchesReturned: number;
+  };
+  sessions: Record<
+    string,
+    {
+      received: number;
+      bytes: number;
+      full: number;
+      incremental: number;
+      stale: number;
+      decodes: number;
+      applies: number;
+    }
+  >;
+}
+
 export function emptyRenderMetrics(): TerminalRenderMetrics {
   return {
     queueSubmits: 0,

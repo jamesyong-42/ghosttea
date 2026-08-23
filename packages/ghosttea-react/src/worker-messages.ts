@@ -1,6 +1,7 @@
 import type { CellSelection, TerminalEffects, TerminalTheme } from "./renderers/types.js";
 import type { TerminalScrollbarState } from "@vibecook/ghosttea-protocol";
-import type { TerminalRenderPerformanceSnapshot } from "./performance.js";
+import type { TerminalRenderCounterSnapshot, TerminalRenderPerformanceSnapshot } from "./performance.js";
+import type { RoutedFramesAttachRequest, RoutedFramesTransportEvent } from "./routed-frames.js";
 
 export type RendererToWorkerMessage =
   | { type: "renderer-config"; forceCanvasFallback: boolean }
@@ -23,7 +24,10 @@ export type RendererToWorkerMessage =
   | { type: "force-full-redraw"; sessionHandle: string }
   | { type: "force-row-redraw"; sessionHandle: string; row: number }
   | { type: "performance-start"; requestId: number }
-  | { type: "performance-finish"; requestId: number; quietMs: number; timeoutMs: number };
+  | { type: "performance-finish"; requestId: number; quietMs: number; timeoutMs: number }
+  | { type: "performance-counters"; requestId: number }
+  | { type: "routed-frames-attach"; request: RoutedFramesAttachRequest }
+  | { type: "routed-frames-detach"; activationId: string };
 
 export type WorkerToRendererMessage =
   | { type: "renderer-status"; backend: string; textEngine?: string; recovered?: boolean }
@@ -49,4 +53,6 @@ export type WorkerToRendererMessage =
   | { type: "frame-credit"; bytes: number }
   | { type: "performance-started"; requestId: number }
   | { type: "performance-result"; requestId: number; snapshot: TerminalRenderPerformanceSnapshot }
+  | { type: "performance-counters"; requestId: number; snapshot: TerminalRenderCounterSnapshot }
+  | { type: "routed-frames-event"; event: RoutedFramesTransportEvent }
   | { type: "renderer-reload-required"; reason: string };
