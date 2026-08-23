@@ -1288,7 +1288,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.dispose();
   });
 
-  it("claims resize control once per attachment epoch through one funnel", async () => {
+  it("claims resize control once per attachment epoch only after an explicit request", async () => {
     vi.stubGlobal("window", globalThis);
     const control = new FakePort();
     const runtime = new GhostteaTerminalRuntime({
@@ -1308,12 +1308,10 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    // Focus arrives before any geometry, so there is nothing to claim with yet.
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     expect(claims()).toHaveLength(1);
 
-    // The focus setter suppresses repeat `true` updates; the claim is scoped to
-    // an epoch, not to a focus transition, so it must not re-fire either.
+    // Focus is scheduling state only and cannot add another geometry claim.
     runtime.setFocused(session.handle, "view-1", true, 80, 24);
     runtime.resize(session.id, "view-1", 100, 30);
     expect(claims()).toHaveLength(1);
@@ -1322,6 +1320,34 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     control.emitViewState({ viewStateSeq: 9, attachmentEpoch: 12 });
     expect(claims()).toHaveLength(2);
     expect(claims().at(-1)).toMatchObject({ attachmentEpoch: 12, cols: 100, rows: 30 });
+    runtime.dispose();
+  });
+
+  it("never turns focus into a geometry claim", async () => {
+    vi.stubGlobal("window", globalThis);
+    const control = new FakePort();
+    const runtime = new GhostteaTerminalRuntime({
+      ports: { control: control as unknown as MessagePort, frames: new FakePort() as unknown as MessagePort },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => new FakeWorker() as unknown as Worker,
+    });
+    await runtime.connect();
+    runtime.registerSession(session);
+    runtime.mount(session.id, session.handle, "mirror", canvas());
+    await flushMicrotasks();
+
+    for (let index = 0; index < 100; index += 1) {
+      runtime.setFocused(session.handle, "mirror", index % 2 === 0, 80, 24);
+    }
+    runtime.resize(session.id, "mirror", 120, 40);
+
+    expect(control.messages.filter((message) => message.type === "focus-and-resize")).toHaveLength(0);
+    expect(control.messages.filter((message) => message.type === "resize")).toHaveLength(0);
     runtime.dispose();
   });
 
@@ -1441,7 +1467,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const remote = await runtime.openRemoteSession("device", "remote", 80, 24, "studio-mac");
     runtime.mount(remote.id, remote.handle, "view-1", canvas());
     await flushMicrotasks();
-    runtime.setFocused(remote.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(remote.handle, "view-1", 80, 24);
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
     const before = claims().length;
@@ -1516,7 +1542,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     expect(claims()).toHaveLength(1);
 
     // A host with no revisions has reported none, and 0 is the "unknown"
@@ -1571,7 +1597,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     control.dispatchEvent(
       new MessageEvent("message", {
         data: {
@@ -1663,7 +1689,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     const before = claims().length;
     announce({ viewId: "other-pane", controlEpoch: 4 }, 31);
 
@@ -1728,7 +1754,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     announce(null, 9);
     expect(claims()).toHaveLength(2);
     expect(claims().at(-1)).toMatchObject({ expectedControlRevision: 9 });
@@ -1778,8 +1804,8 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     const claims = (): Record<string, unknown>[] =>
       control.messages.filter((message) => message.type === "focus-and-resize");
 
-    // Taking focus is a deliberate claim and stays last-write-wins.
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    // The host explicitly requests the geometry seat.
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     expect(claims()).toHaveLength(1);
 
     // Automatic reclaim is the part that must not fight: a fresh epoch while
@@ -1976,6 +2002,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.registerSession(session);
     runtime.mount(session.id, session.handle, "view-1", canvas());
     await flushMicrotasks();
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
 
     control.dispatchEvent(
       new MessageEvent("message", {
@@ -2277,7 +2304,7 @@ describe("GhostteaTerminalRuntime mount ownership", () => {
     runtime.mount(session.id, session.handle, "view-1", canvas());
     await flushMicrotasks();
 
-    runtime.setFocused(session.handle, "view-1", true, 80, 24);
+    runtime.claimResizeControl(session.handle, "view-1", 80, 24);
     runtime.resize(session.id, "view-1", 110, 31);
     controlChanged(control, "view-1", 80, 24);
 

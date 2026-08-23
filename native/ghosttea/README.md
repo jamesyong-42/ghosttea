@@ -59,12 +59,49 @@ the `serve()` future stops accepting traffic and aborts the terminal mesh task,
 but it is not a graceful session-drain API. A host that needs classified
 shutdown events should terminate its sessions before cancellation.
 
+### In-process session access
+
+An embedding host that serves an additional transport beside Ghosttea's local
+sockets can use `serve_managed` to reach the exact same registry and frame hub:
+
+```rust,ignore
+let (service_handle, serving) = service.serve_managed(listeners);
+let serving = tokio::spawn(serving);
+
+// The serving future must be polled before readiness can complete.
+let sessions = service_handle.sessions().await?;
+let mut lifecycle = sessions.subscribe_lifecycle();
+
+let session = sessions.spawn(spawn_options).await?;
+let same_session = sessions.session(&session.id()).expect("registered session");
+assert!(std::sync::Arc::ptr_eq(&session, &same_session));
+
+let (mut frames, baseline_ordinal) = sessions.frames().subscribe();
+session.attach_view("door-view", "door-client")?;
+let packet = frames.recv().await?;
+assert!(packet.ordinal > baseline_ordinal);
+
+service_handle.shutdown(shutdown_timeout).await?;
+serving.await??;
+```
+
+`ServiceSessions::spawn` is the service policy path, not a parallel registry:
+it applies configured private-environment stripping, scrollback and appearance,
+shutdown and owner fencing, persistence, tombstones, socket-visible events, and
+typed lifecycle events. `Created`, `Exited`, and `Removed` are independent
+facts and may arrive in either exit/removal order. A lagged lifecycle receiver
+should reconcile with `sessions()`; `snapshot_and_subscribe()` provides the
+subscribe-before-snapshot pattern for that fold.
+
+Use public `Session::spawn_with_private_env_prefixes` only when the embedder
+deliberately owns those service policies itself.
+
 ## Local endpoints by platform
 
-| Platform | Control | Frames |
-| --- | --- | --- |
+| Platform     | Control            | Frames                    |
+| ------------ | ------------------ | ------------------------- |
 | macOS, Linux | Unix-domain socket | second Unix-domain socket |
-| Windows | named pipe | second named pipe |
+| Windows      | named pipe         | second named pipe         |
 
 Windows pipe names share one flat, machine-wide namespace instead of sitting
 under a private directory, so each name carries an instance suffix and the

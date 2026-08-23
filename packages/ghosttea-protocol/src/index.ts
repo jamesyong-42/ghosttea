@@ -5,6 +5,8 @@ export const STRUCTURED_ERROR_PROTOCOL_MINOR = 16;
 export const CONFIG_SCHEMA_VERSION = 1;
 export const CONFIG_DOCUMENT_SCHEMA_VERSION = 1;
 
+export * from "./routed.js";
+
 export type ConfigDiagnosticSeverity = "info" | "warning" | "error";
 export type ConfigSupport = "applied" | "parsed" | "unsupported";
 export type ConfigSourceKind = "ghostty-default" | "included" | "ghosttea-overlay";

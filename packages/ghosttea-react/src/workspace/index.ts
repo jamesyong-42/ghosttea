@@ -2,6 +2,8 @@ export {
   GhostteaWorkspace,
   type GhostteaPaneClose,
   type GhostteaPaneRehydration,
+  type GhostteaResizeCommit,
+  type GhostteaResizeCommitPolicy,
   type GhostteaWorkspaceContext,
   type GhostteaWorkspacePane,
   type GhostteaWorkspacePaneDecoration,

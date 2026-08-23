@@ -3,6 +3,48 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.11.0 - 2026-08-22
+
+### Added
+
+- `ghosttea::ServiceHandle::sessions` now yields a cloneable in-process
+  `ServiceSessions` capability over the exact registry and frame hub served by
+  the legacy sockets. It supports stable session snapshots and lookup,
+  policy-identical spawning, and typed created/exited/removed lifecycle events.
+  `Session::spawn_with_private_env_prefixes` is public for hosts that must
+  construct a session outside the service policy path.
+- `@vibecook/ghosttea-protocol` exports the TPv3 routed-terminal contract:
+  grants and tickets, direction-checked tagged messages, RFC 8785 canonical
+  grant input, close classification, scene ordering, CRC-32C, and binary
+  presentation-envelope framing. A compatibility verifier covers the complete
+  published VibeField TP fixture corpus.
+- `@vibecook/ghosttea-react` gains an additive `transport: "routed"` mode.
+  Main owns activation authority, the pooled control WebSockets, grant renewal,
+  independent presentation/input leases, recovery, demand, and geometry CAS;
+  the render worker owns pooled frames WebSockets, envelope-before-apply and
+  inner-TRF identity validation, cumulative byte credits, bounded seed/catch-up
+  staging, atomic swaps, and negotiated resume.
+- Terminal surfaces can remove input locally with `inputPolicy="read-only"` or
+  `readWrite={false}`, apply themes per view, and read monotonic production
+  rendering counters without opening a sample window or draining the GPU.
+  Workspace divider drags now expose a throttled live-update/final-commit seam,
+  and pane zoom preserves mounted canvases and activation identity.
+
+### Fixed
+
+- Focus is now scheduling state only. It cannot claim resize authority, the
+  runtime refuses resize calls without an explicit controller request, and a
+  `controlsResize={false}` surface skips observer-driven resize calls as well.
+
+### Compatibility
+
+- The existing UDS control/frame wire and port-pair renderer transport are
+  unchanged; port-pair remains the default rollback path.
+- The published TPv3 T1 contract has no terminal-input message tag. Routed
+  input therefore remains closed unless a host supplies an encoder for an
+  extension negotiated with its cell, instead of Ghosttea inventing an
+  incompatible wire verb.
+
 ## 0.10.1 - 2026-08-18
 
 ### Fixed

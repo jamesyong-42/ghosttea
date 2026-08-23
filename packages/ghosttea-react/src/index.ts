@@ -1,5 +1,19 @@
 export { GhostteaProvider, useGhostteaRuntime, type GhostteaProviderProps } from "./context.js";
-export { TerminalSurface, type TerminalMenuAction, type TerminalSurfaceProps } from "./TerminalSurface.js";
+export {
+  TerminalSurface,
+  type TerminalInputPolicy,
+  type TerminalMenuAction,
+  type TerminalSurfaceProps,
+} from "./TerminalSurface.js";
+export {
+  expireRoutedActivationLeases,
+  initialRoutedActivation,
+  reduceRoutedActivation,
+  type RoutedActivationEvent,
+  type RoutedActivationPhase,
+  type RoutedActivationState,
+  type RoutedInputPolicy,
+} from "./routed-activation.js";
 export { rendererTheme, terminalEffectsFromConfig, terminalThemeFromConfig } from "./config.js";
 export {
   GhostteaTerminalRuntime,
@@ -7,7 +21,12 @@ export {
   waitForGhostteaRendererPorts,
   type GhostteaRendererPlatform,
   type GhostteaRendererPorts,
+  type GhostteaPortTerminalRuntimeOptions,
+  type GhostteaRoutedHost,
+  type GhostteaRoutedTerminalRuntimeOptions,
   type GhostteaTerminalRuntimeOptions,
+  type RoutedTerminalInputContext,
+  type RoutedTerminalInputOperation,
   sessionIsFrozen,
   showsStaleScreen,
   type RemoteInputSuppression,
@@ -24,4 +43,8 @@ export {
   type TerminalShaderEffect,
   type TerminalTheme,
 } from "./renderers/types.js";
-export type { TerminalRenderMetrics, TerminalRenderPerformanceSnapshot } from "./performance.js";
+export type {
+  TerminalRenderCounterSnapshot,
+  TerminalRenderMetrics,
+  TerminalRenderPerformanceSnapshot,
+} from "./performance.js";

@@ -127,6 +127,18 @@ export interface GhostteaPaneClose {
   remainingSessionIds: readonly string[];
 }
 
+export interface GhostteaResizeCommit {
+  splitId: string;
+  ratio: number;
+}
+
+export interface GhostteaResizeCommitPolicy {
+  /** Maximum live-reflow cadence. Defaults to 33 ms (about 30 Hz). */
+  liveIntervalMs?: number;
+  /** Called after the final ratio has been committed at gesture end. */
+  onCommit?: (commit: GhostteaResizeCommit) => void;
+}
+
 export interface GhostteaWorkspaceProps {
   platform: GhostteaWorkspacePlatform;
   storageKey?: string;
@@ -165,6 +177,7 @@ export interface GhostteaWorkspaceProps {
   claimExistingSessions?: boolean;
   initialCwd?: string;
   onSessionsChange?: (sessionIds: readonly string[]) => void;
+  resizeCommitPolicy?: GhostteaResizeCommitPolicy;
 }
 
 interface InitialWorkspace {
@@ -300,6 +313,7 @@ interface WorkspacePaneProps {
   session: SessionSummary;
   active: boolean;
   zoomed: boolean;
+  hiddenByZoom: boolean;
   workspaceActive: boolean;
   platform: GhostteaWorkspacePlatform;
   theme: TerminalTheme;
@@ -316,6 +330,7 @@ function WorkspacePane({
   session,
   active,
   zoomed,
+  hiddenByZoom,
   workspaceActive,
   platform,
   theme,
@@ -375,8 +390,8 @@ function WorkspacePane({
         bindings={bindings}
         active={active}
         {...(platform.platform ? { platform: platform.platform } : {})}
-        visible={workspaceActive}
-        controlsResize
+        visible={workspaceActive && !hiddenByZoom}
+        controlsResize={!hiddenByZoom}
         onActivate={onActivate}
         readClipboard={platform.readClipboard}
         {...(active && platform.setCanCopy ? { onCopyAvailabilityChange: platform.setCanCopy } : {})}
@@ -403,7 +418,8 @@ interface SplitViewProps {
   onClosePane: (paneId: string) => void;
   onBrowseDevice: (deviceId: string) => void;
   decoratePane?: ((session: SessionSummary, paneId: string) => GhostteaWorkspacePaneDecoration | undefined) | undefined;
-  onRatio: (splitId: string, ratio: number) => void;
+  resizeLiveIntervalMs: number;
+  onRatio: (splitId: string, ratio: number, commit: boolean) => void;
 }
 
 function SplitView({
@@ -419,10 +435,24 @@ function SplitView({
   onClosePane,
   onBrowseDevice,
   decoratePane,
+  resizeLiveIntervalMs,
   onRatio,
 }: SplitViewProps) {
   const splitRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ pointerId: number } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    lastSentAt: number;
+    pendingRatio: number | undefined;
+    timer: number | undefined;
+  } | null>(null);
+
+  useEffect(
+    () => () => {
+      const timer = dragRef.current?.timer;
+      if (timer !== undefined) window.clearTimeout(timer);
+    },
+    [],
+  );
 
   if (node.kind === "pane") {
     return (
@@ -431,6 +461,7 @@ function SplitView({
         session={node.session}
         active={workspaceActive && node.id === activePaneId}
         zoomed={node.id === zoomedPaneId}
+        hiddenByZoom={zoomedPaneId !== null && node.id !== zoomedPaneId}
         workspaceActive={workspaceActive}
         platform={platform}
         theme={theme}
@@ -444,19 +475,63 @@ function SplitView({
     );
   }
 
+  const zoomedInFirst = zoomedPaneId !== null && containsPane(node.first, zoomedPaneId);
+  const zoomedInSecond = zoomedPaneId !== null && containsPane(node.second, zoomedPaneId);
   const style =
     node.axis === "horizontal"
-      ? { gridTemplateColumns: `${node.ratio}fr 1px ${1 - node.ratio}fr` }
-      : { gridTemplateRows: `${node.ratio}fr 1px ${1 - node.ratio}fr` };
+      ? {
+          gridTemplateColumns: zoomedInFirst
+            ? "1fr 0 0"
+            : zoomedInSecond
+              ? "0 0 1fr"
+              : `${node.ratio}fr 1px ${1 - node.ratio}fr`,
+        }
+      : {
+          gridTemplateRows: zoomedInFirst
+            ? "1fr 0 0"
+            : zoomedInSecond
+              ? "0 0 1fr"
+              : `${node.ratio}fr 1px ${1 - node.ratio}fr`,
+        };
 
-  const updateRatio = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current?.pointerId !== event.pointerId || !splitRef.current) return;
+  const updateRatio = (event: ReactPointerEvent<HTMLDivElement>, commit = false): void => {
+    const drag = dragRef.current;
+    if (drag?.pointerId !== event.pointerId || !splitRef.current) return;
     const bounds = splitRef.current.getBoundingClientRect();
     const raw =
       node.axis === "horizontal"
         ? (event.clientX - bounds.left) / Math.max(1, bounds.width)
         : (event.clientY - bounds.top) / Math.max(1, bounds.height);
-    onRatio(node.id, Math.max(0.1, Math.min(0.9, raw)));
+    const ratio = Math.max(0.1, Math.min(0.9, raw));
+    const now = performance.now();
+    if (commit) {
+      if (drag.timer !== undefined) window.clearTimeout(drag.timer);
+      drag.timer = undefined;
+      drag.pendingRatio = undefined;
+      drag.lastSentAt = now;
+      onRatio(node.id, ratio, true);
+      return;
+    }
+    const interval = Math.max(0, resizeLiveIntervalMs);
+    if (interval === 0 || now - drag.lastSentAt >= interval) {
+      drag.lastSentAt = now;
+      onRatio(node.id, ratio, false);
+      return;
+    }
+    drag.pendingRatio = ratio;
+    if (drag.timer !== undefined) return;
+    drag.timer = window.setTimeout(
+      () => {
+        const current = dragRef.current;
+        if (current !== drag || current.pendingRatio === undefined) return;
+        const pending = current.pendingRatio;
+        current.pendingRatio = undefined;
+        current.timer = undefined;
+        current.lastSentAt = performance.now();
+        onRatio(node.id, pending, false);
+      },
+      Math.max(0, interval - (now - drag.lastSentAt)),
+    );
   };
 
   return (
@@ -476,23 +551,32 @@ function SplitView({
           onClosePane,
           onBrowseDevice,
           decoratePane,
+          resizeLiveIntervalMs,
           onRatio,
         }}
       />
       <div
         className="ghostty-split-divider"
         onPointerDown={(event) => {
-          dragRef.current = { pointerId: event.pointerId };
+          dragRef.current = {
+            pointerId: event.pointerId,
+            lastSentAt: -Infinity,
+            pendingRatio: undefined,
+            timer: undefined,
+          };
           event.currentTarget.setPointerCapture(event.pointerId);
           event.preventDefault();
         }}
-        onPointerMove={updateRatio}
+        onPointerMove={(event) => updateRatio(event)}
         onPointerUp={(event) => {
+          updateRatio(event, true);
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
           dragRef.current = null;
         }}
         onPointerCancel={() => {
+          const timer = dragRef.current?.timer;
+          if (timer !== undefined) window.clearTimeout(timer);
           dragRef.current = null;
         }}
       />
@@ -511,6 +595,7 @@ function SplitView({
           onClosePane,
           onBrowseDevice,
           decoratePane,
+          resizeLiveIntervalMs,
           onRatio,
         }}
       />
@@ -536,6 +621,7 @@ export function GhostteaWorkspace({
   claimExistingSessions = true,
   initialCwd,
   onSessionsChange,
+  resizeCommitPolicy,
 }: GhostteaWorkspaceProps) {
   const Sidebar = sidebar;
   const terminalRuntime = useGhostteaRuntime();
@@ -914,8 +1000,6 @@ export function GhostteaWorkspace({
     [addSession, terminalRuntime],
   );
 
-  const displayedLayout = zoomedPaneId ? leaves(layout).find((candidate) => candidate.id === zoomedPaneId) : layout;
-
   const executeWorkspaceCommand = useCallback(
     (command: WorkspaceEffect): void => {
       if (command.type === "new-tab") {
@@ -1102,13 +1186,13 @@ export function GhostteaWorkspace({
             <div className="terminal-error" role="alert">
               {error}
             </div>
-          ) : displayedLayout && activePaneId ? (
+          ) : layout && activePaneId ? (
             <SplitView
-              key={displayedLayout.id}
-              node={displayedLayout}
+              key={layout.id}
+              node={layout}
               activePaneId={activePaneId}
               workspaceActive={active}
-              zoomedPaneId={null}
+              zoomedPaneId={zoomedPaneId}
               platform={platform}
               theme={resolvedTheme}
               effects={effects}
@@ -1117,11 +1201,13 @@ export function GhostteaWorkspace({
               onClosePane={closePane}
               onBrowseDevice={browseDeviceSessions}
               decoratePane={decoratePane}
-              onRatio={(splitId, ratio) =>
+              resizeLiveIntervalMs={resizeCommitPolicy?.liveIntervalMs ?? 33}
+              onRatio={(splitId, ratio, commit) => {
                 setLayout((current) =>
                   current ? updateSplit(current, splitId, (split) => ({ ...split, ratio })) : current,
-                )
-              }
+                );
+                if (commit) resizeCommitPolicy?.onCommit?.({ splitId, ratio });
+              }}
             />
           ) : null}
           {operationError ? (
