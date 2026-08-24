@@ -1,7 +1,7 @@
 {
   "name": "ghosttea",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Ghostty-powered native terminal runtime for Electron applications.",
   "license": "MIT",
   "author": "James Yong",
@@ -132,6 +132,7 @@
     "check": "npm run format:check && npm run lint && npm run check:workspace-names && npm run check:build-script-inputs && npm run check:ghostty-upgrade && npm run check:bundled-fonts && npm run check:swiftpm:manifests && npm run check:ios-release-bom && npm run check:ios-release-resources && npm run check:ios-app-store && npm run check:ios-beta-matrix && npm run test:ios:beta-matrix && npm run check:ios-instruments && npm run test:ios:instruments-evidence && npm run check:ios-diagnostics && npm run build:sdk && npm run check --workspaces --if-present && cargo check --workspace && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "dev": "npm run build:sdk && npm run dev --workspace ghosttea-demo",
     "dev:experiment": "npm run build:sdk && npm run dev --workspace ghosttea-desktop-experiment",
+    "dev:pipeline-lab": "npm run dev --workspace ghosttea-desktop-pipeline-lab",
     "dev:peer": "node scripts/dev-peer.mjs",
     "dev:peers": "node scripts/dev-peers.mjs",
     "dist": "npm run dist --workspace ghosttea-demo",
@@ -141,8 +142,8 @@
     "ghosttead": "cargo run -p ghosttead",
     "terminald": "npm run ghosttead",
     "lint": "eslint apps packages scripts tests bench *.js --max-warnings 0",
-    "format": "prettier --write .github/workflows/*.yml apps/desktop/src apps/desktop-experiment/src packages scripts tests bench *.json *.js *.md && cargo fmt --all",
-    "format:check": "prettier --check .github/workflows/*.yml apps/desktop/src apps/desktop-experiment/src packages scripts tests bench *.json *.js *.md && cargo fmt --all -- --check"
+    "format": "prettier --write .github/workflows/*.yml apps/desktop/src apps/desktop-experiment/src apps/desktop-pipeline-lab/src packages scripts tests bench *.json *.js *.md && cargo fmt --all",
+    "format:check": "prettier --check .github/workflows/*.yml apps/desktop/src apps/desktop-experiment/src apps/desktop-pipeline-lab/src packages scripts tests bench *.json *.js *.md && cargo fmt --all -- --check"
   },
   "engines": {
     "node": ">=22"

@@ -9,7 +9,11 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["apps/desktop/src/renderer/**/*.{ts,tsx}", "packages/ghosttea-react/src/**/*.{ts,tsx}"],
+    files: [
+      "apps/desktop/src/renderer/**/*.{ts,tsx}",
+      "apps/desktop-pipeline-lab/src/renderer/**/*.{ts,tsx}",
+      "packages/ghosttea-react/src/**/*.{ts,tsx}",
+    ],
     plugins: reactHooks.configs.flat.recommended.plugins,
     rules: reactHooks.configs.flat.recommended.rules,
   },

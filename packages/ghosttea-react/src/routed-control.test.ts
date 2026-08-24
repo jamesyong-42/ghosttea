@@ -88,6 +88,144 @@ function attach(transport: RoutedControlTransport): void {
 }
 
 describe("main-thread routed control transport", () => {
+  it("delivers unknown authenticated control messages only when extension ingress is enabled", () => {
+    const socket = new FakeSocket();
+    const events: RoutedControlTransportEvent[] = [];
+    const transport = new RoutedControlTransport({
+      socketFactory: () => socket as unknown as WebSocket,
+      acceptExtensionMessages: true,
+      emit: (event) => events.push(event),
+    });
+    attach(transport);
+    socket.open();
+    socket.receive(
+      encodeRoutedMessage("ConnectionAccepted", {
+        selectedProtocolVersion: { major: 1, minor: 0 },
+        connectionSetId: "set-a",
+        channel: "control",
+        legGeneration: 1,
+        heartbeatTtlMs: 15_000,
+        protocolLimits: DEFAULT_ROUTED_PROTOCOL_LIMITS,
+        capabilities: ["resume"],
+      }),
+    );
+    const message = { type: "HostSessionNotice", sessionId: "session-a", revision: 3 };
+    socket.receive(JSON.stringify(message));
+
+    expect(events.at(-1)).toEqual({
+      type: "extension-message",
+      message,
+      context: { cellBootId: "cell-a", connectionSetId: "set-a", channel: "control" },
+    });
+    expect(socket.readyState).toBe(1);
+    transport.dispose();
+  });
+
+  it("keeps unknown messages closed before authentication and when extension ingress is disabled", () => {
+    const preAuthSocket = new FakeSocket();
+    const preAuthEvents: RoutedControlTransportEvent[] = [];
+    const preAuth = new RoutedControlTransport({
+      socketFactory: () => preAuthSocket as unknown as WebSocket,
+      acceptExtensionMessages: true,
+      emit: (event) => preAuthEvents.push(event),
+    });
+    attach(preAuth);
+    preAuthSocket.open();
+    preAuthSocket.receive(JSON.stringify({ type: "HostSessionNotice" }));
+    expect(preAuthEvents.at(-1)).toMatchObject({ type: "transport-closed", code: 4003, preAuth: false });
+
+    const disabledSocket = new FakeSocket();
+    const disabledEvents: RoutedControlTransportEvent[] = [];
+    const disabled = new RoutedControlTransport({
+      socketFactory: () => disabledSocket as unknown as WebSocket,
+      emit: (event) => disabledEvents.push(event),
+    });
+    attach(disabled);
+    disabledSocket.open();
+    disabledSocket.receive(
+      encodeRoutedMessage("ConnectionAccepted", {
+        selectedProtocolVersion: { major: 1, minor: 0 },
+        connectionSetId: "set-a",
+        channel: "control",
+        legGeneration: 1,
+        heartbeatTtlMs: 15_000,
+        protocolLimits: DEFAULT_ROUTED_PROTOCOL_LIMITS,
+        capabilities: ["resume"],
+      }),
+    );
+    disabledSocket.receive(JSON.stringify({ type: "HostSessionNotice" }));
+    expect(disabledEvents.at(-1)).toMatchObject({ type: "transport-closed", code: 4003, preAuth: false });
+
+    preAuth.dispose();
+    disabled.dispose();
+  });
+
+  it("does not reclassify a known wrong-leg message as an extension", () => {
+    const socket = new FakeSocket();
+    const events: RoutedControlTransportEvent[] = [];
+    const transport = new RoutedControlTransport({
+      socketFactory: () => socket as unknown as WebSocket,
+      acceptExtensionMessages: true,
+      emit: (event) => events.push(event),
+    });
+    attach(transport);
+    socket.open();
+    socket.receive(
+      encodeRoutedMessage("ConnectionAccepted", {
+        selectedProtocolVersion: { major: 1, minor: 0 },
+        connectionSetId: "set-a",
+        channel: "control",
+        legGeneration: 1,
+        heartbeatTtlMs: 15_000,
+        protocolLimits: DEFAULT_ROUTED_PROTOCOL_LIMITS,
+        capabilities: ["resume"],
+      }),
+    );
+    const outboundAttach = socket.sent.at(-1)!;
+    socket.receive(outboundAttach);
+
+    expect(events.at(-1)).toMatchObject({ type: "transport-closed", code: 4003, preAuth: false });
+    expect(events.some((event) => event.type === "extension-message")).toBe(false);
+    transport.dispose();
+  });
+
+  it("keeps malformed, known-invalid, binary, and oversized ingress closed", () => {
+    const reject = (
+      deliver: (socket: FakeSocket) => void,
+      maxControlMessageBytes = DEFAULT_ROUTED_PROTOCOL_LIMITS.maxControlMessageBytes,
+    ) => {
+      const socket = new FakeSocket();
+      const events: RoutedControlTransportEvent[] = [];
+      const transport = new RoutedControlTransport({
+        socketFactory: () => socket as unknown as WebSocket,
+        acceptExtensionMessages: true,
+        emit: (event) => events.push(event),
+      });
+      attach(transport);
+      socket.open();
+      socket.receive(
+        encodeRoutedMessage("ConnectionAccepted", {
+          selectedProtocolVersion: { major: 1, minor: 0 },
+          connectionSetId: "set-a",
+          channel: "control",
+          legGeneration: 1,
+          heartbeatTtlMs: 15_000,
+          protocolLimits: { ...DEFAULT_ROUTED_PROTOCOL_LIMITS, maxControlMessageBytes },
+          capabilities: ["resume"],
+        }),
+      );
+      deliver(socket);
+      expect(events.at(-1)).toMatchObject({ type: "transport-closed", code: 4003, preAuth: false });
+      expect(events.some((event) => event.type === "extension-message")).toBe(false);
+      transport.dispose();
+    };
+
+    reject((socket) => socket.receive("{"));
+    reject((socket) => socket.receive(JSON.stringify({ type: "CellActivationStatus" })));
+    reject((socket) => socket.dispatchEvent(new MessageEvent("message", { data: new Uint8Array([1, 2, 3]).buffer })));
+    reject((socket) => socket.receive(JSON.stringify({ type: "HostSessionNotice", payload: "x".repeat(128) })), 64);
+  });
+
   it("closes a leg whose heartbeat acknowledgements stop", async () => {
     const socket = new FakeSocket();
     const events: RoutedControlTransportEvent[] = [];

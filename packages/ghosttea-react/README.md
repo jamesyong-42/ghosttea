@@ -26,11 +26,28 @@ const runtime = createGhostteaTerminalRuntime({
     openTicket: (sessionId, options) => fieldd.openTicket(sessionId, options),
     renewAttach: (request) => fieldd.renewAttach(request),
     listSessions: () => fieldd.listSessions(),
+    getSession: (sessionId) => fieldd.getSession(sessionId),
     createSession: (options) => fieldd.createSession(options),
     terminate: (sessionId, source) => fieldd.terminate(sessionId, source),
+    onExtensionMessage: (message, context) => hostExtensions.receive(message, context),
   },
 });
 ```
+
+When `getSession` is present, each routed `frame-committed` signal arms the
+same coalesced 200 ms metadata refresh used by the ports transport. Reads for a
+session never overlap, `null` is a no-op, and a late response cannot overwrite
+a newer registration or event. Hosts can also project authoritative lifecycle
+facts directly with `runtime.applySessionEvent(event)`. The exported
+`RoutedSessionEvent` union covers full-summary updates, activity changes, exits
+with complete exit facts, and non-terminating removal.
+
+`onExtensionMessage` is deliberately strict. It receives only an unknown
+tagged object from an authenticated control leg, unchanged and with its
+`cellBootId`/`connectionSetId` context. Known protocol messages still use the
+built-in decoder, and malformed, wrong-leg, oversized, binary, or pre-accept
+messages retain their protocol-close behavior. Omitting the callback keeps
+unknown tags closed as before.
 
 The ticket guard accepts only loopback `ws://`/`wss://` endpoints without a
 query or fragment, and checks route/grant/session binding before dialing. A

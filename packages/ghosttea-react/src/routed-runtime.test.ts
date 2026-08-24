@@ -140,6 +140,424 @@ async function flush(): Promise<void> {
 }
 
 describe("routed terminal runtime", () => {
+  it("refreshes registered metadata 200ms after a routed frame commit", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const first = session("session-a", "11");
+    const refreshed = {
+      ...first,
+      title: "build complete",
+      cwd: "/workspace/project",
+      activity: {
+        ...first.activity,
+        kind: "shell-idle" as const,
+        source: "shell-integration" as const,
+        confidence: "authoritative" as const,
+        observedAtMs: 9,
+      },
+    };
+    const getSession = vi.fn(async () => refreshed);
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a"), getSession },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const metadata = vi.fn();
+    runtime.addEventListener("session-metadata", metadata);
+    runtime.registerSession(first);
+
+    worker.emit({
+      type: "frame-committed",
+      sessionHandle: first.handle,
+      sessionEpoch: 1n,
+      frameSequence: 1n,
+      fullSnapshot: false,
+    });
+    await vi.advanceTimersByTimeAsync(199);
+    expect(getSession).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+
+    expect(getSession).toHaveBeenCalledOnce();
+    expect(getSession).toHaveBeenCalledWith(first.id);
+    expect(runtime.sessionMetadata(first.handle)).toEqual(refreshed);
+    expect(metadata).toHaveBeenCalledOnce();
+    expect((metadata.mock.calls[0]![0] as CustomEvent).detail).toEqual(refreshed);
+
+    runtime.dispose();
+    vi.useRealTimers();
+  });
+
+  it("coalesces routed metadata reads without overlapping them", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const first = session("session-a", "11");
+    let resolveFirst!: (value: SessionSummary | null) => void;
+    const firstRead = new Promise<SessionSummary | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const getSession = vi
+      .fn<() => Promise<SessionSummary | null>>()
+      .mockImplementationOnce(() => firstRead)
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("inventory unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a"), getSession },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    runtime.registerSession(first);
+    const commit = (frameSequence: bigint) =>
+      worker.emit({
+        type: "frame-committed",
+        sessionHandle: first.handle,
+        sessionEpoch: 1n,
+        frameSequence,
+        fullSnapshot: false,
+      });
+
+    commit(1n);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getSession).toHaveBeenCalledOnce();
+    commit(2n);
+    commit(3n);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(getSession).toHaveBeenCalledOnce();
+
+    resolveFirst({ ...first, title: "first read" });
+    await flush();
+    await vi.advanceTimersByTimeAsync(199);
+    expect(getSession).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(getSession).toHaveBeenCalledTimes(2);
+    expect(runtime.sessionMetadata(first.handle)?.title).toBe("first read");
+
+    commit(4n);
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    expect(getSession).toHaveBeenCalledTimes(3);
+    expect(runtime.sessionMetadata(first.handle)?.title).toBe("first read");
+    expect(warn).toHaveBeenCalledWith(
+      "[terminal-runtime] session metadata refresh failed",
+      expect.objectContaining({ message: "inventory unavailable" }),
+    );
+
+    runtime.dispose();
+    warn.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("does not let a late routed read resurrect an exited session", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const first = session("session-a", "11");
+    let resolveRead!: (value: SessionSummary | null) => void;
+    const getSession = vi.fn(
+      () =>
+        new Promise<SessionSummary | null>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a"), getSession },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    runtime.registerSession(first);
+    worker.emit({
+      type: "frame-committed",
+      sessionHandle: first.handle,
+      sessionEpoch: 1n,
+      frameSequence: 1n,
+      fullSnapshot: false,
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getSession).toHaveBeenCalledOnce();
+
+    runtime.applySessionEvent({
+      type: "exited",
+      sessionId: first.id,
+      exitCode: null,
+      exitSignal: "SIGTERM",
+      requestedTermination: "application",
+      exitOutcome: "application-terminated",
+    });
+    resolveRead({ ...first, title: "stale live session" });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(runtime.sessionMetadata(first.handle)).toMatchObject({
+      exited: true,
+      title: null,
+      exitCode: null,
+      exitSignal: "SIGTERM",
+      requestedTermination: "application",
+      exitOutcome: "application-terminated",
+    });
+    expect(getSession).toHaveBeenCalledOnce();
+
+    runtime.dispose();
+    vi.useRealTimers();
+  });
+
+  it("discards routed reads made stale by events, registrations, and removal", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const first = session("session-a", "11");
+    const resolvers: Array<(value: SessionSummary | null) => void> = [];
+    const getSession = vi.fn(
+      () =>
+        new Promise<SessionSummary | null>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a"), getSession },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    runtime.registerSession(first);
+    const startRead = async (frameSequence: bigint) => {
+      worker.emit({
+        type: "frame-committed",
+        sessionHandle: first.handle,
+        sessionEpoch: 1n,
+        frameSequence,
+        fullSnapshot: false,
+      });
+      await vi.advanceTimersByTimeAsync(200);
+    };
+
+    await startRead(1n);
+    runtime.applySessionEvent({ type: "updated", session: { ...first, title: "newer event" } });
+    resolvers[0]!({ ...first, title: "stale read one" });
+    await flush();
+    expect(runtime.sessionMetadata(first.handle)?.title).toBe("newer event");
+
+    await startRead(2n);
+    runtime.registerSession({ ...first, title: "newer registration" });
+    resolvers[1]!({ ...first, title: "stale read two" });
+    await flush();
+    expect(runtime.sessionMetadata(first.handle)?.title).toBe("newer registration");
+
+    await startRead(3n);
+    runtime.applySessionEvent({ type: "removed", sessionId: first.id });
+    resolvers[2]!({ ...first, title: "removed session" });
+    await flush();
+    expect(runtime.sessionMetadata(first.handle)).toBeUndefined();
+    expect(getSession).toHaveBeenCalledTimes(3);
+
+    runtime.dispose();
+    vi.useRealTimers();
+  });
+
+  it("applies routed session events with ports-compatible activity and exit ordering", () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const terminate = vi.fn();
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a"), terminate },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const first = session("session-a", "11");
+    runtime.registerSession(first);
+    const order: string[] = [];
+    const activities: unknown[] = [];
+    const exits: unknown[] = [];
+    runtime.addEventListener("session-activity", (event) => {
+      order.push("activity");
+      activities.push((event as CustomEvent).detail);
+    });
+    runtime.addEventListener("session-metadata", () => order.push("metadata"));
+    runtime.addEventListener("session-exited", (event) => {
+      order.push("exited");
+      exits.push((event as CustomEvent).detail);
+    });
+
+    runtime.applySessionEvent({ type: "updated", session: { ...first, title: "host title" } });
+    const activity = {
+      kind: "foreground-job" as const,
+      source: "process-group" as const,
+      confidence: "authoritative" as const,
+      rootProcessGroupId: 10,
+      foregroundProcessGroupId: 20,
+      observedAtMs: 30,
+    };
+    runtime.applySessionEvent({ type: "activity-changed", sessionId: first.id, activity });
+    runtime.applySessionEvent({
+      type: "exited",
+      sessionId: first.id,
+      exitCode: 7,
+      exitSignal: null,
+      requestedTermination: null,
+      exitOutcome: "crashed",
+    });
+
+    expect(order).toEqual(["metadata", "activity", "metadata", "metadata", "exited"]);
+    expect(activities).toEqual([{ requestId: 0, type: "session-activity-changed", sessionId: first.id, activity }]);
+    expect(exits).toEqual([
+      {
+        requestId: 0,
+        type: "session-exited",
+        sessionId: first.id,
+        exitCode: 7,
+        exitSignal: null,
+        requestedTermination: null,
+        exitOutcome: "crashed",
+      },
+    ]);
+    expect(runtime.sessionMetadata(first.handle)).toMatchObject({
+      title: "host title",
+      activity,
+      exited: true,
+      exitCode: 7,
+      exitOutcome: "crashed",
+    });
+
+    runtime.applySessionEvent({ type: "updated", session: { ...first, title: "resurrected" } });
+    runtime.applySessionEvent({
+      type: "exited",
+      sessionId: first.id,
+      exitCode: 0,
+      exitSignal: null,
+      requestedTermination: null,
+      exitOutcome: "completed",
+    });
+    expect(order).toHaveLength(5);
+    runtime.applySessionEvent({ type: "removed", sessionId: first.id });
+    expect(runtime.sessionMetadata(first.handle)).toBeUndefined();
+    expect(terminate).not.toHaveBeenCalled();
+
+    runtime.dispose();
+  });
+
+  it("emits the first explicit exit even when a full summary observed the exit first", () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: { openTicket: async () => ticket("cell-a", "session-a", "set-a") },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const first = session("session-a", "11");
+    runtime.registerSession(first);
+    const order: string[] = [];
+    runtime.addEventListener("session-metadata", () => order.push("metadata"));
+    runtime.addEventListener("session-exited", () => order.push("exited"));
+    const exit = {
+      exitCode: 0,
+      exitSignal: null,
+      requestedTermination: null,
+      exitOutcome: "completed" as const,
+    };
+
+    runtime.applySessionEvent({ type: "updated", session: { ...first, exited: true, ...exit } });
+    expect(order).toEqual(["metadata"]);
+    runtime.applySessionEvent({ type: "exited", sessionId: first.id, ...exit });
+    expect(order).toEqual(["metadata", "metadata", "exited"]);
+    runtime.applySessionEvent({ type: "exited", sessionId: first.id, ...exit });
+    expect(order).toEqual(["metadata", "metadata", "exited"]);
+
+    runtime.dispose();
+  });
+
+  it("forwards authenticated host extension messages with their routed identity", async () => {
+    vi.stubGlobal("window", globalThis);
+    const worker = new FakeWorker();
+    const sockets: FakeSocket[] = [];
+    const onExtensionMessage = vi.fn();
+    const runtime = new GhostteaTerminalRuntime({
+      transport: "routed",
+      host: {
+        openTicket: async () => ticket("cell-a", "session-a", "set-a"),
+        onExtensionMessage,
+      },
+      platform: {
+        writeClipboard: () => undefined,
+        forceCanvasFallback: () => false,
+        setForceCanvasFallback: () => undefined,
+        reload: () => undefined,
+      },
+      websocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const first = session("session-a", "11");
+    runtime.registerSession(first);
+    runtime.mount(first.id, first.handle, "view-a", canvas());
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.receive(
+      encodeRoutedMessage("ConnectionAccepted", {
+        selectedProtocolVersion: { major: 1, minor: 0 },
+        connectionSetId: "set-a",
+        channel: "control",
+        legGeneration: 1,
+        heartbeatTtlMs: 15_000,
+        protocolLimits: DEFAULT_ROUTED_PROTOCOL_LIMITS,
+        capabilities: ["resume"],
+      }),
+    );
+    const message = { type: "HostSessionNotice", sessionId: first.id, revision: 4 };
+    sockets[0]!.receive(JSON.stringify(message));
+
+    expect(onExtensionMessage).toHaveBeenCalledOnce();
+    expect(onExtensionMessage).toHaveBeenCalledWith(message, {
+      cellBootId: "cell-a",
+      connectionSetId: "set-a",
+      channel: "control",
+    });
+    expect(sockets[0]!.readyState).toBe(1);
+
+    runtime.dispose();
+  });
+
   it("keeps routed input closed when T1 has no negotiated input encoder", async () => {
     vi.stubGlobal("window", globalThis);
     const worker = new FakeWorker();
