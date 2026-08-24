@@ -25,6 +25,8 @@ export {
   type GhostteaRoutedHost,
   type GhostteaRoutedTerminalRuntimeOptions,
   type GhostteaTerminalRuntimeOptions,
+  type RoutedExtensionMessageContext,
+  type RoutedSessionEvent,
   type RoutedTerminalInputContext,
   type RoutedTerminalInputOperation,
   sessionIsFrozen,

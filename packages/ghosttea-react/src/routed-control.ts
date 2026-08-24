@@ -31,6 +31,12 @@ export interface RoutedControlAttachRequest {
   capabilities?: string[];
 }
 
+export interface RoutedExtensionMessageContext {
+  readonly cellBootId: string;
+  readonly connectionSetId: string;
+  readonly channel: "control";
+}
+
 export type RoutedControlTransportEvent =
   | { type: "transport-ready"; cellBootId: string; accepted: RoutedConnectionAccepted }
   | { type: "control-attached"; attached: RoutedControlLegAttached }
@@ -39,6 +45,11 @@ export type RoutedControlTransportEvent =
   | { type: "demand-accepted"; activationId?: string; demandSequence: number }
   | { type: "geometry-committed"; activationId?: string; committed: RoutedGeometryCommitted }
   | { type: "geometry-refused"; activationId?: string; refused: RoutedGeometryRefused }
+  | {
+      type: "extension-message";
+      message: Readonly<Record<string, unknown>>;
+      context: RoutedExtensionMessageContext;
+    }
   | {
       type: "transport-closed";
       cellBootId: string;
@@ -78,6 +89,7 @@ const socketClosing = 2;
 export class RoutedControlTransport {
   readonly #socketFactory: (url: string) => WebSocket;
   readonly #emit: (event: RoutedControlTransportEvent) => void;
+  readonly #acceptExtensionMessages: boolean;
   readonly #connections = new Map<string, ControlConnection>();
   readonly #activations = new Map<string, ControlActivation>();
   #disposed = false;
@@ -85,9 +97,11 @@ export class RoutedControlTransport {
   constructor(options: {
     socketFactory?: (url: string) => WebSocket;
     emit: (event: RoutedControlTransportEvent) => void;
+    acceptExtensionMessages?: boolean;
   }) {
     this.#socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
     this.#emit = options.emit;
+    this.#acceptExtensionMessages = options.acceptExtensionMessages ?? false;
   }
 
   attach(request: RoutedControlAttachRequest): void {
@@ -242,6 +256,18 @@ export class RoutedControlTransport {
     }
     const decoded = decodeRoutedMessage(event.data, ROUTED_LEG_OUTBOUND.control);
     if (!decoded.ok) {
+      if (decoded.error === "unknown-type" && connection.accepted && this.#acceptExtensionMessages) {
+        this.#emit({
+          type: "extension-message",
+          message: JSON.parse(event.data) as Readonly<Record<string, unknown>>,
+          context: {
+            cellBootId: connection.cellBootId,
+            connectionSetId: connection.accepted.connectionSetId,
+            channel: "control",
+          },
+        });
+        return;
+      }
       this.#closeConnection(connection, 4003, `invalid control message: ${decoded.error}`, true);
       return;
     }

@@ -3,6 +3,34 @@
 All notable changes to Ghosttea are documented here. The Rust and npm packages
 share one version.
 
+## 0.11.1 - 2026-08-23
+
+### Added
+
+- Routed React hosts can supply `getSession` for the existing frame-driven
+  metadata cadence. Routed frame commits now coalesce exact-summary reads at
+  200 ms, prevent overlapping reads for a session, and reject stale completions
+  after a newer event, registration, exit, or removal.
+- `@vibecook/ghosttea-react` exports `RoutedSessionEvent` and
+  `applySessionEvent` for full-summary, activity, exit, and removal projection.
+  Activity and exit use the same CustomEvent ordering as the port transport,
+  exit events preserve every termination fact, and removal never terminates or
+  invents exit evidence.
+- Routed hosts can opt into strict inbound extension messages with
+  `onExtensionMessage`. Only unknown tagged objects received after control-leg
+  authentication reach the callback, together with authenticated cell and
+  connection-set identity; malformed, known-invalid, wrong-leg, binary,
+  oversized, and pre-authentication messages retain their protocol close.
+- The repository includes a private Electron compositor pipeline lab for
+  comparing scene/view architectures and exercising renderer scheduling under
+  controlled workloads.
+
+### Compatibility
+
+- All new routed host members are optional. Omitting them preserves 0.11.0
+  behavior, and the existing port-pair transport and Ghosttea wire contracts
+  are unchanged.
+
 ## 0.11.0 - 2026-08-22
 
 ### Added

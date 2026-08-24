@@ -1,33 +1,24 @@
 {
-  "name": "ghosttea-desktop-experiment",
+  "name": "ghosttea-desktop-pipeline-lab",
   "version": "0.11.1",
-  "description": "An isolated Ghosttea desktop experimentation application.",
+  "description": "Electron compositor lab: race terminal scene/view architectures.",
   "author": "James Yong",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vibecook-dev/ghosttea.git",
-    "directory": "apps/desktop-experiment"
+    "directory": "apps/desktop-pipeline-lab"
   },
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "predev": "node ../../scripts/build-desktop-native-tabs.mjs apps/desktop-experiment",
     "dev": "electron-vite dev",
-    "prebuild": "node ../../scripts/build-desktop-native-tabs.mjs apps/desktop-experiment",
     "build": "electron-vite build",
-    "stage:ghosttead": "node ../../scripts/stage-ghosttead.mjs apps/desktop-experiment",
-    "dist": "npm run stage:ghosttead && npm run build && electron-builder",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@vibecook/ghosttea": "0.11.1",
-    "@vibecook/ghosttea-electron": "0.11.1",
-    "@vibecook/ghosttea-frame": "0.11.1",
-    "@vibecook/ghosttea-protocol": "0.11.1",
-    "@vibecook/ghosttea-react": "0.11.1",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
@@ -38,7 +29,6 @@
     "@vitejs/plugin-react": "5.2.0",
     "@webgpu/types": "^0.1.71",
     "electron": "43.1.1",
-    "electron-builder": "^26.0.0",
     "electron-vite": "5.0.0",
     "typescript": "7.0.2",
     "vite": "7.3.6",
